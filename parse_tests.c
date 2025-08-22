@@ -102,13 +102,13 @@ const char csSimple[] = R"(
 @workgroup_size(16, 16, 1)
 fn compute_main(@builtin(global_invocation_id) id: vec3<u32>) {
     var i: i32 = -id.x;
-    //for(i = 0;i < -ix.x;i = i + 1){}
+    //for(i = 0;i < -ix.x;i++){}
 }
 )";
 
 int main(){
-    //WgslAstNode* vertexFragmentRootNode = wgsl_parse(vertexFragmentShaderSource);
-    WgslAstNode* computeRootNode = wgsl_parse(csSimple);
-    //wgsl_debug_print(vertexFragmentRootNode, 0);
-    wgsl_debug_print(computeRootNode, 0);
+    WgslAstNode* vertexFragmentRootNode = wgsl_parse(vertexFragmentShaderSource);
+    //WgslAstNode* computeRootNode = wgsl_parse(csSimple);
+    wgsl_debug_print(vertexFragmentRootNode, 0);
+    //wgsl_debug_print(computeRootNode, 0);
 }
