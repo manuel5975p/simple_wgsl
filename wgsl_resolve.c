@@ -1,4 +1,3 @@
-// BEGIN FILE wgsl_resolve.c
 #include "wgsl_resolve.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -251,67 +250,7 @@ static void record_fn_call(FnInfo* fi, const char* name) {
     fi->calls[fi->calls_count++] = name;
 }
 
-/* declarations */
-static void declare_global_from_globalvar(WgslResolver* r, const WgslAstNode* gv) {
-    WgslSymbolInfo s;
-    memset(&s, 0, sizeof(s));
-    s.id = next_id(r);
-    s.kind = WGSL_SYM_GLOBAL;
-    s.name = gv->global_var.name;
-    s.decl_node = gv;
-    const WgslAstNode* g = get_attr_node(gv, "group");
-    const WgslAstNode* b = get_attr_node(gv, "binding");
-    if (g) {
-        s.has_group = 1;
-        s.group_index = attr_first_arg_int(g);
-    }
-    if (b) {
-        s.has_binding = 1;
-        s.binding_index = attr_first_arg_int(b);
-    }
-    add_symbol(r, s);
-    scope_put(r, s.name, s.id);
-}
-static void declare_global_from_vardecl(WgslResolver* r, const WgslAstNode* vd) {
-    if (!vd || vd->type != WGSL_NODE_VAR_DECL || !vd->var_decl.name)
-        return;
-    WgslSymbolInfo s;
-    memset(&s, 0, sizeof(s));
-    s.id = next_id(r);
-    s.kind = WGSL_SYM_GLOBAL;
-    s.name = vd->var_decl.name;
-    s.decl_node = vd;
-    add_symbol(r, s);
-    scope_put(r, s.name, s.id);
-}
-static void declare_param(WgslResolver* r, const WgslAstNode* fn, const WgslAstNode* param) {
-    if (!param->param.name)
-        return;
-    WgslSymbolInfo s;
-    memset(&s, 0, sizeof(s));
-    s.id = next_id(r);
-    s.kind = WGSL_SYM_PARAM;
-    s.name = param->param.name;
-    s.decl_node = param;
-    s.function_node = fn;
-    add_symbol(r, s);
-    scope_put(r, s.name, s.id);
-}
-static void declare_local(WgslResolver* r, const WgslAstNode* fn, const WgslAstNode* v) {
-    if (!v->var_decl.name)
-        return;
-    WgslSymbolInfo s;
-    memset(&s, 0, sizeof(s));
-    s.id = next_id(r);
-    s.kind = WGSL_SYM_LOCAL;
-    s.name = v->var_decl.name;
-    s.decl_node = v;
-    s.function_node = fn;
-    add_symbol(r, s);
-    scope_put(r, s.name, s.id);
-}
-
-/* numeric helpers */
+/* numeric helpers from types */
 static WgslNumericType elem_from_name(const char* n) {
     if (!n)
         return WGSL_NUM_UNKNOWN;
@@ -383,9 +322,8 @@ static int type_info(const WgslResolver* r, const WgslAstNode* t, int* component
             sz = c * 4;
         }
     } else {
-        const WgslAstNode* sd = get_struct(r, n);
-        if (sd)
-            return 0;
+        const WgslAstNode* sd = NULL;
+        (void)sd;
         return 0;
     }
     if (components)
@@ -395,6 +333,75 @@ static int type_info(const WgslResolver* r, const WgslAstNode* t, int* component
     if (bytes)
         *bytes = sz;
     return 1;
+}
+
+/* --- New: rough static size calculator for buffer element types --- */
+/* Returns 1 if size computed and writes to *out_bytes; returns 0 otherwise. */
+static int type_min_size_bytes(const WgslResolver* r, const WgslAstNode* t, int* out_bytes);
+
+static int struct_min_size_bytes(const WgslResolver* r, const WgslAstNode* sd, int* out_bytes) {
+    if (!sd || sd->type != WGSL_NODE_STRUCT)
+        return 0;
+    int total = 0;
+    for (int i = 0; i < sd->struct_decl.field_count; i++) {
+        const WgslAstNode* f = sd->struct_decl.fields[i];
+        if (!f || f->type != WGSL_NODE_STRUCT_FIELD)
+            continue;
+        int fb = 0;
+        if (!type_min_size_bytes(r, f->struct_field.type, &fb))
+            return 0;
+        total += fb;
+    }
+    *out_bytes = total;
+    return 1;
+}
+
+static int type_min_size_bytes(const WgslResolver* r, const WgslAstNode* t, int* out_bytes) {
+    if (!t || t->type != WGSL_NODE_TYPE)
+        return 0;
+
+    /* Scalars and vectors */
+    int comps = 0, bytes = 0;
+    if (type_info(r, t, &comps, NULL, &bytes)) {
+        *out_bytes = bytes;
+        return 1;
+    }
+
+    const char* name = t->type_node.name;
+    if (!name)
+        return 0;
+
+    /* array<T, N> */
+    if (str_eq(name, "array")) {
+        if (t->type_node.type_arg_count <= 0 || !t->type_node.type_args[0])
+            return 0;
+        const WgslAstNode* elem_t = t->type_node.type_args[0];
+        int elem_b = 0;
+        if (!type_min_size_bytes(r, elem_t, &elem_b))
+            return 0;
+
+        /* Try count from expr args if present and literal. */
+        int count = -1;
+        if (t->type_node.expr_arg_count > 0 && t->type_node.expr_args[0]) {
+            const WgslAstNode* n = t->type_node.expr_args[0];
+            if (n->type == WGSL_NODE_LITERAL)
+                count = parse_int_lexeme(n->literal.lexeme);
+        }
+        if (count <= 0)
+            return 0; /* runtime-sized or unknown: cannot produce static min size */
+
+        /* Ignore explicit @stride for now; assume tightly packed. */
+        *out_bytes = elem_b * count;
+        return 1;
+    }
+
+    /* struct reference */
+    const WgslAstNode* sd = get_struct(r, name);
+    if (sd)
+        return struct_min_size_bytes(r, sd, out_bytes);
+
+    /* matrices, textures, samplers, unknown generics: not handled */
+    return 0;
 }
 
 /* stages */
@@ -457,6 +464,21 @@ static void walk_expr(WgslResolver* r, FnInfo* fi, const WgslAstNode* e) {
         break;
     }
 }
+
+static void declare_local(WgslResolver* r, const WgslAstNode* fn, const WgslAstNode* v) {
+    if (!v->var_decl.name)
+        return;
+    WgslSymbolInfo s;
+    memset(&s, 0, sizeof(s));
+    s.id = next_id(r);
+    s.kind = WGSL_SYM_LOCAL;
+    s.name = v->var_decl.name;
+    s.decl_node = v;
+    s.function_node = fn;
+    add_symbol(r, s);
+    scope_put(r, s.name, s.id);
+}
+
 static void walk_stmt(WgslResolver* r, const WgslAstNode* fn, FnInfo* fi, const WgslAstNode* s) {
     if (!s)
         return;
@@ -498,6 +520,73 @@ static void walk_stmt(WgslResolver* r, const WgslAstNode* fn, FnInfo* fi, const 
         break;
     }
 }
+
+/* declarations */
+static void declare_global_from_globalvar(WgslResolver* r, const WgslAstNode* gv) {
+    WgslSymbolInfo s;
+    memset(&s, 0, sizeof(s));
+    s.id = next_id(r);
+    s.kind = WGSL_SYM_GLOBAL;
+    s.name = gv->global_var.name;
+    s.decl_node = gv;
+
+    const WgslAstNode* g = get_attr_node(gv, "group");
+    const WgslAstNode* b = get_attr_node(gv, "binding");
+    if (g) {
+        s.has_group = 1;
+        s.group_index = attr_first_arg_int(g);
+    }
+    if (b) {
+        s.has_binding = 1;
+        s.binding_index = attr_first_arg_int(b);
+    }
+
+    /* New: compute minBindingSize for buffer bindings. */
+    s.has_min_binding_size = 0;
+    s.min_binding_size = 0;
+    if (gv->global_var.address_space &&
+        (str_eq(gv->global_var.address_space, "uniform") ||
+         str_eq(gv->global_var.address_space, "storage"))) {
+        int bytes = 0;
+        if (type_min_size_bytes(r, gv->global_var.type, &bytes) && bytes > 0) {
+            s.has_min_binding_size = 1;
+            s.min_binding_size = bytes;
+        }
+    }
+
+    add_symbol(r, s);
+    scope_put(r, s.name, s.id);
+}
+static void declare_global_from_vardecl(WgslResolver* r, const WgslAstNode* vd) {
+    if (!vd || vd->type != WGSL_NODE_VAR_DECL || !vd->var_decl.name)
+        return;
+    WgslSymbolInfo s;
+    memset(&s, 0, sizeof(s));
+    s.id = next_id(r);
+    s.kind = WGSL_SYM_GLOBAL;
+    s.name = vd->var_decl.name;
+    s.decl_node = vd;
+    add_symbol(r, s);
+    scope_put(r, s.name, s.id);
+}
+static void declare_param(WgslResolver* r, const WgslAstNode* fn, const WgslAstNode* param) {
+    if (!param->param.name)
+        return;
+    WgslSymbolInfo s;
+    memset(&s, 0, sizeof(s));
+    s.id = next_id(r);
+    s.kind = WGSL_SYM_PARAM;
+    s.name = param->param.name;
+    s.decl_node = param;
+    s.function_node = fn;
+    add_symbol(r, s);
+    scope_put(r, s.name, s.id);
+}
+
+
+/* stages */
+static int has_attr(const WgslAstNode* fn, const char* name);
+static WgslStage detect_stage(const WgslAstNode* fn);
 
 /* build */
 WgslResolver* wgsl_resolver_build(const WgslAstNode* program) {
@@ -815,4 +904,4 @@ void wgsl_resolve_free(void* p) {
     if (p)
         NODE_FREE(p);
 }
-// END FILE wgsl_resolve.c
+

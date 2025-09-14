@@ -1,4 +1,3 @@
-// BEGIN FILE wgsl_resolve.h
 #ifndef WGSL_RESOLVE_H
 #define WGSL_RESOLVE_H
 
@@ -22,6 +21,12 @@ typedef struct {
     int group_index;
     int has_binding;
     int binding_index;
+
+    /* New: present when the symbol is a buffer binding (var<uniform|storage>)
+       and a static minimum size could be computed. */
+    int has_min_binding_size;
+    int min_binding_size; /* bytes */
+
     const WgslAstNode *decl_node;
     const WgslAstNode *function_node;
 } WgslSymbolInfo;
@@ -78,4 +83,4 @@ void wgsl_resolve_free(void *p);
 }
 #endif
 #endif
-// END FILE wgsl_resolve.h
+
