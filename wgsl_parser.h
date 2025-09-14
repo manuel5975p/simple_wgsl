@@ -1,9 +1,6 @@
+// BEGIN FILE wgsl_parser.h
 #ifndef WGSL_PARSER_H
 #define WGSL_PARSER_H
-
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdint.h>
 
 #ifndef NODE_ALLOC
 #define NODE_ALLOC(T) (T *)calloc(1, sizeof(T))
@@ -240,3 +237,4 @@ void wgsl_debug_print(const WgslAstNode *node, int indent);
 }
 #endif
 #endif
+// END FILE wgsl_parser.h

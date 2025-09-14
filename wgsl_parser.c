@@ -1,8 +1,11 @@
+// BEGIN FILE wgsl_parser.c
 #include "wgsl_parser.h"
-#include <ctype.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
+
 
 static char *wgsl_strndup(const char *s, size_t n) {
     char *r = (char *)NODE_MALLOC(n + 1);
@@ -157,6 +160,9 @@ static Token make_token(Lexer *L, TokenType t, const char *s, int len, bool f) {
     return tok;
 }
 
+static int is_dec_digit_or_us(char c) { return isdigit((unsigned char)c) || c == '_'; }
+static int is_hex_digit_or_us(char c) { return isxdigit((unsigned char)c) || c == '_'; }
+
 static Token lx_next(Lexer *L) {
     lx_skip_ws_comments(L);
     const char *s = &L->src[L->pos];
@@ -306,34 +312,61 @@ static Token lx_next(Lexer *L) {
             return make_token(L, TOK_FOR, start, len, false);
         return make_token(L, TOK_IDENT, start, len, false);
     }
-    if (isdigit((unsigned char)c)) {
+        if (isdigit((unsigned char)c)) {
         size_t p = L->pos;
-        bool has_dot = false;
+        bool is_float = false;
+
+        /* hex: 0x... or 0X... with optional 'u' suffix */
+        if (c == '0' && (L->src[L->pos + 1] == 'x' || L->src[L->pos + 1] == 'X')) {
+            lx_advance(L); /* '0' */
+            lx_advance(L); /* 'x' or 'X' */
+            int have_hex = 0;
+            while (is_hex_digit_or_us(L->src[L->pos])) {
+                if (L->src[L->pos] != '_') have_hex = 1;
+                lx_advance(L);
+            }
+            /* optional unsigned suffix */
+            if (L->src[L->pos] == 'u' || L->src[L->pos] == 'U')
+                lx_advance(L);
+
+            const char *start = &L->src[p];
+            int len = (int)(&L->src[L->pos] - start);
+            return make_token(L, TOK_NUMBER, start, len, false);
+        }
+
+        /* decimal: digits [_], optional .digits, optional exponent, optional suffix */
         lx_advance(L);
-        while (isdigit((unsigned char)L->src[L->pos]))
+        while (is_dec_digit_or_us(L->src[L->pos]))
             lx_advance(L);
+
         if (L->src[L->pos] == '.') {
-            has_dot = true;
+            is_float = true;
             lx_advance(L);
-            while (isdigit((unsigned char)L->src[L->pos]))
+            while (is_dec_digit_or_us(L->src[L->pos]))
                 lx_advance(L);
         }
         if (L->src[L->pos] == 'e' || L->src[L->pos] == 'E') {
-            has_dot = true;
+            is_float = true;
             lx_advance(L);
             if (L->src[L->pos] == '+' || L->src[L->pos] == '-')
                 lx_advance(L);
-            while (isdigit((unsigned char)L->src[L->pos]))
+            while (is_dec_digit_or_us(L->src[L->pos]))
                 lx_advance(L);
         }
+
+        /* suffixes: f/F for float, u/U for unsigned int (only if not float) */
         if (L->src[L->pos] == 'f' || L->src[L->pos] == 'F') {
-            has_dot = true;
+            is_float = true;
+            lx_advance(L);
+        } else if (!is_float && (L->src[L->pos] == 'u' || L->src[L->pos] == 'U')) {
             lx_advance(L);
         }
+
         const char *start = &L->src[p];
         int len = (int)(&L->src[L->pos] - start);
-        return make_token(L, TOK_NUMBER, start, len, has_dot);
+        return make_token(L, TOK_NUMBER, start, len, is_float);
     }
+
     lx_advance(L);
     return make_token(L, TOK_EOF, s, 0, false);
 }
@@ -420,6 +453,7 @@ static WgslAstNode *parse_if_stmt(Parser *P);
 static WgslAstNode *parse_while_stmt(Parser *P);
 static WgslAstNode *parse_for_stmt(Parser *P);
 
+
 static int parse_attribute_list(Parser *P, WgslAstNode ***out) {
     int cap = 0, count = 0;
     WgslAstNode **list = NULL;
@@ -462,6 +496,41 @@ static WgslAstNode *parse_attribute(Parser *P) {
     return A;
 }
 
+static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
+    char *tname = wgsl_strndup(name_tok->start, (size_t)name_tok->length);
+    WgslAstNode *T = new_type(P, tname);
+    NODE_FREE(tname);
+
+    if (!match(P, TOK_LT))
+        return T;
+
+    int tcap = 0, tcount = 0; WgslAstNode **targs = NULL;
+    int ecap = 0, ecount = 0; WgslAstNode **eargs = NULL;
+
+    int first = 1;
+    while (!check(P, TOK_GT) && !check(P, TOK_EOF)) {
+        if (!first) expect(P, TOK_COMMA, "expected ','");
+        first = 0;
+
+        /* Prefer a type if the next token can start a type (IDENT). */
+        if (check(P, TOK_IDENT)) {
+            WgslAstNode *t = parse_type_node(P);
+            if (t) vec_push_node(&targs, &tcount, &tcap, t);
+        } else {
+            /* Fallback: expression argument (e.g., array<T, N>). */
+            WgslAstNode *ex = parse_expr(P);
+            if (ex) vec_push_node(&eargs, &ecount, &ecap, ex);
+        }
+    }
+    expect(P, TOK_GT, "expected '>'");
+
+    T->type_node.type_arg_count = tcount;
+    T->type_node.type_args = targs;
+    T->type_node.expr_arg_count = ecount;
+    T->type_node.expr_args = eargs;
+    return T;
+}
+
 static WgslAstNode *parse_type_node(Parser *P) {
     if (!check(P, TOK_IDENT)) {
         parse_error(P, "expected type name");
@@ -469,37 +538,9 @@ static WgslAstNode *parse_type_node(Parser *P) {
     }
     Token name = P->cur;
     advance(P);
-    char *tname = wgsl_strndup(name.start, (size_t)name.length);
-    WgslAstNode *T = new_type(P, tname);
-    NODE_FREE(tname);
-    if (match(P, TOK_LT)) {
-        int tcap = 0, tcount = 0;
-        WgslAstNode **targs = NULL;
-        int ecap = 0, ecount = 0;
-        WgslAstNode **eargs = NULL;
-        if (!check(P, TOK_GT)) {
-            WgslAstNode *t = parse_type_node(P);
-            if (t)
-                vec_push_node(&targs, &tcount, &tcap, t);
-            if (match(P, TOK_COMMA)) {
-                WgslAstNode *ex = parse_expr(P);
-                if (ex)
-                    vec_push_node(&eargs, &ecount, &ecap, ex);
-            }
-            while (match(P, TOK_COMMA)) {
-                WgslAstNode *t2 = parse_type_node(P);
-                if (t2)
-                    vec_push_node(&targs, &tcount, &tcap, t2);
-            }
-        }
-        expect(P, TOK_GT, "expected '>'");
-        T->type_node.type_arg_count = tcount;
-        T->type_node.type_args = targs;
-        T->type_node.expr_arg_count = ecount;
-        T->type_node.expr_args = eargs;
-    }
-    return T;
+    return parse_type_after_name(P, &name);
 }
+
 
 static WgslAstNode *parse_struct(Parser *P, WgslAstNode **opt_attrs,
                                  int attr_count) {
@@ -1114,9 +1155,40 @@ static WgslAstNode *parse_postfix(Parser *P) {
 
 static WgslAstNode *parse_primary(Parser *P) {
     if (check(P, TOK_IDENT)) {
-        Token t = P->cur;
-        advance(P);
-        return new_ident(P, &t);
+        Token name = P->cur;
+
+        /* look ahead without consuming to disambiguate:
+           IDENT '<' ... '>' '('  -> treat as type head for constructor */
+        int is_ctor_head = 0;
+        {
+            Lexer L2 = P->L;          /* safe copy */
+            Token t2 = lx_next(&L2);  /* token after IDENT */
+            if (t2.type == TOK_LT) {
+                int depth = 1;
+                for (;;) {
+                    Token t3 = lx_next(&L2);
+                    if (t3.type == TOK_EOF) break;
+                    if (t3.type == TOK_LT) { depth++; continue; }
+                    if (t3.type == TOK_GT) {
+                        depth--;
+                        if (depth == 0) {
+                            Token t4 = lx_next(&L2);
+                            if (t4.type == TOK_LPAREN) is_ctor_head = 1;
+                            break;
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+
+        advance(P); /* consume IDENT */
+
+        if (is_ctor_head) {
+            /* parse as TYPE node; parse_postfix will wrap it into CALL */
+            return parse_type_after_name(P, &name);
+        }
+        return new_ident(P, &name);
     }
     if (check(P, TOK_NUMBER)) {
         Token t = P->cur;
@@ -1131,6 +1203,7 @@ static WgslAstNode *parse_primary(Parser *P) {
     parse_error(P, "expected expression");
     return new_node(P, WGSL_NODE_LITERAL);
 }
+
 
 static void skip_optional_comma(Parser *P) { match(P, TOK_COMMA); }
 
@@ -1709,3 +1782,4 @@ static void dbg_print_node(const WgslAstNode *n, int ind) {
 void wgsl_debug_print(const WgslAstNode *node, int indent) {
     dbg_print_node(node, indent);
 }
+// END FILE wgsl_parser.c
