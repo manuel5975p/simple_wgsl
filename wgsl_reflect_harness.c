@@ -1,6 +1,7 @@
 // FILE: wgsl_reflect_harness.c
 #include "wgsl_parser.h"
 #include "wgsl_resolve.h"
+#include "wgsl_lower.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -273,7 +274,21 @@ static void run_one(const char* path) {
     int epn = 0;
     const WgslResolverEntrypoint* eps = wgsl_resolver_entrypoints(r, &epn);
     CHECK(eps != NULL || E.entries_n == 0);
-
+    char spvPath[256] = {0};
+    snprintf(spvPath, 128, "%s.spv", path);
+    WgslLowerOptions lowerOptions = {
+        .env = WGSL_LOWER_ENV_VULKAN_1_3
+    };
+    uint32_t* outWords;
+    size_t wordCount;
+    wgsl_lower_emit_spirv(ast, r, &lowerOptions, &outWords, &wordCount);
+    FILE* f = fopen(spvPath, "w");
+    fwrite(outWords, sizeof(uint32_t), wordCount, f);
+    fclose(f);
+    wgsl_lower_free(outWords);
+    //WgslLower* lowered = wgsl_lower_create(ast, r, &lowerOptions);
+    //wgsl_lower_destroy(lowered);
+    
     for (int i = 0; i < E.entries_n; i++) {
         const WgslResolverEntrypoint* ep = eps ? find_ep(eps, epn, E.entries[i].name) : NULL;
         CHECK(ep != NULL);
