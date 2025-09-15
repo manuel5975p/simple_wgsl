@@ -1,3 +1,4 @@
+// begin file wgsl_resolve.c
 #include "wgsl_resolve.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -162,6 +163,8 @@ static const char* attr_first_arg_string(const WgslAstNode* a) {
         return x->literal.lexeme;
     return NULL;
 }
+
+
 static int parse_int_lexeme(const char* s) {
     if (!s)
         return -1;
@@ -179,8 +182,25 @@ static int parse_int_lexeme(const char* s) {
     }
     return sign * v;
 }
-static int attr_first_arg_int(const WgslAstNode* a) { return parse_int_lexeme(attr_first_arg_string(a)); }
-
+static int attr_first_arg_int(const WgslAstNode* a) {
+    return parse_int_lexeme(attr_first_arg_string(a));
+}
+static const WgslAstNode* get_ret_attr_node(const WgslAstNode* fn, const char* attr) {
+    if (!fn || fn->type != WGSL_NODE_FUNCTION)
+        return NULL;
+    for (int i = 0; i < fn->function.ret_attr_count; i++) {
+        const WgslAstNode* a = fn->function.ret_attrs[i];
+        if (a && a->type == WGSL_NODE_ATTRIBUTE && a->attribute.name && str_eq(a->attribute.name, attr))
+            return a;
+    }
+    return NULL;
+}
+static int ret_attr_first_arg_int(const WgslAstNode* fn, const char* attr) {
+    const WgslAstNode* a = get_ret_attr_node(fn, attr);
+    if (!a)
+        return -1;
+    return attr_first_arg_int(a);
+}
 /* lookups */
 static const WgslAstNode* find_function(const WgslAstNode* program, const char* name) {
     if (!program || program->type != WGSL_NODE_PROGRAM)
@@ -256,6 +276,8 @@ static WgslNumericType elem_from_name(const char* n) {
         return WGSL_NUM_UNKNOWN;
     if (str_eq(n, "f32"))
         return WGSL_NUM_F32;
+    if (str_eq(n, "f16"))
+        return WGSL_NUM_F16;
     if (str_eq(n, "i32"))
         return WGSL_NUM_I32;
     if (str_eq(n, "u32"))
@@ -264,6 +286,7 @@ static WgslNumericType elem_from_name(const char* n) {
         return WGSL_NUM_BOOL;
     return WGSL_NUM_UNKNOWN;
 }
+
 static void parse_vec_like_name(const char* name, int* vecn, WgslNumericType* elem) {
     *vecn = 0;
     *elem = WGSL_NUM_UNKNOWN;
@@ -280,12 +303,15 @@ static void parse_vec_like_name(const char* name, int* vecn, WgslNumericType* el
         char c = name[L - 1];
         if (c == 'f')
             *elem = WGSL_NUM_F32;
+        else if (c == 'h')
+            *elem = WGSL_NUM_F16;
         else if (c == 'i')
             *elem = WGSL_NUM_I32;
         else if (c == 'u')
             *elem = WGSL_NUM_U32;
     }
 }
+
 static int type_info(const WgslResolver* r, const WgslAstNode* t, int* components, WgslNumericType* num, int* bytes) {
     (void)r;
     if (!t || t->type != WGSL_NODE_TYPE)
@@ -734,6 +760,63 @@ int wgsl_resolver_ident_symbol_id(const WgslResolver* r, const WgslAstNode* iden
     return -1;
 }
 
+int wgsl_resolver_fragment_outputs(const WgslResolver* r, const char* fragment_entry_name, WgslFragmentOutput** frag_outputs) {
+    if (frag_outputs)
+        *frag_outputs = NULL;
+    if (!r || !fragment_entry_name || !frag_outputs)
+        return 0;
+    const WgslAstNode* fn = find_function(r->program, fragment_entry_name);
+    if (!fn || detect_stage(fn) != WGSL_STAGE_FRAGMENT)
+        return 0;
+
+    int count = 0, cap = 0;
+    WgslFragmentOutput* arr = NULL;
+
+    int loc_ret = ret_attr_first_arg_int(fn, "location");
+    if (loc_ret >= 0 && fn->function.return_type) {
+        int comps = 0, bytes = 0;
+        WgslNumericType nt = WGSL_NUM_UNKNOWN;
+        if (type_info(r, fn->function.return_type, &comps, &nt, &bytes)) {
+            cap = 1;
+            arr = (WgslFragmentOutput*)NODE_MALLOC(sizeof(WgslFragmentOutput) * 1);
+            arr[0].location = loc_ret;
+            arr[0].component_count = comps;
+            arr[0].numeric_type = nt;
+            count = 1;
+        }
+    } else if (fn->function.return_type && fn->function.return_type->type == WGSL_NODE_TYPE) {
+        const char* tn = fn->function.return_type->type_node.name;
+        const WgslAstNode* sd = get_struct(r, tn);
+        if (sd) {
+            for (int f = 0; f < sd->struct_decl.field_count; f++) {
+                const WgslAstNode* fld = sd->struct_decl.fields[f];
+                if (!fld || fld->type != WGSL_NODE_STRUCT_FIELD)
+                    continue;
+                const WgslAstNode* loca = get_attr_node(fld, "location");
+                if (!loca)
+                    continue;
+                int loc = attr_first_arg_int(loca);
+                int comps = 0, bytes = 0;
+                WgslNumericType nt = WGSL_NUM_UNKNOWN;
+                if (!type_info(r, fld->struct_field.type, &comps, &nt, &bytes))
+                    continue;
+                if (count >= cap) {
+                    cap = cap ? cap * 2 : 4;
+                    arr = (WgslFragmentOutput*)NODE_REALLOC(arr, sizeof(WgslFragmentOutput) * cap);
+                }
+                arr[count].location = loc;
+                arr[count].component_count = comps;
+                arr[count].numeric_type = nt;
+                count++;
+            }
+        }
+    }
+
+    *frag_outputs = arr;
+    return count;
+}
+
+
 /* vertex inputs */
 int wgsl_resolver_vertex_inputs(const WgslResolver* r, const char* vertex_entry_name, WgslVertexSlot** out_slots) {
     if (out_slots)
@@ -905,3 +988,4 @@ void wgsl_resolve_free(void* p) {
         NODE_FREE(p);
 }
 
+// end file wgsl_resolve.c

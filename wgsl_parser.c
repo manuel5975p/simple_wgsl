@@ -355,7 +355,8 @@ static Token lx_next(Lexer *L) {
         }
 
         /* suffixes: f/F for float, u/U for unsigned int (only if not float) */
-        if (L->src[L->pos] == 'f' || L->src[L->pos] == 'F') {
+        if (L->src[L->pos] == 'f' || L->src[L->pos] == 'F' ||
+            L->src[L->pos] == 'h' || L->src[L->pos] == 'H') {
             is_float = true;
             lx_advance(L);
         } else if (!is_float && (L->src[L->pos] == 'u' || L->src[L->pos] == 'U')) {
