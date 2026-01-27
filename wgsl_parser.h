@@ -196,7 +196,7 @@ typedef struct Program {
     WgslAstNode **decls;
 } Program;
 
-typedef struct WgslAstNode {
+struct WgslAstNode {
     WgslNodeType type;
     int line;
     int col;
@@ -226,7 +226,7 @@ typedef struct WgslAstNode {
         Unary unary;
         Ternary ternary;
     };
-} WgslAstNode;
+};
 
 WgslAstNode *wgsl_parse(const char *source);
 void wgsl_free_ast(WgslAstNode *node);

@@ -57,6 +57,8 @@ struct WgslResolver {
 
 /* basic utils */
 static int str_eq(const char* a, const char* b) { return a && b && strcmp(a, b) == 0; }
+
+
 static void vec_grow(void** ptr, int* cap, size_t elsz) {
     if (*cap == 0) {
         *cap = 8;

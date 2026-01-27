@@ -13,6 +13,7 @@ add_library(wgsl_compiler STATIC
     wgsl_parser.c
     wgsl_resolve.c
     wgsl_lower.c
+    wgsl_raise.c
 )
 
 target_include_directories(wgsl_compiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

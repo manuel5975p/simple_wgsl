@@ -13,6 +13,7 @@ set(TEST_SOURCES
     parser_test.cpp
     resolver_test.cpp
     lower_test.cpp
+    raise_test.cpp
     integration_test.cpp
     expression_test.cpp
 )
