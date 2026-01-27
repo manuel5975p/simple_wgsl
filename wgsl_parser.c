@@ -68,6 +68,8 @@ typedef enum TokenType {
     TOK_OROR,
     TOK_PLUSPLUS,
     TOK_MINUSMINUS,
+    TOK_SHL,
+    TOK_SHR,
     TOK_BANG,
     TOK_TILDE,
     TOK_QMARK,
@@ -179,10 +181,20 @@ static Token lx_next(Lexer *L) {
         lx_advance(L);
         return make_token(L, TOK_LE, s, 2, false);
     }
+    if (lx_peek2(L, '<', '<')) {
+        lx_advance(L);
+        lx_advance(L);
+        return make_token(L, TOK_SHL, s, 2, false);
+    }
     if (lx_peek2(L, '>', '=')) {
         lx_advance(L);
         lx_advance(L);
         return make_token(L, TOK_GE, s, 2, false);
+    }
+    if (lx_peek2(L, '>', '>')) {
+        lx_advance(L);
+        lx_advance(L);
+        return make_token(L, TOK_SHR, s, 2, false);
     }
     if (lx_peek2(L, '=', '=')) {
         lx_advance(L);
@@ -325,8 +337,9 @@ static Token lx_next(Lexer *L) {
                 if (L->src[L->pos] != '_') have_hex = 1;
                 lx_advance(L);
             }
-            /* optional unsigned suffix */
-            if (L->src[L->pos] == 'u' || L->src[L->pos] == 'U')
+            /* optional integer suffix: i/I for signed, u/U for unsigned */
+            if (L->src[L->pos] == 'u' || L->src[L->pos] == 'U' ||
+                L->src[L->pos] == 'i' || L->src[L->pos] == 'I')
                 lx_advance(L);
 
             const char *start = &L->src[p];
@@ -354,12 +367,13 @@ static Token lx_next(Lexer *L) {
                 lx_advance(L);
         }
 
-        /* suffixes: f/F for float, u/U for unsigned int (only if not float) */
+        /* suffixes: f/F for float, h/H for half, i/I for signed int, u/U for unsigned int */
         if (L->src[L->pos] == 'f' || L->src[L->pos] == 'F' ||
             L->src[L->pos] == 'h' || L->src[L->pos] == 'H') {
             is_float = true;
             lx_advance(L);
-        } else if (!is_float && (L->src[L->pos] == 'u' || L->src[L->pos] == 'U')) {
+        } else if (!is_float && (L->src[L->pos] == 'u' || L->src[L->pos] == 'U' ||
+                                  L->src[L->pos] == 'i' || L->src[L->pos] == 'I')) {
             lx_advance(L);
         }
 
@@ -444,6 +458,7 @@ static WgslAstNode *parse_logical_or(Parser *P);
 static WgslAstNode *parse_logical_and(Parser *P);
 static WgslAstNode *parse_equality(Parser *P);
 static WgslAstNode *parse_relational(Parser *P);
+static WgslAstNode *parse_shift(Parser *P);
 static WgslAstNode *parse_additive(Parser *P);
 static WgslAstNode *parse_multiplicative(Parser *P);
 static WgslAstNode *parse_unary(Parser *P);
@@ -518,8 +533,9 @@ static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
             WgslAstNode *t = parse_type_node(P);
             if (t) vec_push_node(&targs, &tcount, &tcap, t);
         } else {
-            /* Fallback: expression argument (e.g., array<T, N>). */
-            WgslAstNode *ex = parse_expr(P);
+            /* Fallback: expression argument (e.g., array<T, N>).
+               Use parse_shift to avoid consuming '>' as comparison operator. */
+            WgslAstNode *ex = parse_shift(P);
             if (ex) vec_push_node(&eargs, &ecount, &ecap, ex);
         }
     }
@@ -820,6 +836,27 @@ static WgslAstNode *parse_statement(Parser *P) {
         V->var_decl.init = init;
         return V;
     }
+    if (check(P, TOK_CONST)) {
+        advance(P);
+        if (!check(P, TOK_IDENT)) {
+            parse_error(P, "expected local const name");
+            return NULL;
+        }
+        Token name = P->cur;
+        advance(P);
+        WgslAstNode *type = NULL;
+        if (match(P, TOK_COLON))
+            type = parse_type_node(P);
+        if (!match(P, TOK_EQ))
+            parse_error(P, "const declaration requires an initializer");
+        WgslAstNode *init = parse_expr(P);
+        expect(P, TOK_SEMI, "expected ';'");
+        WgslAstNode *V = new_node(P, WGSL_NODE_VAR_DECL);
+        V->var_decl.name = wgsl_strndup(name.start, (size_t)name.length);
+        V->var_decl.type = type;
+        V->var_decl.init = init;
+        return V;
+    }
     if (check(P, TOK_LET)) {
         advance(P);
         if (!check(P, TOK_IDENT)) {
@@ -940,10 +977,10 @@ static WgslAstNode *parse_equality(Parser *P) {
 }
 
 static WgslAstNode *parse_relational(Parser *P) {
-    WgslAstNode *left = parse_additive(P);
+    WgslAstNode *left = parse_shift(P);
     for (;;) {
         if (match(P, TOK_LT)) {
-            WgslAstNode *r = parse_additive(P);
+            WgslAstNode *r = parse_shift(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
             B->binary.op = wgsl_strdup("<");
             B->binary.left = left;
@@ -952,7 +989,7 @@ static WgslAstNode *parse_relational(Parser *P) {
             continue;
         }
         if (match(P, TOK_GT)) {
-            WgslAstNode *r = parse_additive(P);
+            WgslAstNode *r = parse_shift(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
             B->binary.op = wgsl_strdup(">");
             B->binary.left = left;
@@ -961,7 +998,7 @@ static WgslAstNode *parse_relational(Parser *P) {
             continue;
         }
         if (match(P, TOK_LE)) {
-            WgslAstNode *r = parse_additive(P);
+            WgslAstNode *r = parse_shift(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
             B->binary.op = wgsl_strdup("<=");
             B->binary.left = left;
@@ -970,9 +1007,35 @@ static WgslAstNode *parse_relational(Parser *P) {
             continue;
         }
         if (match(P, TOK_GE)) {
-            WgslAstNode *r = parse_additive(P);
+            WgslAstNode *r = parse_shift(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
             B->binary.op = wgsl_strdup(">=");
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
+        }
+        break;
+    }
+    return left;
+}
+
+static WgslAstNode *parse_shift(Parser *P) {
+    WgslAstNode *left = parse_additive(P);
+    for (;;) {
+        if (match(P, TOK_SHL)) {
+            WgslAstNode *r = parse_additive(P);
+            WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
+            B->binary.op = wgsl_strdup("<<");
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
+        }
+        if (match(P, TOK_SHR)) {
+            WgslAstNode *r = parse_additive(P);
+            WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
+            B->binary.op = wgsl_strdup(">>");
             B->binary.left = left;
             B->binary.right = r;
             left = B;
