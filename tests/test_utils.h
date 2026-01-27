@@ -13,6 +13,7 @@ extern "C" {
 #include "wgsl_parser.h"
 #include "wgsl_resolve.h"
 #include "wgsl_lower.h"
+#include "wgsl_raise.h"
 }
 
 namespace wgsl_test {
@@ -160,6 +161,37 @@ inline CompileResult CompileWgsl(const char* source) {
         return result;
     }
 
+    result.success = true;
+    return result;
+}
+
+struct RaiseResult {
+    bool success;
+    std::string error;
+    std::string wgsl;
+};
+
+inline RaiseResult RaiseSpirvToWgsl(const std::vector<uint32_t>& spirv) {
+    RaiseResult result;
+    result.success = false;
+
+    char* wgsl = nullptr;
+    char* error = nullptr;
+    WgslRaiseOptions opts = {};
+    opts.preserve_names = 1;
+
+    WgslRaiseResult raise_result = wgsl_raise_to_wgsl(
+        spirv.data(), spirv.size(), &opts, &wgsl, &error);
+
+    if (raise_result != WGSL_RAISE_SUCCESS) {
+        result.error = error ? error : "Raise failed";
+        if (error) wgsl_raise_free(error);
+        if (wgsl) wgsl_raise_free(wgsl);
+        return result;
+    }
+
+    result.wgsl = wgsl;
+    wgsl_raise_free(wgsl);
     result.success = true;
     return result;
 }

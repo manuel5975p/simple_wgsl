@@ -2113,6 +2113,71 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         return r;
     }
 
+    // Scalar type conversions: f32(), i32(), u32()
+    if (strcmp(callee_name, "f32") == 0 && call->arg_count >= 1) {
+        ExprResult arg = lower_expr_full(l, call->args[0]);
+        if (arg.id) {
+            if (is_float_type(arg.type_id, l)) {
+                r.id = arg.id;
+                r.type_id = l->id_f32;
+            } else {
+                uint32_t result;
+                SpvOp op = is_signed_int_type(arg.type_id, l) ? SpvOpConvertSToF : SpvOpConvertUToF;
+                if (emit_unary_op(l, op, l->id_f32, &result, arg.id)) {
+                    r.id = result;
+                    r.type_id = l->id_f32;
+                }
+            }
+        }
+        return r;
+    }
+
+    if (strcmp(callee_name, "i32") == 0 && call->arg_count >= 1) {
+        ExprResult arg = lower_expr_full(l, call->args[0]);
+        if (arg.id) {
+            if (is_signed_int_type(arg.type_id, l)) {
+                r.id = arg.id;
+                r.type_id = l->id_i32;
+            } else if (is_float_type(arg.type_id, l)) {
+                uint32_t result;
+                if (emit_unary_op(l, SpvOpConvertFToS, l->id_i32, &result, arg.id)) {
+                    r.id = result;
+                    r.type_id = l->id_i32;
+                }
+            } else {
+                uint32_t result;
+                if (emit_unary_op(l, SpvOpBitcast, l->id_i32, &result, arg.id)) {
+                    r.id = result;
+                    r.type_id = l->id_i32;
+                }
+            }
+        }
+        return r;
+    }
+
+    if (strcmp(callee_name, "u32") == 0 && call->arg_count >= 1) {
+        ExprResult arg = lower_expr_full(l, call->args[0]);
+        if (arg.id) {
+            if (is_unsigned_int_type(arg.type_id, l)) {
+                r.id = arg.id;
+                r.type_id = l->id_u32;
+            } else if (is_float_type(arg.type_id, l)) {
+                uint32_t result;
+                if (emit_unary_op(l, SpvOpConvertFToU, l->id_u32, &result, arg.id)) {
+                    r.id = result;
+                    r.type_id = l->id_u32;
+                }
+            } else {
+                uint32_t result;
+                if (emit_unary_op(l, SpvOpBitcast, l->id_u32, &result, arg.id)) {
+                    r.id = result;
+                    r.type_id = l->id_u32;
+                }
+            }
+        }
+        return r;
+    }
+
     // GLSL.std.450 built-in functions
     if (strcmp(callee_name, "abs") == 0 && call->arg_count >= 1) {
         ExprResult arg = lower_expr_full(l, call->args[0]);

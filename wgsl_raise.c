@@ -107,6 +107,7 @@ typedef struct {
     uint32_t continue_block;
     int is_loop_header;
     int is_selection_header;
+    int emitted;
 } SpvBasicBlock;
 
 typedef struct {
@@ -168,6 +169,8 @@ struct WgslRaiser {
     int pending_wg_cap;
 
     uint32_t glsl_ext_id;
+
+    int var_counter;
 
     char *output;
     char last_error[256];
@@ -1032,7 +1035,7 @@ static const char *type_to_wgsl(WgslRaiser *r, uint32_t type_id) {
     }
     case SPV_TYPE_STRUCT: {
         if (info->name) return info->name;
-        return "Struct";
+        return "UnnamedStruct";
     }
     case SPV_TYPE_POINTER: {
         return type_to_wgsl(r, info->type_info.pointer.pointee_type);
@@ -1145,7 +1148,13 @@ static void emit_global_var(WgslRaiser *r, uint32_t var_id) {
     }
 
     const char *type_str = type_to_wgsl(r, pointee_type);
-    const char *name = info->name ? info->name : "_var";
+    if (!info->name) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "_var%d", r->var_counter++);
+        info->name = (char*)WGSL_MALLOC(strlen(buf) + 1);
+        strcpy(info->name, buf);
+    }
+    const char *name = info->name;
 
     if (sc == SpvStorageClassUniform) {
         sb_appendf(&r->sb, "var<uniform> %s: %s;\n", name, type_str);
@@ -1676,7 +1685,73 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
     }
 }
 
+static SpvBasicBlock *find_block(SpvFunction *fn, uint32_t label_id) {
+    for (int i = 0; i < fn->block_count; i++) {
+        if (fn->blocks[i].label_id == label_id) return &fn->blocks[i];
+    }
+    return NULL;
+}
+
 static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
+    if (blk->emitted) return;
+    blk->emitted = 1;
+
+    // Handle loop header - emit as while loop
+    if (blk->is_loop_header) {
+        // Find the condition from the condition block
+        for (int i = 0; i < blk->instruction_count; i++) {
+            uint32_t instr_pos = blk->instructions[i];
+            uint32_t word0 = r->spirv[instr_pos];
+            uint16_t opcode = word0 & 0xFFFF;
+            uint16_t wc = word0 >> 16;
+            const uint32_t *operands = &r->spirv[instr_pos + 1];
+            int operand_count = wc - 1;
+
+            if ((SpvOp)opcode == SpvOpBranch && operand_count >= 1) {
+                uint32_t cond_label = operands[0];
+                SpvBasicBlock *cond_blk = find_block(fn, cond_label);
+                if (cond_blk && !cond_blk->emitted) {
+                    cond_blk->emitted = 1;
+                    // Find the conditional branch in the condition block
+                    for (int j = 0; j < cond_blk->instruction_count; j++) {
+                        uint32_t cinstr_pos = cond_blk->instructions[j];
+                        uint32_t cword0 = r->spirv[cinstr_pos];
+                        uint16_t copcode = cword0 & 0xFFFF;
+                        uint16_t cwc = cword0 >> 16;
+                        const uint32_t *coperands = &r->spirv[cinstr_pos + 1];
+                        int coperand_count = cwc - 1;
+
+                        if ((SpvOp)copcode == SpvOpBranchConditional && coperand_count >= 3) {
+                            // Emit: while (cond) { ... }
+                            sb_indent(&r->sb);
+                            sb_append(&r->sb, "while (");
+                            emit_expression(r, coperands[0], &r->sb);
+                            sb_append(&r->sb, ") {\n");
+                            r->sb.indent++;
+
+                            // Emit body block (true branch)
+                            SpvBasicBlock *body_blk = find_block(fn, coperands[1]);
+                            if (body_blk) emit_block(r, fn, body_blk);
+
+                            // Emit continue block (loop increment)
+                            SpvBasicBlock *cont_blk = find_block(fn, blk->continue_block);
+                            if (cont_blk) emit_block(r, fn, cont_blk);
+
+                            r->sb.indent--;
+                            sb_indent(&r->sb);
+                            sb_append(&r->sb, "}\n");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Continue to merge block
+        SpvBasicBlock *merge_blk = find_block(fn, blk->merge_block);
+        if (merge_blk) emit_block(r, fn, merge_blk);
+        return;
+    }
+
     for (int i = 0; i < blk->instruction_count; i++) {
         uint32_t instr_pos = blk->instructions[i];
         uint32_t word0 = r->spirv[instr_pos];
@@ -1811,7 +1886,11 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
             sb_appendf(&r->sb, "@builtin(%s) ", get_builtin_name((SpvBuiltIn)builtin_val));
         }
 
-        const char *pname = info->name ? info->name : "_in";
+        if (!info->name) {
+            info->name = (char*)WGSL_MALLOC(16);
+            snprintf(info->name, 16, "_in%d", r->var_counter++);
+        }
+        const char *pname = info->name;
         const char *ptype = type_to_wgsl(r, pointee);
         sb_appendf(&r->sb, "%s: %s", pname, ptype);
     }
@@ -1860,6 +1939,29 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
 
     sb_append(&r->sb, " {\n");
     r->sb.indent++;
+
+    // Emit function-local variable declarations
+    for (uint32_t i = 0; i < r->id_bound; i++) {
+        SpvIdInfo *info = &r->ids[i];
+        if (info->kind == SPV_ID_VARIABLE &&
+            info->variable.storage_class == SpvStorageClassFunction) {
+            uint32_t ptr_type = info->variable.type_id;
+            uint32_t pointee = 0;
+            if (ptr_type < r->id_bound && r->ids[ptr_type].kind == SPV_ID_TYPE &&
+                r->ids[ptr_type].type_info.kind == SPV_TYPE_POINTER) {
+                pointee = r->ids[ptr_type].type_info.pointer.pointee_type;
+            }
+            const char *type_str = type_to_wgsl(r, pointee);
+            const char *vname = get_id_name(r, i);
+            sb_indent(&r->sb);
+            sb_appendf(&r->sb, "var %s: %s;\n", vname, type_str);
+        }
+    }
+
+    // Reset emitted flags
+    for (int i = 0; i < fn->block_count; i++) {
+        fn->blocks[i].emitted = 0;
+    }
 
     for (int i = 0; i < fn->block_count; i++) {
         emit_block(r, fn, &fn->blocks[i]);

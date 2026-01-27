@@ -411,4 +411,127 @@ TEST_F(VulkanComputeTest, MathFloorCeil) {
     }
 }
 
+TEST_F(VulkanComputeTest, RoundtripSpirvIdentity) {
+    const char* source = R"(
+        struct Buffer {
+            data: array<f32>,
+        };
+
+        @group(0) @binding(0) var<storage, read> a: Buffer;
+        @group(0) @binding(1) var<storage, read> b: Buffer;
+        @group(0) @binding(2) var<storage, read_write> result: Buffer;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            var x: f32 = a.data[id.x];
+            var y: f32 = b.data[id.x];
+            if (x > y) {
+                result.data[id.x] = x * 2.0 + y;
+            } else {
+                result.data[id.x] = y * 2.0 - x;
+            }
+        }
+    )";
+
+    auto first_compile = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(first_compile.success) << "First compile failed: " << first_compile.error;
+
+    auto raised = wgsl_test::RaiseSpirvToWgsl(first_compile.spirv);
+    ASSERT_TRUE(raised.success) << "Raise failed: " << raised.error;
+
+    auto second_compile = wgsl_test::CompileWgsl(raised.wgsl.c_str());
+    ASSERT_TRUE(second_compile.success) << "Second compile failed: " << second_compile.error
+        << "\nRaised WGSL:\n" << raised.wgsl;
+
+    std::vector<float> a_data = {5.0f, 2.0f, 8.0f, 1.0f, 3.0f, 7.0f, 4.0f, 6.0f};
+    std::vector<float> b_data = {3.0f, 7.0f, 4.0f, 9.0f, 6.0f, 2.0f, 8.0f, 5.0f};
+
+    auto a1 = ctx_->createStorageBuffer(a_data);
+    auto b1 = ctx_->createStorageBuffer(b_data);
+    auto out1 = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
+
+    auto pipeline1 = ctx_->createPipeline(first_compile.spirv);
+    ctx_->dispatch(pipeline1, {
+        {0, &a1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &b1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {2, &out1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, static_cast<uint32_t>(a_data.size()));
+
+    auto a2 = ctx_->createStorageBuffer(a_data);
+    auto b2 = ctx_->createStorageBuffer(b_data);
+    auto out2 = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
+
+    auto pipeline2 = ctx_->createPipeline(second_compile.spirv);
+    ctx_->dispatch(pipeline2, {
+        {0, &a2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &b2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {2, &out2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, static_cast<uint32_t>(a_data.size()));
+
+    auto result1 = out1.download<float>(a_data.size());
+    auto result2 = out2.download<float>(a_data.size());
+
+    for (size_t i = 0; i < a_data.size(); i++) {
+        EXPECT_FLOAT_EQ(result1[i], result2[i])
+            << "Mismatch at index " << i
+            << "\nDirect SPIR-V: " << result1[i]
+            << "\nRoundtrip SPIR-V: " << result2[i];
+    }
+}
+
+TEST_F(VulkanComputeTest, RoundtripWithLoop) {
+    const char* source = R"(
+        struct Buffer {
+            data: array<f32>,
+        };
+
+        @group(0) @binding(0) var<storage, read> input: Buffer;
+        @group(0) @binding(1) var<storage, read_write> output: Buffer;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            var sum: f32 = 0.0;
+            for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+                sum = sum + input.data[i] * f32(i + 1u);
+            }
+            output.data[id.x] = sum;
+        }
+    )";
+
+    auto first_compile = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(first_compile.success) << "First compile failed: " << first_compile.error;
+
+    auto raised = wgsl_test::RaiseSpirvToWgsl(first_compile.spirv);
+    ASSERT_TRUE(raised.success) << "Raise failed: " << raised.error;
+
+    auto second_compile = wgsl_test::CompileWgsl(raised.wgsl.c_str());
+    ASSERT_TRUE(second_compile.success) << "Second compile failed: " << second_compile.error
+        << "\nRaised WGSL:\n" << raised.wgsl;
+
+    std::vector<float> input_data = {1.0f, 2.0f, 3.0f, 4.0f};
+
+    auto in1 = ctx_->createStorageBuffer(input_data);
+    auto out1 = ctx_->createStorageBuffer(sizeof(float));
+    auto pipeline1 = ctx_->createPipeline(first_compile.spirv);
+    ctx_->dispatch(pipeline1, {
+        {0, &in1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &out1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto in2 = ctx_->createStorageBuffer(input_data);
+    auto out2 = ctx_->createStorageBuffer(sizeof(float));
+    auto pipeline2 = ctx_->createPipeline(second_compile.spirv);
+    ctx_->dispatch(pipeline2, {
+        {0, &in2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &out2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto result1 = out1.download<float>(1);
+    auto result2 = out2.download<float>(1);
+
+    EXPECT_FLOAT_EQ(result1[0], result2[0])
+        << "Direct SPIR-V: " << result1[0]
+        << "\nRoundtrip SPIR-V: " << result2[0];
+}
+
 #endif // WGSL_HAS_VULKAN
