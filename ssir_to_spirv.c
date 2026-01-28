@@ -2,12 +2,11 @@
  * SSIR to SPIR-V Converter - Implementation
  */
 
-#include "ssir_to_spirv.h"
+#include "simple_wgsl.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
-/* Use GLSL.std.450 extended instruction set */
+#include <spirv/unified1/spirv.h>
 #include <spirv/unified1/GLSL.std.450.h>
 
 /* ============================================================================

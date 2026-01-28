@@ -2,7 +2,7 @@
 #include "test_utils.h"
 
 extern "C" {
-#include "wgsl_raise.h"
+#include "simple_wgsl.h"
 }
 
 class RaiseGuard {

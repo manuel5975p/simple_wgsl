@@ -4,7 +4,7 @@
  * Converts SSIR (Simple Shader IR) directly to WGSL text.
  */
 
-#include "ssir_to_wgsl.h"
+#include "simple_wgsl.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

@@ -4,9 +4,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#include "wgsl_lower.h"
-#include "ssir.h"
-#include "ssir_to_spirv.h"
+#include "simple_wgsl.h"
 
 // Use official SPIR-V headers
 #include <spirv/unified1/spirv.h>

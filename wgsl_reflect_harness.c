@@ -1,7 +1,5 @@
 // FILE: wgsl_reflect_harness.c
-#include "wgsl_parser.h"
-#include "wgsl_resolve.h"
-#include "wgsl_lower.h"
+#include "simple_wgsl.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,7 +1,6 @@
 #include <gtest/gtest.h>
 extern "C" {
-#include "wgsl_parser.h"
-#include "wgsl_resolve.h"
+#include "simple_wgsl.h"
 }
 
 class ResolverTest : public ::testing::Test {

@@ -10,10 +10,7 @@
 #include <unistd.h>
 
 extern "C" {
-#include "wgsl_parser.h"
-#include "wgsl_resolve.h"
-#include "wgsl_lower.h"
-#include "wgsl_raise.h"
+#include "simple_wgsl.h"
 }
 
 namespace wgsl_test {

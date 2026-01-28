@@ -1,5 +1,5 @@
 // BEGIN FILE wgsl_parser.c
-#include "wgsl_parser.h"
+#include "simple_wgsl.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>

@@ -2,7 +2,7 @@
  * SPIR-V to SSIR Converter - Implementation
  */
 
-#include "spirv_to_ssir.h"
+#include "simple_wgsl.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

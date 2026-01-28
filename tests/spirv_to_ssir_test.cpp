@@ -2,10 +2,7 @@
 #include "test_utils.h"
 
 extern "C" {
-#include "ssir.h"
-#include "spirv_to_ssir.h"
-#include "ssir_to_wgsl.h"
-#include "ssir_to_spirv.h"
+#include "simple_wgsl.h"
 }
 
 namespace {

@@ -2,9 +2,7 @@
 #include "test_utils.h"
 
 extern "C" {
-#include "ssir.h"
-#include "ssir_to_wgsl.h"
-#include "wgsl_lower.h"
+#include "simple_wgsl.h"
 }
 
 namespace {

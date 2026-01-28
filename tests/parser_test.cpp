@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 extern "C" {
-#include "wgsl_parser.h"
+#include "simple_wgsl.h"
 }
 
 class ParserTest : public ::testing::Test {

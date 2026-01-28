@@ -1,5 +1,5 @@
 // begin file wgsl_resolve.c
-#include "wgsl_resolve.h"
+#include "simple_wgsl.h"
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>

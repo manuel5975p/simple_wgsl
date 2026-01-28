@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
-#include "wgsl_raise.h"
+#include "simple_wgsl.h"
 #include <spirv/unified1/spirv.h>
 #include <spirv/unified1/GLSL.std.450.h>
 

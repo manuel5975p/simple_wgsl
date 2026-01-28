@@ -2,7 +2,7 @@
  * SSIR (Simple Shader IR) - Implementation
  */
 
-#include "ssir.h"
+#include "simple_wgsl.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
