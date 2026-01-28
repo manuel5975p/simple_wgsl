@@ -39,8 +39,8 @@ else()
     target_include_directories(wgsl_compiler PUBLIC ${spirv_headers_SOURCE_DIR}/include)
 endif()
 
-add_executable(wgsl_reflect_harness wgsl_reflect_harness.c)
-target_link_libraries(wgsl_reflect_harness wgsl_compiler)
+add_executable(example example/example.c)
+target_link_libraries(example wgsl_compiler)
 
 if(WGSL_BUILD_TESTS)
     enable_testing()
