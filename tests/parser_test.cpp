@@ -17,6 +17,23 @@ protected:
     }
 };
 
+TEST_F(ParserTest, ParseStructWithLargeArray) {
+    auto* node = Parse(R"(
+        struct Struct {
+            Dummy : array<vec2<u32>, 32768u>,
+        };
+
+        @group(0) @binding(0) var<storage, read_write> binding : Struct;")
+        }
+        )"
+    );
+    ASSERT_NE(node, nullptr);
+    ASSERT_EQ(node->type, WGSL_NODE_PROGRAM);
+    ASSERT_EQ(node->program.decl_count, 2);
+    EXPECT_EQ(node->program.decls[0]->type, WGSL_NODE_STRUCT);
+    EXPECT_STREQ(node->program.decls[0]->struct_decl.name, "Struct");
+}
+
 TEST_F(ParserTest, ParseEmptyStruct) {
     auto* node = Parse("struct Empty {};");
     ASSERT_NE(node, nullptr);
