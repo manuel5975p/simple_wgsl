@@ -114,6 +114,12 @@ uint32_t wgsl_lower_symbol_result_id(const WgslLower *lower, int symbol_id);
 // Utilities
 void wgsl_lower_free(void *p);
 
+// Get the internal SSIR module (for ssir_to_wgsl roundtrip testing)
+// Returns a pointer to the internal module; do not modify or free.
+// The pointer is valid as long as the WgslLower context is alive.
+struct SsirModule;
+const struct SsirModule *wgsl_lower_get_ssir(const WgslLower *lower);
+
 #ifdef __cplusplus
 }
 #endif

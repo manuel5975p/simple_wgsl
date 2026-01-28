@@ -14,6 +14,7 @@ set(TEST_SOURCES
     resolver_test.cpp
     lower_test.cpp
     raise_test.cpp
+    ssir_raise_test.cpp
     integration_test.cpp
     expression_test.cpp
 )

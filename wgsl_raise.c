@@ -1115,7 +1115,7 @@ static void emit_struct_decl(WgslRaiser *r, uint32_t type_id) {
     }
 
     r->sb.indent--;
-    sb_append(&r->sb, "}\n\n");
+    sb_append(&r->sb, "};\n\n");
 }
 
 static void emit_global_var(WgslRaiser *r, uint32_t var_id) {

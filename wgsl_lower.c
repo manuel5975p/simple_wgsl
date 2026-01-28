@@ -5233,4 +5233,9 @@ uint32_t wgsl_lower_symbol_result_id(const WgslLower *lower, int symbol_id) {
 void wgsl_lower_free(void *p) {
     WGSL_FREE(p);
 }
+
+const SsirModule *wgsl_lower_get_ssir(const WgslLower *lower) {
+    if (!lower) return NULL;
+    return lower->ssir;
+}
 // END FILE wgsl_lower.c
