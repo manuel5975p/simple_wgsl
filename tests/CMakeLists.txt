@@ -15,6 +15,7 @@ set(TEST_SOURCES
     lower_test.cpp
     raise_test.cpp
     ssir_raise_test.cpp
+    spirv_to_ssir_test.cpp
     integration_test.cpp
     expression_test.cpp
 )

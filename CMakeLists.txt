@@ -17,6 +17,7 @@ add_library(wgsl_compiler STATIC
     ssir.c
     ssir_to_spirv.c
     ssir_to_wgsl.c
+    spirv_to_ssir.c
 )
 
 target_include_directories(wgsl_compiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
