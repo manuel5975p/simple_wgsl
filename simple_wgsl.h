@@ -134,10 +134,17 @@ typedef struct Block {
     WgslAstNode **stmts;
 } Block;
 
+typedef enum {
+    WGSL_DECL_VAR = 0,
+    WGSL_DECL_LET,
+    WGSL_DECL_CONST,
+} WgslDeclKind;
+
 typedef struct VarDecl {
     char *name;
     WgslAstNode *type;
     WgslAstNode *init;
+    WgslDeclKind kind;
 } VarDecl;
 
 typedef struct ReturnNode {
@@ -812,6 +819,7 @@ struct SsirConstant {
     uint32_t id;
     uint32_t type;
     SsirConstantKind kind;
+    const char *name;
     union {
         bool bool_val;
         int32_t i32_val;
@@ -896,6 +904,11 @@ struct SsirEntryPoint {
 
 /* Module */
 
+typedef struct SsirNameEntry {
+    uint32_t id;
+    const char *name;
+} SsirNameEntry;
+
 struct SsirModule {
     SsirType *types;
     uint32_t type_count;
@@ -912,6 +925,9 @@ struct SsirModule {
     SsirEntryPoint *entry_points;
     uint32_t entry_point_count;
     uint32_t entry_point_capacity;
+    SsirNameEntry *names;
+    uint32_t name_count;
+    uint32_t name_capacity;
     uint32_t next_id;
 };
 
@@ -938,6 +954,7 @@ typedef enum SsirResult {
 SsirModule *ssir_module_create(void);
 void ssir_module_destroy(SsirModule *mod);
 uint32_t ssir_module_alloc_id(SsirModule *mod);
+void ssir_set_name(SsirModule *mod, uint32_t id, const char *name);
 
 /* Type API */
 

@@ -71,9 +71,11 @@ inline bool WriteSpirvFile(const std::string& path, const uint32_t* words, size_
 // Returns true if valid, false otherwise
 // If out_error is provided, fills it with error message on failure
 inline bool ValidateSpirv(const uint32_t* words, size_t word_count, std::string* out_error = nullptr) {
-    // Create temp file
-    char temp_path[] = "/tmp/wgsl_test_XXXXXX.spv";
-    int fd = mkstemps(temp_path, 4);
+    // Create temp file, then rename to .spv for spirv-val
+    char temp_path[] = "/tmp/wgsl_test_XXXXXX";
+    int fd = mkstemp(temp_path);
+    std::string spv_path = std::string(temp_path) + ".spv";
+    if (fd >= 0) rename(temp_path, spv_path.c_str());
     if (fd < 0) {
         if (out_error) *out_error = "Failed to create temp file";
         return false;
@@ -83,16 +85,16 @@ inline bool ValidateSpirv(const uint32_t* words, size_t word_count, std::string*
     ssize_t written = write(fd, words, word_count * sizeof(uint32_t));
     close(fd);
     if (written != static_cast<ssize_t>(word_count * sizeof(uint32_t))) {
-        unlink(temp_path);
+        unlink(spv_path.c_str());
         if (out_error) *out_error = "Failed to write SPIR-V";
         return false;
     }
 
     // Run spirv-val
-    std::string cmd = "spirv-val --target-env vulkan1.3 " + std::string(temp_path) + " 2>&1";
+    std::string cmd = "spirv-val --target-env vulkan1.3 " + spv_path + " 2>&1";
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) {
-        unlink(temp_path);
+        unlink(spv_path.c_str());
         if (out_error) *out_error = "Failed to run spirv-val";
         return false;
     }
@@ -103,7 +105,7 @@ inline bool ValidateSpirv(const uint32_t* words, size_t word_count, std::string*
         output += buffer;
     }
     int ret = pclose(pipe);
-    unlink(temp_path);
+    unlink(spv_path.c_str());
 
     if (ret != 0) {
         if (out_error) *out_error = output;

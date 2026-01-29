@@ -123,11 +123,30 @@ void ssir_module_destroy(SsirModule *mod) {
     }
     SSIR_FREE(mod->entry_points);
 
+    for (uint32_t i = 0; i < mod->name_count; i++) {
+        SSIR_FREE((void *)mod->names[i].name);
+    }
+    SSIR_FREE(mod->names);
+
     SSIR_FREE(mod);
 }
 
 uint32_t ssir_module_alloc_id(SsirModule *mod) {
     return mod->next_id++;
+}
+
+void ssir_set_name(SsirModule *mod, uint32_t id, const char *name) {
+    if (!mod || !name || !*name) return;
+    if (mod->name_count >= mod->name_capacity) {
+        uint32_t new_cap = mod->name_capacity ? mod->name_capacity * 2 : 16;
+        SsirNameEntry *new_names = (SsirNameEntry *)SSIR_REALLOC(mod->names, new_cap * sizeof(SsirNameEntry));
+        if (!new_names) return;
+        mod->names = new_names;
+        mod->name_capacity = new_cap;
+    }
+    mod->names[mod->name_count].id = id;
+    mod->names[mod->name_count].name = ssir_strdup(name);
+    mod->name_count++;
 }
 
 /* ============================================================================

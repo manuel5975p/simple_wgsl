@@ -73,6 +73,10 @@ typedef enum TokenType {
     TOK_BANG,
     TOK_TILDE,
     TOK_QMARK,
+    TOK_AND,
+    TOK_OR,
+    TOK_XOR,
+    TOK_PERCENT,
     TOK_STRUCT,
     TOK_FN,
     TOK_VAR,
@@ -290,6 +294,18 @@ static Token lx_next(Lexer *L) {
     case '?':
         lx_advance(L);
         return make_token(L, TOK_QMARK, s, 1, false);
+    case '&':
+        lx_advance(L);
+        return make_token(L, TOK_AND, s, 1, false);
+    case '|':
+        lx_advance(L);
+        return make_token(L, TOK_OR, s, 1, false);
+    case '^':
+        lx_advance(L);
+        return make_token(L, TOK_XOR, s, 1, false);
+    case '%':
+        lx_advance(L);
+        return make_token(L, TOK_PERCENT, s, 1, false);
     default:
         break;
     }
@@ -455,6 +471,9 @@ static WgslAstNode *parse_expr(Parser *P);
 static WgslAstNode *parse_assignment(Parser *P);
 static WgslAstNode *parse_conditional(Parser *P);
 static WgslAstNode *parse_logical_or(Parser *P);
+static WgslAstNode *parse_or_expr(Parser *P);
+static WgslAstNode *parse_xor_expr(Parser *P);
+static WgslAstNode *parse_and_expr(Parser *P);
 static WgslAstNode *parse_logical_and(Parser *P);
 static WgslAstNode *parse_equality(Parser *P);
 static WgslAstNode *parse_relational(Parser *P);
@@ -834,6 +853,7 @@ static WgslAstNode *parse_statement(Parser *P) {
         V->var_decl.name = wgsl_strndup(name.start, (size_t)name.length);
         V->var_decl.type = type;
         V->var_decl.init = init;
+        V->var_decl.kind = WGSL_DECL_VAR;
         return V;
     }
     if (check(P, TOK_CONST)) {
@@ -855,6 +875,7 @@ static WgslAstNode *parse_statement(Parser *P) {
         V->var_decl.name = wgsl_strndup(name.start, (size_t)name.length);
         V->var_decl.type = type;
         V->var_decl.init = init;
+        V->var_decl.kind = WGSL_DECL_CONST;
         return V;
     }
     if (check(P, TOK_LET)) {
@@ -876,6 +897,7 @@ static WgslAstNode *parse_statement(Parser *P) {
         V->var_decl.name = wgsl_strndup(name.start, (size_t)name.length);
         V->var_decl.type = type;
         V->var_decl.init = init;
+        V->var_decl.kind = WGSL_DECL_LET;
         return V;
     }
     if (check(P, TOK_RETURN)) {
@@ -938,11 +960,50 @@ static WgslAstNode *parse_logical_or(Parser *P) {
 }
 
 static WgslAstNode *parse_logical_and(Parser *P) {
-    WgslAstNode *left = parse_equality(P);
+    WgslAstNode *left = parse_or_expr(P);
     while (match(P, TOK_ANDAND)) {
         WgslAstNode *right = parse_equality(P);
         WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
         B->binary.op = wgsl_strdup("&&");
+        B->binary.left = left;
+        B->binary.right = right;
+        left = B;
+    }
+    return left;
+}
+
+static WgslAstNode *parse_or_expr(Parser *P) {
+    WgslAstNode *left = parse_xor_expr(P);
+    while (match(P, TOK_OR)) {
+        WgslAstNode *right = parse_xor_expr(P);
+        WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
+        B->binary.op = wgsl_strdup("|");
+        B->binary.left = left;
+        B->binary.right = right;
+        left = B;
+    }
+    return left;
+}
+
+static WgslAstNode *parse_xor_expr(Parser *P) {
+    WgslAstNode *left = parse_and_expr(P);
+    while (match(P, TOK_XOR)) {
+        WgslAstNode *right = parse_and_expr(P);
+        WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
+        B->binary.op = wgsl_strdup("^");
+        B->binary.left = left;
+        B->binary.right = right;
+        left = B;
+    }
+    return left;
+}
+
+static WgslAstNode *parse_and_expr(Parser *P) {
+    WgslAstNode *left = parse_equality(P);
+    while (match(P, TOK_AND)) {
+        WgslAstNode *right = parse_equality(P);
+        WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
+        B->binary.op = wgsl_strdup("&");
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1088,6 +1149,15 @@ static WgslAstNode *parse_multiplicative(Parser *P) {
             WgslAstNode *r = parse_unary(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
             B->binary.op = wgsl_strdup("/");
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
+        }
+        if (match(P, TOK_PERCENT)) {
+            WgslAstNode *r = parse_unary(P);
+            WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
+            B->binary.op = wgsl_strdup("%");
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1299,6 +1369,7 @@ static WgslAstNode *parse_const_decl(Parser *P) {
     V->var_decl.name = wgsl_strndup(name.start, (size_t)name.length);
     V->var_decl.type = type;
     V->var_decl.init = init;
+    V->var_decl.kind = WGSL_DECL_CONST;
     return V;
 }
 
@@ -1324,7 +1395,27 @@ static WgslAstNode *parse_override_decl(Parser *P) {
     return V;
 }
 
+static bool check_ident_text(Parser *P, const char *text) {
+    if (P->cur.type != TOK_IDENT) return false;
+    int n = (int)strlen(text);
+    return P->cur.length == n && strncmp(P->cur.start, text, n) == 0;
+}
+
 static WgslAstNode *parse_decl_or_stmt(Parser *P) {
+    // Skip 'enable', 'diagnostic', 'requires' directives
+    if (check_ident_text(P, "enable") || check_ident_text(P, "diagnostic") ||
+        check_ident_text(P, "requires")) {
+        while (!check(P, TOK_SEMI) && !check(P, TOK_EOF))
+            advance(P);
+        match(P, TOK_SEMI);
+        return new_node(P, WGSL_NODE_PROGRAM);
+    }
+    if (check_ident_text(P, "alias")) {
+        while (!check(P, TOK_SEMI) && !check(P, TOK_EOF))
+            advance(P);
+        match(P, TOK_SEMI);
+        return new_node(P, WGSL_NODE_PROGRAM);
+    }
     WgslAstNode **attrs = NULL;
     int acount = parse_attribute_list(P, &attrs);
     if (check(P, TOK_STRUCT))

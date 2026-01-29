@@ -340,6 +340,7 @@ struct WgslLower {
                 uint32_t ptr_id;
                 uint32_t type_id;
                 uint32_t ssir_id;  // SSIR local variable ID
+                int is_value;      // 1 if this is a let/const (value, not pointer)
             } *vars;
             int count;
             int cap;
@@ -1107,19 +1108,44 @@ static uint32_t emit_const_u32(WgslLower *l, uint32_t value) {
 }
 
 static uint32_t emit_const_f32(WgslLower *l, float value) {
+    // Check cache
+    uint32_t bits_check;
+    memcpy(&bits_check, &value, sizeof(bits_check));
+    for (int i = 0; i < l->const_cache_count; ++i) {
+        if (l->const_cache[i].type_id == l->id_f32) {
+            uint32_t cached_bits;
+            memcpy(&cached_bits, &l->const_cache[i].f32_val, sizeof(cached_bits));
+            if (cached_bits == bits_check) return l->const_cache[i].id;
+        }
+    }
+
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     uint32_t type = emit_type_float(l, 32);
     if (!emit_op(wb, SpvOpConstant, 4)) return 0;
     if (!wb_push_u32(wb, type)) return 0;
     if (!wb_push_u32(wb, id)) return 0;
-    uint32_t bits;
-    memcpy(&bits, &value, sizeof(bits));
-    if (!wb_push_u32(wb, bits)) return 0;
+    if (!wb_push_u32(wb, bits_check)) return 0;
 
     // Create SSIR constant and map ID
     uint32_t ssir_const = ssir_const_f32(l->ssir, value);
     ssir_id_map_set(l, id, ssir_const);
+
+    // Cache
+    if (l->const_cache_count >= l->const_cache_cap) {
+        int new_cap = l->const_cache_cap ? l->const_cache_cap * 2 : 32;
+        void *p = WGSL_REALLOC(l->const_cache, new_cap * sizeof(l->const_cache[0]));
+        if (p) {
+            l->const_cache = (__typeof__(l->const_cache))p;
+            l->const_cache_cap = new_cap;
+        }
+    }
+    if (l->const_cache_count < l->const_cache_cap) {
+        l->const_cache[l->const_cache_count].id = id;
+        l->const_cache[l->const_cache_count].type_id = type;
+        l->const_cache[l->const_cache_count].f32_val = value;
+        l->const_cache_count++;
+    }
 
     return id;
 }
@@ -1625,8 +1651,9 @@ static int lower_block(WgslLower *l, const WgslAstNode *block);
 
 typedef struct {
     const char *name;
-    uint32_t ptr_id;      // SPIR-V pointer to the variable
+    uint32_t ptr_id;      // SPIR-V pointer to the variable (or value ID if is_value)
     uint32_t type_id;     // SPIR-V type of the value (not pointer)
+    int is_value;         // if true, ptr_id is a value (let/const), not a pointer
 } LocalVar;
 
 typedef struct {
@@ -2180,7 +2207,7 @@ static int emit_function_call(WgslLower *l, uint32_t result_type, uint32_t *out_
 
 static int finalize_spirv(WgslLower *l, uint32_t **out_words, size_t *out_count) {
     SsirToSpirvOptions opts = {0};
-    opts.spirv_version = l->opts.spirv_version ? l->opts.spirv_version : 0x00010400;
+    opts.spirv_version = l->opts.spirv_version ? l->opts.spirv_version : 0x00010300;
     opts.enable_debug_names = l->opts.enable_debug_names;
     return ssir_to_spirv(l->ssir, &opts, out_words, out_count) == SSIR_TO_SPIRV_OK;
 }
@@ -2280,7 +2307,7 @@ typedef struct {
 
 // ---------- Local Variable Helpers ----------
 
-static void fn_ctx_add_local(WgslLower *l, const char *name, uint32_t ptr_id, uint32_t type_id) {
+static void fn_ctx_add_local_ex(WgslLower *l, const char *name, uint32_t ptr_id, uint32_t type_id, int is_value) {
     if (l->fn_ctx.locals.count >= l->fn_ctx.locals.cap) {
         int new_cap = l->fn_ctx.locals.cap ? l->fn_ctx.locals.cap * 2 : 16;
         void *p = WGSL_REALLOC(l->fn_ctx.locals.vars, new_cap * sizeof(l->fn_ctx.locals.vars[0]));
@@ -2291,7 +2318,12 @@ static void fn_ctx_add_local(WgslLower *l, const char *name, uint32_t ptr_id, ui
     l->fn_ctx.locals.vars[l->fn_ctx.locals.count].name = name;
     l->fn_ctx.locals.vars[l->fn_ctx.locals.count].ptr_id = ptr_id;
     l->fn_ctx.locals.vars[l->fn_ctx.locals.count].type_id = type_id;
+    l->fn_ctx.locals.vars[l->fn_ctx.locals.count].is_value = is_value;
     l->fn_ctx.locals.count++;
+}
+
+static void fn_ctx_add_local(WgslLower *l, const char *name, uint32_t ptr_id, uint32_t type_id) {
+    fn_ctx_add_local_ex(l, name, ptr_id, type_id, 0);
 }
 
 static int fn_ctx_find_local(WgslLower *l, const char *name, uint32_t *out_ptr_id, uint32_t *out_type_id) {
@@ -2453,15 +2485,20 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
     const char *name = node->ident.name;
 
     // Check local variables first
-    uint32_t ptr_id, type_id;
-    if (fn_ctx_find_local(l, name, &ptr_id, &type_id)) {
-        // Load the value from the pointer
-        uint32_t loaded;
-        if (emit_load(l, type_id, &loaded, ptr_id)) {
-            r.id = loaded;
-            r.type_id = type_id;
+    for (int i = l->fn_ctx.locals.count - 1; i >= 0; --i) {
+        if (strcmp(l->fn_ctx.locals.vars[i].name, name) == 0) {
+            if (l->fn_ctx.locals.vars[i].is_value) {
+                r.id = l->fn_ctx.locals.vars[i].ptr_id;
+                r.type_id = l->fn_ctx.locals.vars[i].type_id;
+            } else {
+                uint32_t loaded;
+                if (emit_load(l, l->fn_ctx.locals.vars[i].type_id, &loaded, l->fn_ctx.locals.vars[i].ptr_id)) {
+                    r.id = loaded;
+                    r.type_id = l->fn_ctx.locals.vars[i].type_id;
+                }
+            }
+            return r;
         }
-        return r;
     }
 
     // Check global variables
@@ -2635,111 +2672,93 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
 
     if (!callee_name) return r;
 
-    // Type constructors (vec2f, vec3f, vec4f, etc.)
-    if (strcmp(callee_name, "vec2f") == 0 || strcmp(callee_name, "vec2") == 0) {
-        uint32_t constituents[2] = {0, 0};
-        int idx = 0;
-        for (int i = 0; i < call->arg_count && idx < 2; ++i) {
-            ExprResult arg = lower_expr_full(l, call->args[i]);
-            if (arg.id) {
-                int vec_count = get_vector_component_count(arg.type_id, l);
-                if (vec_count > 0) {
-                    // Flatten vector argument by extracting components
-                    uint32_t scalar_type = get_scalar_type(arg.type_id, l);
-                    for (int j = 0; j < vec_count && idx < 2; ++j) {
-                        uint32_t comp_id;
-                        uint32_t index = j;
-                        if (emit_composite_extract(l, scalar_type, &comp_id, arg.id, &index, 1)) {
-                            constituents[idx++] = comp_id;
-                        }
-                    }
-                } else {
-                    constituents[idx++] = arg.id;
-                }
-            }
-        }
-        // Fill remaining with first constituent or zero
-        while (idx < 2) {
-            constituents[idx] = idx > 0 ? constituents[0] : emit_const_f32(l, 0.0f);
-            idx++;
-        }
-        uint32_t vec_type = l->id_vec2f ? l->id_vec2f : emit_type_vector(l, l->id_f32, 2);
-        uint32_t result;
-        if (emit_composite_construct(l, vec_type, &result, constituents, 2)) {
-            r.id = result;
-            r.type_id = vec_type;
-        }
-        return r;
-    }
+    // Generic vector constructor: vec2/vec3/vec4 with any element type
+    {
+        int vec_size = 0;
+        if (strncmp(callee_name, "vec2", 4) == 0) vec_size = 2;
+        else if (strncmp(callee_name, "vec3", 4) == 0) vec_size = 3;
+        else if (strncmp(callee_name, "vec4", 4) == 0) vec_size = 4;
 
-    if (strcmp(callee_name, "vec3f") == 0 || strcmp(callee_name, "vec3") == 0) {
-        uint32_t constituents[3] = {0, 0, 0};
-        int idx = 0;
-        for (int i = 0; i < call->arg_count && idx < 3; ++i) {
-            ExprResult arg = lower_expr_full(l, call->args[i]);
-            if (arg.id) {
-                int vec_count = get_vector_component_count(arg.type_id, l);
-                if (vec_count > 0) {
-                    // Flatten vector argument by extracting components
-                    uint32_t scalar_type = get_scalar_type(arg.type_id, l);
-                    for (int j = 0; j < vec_count && idx < 3; ++j) {
-                        uint32_t comp_id;
-                        uint32_t index = j;
-                        if (emit_composite_extract(l, scalar_type, &comp_id, arg.id, &index, 1)) {
-                            constituents[idx++] = comp_id;
-                        }
-                    }
+        if (vec_size > 0) {
+            // Determine element type from suffix or type args
+            uint32_t elem_type = 0;
+            char suffix = callee_name[4];
+            if (suffix == 'f' || suffix == '\0') {
+                // Check type args for vec3<u32> style
+                if (suffix == '\0' && call->callee && call->callee->type == WGSL_NODE_TYPE &&
+                    call->callee->type_node.type_arg_count > 0 && call->callee->type_node.type_args[0]) {
+                    const char *ta = call->callee->type_node.type_args[0]->type_node.name;
+                    if (strcmp(ta, "f32") == 0) elem_type = l->id_f32;
+                    else if (strcmp(ta, "f16") == 0) elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16);
+                    else if (strcmp(ta, "i32") == 0) elem_type = l->id_i32;
+                    else if (strcmp(ta, "u32") == 0) elem_type = l->id_u32;
+                    else if (strcmp(ta, "bool") == 0) elem_type = l->id_bool;
                 } else {
-                    constituents[idx++] = arg.id;
+                    elem_type = l->id_f32;
                 }
-            }
-        }
-        while (idx < 3) {
-            constituents[idx] = idx > 0 ? constituents[0] : emit_const_f32(l, 0.0f);
-            idx++;
-        }
-        uint32_t vec_type = l->id_vec3f ? l->id_vec3f : emit_type_vector(l, l->id_f32, 3);
-        uint32_t result;
-        if (emit_composite_construct(l, vec_type, &result, constituents, 3)) {
-            r.id = result;
-            r.type_id = vec_type;
-        }
-        return r;
-    }
+            } else if (suffix == 'i') { elem_type = l->id_i32; }
+            else if (suffix == 'u') { elem_type = l->id_u32; }
+            else if (suffix == 'h') { elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16); }
 
-    if (strcmp(callee_name, "vec4f") == 0 || strcmp(callee_name, "vec4") == 0) {
-        uint32_t constituents[4] = {0, 0, 0, 0};
-        int idx = 0;
-        for (int i = 0; i < call->arg_count && idx < 4; ++i) {
-            ExprResult arg = lower_expr_full(l, call->args[i]);
-            if (arg.id) {
-                int vec_count = get_vector_component_count(arg.type_id, l);
-                if (vec_count > 0) {
-                    // Flatten vector argument by extracting components
-                    uint32_t scalar_type = get_scalar_type(arg.type_id, l);
-                    for (int j = 0; j < vec_count && idx < 4; ++j) {
-                        uint32_t comp_id;
-                        uint32_t index = j;
-                        if (emit_composite_extract(l, scalar_type, &comp_id, arg.id, &index, 1)) {
-                            constituents[idx++] = comp_id;
+            if (!elem_type) elem_type = l->id_f32;
+
+            uint32_t constituents[4] = {0, 0, 0, 0};
+            int idx = 0;
+            for (int i = 0; i < call->arg_count && idx < vec_size; ++i) {
+                ExprResult arg = lower_expr_full(l, call->args[i]);
+                if (arg.id) {
+                    int vec_count = get_vector_component_count(arg.type_id, l);
+                    if (vec_count > 0) {
+                        uint32_t scalar_type = get_scalar_type(arg.type_id, l);
+                        for (int j = 0; j < vec_count && idx < vec_size; ++j) {
+                            uint32_t comp_id;
+                            uint32_t index = j;
+                            if (emit_composite_extract(l, scalar_type, &comp_id, arg.id, &index, 1)) {
+                                constituents[idx++] = comp_id;
+                            }
                         }
+                    } else {
+                        constituents[idx++] = arg.id;
                     }
-                } else {
-                    constituents[idx++] = arg.id;
                 }
             }
+            // Single-arg splat
+            if (call->arg_count == 1 && idx == 1) {
+                for (int i = 1; i < vec_size; ++i)
+                    constituents[i] = constituents[0];
+                idx = vec_size;
+            }
+            uint32_t vec_type = emit_type_vector(l, elem_type, vec_size);
+
+            // Check if all constituents are constants -> use OpConstantComposite
+            int all_const = 1;
+            for (int i = 0; i < vec_size; ++i) {
+                int found = 0;
+                for (int j = 0; j < l->const_cache_count; ++j) {
+                    if (l->const_cache[j].id == constituents[i]) { found = 1; break; }
+                }
+                if (!found) { all_const = 0; break; }
+            }
+
+            if (all_const && l->ssir) {
+                uint32_t ssir_type = spv_type_to_ssir(l, vec_type);
+                uint32_t ssir_components[4];
+                for (int i = 0; i < vec_size; ++i)
+                    ssir_components[i] = ssir_id_map_get(l, constituents[i]);
+                uint32_t ssir_const_id = ssir_const_composite(l->ssir, ssir_type, ssir_components, vec_size);
+                uint32_t id = fresh_id(l);
+                ssir_id_map_set(l, id, ssir_const_id);
+                r.id = id;
+                r.type_id = vec_type;
+            } else {
+                uint32_t result;
+                if (emit_composite_construct(l, vec_type, &result, constituents, vec_size)) {
+                    r.id = result;
+                    r.type_id = vec_type;
+                }
+            }
+            return r;
         }
-        while (idx < 4) {
-            constituents[idx] = idx > 0 ? constituents[0] : emit_const_f32(l, 0.0f);
-            idx++;
-        }
-        uint32_t vec_type = l->id_vec4f ? l->id_vec4f : emit_type_vector(l, l->id_f32, 4);
-        uint32_t result;
-        if (emit_composite_construct(l, vec_type, &result, constituents, 4)) {
-            r.id = result;
-            r.type_id = vec_type;
-        }
-        return r;
     }
 
     // Matrix constructors (mat2x2, mat3x3, mat4x4, etc.)
@@ -2749,9 +2768,15 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         if (sscanf(callee_name, "mat%dx%d", &cols, &rows) == 2 ||
             sscanf(callee_name, "mat%dx%df", &cols, &rows) == 2) {
             if (cols >= 2 && cols <= 4 && rows >= 2 && rows <= 4) {
-                // Get column vector type
-                uint32_t f32_type = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
-                uint32_t col_type = emit_type_vector(l, f32_type, rows);
+                uint32_t elem_type = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
+                char mat_suffix = callee_name[strlen(callee_name) - 1];
+                if (mat_suffix == 'h') elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16);
+                else if (call->callee && call->callee->type == WGSL_NODE_TYPE &&
+                         call->callee->type_node.type_arg_count > 0 && call->callee->type_node.type_args[0]) {
+                    const char *ta = call->callee->type_node.type_args[0]->type_node.name;
+                    if (strcmp(ta, "f16") == 0) elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16);
+                }
+                uint32_t col_type = emit_type_vector(l, elem_type, rows);
                 uint32_t mat_type = emit_type_matrix(l, col_type, cols);
 
                 uint32_t columns[4] = {0, 0, 0, 0};
@@ -3620,26 +3645,26 @@ static void collect_variables_from_stmt(WgslLower *l, const WgslAstNode *stmt) {
         case WGSL_NODE_VAR_DECL: {
             const VarDecl *vd = &stmt->var_decl;
 
+            // let/const are handled later as SSA values, not variables
+            if (vd->kind == WGSL_DECL_LET || vd->kind == WGSL_DECL_CONST) {
+                break;
+            }
+
             // Lower the type
             uint32_t type_id = l->id_f32; // default
             if (vd->type) {
                 type_id = lower_type(l, vd->type);
             } else if (vd->init) {
-                // Infer type from initializer
                 type_id = infer_expr_type(l, vd->init);
             }
 
-            // Create pointer type
             uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassFunction, type_id);
 
-            // Emit variable declaration (all at start of function)
             uint32_t var_id;
             if (emit_local_variable(l, ptr_type, type_id, &var_id, 0)) {
-                // Add to local context
                 fn_ctx_add_local(l, vd->name, var_id, type_id);
                 emit_name(l, var_id, vd->name);
 
-                // Record pending initializer if any
                 if (vd->init) {
                     if (l->fn_ctx.pending_init_count >= l->fn_ctx.pending_init_cap) {
                         int new_cap = l->fn_ctx.pending_init_cap ? l->fn_ctx.pending_init_cap * 2 : 16;
@@ -3725,10 +3750,26 @@ static void emit_pending_initializers(WgslLower *l) {
 }
 
 static int lower_var_decl(WgslLower *l, const WgslAstNode *node) {
-    // Variables are already declared in collect_variables_from_block
-    // Here we just need to handle the initializer if we're in the execution pass
-    // The initializers are also handled via pending_inits, so this is a no-op now
-    (void)l; (void)node;
+    const VarDecl *vd = &node->var_decl;
+
+    // var declarations are handled by collect_variables + pending_inits
+    if (vd->kind == WGSL_DECL_VAR) return 1;
+
+    // let/const: evaluate init expression and bind as SSA value
+    if (!vd->init) return 1;
+
+    ExprResult init = lower_expr_full(l, vd->init);
+    if (!init.id) return 0;
+
+    // Register as a value binding (not a pointer)
+    fn_ctx_add_local_ex(l, vd->name, init.id, init.type_id, 1);
+
+    // Emit OpName for this value via SSIR
+    uint32_t ssir_id = ssir_id_map_get(l, init.id);
+    if (ssir_id && l->ssir) {
+        ssir_set_name(l->ssir, ssir_id, vd->name);
+    }
+
     return 1;
 }
 
@@ -5232,6 +5273,21 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
     // Emit pending initializers (stores happen after all OpVariable)
     emit_pending_initializers(l);
 
+    // Register module-scope const declarations as value bindings
+    if (l->program && l->program->type == WGSL_NODE_PROGRAM) {
+        const Program *mprog = &l->program->program;
+        for (int d = 0; d < mprog->decl_count; d++) {
+            const WgslAstNode *decl = mprog->decls[d];
+            if (!decl || decl->type != WGSL_NODE_VAR_DECL) continue;
+            const VarDecl *vd = &decl->var_decl;
+            if (vd->kind != WGSL_DECL_CONST || !vd->init) continue;
+            ExprResult cval = lower_expr_full(l, vd->init);
+            if (cval.id) {
+                fn_ctx_add_local_ex(l, vd->name, cval.id, cval.type_id, 1);
+            }
+        }
+    }
+
     // Second pass: lower the rest of the function body
     if (fn->body) {
         lower_block(l, fn->body);
@@ -5283,9 +5339,9 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
     else {
         memset(&l->opts, 0, sizeof(l->opts));
         l->opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
-        l->opts.spirv_version = 0x00010400;
+        l->opts.spirv_version = 0x00010300;
     }
-    if (l->opts.spirv_version == 0) l->opts.spirv_version = 0x00010400;
+    if (l->opts.spirv_version == 0) l->opts.spirv_version = 0x00010300;
 
     l->next_id = 1;
     spv_sections_init(&l->sections);

@@ -1924,10 +1924,10 @@ static WgslAstNode *gp_parse_program(GpParser *P) {
  * ============================================================================ */
 
 typedef struct {
-    const char *glsl_name;
-    const char *builtin_name;
-    const char *wgsl_type;
-    const char *addr_space; /* "in" or "out" */
+    const char* glsl_name;
+    const char* builtin_name;
+    const char* wgsl_type;
+    const char* addr_space; /* "in" or "out" */
     WgslStage stage;
 } GlslBuiltinDef;
 
