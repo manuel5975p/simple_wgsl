@@ -162,6 +162,48 @@ inline CompileResult CompileWgsl(const char* source) {
     return result;
 }
 
+inline CompileResult CompileGlsl(const char* source, WgslStage stage) {
+    CompileResult result;
+    result.success = false;
+
+    WgslAstNode* ast = glsl_parse(source, stage);
+    if (!ast) {
+        result.error = "GLSL parse failed";
+        return result;
+    }
+
+    WgslResolver* resolver = wgsl_resolver_build(ast);
+    if (!resolver) {
+        wgsl_free_ast(ast);
+        result.error = "Resolve failed";
+        return result;
+    }
+
+    uint32_t* spirv = nullptr;
+    size_t spirv_size = 0;
+    WgslLowerOptions opts = {};
+    opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
+
+    WgslLowerResult lower_result = wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &spirv_size);
+    wgsl_resolver_free(resolver);
+    wgsl_free_ast(ast);
+
+    if (lower_result != WGSL_LOWER_OK) {
+        result.error = "Lower failed";
+        return result;
+    }
+
+    result.spirv.assign(spirv, spirv + spirv_size);
+    wgsl_lower_free(spirv);
+
+    if (!ValidateSpirv(result.spirv.data(), result.spirv.size(), &result.error)) {
+        return result;
+    }
+
+    result.success = true;
+    return result;
+}
+
 struct RaiseResult {
     bool success;
     std::string error;

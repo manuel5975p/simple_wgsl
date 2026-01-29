@@ -291,8 +291,16 @@ void wgsl_free_ast(WgslAstNode *node);
 const char *wgsl_node_type_name(WgslNodeType t);
 void wgsl_debug_print(const WgslAstNode *node, int indent);
 
+/* Shader Stage (also used by resolver, declared early for glsl_parse) */
+typedef enum WgslStage{
+    WGSL_STAGE_UNKNOWN = 0,
+    WGSL_STAGE_VERTEX,
+    WGSL_STAGE_FRAGMENT,
+    WGSL_STAGE_COMPUTE
+} WgslStage;
+
 /* GLSL Parser */
-WgslAstNode *glsl_parse(const char *source);
+WgslAstNode *glsl_parse(const char *source, WgslStage stage);
 
 /* ============================================================================
  * WGSL RESOLVER
@@ -339,13 +347,6 @@ typedef struct WgslFragmentOutput{
     int component_count;
     WgslNumericType numeric_type;
 } WgslFragmentOutput;
-
-typedef enum WgslStage{
-    WGSL_STAGE_UNKNOWN = 0,
-    WGSL_STAGE_VERTEX,
-    WGSL_STAGE_FRAGMENT,
-    WGSL_STAGE_COMPUTE
-} WgslStage;
 
 typedef struct WgslResolverEntrypoint{
     const char *name;

@@ -12,8 +12,8 @@ protected:
         if (ast) { wgsl_free_ast(ast); ast = nullptr; }
     }
 
-    WgslAstNode* Parse(const char* source) {
-        ast = glsl_parse(source);
+    WgslAstNode* Parse(const char* source, WgslStage stage = WGSL_STAGE_UNKNOWN) {
+        ast = glsl_parse(source, stage);
         return ast;
     }
 };
@@ -78,9 +78,9 @@ TEST_F(GlslParserTest, SimpleStruct) {
     EXPECT_STREQ(s->struct_decl.name, "Material");
     EXPECT_EQ(s->struct_decl.field_count, 2);
     EXPECT_STREQ(s->struct_decl.fields[0]->struct_field.name, "color");
-    EXPECT_STREQ(s->struct_decl.fields[0]->struct_field.type->type_node.name, "vec4");
+    EXPECT_STREQ(s->struct_decl.fields[0]->struct_field.type->type_node.name, "vec4f");
     EXPECT_STREQ(s->struct_decl.fields[1]->struct_field.name, "roughness");
-    EXPECT_STREQ(s->struct_decl.fields[1]->struct_field.type->type_node.name, "float");
+    EXPECT_STREQ(s->struct_decl.fields[1]->struct_field.type->type_node.name, "f32");
 }
 
 TEST_F(GlslParserTest, EmptyStruct) {
@@ -107,7 +107,7 @@ TEST_F(GlslParserTest, StructWithArrayField) {
     auto* f0type = s->struct_decl.fields[0]->struct_field.type;
     EXPECT_STREQ(f0type->type_node.name, "array");
     EXPECT_EQ(f0type->type_node.type_arg_count, 1);
-    EXPECT_STREQ(f0type->type_node.type_args[0]->type_node.name, "float");
+    EXPECT_STREQ(f0type->type_node.type_args[0]->type_node.name, "f32");
     EXPECT_EQ(f0type->type_node.expr_arg_count, 1);
 }
 
@@ -122,7 +122,7 @@ TEST_F(GlslParserTest, StructWithMatrixFields) {
     ASSERT_NE(node, nullptr);
     auto* s = node->program.decls[0];
     EXPECT_EQ(s->struct_decl.field_count, 3);
-    EXPECT_STREQ(s->struct_decl.fields[0]->struct_field.type->type_node.name, "mat4");
+    EXPECT_STREQ(s->struct_decl.fields[0]->struct_field.type->type_node.name, "mat4x4f");
 }
 
 /* ============================================================================
@@ -137,7 +137,7 @@ TEST_F(GlslParserTest, InputVariable) {
     EXPECT_EQ(g->type, WGSL_NODE_GLOBAL_VAR);
     EXPECT_STREQ(g->global_var.name, "position");
     EXPECT_STREQ(g->global_var.address_space, "in");
-    EXPECT_STREQ(g->global_var.type->type_node.name, "vec3");
+    EXPECT_STREQ(g->global_var.type->type_node.name, "vec3f");
 }
 
 TEST_F(GlslParserTest, OutputVariable) {
@@ -350,17 +350,17 @@ TEST_F(GlslParserTest, FunctionWithReturnType) {
     ASSERT_NE(node, nullptr);
     auto* fn = node->program.decls[0];
     EXPECT_STREQ(fn->function.name, "square");
-    EXPECT_STREQ(fn->function.return_type->type_node.name, "float");
+    EXPECT_STREQ(fn->function.return_type->type_node.name, "f32");
     EXPECT_EQ(fn->function.param_count, 1);
     EXPECT_STREQ(fn->function.params[0]->param.name, "x");
-    EXPECT_STREQ(fn->function.params[0]->param.type->type_node.name, "float");
+    EXPECT_STREQ(fn->function.params[0]->param.type->type_node.name, "f32");
 }
 
 TEST_F(GlslParserTest, FunctionMultipleParams) {
     auto* node = Parse("vec3 lerp(vec3 a, vec3 b, float t) { return a + (b - a) * t; }");
     ASSERT_NE(node, nullptr);
     auto* fn = node->program.decls[0];
-    EXPECT_STREQ(fn->function.return_type->type_node.name, "vec3");
+    EXPECT_STREQ(fn->function.return_type->type_node.name, "vec3f");
     EXPECT_EQ(fn->function.param_count, 3);
     EXPECT_STREQ(fn->function.params[0]->param.name, "a");
     EXPECT_STREQ(fn->function.params[1]->param.name, "b");
@@ -391,7 +391,7 @@ TEST_F(GlslParserTest, FunctionWithVectorReturn) {
     auto* node = Parse("vec4 getColor() { return vec4(1.0, 0.0, 0.0, 1.0); }");
     ASSERT_NE(node, nullptr);
     auto* fn = node->program.decls[0];
-    EXPECT_STREQ(fn->function.return_type->type_node.name, "vec4");
+    EXPECT_STREQ(fn->function.return_type->type_node.name, "vec4f");
 }
 
 /* ============================================================================
@@ -424,7 +424,7 @@ TEST_F(GlslParserTest, LocalVariableDeclaration) {
     auto* vd = body->block.stmts[0];
     EXPECT_EQ(vd->type, WGSL_NODE_VAR_DECL);
     EXPECT_STREQ(vd->var_decl.name, "x");
-    EXPECT_STREQ(vd->var_decl.type->type_node.name, "float");
+    EXPECT_STREQ(vd->var_decl.type->type_node.name, "f32");
     ASSERT_NE(vd->var_decl.init, nullptr);
 }
 
@@ -705,7 +705,7 @@ TEST_F(GlslParserTest, TypeConstructor) {
     auto* init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_CALL);
     EXPECT_EQ(init->call.callee->type, WGSL_NODE_TYPE);
-    EXPECT_STREQ(init->call.callee->type_node.name, "vec3");
+    EXPECT_STREQ(init->call.callee->type_node.name, "vec3f");
     EXPECT_EQ(init->call.arg_count, 3);
 }
 
@@ -715,7 +715,7 @@ TEST_F(GlslParserTest, MatrixConstructor) {
     auto* init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_CALL);
     EXPECT_EQ(init->call.callee->type, WGSL_NODE_TYPE);
-    EXPECT_STREQ(init->call.callee->type_node.name, "mat4");
+    EXPECT_STREQ(init->call.callee->type_node.name, "mat4x4f");
 }
 
 TEST_F(GlslParserTest, MemberAccess) {
@@ -956,7 +956,7 @@ TEST_F(GlslParserTest, ShaderWithMultipleFunctions) {
         }
     }
     ASSERT_NE(square_fn, nullptr);
-    EXPECT_STREQ(square_fn->function.return_type->type_node.name, "float");
+    EXPECT_STREQ(square_fn->function.return_type->type_node.name, "f32");
     EXPECT_EQ(square_fn->function.param_count, 1);
 }
 
@@ -1200,12 +1200,12 @@ TEST_F(GlslParserTest, AllGLSLTypeKeywords) {
     ASSERT_EQ(body->block.stmt_count, 19);
 
     const char* expected_types[] = {
-        "int", "uint", "float", "bool",
-        "vec2", "vec3", "vec4",
-        "ivec2", "ivec3", "ivec4",
-        "uvec2", "uvec3", "uvec4",
-        "mat2", "mat3", "mat4",
-        "bvec2", "bvec3", "bvec4"
+        "i32", "u32", "f32", "bool",
+        "vec2f", "vec3f", "vec4f",
+        "vec2i", "vec3i", "vec4i",
+        "vec2u", "vec3u", "vec4u",
+        "mat2x2f", "mat3x3f", "mat4x4f",
+        "vec2<bool>", "vec3<bool>", "vec4<bool>"
     };
     for (int i = 0; i < 19; i++) {
         EXPECT_STREQ(body->block.stmts[i]->var_decl.type->type_node.name,

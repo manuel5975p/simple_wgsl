@@ -1154,6 +1154,8 @@ static SpvStorageClass wgsl_address_space_to_storage_class(const char *space) {
     if (strcmp(space, "private") == 0) return SpvStorageClassPrivate;
     if (strcmp(space, "workgroup") == 0) return SpvStorageClassWorkgroup;
     if (strcmp(space, "function") == 0) return SpvStorageClassFunction;
+    if (strcmp(space, "in") == 0) return SpvStorageClassInput;
+    if (strcmp(space, "out") == 0) return SpvStorageClassOutput;
     return SpvStorageClassUniformConstant; // for samplers/textures
 }
 
@@ -2466,8 +2468,8 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
     uint32_t var_id, elem_type_id;
     SpvStorageClass sc;
     if (find_global_by_name(l, name, &var_id, &elem_type_id, &sc)) {
-        // For Input variables (like builtins), load the value directly
-        if (sc == SpvStorageClassInput) {
+        // For Input/Output variables, load the value directly
+        if (sc == SpvStorageClassInput || sc == SpvStorageClassOutput) {
             uint32_t loaded;
             if (emit_load(l, elem_type_id, &loaded, var_id)) {
                 r.id = loaded;
@@ -3678,6 +3680,17 @@ static void collect_variables_from_stmt(WgslLower *l, const WgslAstNode *stmt) {
             collect_variables_from_block(l, for_stmt->body);
             break;
         }
+        case WGSL_NODE_DO_WHILE:
+            collect_variables_from_block(l, stmt->do_while_stmt.body);
+            break;
+        case WGSL_NODE_SWITCH:
+            for (int i = 0; i < stmt->switch_stmt.case_count; i++) {
+                const WgslAstNode *c = stmt->switch_stmt.cases[i];
+                if (!c) continue;
+                for (int s = 0; s < c->case_clause.stmt_count; s++)
+                    collect_variables_from_stmt(l, c->case_clause.stmts[s]);
+            }
+            break;
         default:
             break;
     }
@@ -3726,6 +3739,32 @@ static int lower_assignment(WgslLower *l, const WgslAstNode *node) {
     ExprResult rhs = lower_expr_full(l, asgn->rhs);
 
     if (!lhs.id || !rhs.id) return 0;
+
+    /* Compound assignment: load, op, store */
+    if (asgn->op && strcmp(asgn->op, "=") != 0) {
+        uint32_t lhs_val;
+        if (!emit_load(l, lhs.type_id, &lhs_val, lhs.id)) return 0;
+
+        int is_float = is_float_type(lhs.type_id, l);
+        SpvOp op = 0;
+        if (strcmp(asgn->op, "+=") == 0) op = is_float ? SpvOpFAdd : SpvOpIAdd;
+        else if (strcmp(asgn->op, "-=") == 0) op = is_float ? SpvOpFSub : SpvOpISub;
+        else if (strcmp(asgn->op, "*=") == 0) op = is_float ? SpvOpFMul : SpvOpIMul;
+        else if (strcmp(asgn->op, "/=") == 0) op = is_float ? SpvOpFDiv : SpvOpSDiv;
+        else if (strcmp(asgn->op, "%=") == 0) op = is_float ? SpvOpFRem : SpvOpSRem;
+        else if (strcmp(asgn->op, "&=") == 0) op = SpvOpBitwiseAnd;
+        else if (strcmp(asgn->op, "|=") == 0) op = SpvOpBitwiseOr;
+        else if (strcmp(asgn->op, "^=") == 0) op = SpvOpBitwiseXor;
+        else if (strcmp(asgn->op, "<<=") == 0) op = SpvOpShiftLeftLogical;
+        else if (strcmp(asgn->op, ">>=") == 0) op = SpvOpShiftRightArithmetic;
+
+        if (op) {
+            uint32_t result;
+            if (!emit_binary_op(l, op, lhs.type_id, &result, lhs_val, rhs.id)) return 0;
+            return emit_store(l, lhs.id, result);
+        }
+        /* Unknown compound op - fall through to plain store */
+    }
 
     return emit_store(l, lhs.id, rhs.id);
 }
@@ -4119,6 +4158,199 @@ static int lower_for_stmt(WgslLower *l, const WgslAstNode *node) {
     return 1;
 }
 
+static int lower_do_while_stmt(WgslLower *l, const WgslAstNode *node) {
+    const DoWhileStmt *dw = &node->do_while_stmt;
+    WordBuf *wb = &l->sections.functions;
+
+    uint32_t header_label = fresh_id(l);
+    uint32_t body_label = fresh_id(l);
+    uint32_t continue_label = fresh_id(l);
+    uint32_t merge_label = fresh_id(l);
+
+    uint32_t ssir_header = 0, ssir_body = 0, ssir_continue = 0, ssir_merge = 0;
+    if (l->fn_ctx.ssir_func_id) {
+        ssir_header = ssir_block_create(l->ssir, l->fn_ctx.ssir_func_id, "dowhile.header");
+        ssir_body = ssir_block_create(l->ssir, l->fn_ctx.ssir_func_id, "dowhile.body");
+        ssir_continue = ssir_module_alloc_id(l->ssir);
+        ssir_merge = ssir_module_alloc_id(l->ssir);
+        ssir_id_map_set(l, header_label, ssir_header);
+        ssir_id_map_set(l, body_label, ssir_body);
+        ssir_id_map_set(l, continue_label, ssir_continue);
+        ssir_id_map_set(l, merge_label, ssir_merge);
+    }
+
+    if (l->fn_ctx.loop_depth < 16) {
+        l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].merge_block = merge_label;
+        l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].continue_block = continue_label;
+        l->fn_ctx.loop_depth++;
+    }
+
+    emit_branch(l, header_label);
+
+    /* Header: loop merge then branch to body */
+    emit_op(wb, SpvOpLabel, 2);
+    wb_push_u32(wb, header_label);
+    emit_loop_merge(l, merge_label, continue_label);
+
+    if (ssir_header) {
+        l->fn_ctx.ssir_block_id = ssir_header;
+        ssir_build_loop_merge(l->ssir, l->fn_ctx.ssir_func_id, ssir_header, ssir_merge, ssir_continue);
+    }
+
+    emit_branch(l, body_label);
+
+    /* Body */
+    emit_op(wb, SpvOpLabel, 2);
+    wb_push_u32(wb, body_label);
+    if (ssir_body) l->fn_ctx.ssir_block_id = ssir_body;
+
+    if (!lower_block(l, dw->body)) { l->fn_ctx.loop_depth--; return 0; }
+
+    if (!l->fn_ctx.has_returned) emit_branch(l, continue_label);
+    l->fn_ctx.has_returned = 0;
+
+    /* Continue: evaluate condition */
+    emit_op(wb, SpvOpLabel, 2);
+    wb_push_u32(wb, continue_label);
+    if (ssir_continue) {
+        ssir_block_create_with_id(l->ssir, l->fn_ctx.ssir_func_id, ssir_continue, "dowhile.continue");
+        l->fn_ctx.ssir_block_id = ssir_continue;
+    }
+
+    ExprResult cond = lower_expr_full(l, dw->cond);
+    if (!cond.id) { l->fn_ctx.loop_depth--; return 0; }
+
+    if (ssir_continue) {
+        uint32_t ssir_cond = ssir_id_map_get(l, cond.id);
+        if (ssir_cond)
+            ssir_build_branch_cond(l->ssir, l->fn_ctx.ssir_func_id, ssir_continue,
+                                   ssir_cond, ssir_header, ssir_merge);
+    }
+    emit_branch_conditional(l, cond.id, header_label, merge_label);
+
+    /* Merge */
+    emit_op(wb, SpvOpLabel, 2);
+    wb_push_u32(wb, merge_label);
+    if (ssir_merge) {
+        ssir_block_create_with_id(l->ssir, l->fn_ctx.ssir_func_id, ssir_merge, "dowhile.merge");
+        l->fn_ctx.ssir_block_id = ssir_merge;
+    }
+
+    l->fn_ctx.loop_depth--;
+    return 1;
+}
+
+static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
+    const SwitchStmt *sw = &node->switch_stmt;
+    WordBuf *wb = &l->sections.functions;
+
+    ExprResult sel = lower_expr_full(l, sw->expr);
+    if (!sel.id) return 0;
+
+    uint32_t merge_label = fresh_id(l);
+    uint32_t default_label = merge_label;
+
+    /* Allocate labels for each case */
+    uint32_t *case_labels = (uint32_t *)WGSL_MALLOC((size_t)sw->case_count * sizeof(uint32_t));
+    for (int i = 0; i < sw->case_count; i++) {
+        case_labels[i] = fresh_id(l);
+        if (!sw->cases[i] || sw->cases[i]->case_clause.expr == NULL)
+            default_label = case_labels[i];
+    }
+
+    /* SSIR blocks */
+    uint32_t ssir_merge = 0;
+    if (l->fn_ctx.ssir_func_id)
+        ssir_merge = ssir_module_alloc_id(l->ssir);
+
+    /* Push switch context (reuse loop_stack for break target) */
+    if (l->fn_ctx.loop_depth < 16) {
+        l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].merge_block = merge_label;
+        l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].continue_block = 0;
+        l->fn_ctx.loop_depth++;
+    }
+
+    /* Selection merge */
+    emit_selection_merge(l, merge_label);
+
+    /* Build OpSwitch: word count = 3 + 2*literal_count */
+    int literal_count = 0;
+    for (int i = 0; i < sw->case_count; i++) {
+        const WgslAstNode *c = sw->cases[i];
+        if (c && c->case_clause.expr) literal_count++;
+    }
+
+    emit_op(wb, SpvOpSwitch, 3 + 2 * literal_count);
+    wb_push_u32(wb, sel.id);
+    wb_push_u32(wb, default_label);
+    for (int i = 0; i < sw->case_count; i++) {
+        const WgslAstNode *c = sw->cases[i];
+        if (!c || !c->case_clause.expr) continue;
+        int val = 0;
+        if (c->case_clause.expr->type == WGSL_NODE_LITERAL)
+            val = atoi(c->case_clause.expr->literal.lexeme);
+        wb_push_u32(wb, (uint32_t)val);
+        wb_push_u32(wb, case_labels[i]);
+    }
+
+    /* Lower each case body */
+    for (int i = 0; i < sw->case_count; i++) {
+        const WgslAstNode *c = sw->cases[i];
+        if (!c) continue;
+
+        emit_op(wb, SpvOpLabel, 2);
+        wb_push_u32(wb, case_labels[i]);
+
+        if (l->fn_ctx.ssir_func_id) {
+            uint32_t ssir_blk = ssir_block_create(l->ssir, l->fn_ctx.ssir_func_id, "switch.case");
+            ssir_id_map_set(l, case_labels[i], ssir_blk);
+            l->fn_ctx.ssir_block_id = ssir_blk;
+        }
+
+        for (int s = 0; s < c->case_clause.stmt_count; s++)
+            lower_statement(l, c->case_clause.stmts[s]);
+
+        if (!l->fn_ctx.has_returned)
+            emit_branch(l, merge_label);
+        l->fn_ctx.has_returned = 0;
+    }
+
+    /* Merge block */
+    emit_op(wb, SpvOpLabel, 2);
+    wb_push_u32(wb, merge_label);
+    if (ssir_merge) {
+        ssir_block_create_with_id(l->ssir, l->fn_ctx.ssir_func_id, ssir_merge, "switch.merge");
+        l->fn_ctx.ssir_block_id = ssir_merge;
+    }
+
+    l->fn_ctx.loop_depth--;
+    WGSL_FREE(case_labels);
+    return 1;
+}
+
+static int lower_break_stmt(WgslLower *l) {
+    if (l->fn_ctx.loop_depth <= 0) return 1;
+    uint32_t merge = l->fn_ctx.loop_stack[l->fn_ctx.loop_depth - 1].merge_block;
+    if (merge) emit_branch(l, merge);
+    l->fn_ctx.has_returned = 1; /* prevent further emission in this block */
+    return 1;
+}
+
+static int lower_continue_stmt(WgslLower *l) {
+    if (l->fn_ctx.loop_depth <= 0) return 1;
+    uint32_t cont = l->fn_ctx.loop_stack[l->fn_ctx.loop_depth - 1].continue_block;
+    if (cont) emit_branch(l, cont);
+    l->fn_ctx.has_returned = 1;
+    return 1;
+}
+
+static int lower_discard_stmt(WgslLower *l) {
+    WordBuf *wb = &l->sections.functions;
+    emit_op(wb, SpvOpKill, 1);
+    l->fn_ctx.has_returned = 1;
+    return 1;
+}
+
 static int lower_statement(WgslLower *l, const WgslAstNode *stmt) {
     if (!stmt) return 1;
 
@@ -4152,6 +4384,21 @@ static int lower_statement(WgslLower *l, const WgslAstNode *stmt) {
 
         case WGSL_NODE_FOR:
             return lower_for_stmt(l, stmt);
+
+        case WGSL_NODE_DO_WHILE:
+            return lower_do_while_stmt(l, stmt);
+
+        case WGSL_NODE_SWITCH:
+            return lower_switch_stmt(l, stmt);
+
+        case WGSL_NODE_BREAK:
+            return lower_break_stmt(l);
+
+        case WGSL_NODE_CONTINUE:
+            return lower_continue_stmt(l);
+
+        case WGSL_NODE_DISCARD:
+            return lower_discard_stmt(l);
 
         case WGSL_NODE_BLOCK:
             return lower_block(l, stmt);
@@ -4272,6 +4519,118 @@ static int lower_globals(WgslLower *l) {
     }
 
     wgsl_resolve_free((void*)bindings);
+    return 1;
+}
+
+static void add_global_map_entry(WgslLower *l, int symbol_id, uint32_t spv_id,
+                                 uint32_t ssir_id, uint32_t type_id,
+                                 SpvStorageClass sc, const char *name) {
+    if (l->global_map_count >= l->global_map_cap) {
+        int new_cap = l->global_map_cap ? l->global_map_cap * 2 : 16;
+        void *p = WGSL_REALLOC(l->global_map, new_cap * sizeof(l->global_map[0]));
+        if (!p) return;
+        l->global_map = (__typeof__(l->global_map))p;
+        l->global_map_cap = new_cap;
+    }
+    l->global_map[l->global_map_count].symbol_id = symbol_id;
+    l->global_map[l->global_map_count].spv_id = spv_id;
+    l->global_map[l->global_map_count].ssir_id = ssir_id;
+    l->global_map[l->global_map_count].type_id = type_id;
+    l->global_map[l->global_map_count].sc = sc;
+    l->global_map[l->global_map_count].name = name;
+    l->global_map_count++;
+}
+
+static int resolve_builtin_name(const char *name, SpvBuiltIn *out_spv, SsirBuiltinVar *out_ssir) {
+    struct { const char *name; SpvBuiltIn spv; SsirBuiltinVar ssir; } table[] = {
+        {"position",              SpvBuiltInPosition,             SSIR_BUILTIN_POSITION},
+        {"vertex_index",          SpvBuiltInVertexIndex,          SSIR_BUILTIN_VERTEX_INDEX},
+        {"instance_index",        SpvBuiltInInstanceIndex,        SSIR_BUILTIN_INSTANCE_INDEX},
+        {"front_facing",          SpvBuiltInFrontFacing,          SSIR_BUILTIN_FRONT_FACING},
+        {"frag_depth",            SpvBuiltInFragDepth,            SSIR_BUILTIN_FRAG_DEPTH},
+        {"sample_index",          SpvBuiltInSampleId,             SSIR_BUILTIN_SAMPLE_INDEX},
+        {"sample_mask",           SpvBuiltInSampleMask,           SSIR_BUILTIN_SAMPLE_MASK},
+        {"global_invocation_id",  SpvBuiltInGlobalInvocationId,   SSIR_BUILTIN_GLOBAL_INVOCATION_ID},
+        {"local_invocation_id",   SpvBuiltInLocalInvocationId,    SSIR_BUILTIN_LOCAL_INVOCATION_ID},
+        {"local_invocation_index",SpvBuiltInLocalInvocationIndex, SSIR_BUILTIN_LOCAL_INVOCATION_INDEX},
+        {"workgroup_id",          SpvBuiltInWorkgroupId,          SSIR_BUILTIN_WORKGROUP_ID},
+        {"num_workgroups",        SpvBuiltInNumWorkgroups,        SSIR_BUILTIN_NUM_WORKGROUPS},
+    };
+    for (int i = 0; i < (int)(sizeof(table)/sizeof(table[0])); i++) {
+        if (strcmp(name, table[i].name) == 0) {
+            *out_spv = table[i].spv;
+            *out_ssir = table[i].ssir;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int lower_io_globals(WgslLower *l) {
+    if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return 1;
+    const Program *prog = &l->program->program;
+
+    for (int i = 0; i < prog->decl_count; i++) {
+        const WgslAstNode *decl = prog->decls[i];
+        if (!decl || decl->type != WGSL_NODE_GLOBAL_VAR) continue;
+        const GlobalVar *gv = &decl->global_var;
+        if (!gv->address_space) continue;
+        if (strcmp(gv->address_space, "in") != 0 && strcmp(gv->address_space, "out") != 0)
+            continue;
+        if (!gv->type) continue;
+
+        SpvStorageClass sc = wgsl_address_space_to_storage_class(gv->address_space);
+        uint32_t elem_type = lower_type(l, gv->type);
+        uint32_t ptr_type = emit_type_pointer(l, sc, elem_type);
+        uint32_t var_id = emit_global_variable(l, ptr_type, sc, gv->name, 0);
+
+        uint32_t ssir_var = 0;
+        if (l->ssir) {
+            uint32_t ssir_elem = spv_type_to_ssir(l, elem_type);
+            SsirAddressSpace ssir_addr = spv_sc_to_ssir_addr(sc);
+            uint32_t ssir_ptr = ssir_type_ptr(l->ssir, ssir_elem, ssir_addr);
+            ssir_var = ssir_global_var(l->ssir, gv->name, ssir_ptr);
+            ssir_id_map_set(l, var_id, ssir_var);
+        }
+
+        /* Apply @location or @builtin decorations */
+        for (int a = 0; a < gv->attr_count; a++) {
+            const WgslAstNode *attr = gv->attrs[a];
+            if (!attr || attr->type != WGSL_NODE_ATTRIBUTE) continue;
+
+            if (strcmp(attr->attribute.name, "location") == 0) {
+                int loc = 0;
+                if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL)
+                    loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                uint32_t loc_val = (uint32_t)loc;
+                emit_decorate(l, var_id, SpvDecorationLocation, &loc_val, 1);
+                if (l->ssir) ssir_global_set_location(l->ssir, ssir_var, (uint32_t)loc);
+            } else if (strcmp(attr->attribute.name, "builtin") == 0) {
+                if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_IDENT) {
+                    SpvBuiltIn spv_bi;
+                    SsirBuiltinVar ssir_bi;
+                    if (resolve_builtin_name(attr->attribute.args[0]->ident.name, &spv_bi, &ssir_bi)) {
+                        uint32_t bi_val = (uint32_t)spv_bi;
+                        emit_decorate(l, var_id, SpvDecorationBuiltIn, &bi_val, 1);
+                        if (l->ssir) ssir_global_set_builtin(l->ssir, ssir_var, ssir_bi);
+                    }
+                }
+            }
+        }
+
+        /* Find the resolver symbol id for this global */
+        int sym_id = -1;
+        int sym_count = 0;
+        const WgslSymbolInfo *all_syms = wgsl_resolver_all_symbols(l->resolver, &sym_count);
+        if (all_syms) {
+            for (int s = 0; s < sym_count; s++) {
+                if (all_syms[s].decl_node == decl) { sym_id = all_syms[s].id; break; }
+            }
+            wgsl_resolve_free((void*)all_syms);
+        }
+
+        add_global_map_entry(l, sym_id, var_id, ssir_var, elem_type, sc, gv->name);
+    }
     return 1;
 }
 
@@ -4825,10 +5184,11 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
         }
     }
 
-    // Add all storage buffer variables to the interface (required in SPIR-V 1.4+)
+    // Add all storage buffer and in/out variables to the interface
     for (int g = 0; g < l->global_map_count; ++g) {
-        if (l->global_map[g].sc == SpvStorageClassStorageBuffer ||
-            l->global_map[g].sc == SpvStorageClassUniform) {
+        SpvStorageClass gsc = l->global_map[g].sc;
+        if (gsc == SpvStorageClassStorageBuffer || gsc == SpvStorageClassUniform ||
+            gsc == SpvStorageClassInput || gsc == SpvStorageClassOutput) {
             ADD_INTERFACE(l->global_map[g].spv_id);
         }
     }
@@ -4978,6 +5338,9 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
 
     // Lower globals
     if (!lower_globals(l)) goto fail;
+
+    // Lower in/out globals (GLSL-style I/O)
+    if (!lower_io_globals(l)) goto fail;
 
     // Get entrypoints
     eps = wgsl_resolver_entrypoints(resolver, &ep_count);

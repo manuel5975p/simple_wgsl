@@ -665,4 +665,270 @@ TEST_F(VulkanGraphicsTest, FragmentConditional) {
     EXPECT_LE(b, 5) << "Right side blue should be ~0";
 }
 
+// ============================================================================
+// GLSL Graphics Tests
+// ============================================================================
+
+TEST_F(VulkanGraphicsTest, GlslSolidColorFill) {
+    const char* vs_source = R"(
+        #version 450
+        layout(location = 0) in vec2 position;
+
+        void main() {
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    )";
+
+    const char* fs_source = R"(
+        #version 450
+        layout(location = 0) out vec4 outColor;
+
+        void main() {
+            outColor = vec4(1.0, 0.0, 0.0, 1.0);
+        }
+    )";
+
+    auto vs_result = wgsl_test::CompileGlsl(vs_source, WGSL_STAGE_VERTEX);
+    ASSERT_TRUE(vs_result.success) << vs_result.error;
+
+    auto fs_result = wgsl_test::CompileGlsl(fs_source, WGSL_STAGE_FRAGMENT);
+    ASSERT_TRUE(fs_result.success) << fs_result.error;
+
+    auto vb = ctx_->createVertexBuffer(kFullScreenTriangle);
+
+    const uint32_t width = 64, height = 64;
+    auto target = ctx_->createColorTarget(width, height);
+
+    vk_graphics::GraphicsPipelineConfig config;
+    config.vertex_spirv = vs_result.spirv.data();
+    config.vertex_spirv_words = vs_result.spirv.size();
+    config.vertex_entry = "main";
+    config.fragment_spirv = fs_result.spirv.data();
+    config.fragment_spirv_words = fs_result.spirv.size();
+    config.fragment_entry = "main";
+    config.vertex_stride = sizeof(SimpleVertex);
+    config.vertex_attributes = {
+        {0, VK_FORMAT_R32G32_SFLOAT, 0},
+    };
+
+    auto pipeline = ctx_->createPipeline(config);
+    ctx_->draw(pipeline, target, &vb, {.vertex_count = 3});
+
+    auto pixels = target.downloadAs<uint32_t>();
+    ASSERT_EQ(pixels.size(), width * height);
+
+    uint32_t center = pixels[(height / 2) * width + (width / 2)];
+    uint8_t r, g, b, a;
+    unpackRGBA(center, r, g, b, a);
+    EXPECT_GE(r, 250) << "Red channel should be ~255";
+    EXPECT_LE(g, 5) << "Green channel should be ~0";
+    EXPECT_LE(b, 5) << "Blue channel should be ~0";
+    EXPECT_GE(a, 250) << "Alpha channel should be ~255";
+}
+
+TEST_F(VulkanGraphicsTest, GlslVertexAttributes) {
+    const char* vs_source = R"(
+        #version 450
+        layout(location = 0) in vec2 position;
+        layout(location = 1) in vec3 color;
+
+        layout(location = 0) out vec3 fragColor;
+
+        void main() {
+            gl_Position = vec4(position, 0.0, 1.0);
+            fragColor = color;
+        }
+    )";
+
+    const char* fs_source = R"(
+        #version 450
+        layout(location = 0) in vec3 fragColor;
+        layout(location = 0) out vec4 outColor;
+
+        void main() {
+            outColor = vec4(fragColor, 1.0);
+        }
+    )";
+
+    auto vs_result = wgsl_test::CompileGlsl(vs_source, WGSL_STAGE_VERTEX);
+    ASSERT_TRUE(vs_result.success) << vs_result.error;
+
+    auto fs_result = wgsl_test::CompileGlsl(fs_source, WGSL_STAGE_FRAGMENT);
+    ASSERT_TRUE(fs_result.success) << fs_result.error;
+
+    struct ColorVertex {
+        float x, y;
+        float r, g, b;
+    };
+
+    std::vector<ColorVertex> vertices = {
+        {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f},
+        { 3.0f, -1.0f, 0.0f, 0.0f, 1.0f},
+        {-1.0f,  3.0f, 0.0f, 0.0f, 1.0f},
+    };
+
+    auto vb = ctx_->createVertexBuffer(vertices);
+
+    const uint32_t width = 64, height = 64;
+    auto target = ctx_->createColorTarget(width, height);
+
+    vk_graphics::GraphicsPipelineConfig config;
+    config.vertex_spirv = vs_result.spirv.data();
+    config.vertex_spirv_words = vs_result.spirv.size();
+    config.vertex_entry = "main";
+    config.fragment_spirv = fs_result.spirv.data();
+    config.fragment_spirv_words = fs_result.spirv.size();
+    config.fragment_entry = "main";
+    config.vertex_stride = sizeof(ColorVertex);
+    config.vertex_attributes = {
+        {0, VK_FORMAT_R32G32_SFLOAT, offsetof(ColorVertex, x)},
+        {1, VK_FORMAT_R32G32B32_SFLOAT, offsetof(ColorVertex, r)},
+    };
+
+    auto pipeline = ctx_->createPipeline(config);
+    ctx_->draw(pipeline, target, &vb, {.vertex_count = 3});
+
+    auto pixels = target.downloadAs<uint32_t>();
+
+    uint32_t center = pixels[(height / 2) * width + (width / 2)];
+    uint8_t r, g, b, a;
+    unpackRGBA(center, r, g, b, a);
+    EXPECT_LE(r, 5) << "Red should be ~0";
+    EXPECT_LE(g, 5) << "Green should be ~0";
+    EXPECT_GE(b, 250) << "Blue should be ~255";
+}
+
+TEST_F(VulkanGraphicsTest, GlslFragmentMathOps) {
+    const char* vs_source = R"(
+        #version 450
+        layout(location = 0) in vec2 position;
+
+        void main() {
+            gl_Position = vec4(position, 0.0, 1.0);
+        }
+    )";
+
+    const char* fs_source = R"(
+        #version 450
+        layout(location = 0) out vec4 outColor;
+
+        void main() {
+            float a = 0.5;
+            float b = abs(-0.3);
+            float c = clamp(1.5, 0.0, 1.0);
+            float d = max(0.2, 0.1);
+            outColor = vec4(a, b, c, d);
+        }
+    )";
+
+    auto vs_result = wgsl_test::CompileGlsl(vs_source, WGSL_STAGE_VERTEX);
+    ASSERT_TRUE(vs_result.success) << vs_result.error;
+
+    auto fs_result = wgsl_test::CompileGlsl(fs_source, WGSL_STAGE_FRAGMENT);
+    ASSERT_TRUE(fs_result.success) << fs_result.error;
+
+    auto vb = ctx_->createVertexBuffer(kFullScreenTriangle);
+
+    const uint32_t width = 64, height = 64;
+    auto target = ctx_->createColorTarget(width, height);
+
+    vk_graphics::GraphicsPipelineConfig config;
+    config.vertex_spirv = vs_result.spirv.data();
+    config.vertex_spirv_words = vs_result.spirv.size();
+    config.vertex_entry = "main";
+    config.fragment_spirv = fs_result.spirv.data();
+    config.fragment_spirv_words = fs_result.spirv.size();
+    config.fragment_entry = "main";
+    config.vertex_stride = sizeof(SimpleVertex);
+    config.vertex_attributes = {
+        {0, VK_FORMAT_R32G32_SFLOAT, 0},
+    };
+
+    auto pipeline = ctx_->createPipeline(config);
+    ctx_->draw(pipeline, target, &vb, {.vertex_count = 3});
+
+    auto pixels = target.downloadAs<uint32_t>();
+
+    uint32_t center = pixels[(height / 2) * width + (width / 2)];
+    uint8_t r, g, b, a;
+    unpackRGBA(center, r, g, b, a);
+
+    EXPECT_NEAR(r, 128, 2) << "Red should be ~0.5";
+    EXPECT_NEAR(g, 77, 2) << "Green should be ~0.3";
+    EXPECT_GE(b, 250) << "Blue should be ~1.0";
+    EXPECT_NEAR(a, 51, 2) << "Alpha should be ~0.2";
+}
+
+TEST_F(VulkanGraphicsTest, GlslVertexTransform) {
+    const char* vs_source = R"(
+        #version 450
+        layout(location = 0) in vec2 position;
+
+        void main() {
+            vec2 scaled = position * 0.5;
+            gl_Position = vec4(scaled, 0.0, 1.0);
+        }
+    )";
+
+    const char* fs_source = R"(
+        #version 450
+        layout(location = 0) out vec4 outColor;
+
+        void main() {
+            outColor = vec4(0.0, 1.0, 1.0, 1.0);
+        }
+    )";
+
+    auto vs_result = wgsl_test::CompileGlsl(vs_source, WGSL_STAGE_VERTEX);
+    ASSERT_TRUE(vs_result.success) << vs_result.error;
+
+    auto fs_result = wgsl_test::CompileGlsl(fs_source, WGSL_STAGE_FRAGMENT);
+    ASSERT_TRUE(fs_result.success) << fs_result.error;
+
+    std::vector<SimpleVertex> vertices = {
+        {-1.0f, -1.0f},
+        { 1.0f, -1.0f},
+        {-1.0f,  1.0f},
+        { 1.0f, -1.0f},
+        { 1.0f,  1.0f},
+        {-1.0f,  1.0f},
+    };
+
+    auto vb = ctx_->createVertexBuffer(vertices);
+
+    const uint32_t width = 64, height = 64;
+    auto target = ctx_->createColorTarget(width, height);
+
+    vk_graphics::GraphicsPipelineConfig config;
+    config.vertex_spirv = vs_result.spirv.data();
+    config.vertex_spirv_words = vs_result.spirv.size();
+    config.vertex_entry = "main";
+    config.fragment_spirv = fs_result.spirv.data();
+    config.fragment_spirv_words = fs_result.spirv.size();
+    config.fragment_entry = "main";
+    config.vertex_stride = sizeof(SimpleVertex);
+    config.vertex_attributes = {
+        {0, VK_FORMAT_R32G32_SFLOAT, 0},
+    };
+
+    auto pipeline = ctx_->createPipeline(config);
+    vk_graphics::ClearColor black = {0.0f, 0.0f, 0.0f, 1.0f};
+    ctx_->draw(pipeline, target, &vb, {.vertex_count = 6}, {}, black);
+
+    auto pixels = target.downloadAs<uint32_t>();
+
+    uint32_t center = pixels[(height / 2) * width + (width / 2)];
+    uint8_t r, g, b, a;
+    unpackRGBA(center, r, g, b, a);
+    EXPECT_LE(r, 5) << "Red should be ~0";
+    EXPECT_GE(g, 250) << "Green should be ~255";
+    EXPECT_GE(b, 250) << "Blue should be ~255";
+
+    uint32_t corner = pixels[0];
+    unpackRGBA(corner, r, g, b, a);
+    EXPECT_LE(r, 5) << "Corner red should be ~0 (clear)";
+    EXPECT_LE(g, 5) << "Corner green should be ~0 (clear)";
+    EXPECT_LE(b, 5) << "Corner blue should be ~0 (clear)";
+}
+
 #endif // WGSL_HAS_VULKAN

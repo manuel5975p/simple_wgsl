@@ -686,6 +686,45 @@ static int parse_layout_qualifier(Parser *P, WgslAstNode ***out_attrs) {
  * Type Parsing
  * ============================================================================ */
 
+static const char *normalize_glsl_type(const char *name) {
+    if (!name) return name;
+    /* scalars */
+    if (strcmp(name, "float") == 0) return "f32";
+    if (strcmp(name, "int") == 0) return "i32";
+    if (strcmp(name, "uint") == 0) return "u32";
+    if (strcmp(name, "double") == 0) return "f64";
+    /* float vectors */
+    if (strcmp(name, "vec2") == 0) return "vec2f";
+    if (strcmp(name, "vec3") == 0) return "vec3f";
+    if (strcmp(name, "vec4") == 0) return "vec4f";
+    /* int vectors */
+    if (strcmp(name, "ivec2") == 0) return "vec2i";
+    if (strcmp(name, "ivec3") == 0) return "vec3i";
+    if (strcmp(name, "ivec4") == 0) return "vec4i";
+    /* uint vectors */
+    if (strcmp(name, "uvec2") == 0) return "vec2u";
+    if (strcmp(name, "uvec3") == 0) return "vec3u";
+    if (strcmp(name, "uvec4") == 0) return "vec4u";
+    /* bool vectors */
+    if (strcmp(name, "bvec2") == 0) return "vec2<bool>";
+    if (strcmp(name, "bvec3") == 0) return "vec3<bool>";
+    if (strcmp(name, "bvec4") == 0) return "vec4<bool>";
+    /* matrices (column-major, float only) */
+    if (strcmp(name, "mat2") == 0) return "mat2x2f";
+    if (strcmp(name, "mat3") == 0) return "mat3x3f";
+    if (strcmp(name, "mat4") == 0) return "mat4x4f";
+    if (strcmp(name, "mat2x2") == 0) return "mat2x2f";
+    if (strcmp(name, "mat2x3") == 0) return "mat2x3f";
+    if (strcmp(name, "mat2x4") == 0) return "mat2x4f";
+    if (strcmp(name, "mat3x2") == 0) return "mat3x2f";
+    if (strcmp(name, "mat3x3") == 0) return "mat3x3f";
+    if (strcmp(name, "mat3x4") == 0) return "mat3x4f";
+    if (strcmp(name, "mat4x2") == 0) return "mat4x2f";
+    if (strcmp(name, "mat4x3") == 0) return "mat4x3f";
+    if (strcmp(name, "mat4x4") == 0) return "mat4x4f";
+    return name;
+}
+
 static WgslAstNode *parse_type_node(Parser *P) {
     if (!check(P, TOK_IDENT) && !check(P, TOK_STRUCT)) {
         parse_error(P, "expected type name");
@@ -694,7 +733,8 @@ static WgslAstNode *parse_type_node(Parser *P) {
     Token name = P->cur;
     advance(P);
     char *tname = glsl_strndup(name.start, (size_t)name.length);
-    WgslAstNode *T = new_type(P, tname);
+    const char *normalized = normalize_glsl_type(tname);
+    WgslAstNode *T = new_type(P, normalized);
     NODE_FREE(tname);
     return T;
 }
@@ -1171,10 +1211,6 @@ static WgslAstNode *parse_external_declaration(Parser *P,
     return G;
 }
 
-/* ============================================================================
- * Statement Parsing
- * ============================================================================ */
-
 static WgslAstNode *parse_block(Parser *P) {
     expect(P, TOK_LBRACE, "expected '{'");
     WgslAstNode *B = new_node(P, WGSL_NODE_BLOCK);
@@ -1183,7 +1219,6 @@ static WgslAstNode *parse_block(Parser *P) {
     while (!check(P, TOK_RBRACE) && !check(P, TOK_EOF)) {
         WgslAstNode *s = parse_statement(P);
         if (s) vec_push_node(&stmts, &count, &cap, s);
-        else break;
     }
     expect(P, TOK_RBRACE, "expected '}'");
     B->block.stmt_count = count;
@@ -1809,7 +1844,11 @@ static WgslAstNode *parse_primary(Parser *P) {
         Token t2 = lx_next(&L2);
         if (t2.type == TOK_LPAREN) {
             advance(P); /* consume type keyword */
-            return new_type(P, glsl_strndup(t.start, (size_t)t.length));
+            char *raw = glsl_strndup(t.start, (size_t)t.length);
+            const char *norm = normalize_glsl_type(raw);
+            WgslAstNode *tn = new_type(P, norm);
+            NODE_FREE(raw);
+            return tn;
         }
         /* Otherwise fall through to identifier */
     }
@@ -1881,10 +1920,200 @@ static WgslAstNode *parse_program(Parser *P) {
 }
 
 /* ============================================================================
+ * Built-in Variable Injection
+ * ============================================================================ */
+
+typedef struct {
+    const char *glsl_name;
+    const char *builtin_name;
+    const char *wgsl_type;
+    const char *addr_space; /* "in" or "out" */
+    WgslStage stage;
+} GlslBuiltinDef;
+
+static const GlslBuiltinDef glsl_builtins[] = {
+    {"gl_Position",            "position",              "vec4f", "out", WGSL_STAGE_VERTEX},
+    {"gl_VertexIndex",         "vertex_index",          "u32",   "in",  WGSL_STAGE_VERTEX},
+    {"gl_InstanceIndex",       "instance_index",        "u32",   "in",  WGSL_STAGE_VERTEX},
+    {"gl_FragCoord",           "position",              "vec4f", "in",  WGSL_STAGE_FRAGMENT},
+    {"gl_FrontFacing",         "front_facing",          "bool",  "in",  WGSL_STAGE_FRAGMENT},
+    {"gl_FragDepth",           "frag_depth",            "f32",   "out", WGSL_STAGE_FRAGMENT},
+    {"gl_GlobalInvocationID",  "global_invocation_id",  "vec3u", "in",  WGSL_STAGE_COMPUTE},
+    {"gl_LocalInvocationID",   "local_invocation_id",   "vec3u", "in",  WGSL_STAGE_COMPUTE},
+    {"gl_WorkGroupID",         "workgroup_id",          "vec3u", "in",  WGSL_STAGE_COMPUTE},
+    {"gl_NumWorkGroups",       "num_workgroups",        "vec3u", "in",  WGSL_STAGE_COMPUTE},
+    {"gl_LocalInvocationIndex","local_invocation_index", "u32",  "in",  WGSL_STAGE_COMPUTE},
+    {NULL, NULL, NULL, NULL, WGSL_STAGE_UNKNOWN}
+};
+
+static int ast_uses_ident(const WgslAstNode *n, const char *name) {
+    if (!n) return 0;
+    switch (n->type) {
+    case WGSL_NODE_IDENT:
+        return strcmp(n->ident.name, name) == 0;
+    case WGSL_NODE_BINARY:
+        return ast_uses_ident(n->binary.left, name) || ast_uses_ident(n->binary.right, name);
+    case WGSL_NODE_ASSIGN:
+        return ast_uses_ident(n->assign.lhs, name) || ast_uses_ident(n->assign.rhs, name);
+    case WGSL_NODE_CALL:
+        if (ast_uses_ident(n->call.callee, name)) return 1;
+        for (int i = 0; i < n->call.arg_count; i++)
+            if (ast_uses_ident(n->call.args[i], name)) return 1;
+        return 0;
+    case WGSL_NODE_MEMBER:
+        return ast_uses_ident(n->member.object, name);
+    case WGSL_NODE_INDEX:
+        return ast_uses_ident(n->index.object, name) || ast_uses_ident(n->index.index, name);
+    case WGSL_NODE_UNARY:
+        return ast_uses_ident(n->unary.expr, name);
+    case WGSL_NODE_TERNARY:
+        return ast_uses_ident(n->ternary.cond, name) ||
+               ast_uses_ident(n->ternary.then_expr, name) ||
+               ast_uses_ident(n->ternary.else_expr, name);
+    case WGSL_NODE_BLOCK:
+        for (int i = 0; i < n->block.stmt_count; i++)
+            if (ast_uses_ident(n->block.stmts[i], name)) return 1;
+        return 0;
+    case WGSL_NODE_VAR_DECL:
+        return ast_uses_ident(n->var_decl.init, name);
+    case WGSL_NODE_RETURN:
+        return ast_uses_ident(n->return_stmt.expr, name);
+    case WGSL_NODE_EXPR_STMT:
+        return ast_uses_ident(n->expr_stmt.expr, name);
+    case WGSL_NODE_IF:
+        return ast_uses_ident(n->if_stmt.cond, name) ||
+               ast_uses_ident(n->if_stmt.then_branch, name) ||
+               ast_uses_ident(n->if_stmt.else_branch, name);
+    case WGSL_NODE_WHILE:
+        return ast_uses_ident(n->while_stmt.cond, name) || ast_uses_ident(n->while_stmt.body, name);
+    case WGSL_NODE_FOR:
+        return ast_uses_ident(n->for_stmt.init, name) || ast_uses_ident(n->for_stmt.cond, name) ||
+               ast_uses_ident(n->for_stmt.cont, name) || ast_uses_ident(n->for_stmt.body, name);
+    case WGSL_NODE_DO_WHILE:
+        return ast_uses_ident(n->do_while_stmt.body, name) || ast_uses_ident(n->do_while_stmt.cond, name);
+    case WGSL_NODE_SWITCH:
+        if (ast_uses_ident(n->switch_stmt.expr, name)) return 1;
+        for (int i = 0; i < n->switch_stmt.case_count; i++)
+            if (ast_uses_ident(n->switch_stmt.cases[i], name)) return 1;
+        return 0;
+    case WGSL_NODE_CASE:
+        if (ast_uses_ident(n->case_clause.expr, name)) return 1;
+        for (int i = 0; i < n->case_clause.stmt_count; i++)
+            if (ast_uses_ident(n->case_clause.stmts[i], name)) return 1;
+        return 0;
+    case WGSL_NODE_FUNCTION:
+        return ast_uses_ident(n->function.body, name);
+    default:
+        return 0;
+    }
+}
+
+static WgslAstNode *make_builtin_global(const GlslBuiltinDef *def) {
+    WgslAstNode *gv = NODE_ALLOC(WgslAstNode);
+    memset(gv, 0, sizeof(*gv));
+    gv->type = WGSL_NODE_GLOBAL_VAR;
+    gv->global_var.name = glsl_strdup(def->glsl_name);
+    gv->global_var.address_space = glsl_strdup(def->addr_space);
+    gv->global_var.type = NODE_ALLOC(WgslAstNode);
+    memset(gv->global_var.type, 0, sizeof(WgslAstNode));
+    gv->global_var.type->type = WGSL_NODE_TYPE;
+    gv->global_var.type->type_node.name = glsl_strdup(def->wgsl_type);
+
+    /* Create @builtin(name) attribute */
+    WgslAstNode *attr = NODE_ALLOC(WgslAstNode);
+    memset(attr, 0, sizeof(*attr));
+    attr->type = WGSL_NODE_ATTRIBUTE;
+    attr->attribute.name = glsl_strdup("builtin");
+    attr->attribute.arg_count = 1;
+    attr->attribute.args = (WgslAstNode **)NODE_MALLOC(sizeof(WgslAstNode *));
+    WgslAstNode *arg = NODE_ALLOC(WgslAstNode);
+    memset(arg, 0, sizeof(*arg));
+    arg->type = WGSL_NODE_IDENT;
+    arg->ident.name = glsl_strdup(def->builtin_name);
+    attr->attribute.args[0] = arg;
+
+    gv->global_var.attr_count = 1;
+    gv->global_var.attrs = (WgslAstNode **)NODE_MALLOC(sizeof(WgslAstNode *));
+    gv->global_var.attrs[0] = attr;
+
+    return gv;
+}
+
+static void inject_glsl_builtins(WgslAstNode *ast, WgslStage stage) {
+    if (!ast || ast->type != WGSL_NODE_PROGRAM || stage == WGSL_STAGE_UNKNOWN)
+        return;
+
+    int inject_count = 0;
+    const GlslBuiltinDef *to_inject[32];
+
+    for (const GlslBuiltinDef *def = glsl_builtins; def->glsl_name; def++) {
+        if (def->stage != stage) continue;
+        /* Scan AST for usage of this built-in */
+        for (int i = 0; i < ast->program.decl_count; i++) {
+            if (ast_uses_ident(ast->program.decls[i], def->glsl_name)) {
+                if (inject_count < 32) to_inject[inject_count++] = def;
+                break;
+            }
+        }
+    }
+
+    if (inject_count == 0) return;
+
+    int old_count = ast->program.decl_count;
+    int new_count = old_count + inject_count;
+    WgslAstNode **new_decls = (WgslAstNode **)NODE_REALLOC(
+        ast->program.decls, (size_t)new_count * sizeof(WgslAstNode *));
+    if (!new_decls) return;
+
+    /* Move existing decls to make room - builtins go first */
+    memmove(new_decls + inject_count, new_decls, (size_t)old_count * sizeof(WgslAstNode *));
+    for (int i = 0; i < inject_count; i++)
+        new_decls[i] = make_builtin_global(to_inject[i]);
+
+    ast->program.decls = new_decls;
+    ast->program.decl_count = new_count;
+}
+
+/* ============================================================================
  * Public API
  * ============================================================================ */
 
-WgslAstNode *glsl_parse(const char *source) {
+static void inject_stage_attr(WgslAstNode *ast, WgslStage stage) {
+    if (!ast || ast->type != WGSL_NODE_PROGRAM || stage == WGSL_STAGE_UNKNOWN)
+        return;
+    const char *attr_name = NULL;
+    if (stage == WGSL_STAGE_VERTEX) attr_name = "vertex";
+    else if (stage == WGSL_STAGE_FRAGMENT) attr_name = "fragment";
+    else if (stage == WGSL_STAGE_COMPUTE) attr_name = "compute";
+    if (!attr_name) return;
+
+    for (int i = 0; i < ast->program.decl_count; i++) {
+        WgslAstNode *d = ast->program.decls[i];
+        if (!d || d->type != WGSL_NODE_FUNCTION) continue;
+        if (!d->function.name || strcmp(d->function.name, "main") != 0) continue;
+
+        WgslAstNode *attr = NODE_ALLOC(WgslAstNode);
+        memset(attr, 0, sizeof(*attr));
+        attr->type = WGSL_NODE_ATTRIBUTE;
+        attr->attribute.name = glsl_strdup(attr_name);
+
+        int old_count = d->function.attr_count;
+        int new_count = old_count + 1;
+        WgslAstNode **new_attrs = (WgslAstNode **)NODE_REALLOC(
+            d->function.attrs, (size_t)new_count * sizeof(WgslAstNode *));
+        if (new_attrs) {
+            new_attrs[old_count] = attr;
+            d->function.attrs = new_attrs;
+            d->function.attr_count = new_count;
+        } else {
+            NODE_FREE(attr->attribute.name);
+            NODE_FREE(attr);
+        }
+        break;
+    }
+}
+
+WgslAstNode *glsl_parse(const char *source, WgslStage stage) {
     Parser P;
     memset(&P, 0, sizeof(P));
     P.L.src = source ? source : "";
@@ -1894,6 +2123,10 @@ WgslAstNode *glsl_parse(const char *source) {
     advance(&P);
 
     WgslAstNode *ast = parse_program(&P);
+
+    /* Inject synthetic built-in globals and stage attribute on main() */
+    inject_glsl_builtins(ast, stage);
+    inject_stage_attr(ast, stage);
 
     /* Free known type tracking */
     for (int i = 0; i < P.known_type_count; i++)

@@ -544,6 +544,24 @@ static void walk_stmt(WgslResolver* r, const WgslAstNode* fn, FnInfo* fi, const 
         walk_stmt(r, fn, fi, s->for_stmt.body);
         scope_pop(r);
         break;
+    case WGSL_NODE_DO_WHILE:
+        walk_stmt(r, fn, fi, s->do_while_stmt.body);
+        walk_expr(r, fi, s->do_while_stmt.cond);
+        break;
+    case WGSL_NODE_SWITCH:
+        walk_expr(r, fi, s->switch_stmt.expr);
+        for (int i = 0; i < s->switch_stmt.case_count; i++)
+            walk_stmt(r, fn, fi, s->switch_stmt.cases[i]);
+        break;
+    case WGSL_NODE_CASE:
+        if (s->case_clause.expr) walk_expr(r, fi, s->case_clause.expr);
+        for (int i = 0; i < s->case_clause.stmt_count; i++)
+            walk_stmt(r, fn, fi, s->case_clause.stmts[i]);
+        break;
+    case WGSL_NODE_BREAK:
+    case WGSL_NODE_CONTINUE:
+    case WGSL_NODE_DISCARD:
+        break;
     default:
         break;
     }

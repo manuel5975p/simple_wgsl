@@ -5,6 +5,11 @@
 #ifdef WGSL_HAS_VULKAN
 #include "vulkan_compute_harness.h"
 
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+extern "C" {
+#include "stb_image_write.h"
+}
+
 class VulkanComputeTest : public ::testing::Test {
 protected:
     static void SetUpTestSuite() {
@@ -1185,6 +1190,471 @@ TEST_F(VulkanComputeTest, RoundtripTrigFunctions) {
             << "\nDirect SPIR-V: " << result1[i]
             << "\nRoundtrip SPIR-V: " << result2[i];
     }
+}
+
+// ============================================================================
+// GLSL Compute Tests
+// ============================================================================
+
+TEST_F(VulkanComputeTest, GlslBufferCopy) {
+    const char* source = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+
+        layout(std430, set = 0, binding = 0) buffer InputBuf {
+            float data[];
+        } input_buf;
+
+        layout(std430, set = 0, binding = 1) buffer OutputBuf {
+            float data[];
+        } output_buf;
+
+        void main() {
+            uint id = gl_GlobalInvocationID.x;
+            output_buf.data[id] = input_buf.data[id];
+        }
+    )";
+
+    auto result = wgsl_test::CompileGlsl(source, WGSL_STAGE_COMPUTE);
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> input_data = {1.0f, 2.0f, 3.0f, 4.0f};
+    auto input = ctx_->createStorageBuffer(input_data);
+    auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, static_cast<uint32_t>(input_data.size()));
+
+    auto output_data = output.download<float>(input_data.size());
+    for (size_t i = 0; i < input_data.size(); i++) {
+        EXPECT_FLOAT_EQ(output_data[i], input_data[i]) << "Mismatch at index " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, GlslScalarAdd) {
+    const char* source = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+
+        layout(std430, set = 0, binding = 0) buffer ABuf {
+            float data[];
+        } a;
+
+        layout(std430, set = 0, binding = 1) buffer BBuf {
+            float data[];
+        } b;
+
+        layout(std430, set = 0, binding = 2) buffer ResultBuf {
+            float data[];
+        } result;
+
+        void main() {
+            uint id = gl_GlobalInvocationID.x;
+            result.data[id] = a.data[id] + b.data[id];
+        }
+    )";
+
+    auto result = wgsl_test::CompileGlsl(source, WGSL_STAGE_COMPUTE);
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> a_data = {1.0f, 2.0f, 3.0f, 4.0f};
+    std::vector<float> b_data = {10.0f, 20.0f, 30.0f, 40.0f};
+    auto a = ctx_->createStorageBuffer(a_data);
+    auto b = ctx_->createStorageBuffer(b_data);
+    auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, static_cast<uint32_t>(a_data.size()));
+
+    auto output_data = out.download<float>(a_data.size());
+    for (size_t i = 0; i < a_data.size(); i++) {
+        EXPECT_FLOAT_EQ(output_data[i], a_data[i] + b_data[i]) << "Mismatch at index " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, GlslScalarMultiply) {
+    const char* source = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+
+        layout(std430, set = 0, binding = 0) buffer ABuf {
+            float data[];
+        } a;
+
+        layout(std430, set = 0, binding = 1) buffer BBuf {
+            float data[];
+        } b;
+
+        layout(std430, set = 0, binding = 2) buffer ResultBuf {
+            float data[];
+        } result;
+
+        void main() {
+            uint id = gl_GlobalInvocationID.x;
+            result.data[id] = a.data[id] * b.data[id];
+        }
+    )";
+
+    auto result = wgsl_test::CompileGlsl(source, WGSL_STAGE_COMPUTE);
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> a_data = {2.0f, 3.0f, 4.0f, 5.0f};
+    std::vector<float> b_data = {10.0f, 10.0f, 10.0f, 10.0f};
+    auto a = ctx_->createStorageBuffer(a_data);
+    auto b = ctx_->createStorageBuffer(b_data);
+    auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, static_cast<uint32_t>(a_data.size()));
+
+    auto output_data = out.download<float>(a_data.size());
+    for (size_t i = 0; i < a_data.size(); i++) {
+        EXPECT_FLOAT_EQ(output_data[i], a_data[i] * b_data[i]) << "Mismatch at index " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, GlslConditionalSelect) {
+    const char* source = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+
+        layout(std430, set = 0, binding = 0) buffer ABuf {
+            float data[];
+        } a;
+
+        layout(std430, set = 0, binding = 1) buffer BBuf {
+            float data[];
+        } b;
+
+        layout(std430, set = 0, binding = 2) buffer ResultBuf {
+            float data[];
+        } result;
+
+        void main() {
+            uint id = gl_GlobalInvocationID.x;
+            if (a.data[id] > b.data[id]) {
+                result.data[id] = a.data[id];
+            } else {
+                result.data[id] = b.data[id];
+            }
+        }
+    )";
+
+    auto result = wgsl_test::CompileGlsl(source, WGSL_STAGE_COMPUTE);
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> a_data = {5.0f, 2.0f, 8.0f, 1.0f};
+    std::vector<float> b_data = {3.0f, 7.0f, 4.0f, 9.0f};
+    auto a = ctx_->createStorageBuffer(a_data);
+    auto b = ctx_->createStorageBuffer(b_data);
+    auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, static_cast<uint32_t>(a_data.size()));
+
+    auto output_data = out.download<float>(a_data.size());
+    for (size_t i = 0; i < a_data.size(); i++) {
+        float expected = a_data[i] > b_data[i] ? a_data[i] : b_data[i];
+        EXPECT_FLOAT_EQ(output_data[i], expected) << "Mismatch at index " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, GlslLoopSum) {
+    const char* source = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+
+        layout(std430, set = 0, binding = 0) buffer InputBuf {
+            float data[];
+        } input_buf;
+
+        layout(std430, set = 0, binding = 1) buffer OutputBuf {
+            float data[];
+        } output_buf;
+
+        void main() {
+            float sum = 0.0;
+            for (uint i = 0u; i < 4u; i = i + 1u) {
+                sum = sum + input_buf.data[i];
+            }
+            output_buf.data[gl_GlobalInvocationID.x] = sum;
+        }
+    )";
+
+    auto result = wgsl_test::CompileGlsl(source, WGSL_STAGE_COMPUTE);
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> input_data = {1.0f, 2.0f, 3.0f, 4.0f};
+    auto input = ctx_->createStorageBuffer(input_data);
+    auto output = ctx_->createStorageBuffer(sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto output_data = output.download<float>(1);
+    float expected = 1.0f + 2.0f + 3.0f + 4.0f;
+    EXPECT_FLOAT_EQ(output_data[0], expected);
+}
+
+TEST_F(VulkanComputeTest, GlslMathAbs) {
+    const char* source = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+
+        layout(std430, set = 0, binding = 0) buffer InputBuf {
+            float data[];
+        } input_buf;
+
+        layout(std430, set = 0, binding = 1) buffer OutputBuf {
+            float data[];
+        } output_buf;
+
+        void main() {
+            uint id = gl_GlobalInvocationID.x;
+            output_buf.data[id] = abs(input_buf.data[id]);
+        }
+    )";
+
+    auto result = wgsl_test::CompileGlsl(source, WGSL_STAGE_COMPUTE);
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> input_data = {-1.0f, 2.0f, -3.0f, 4.0f};
+    auto input = ctx_->createStorageBuffer(input_data);
+    auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, static_cast<uint32_t>(input_data.size()));
+
+    auto output_data = output.download<float>(input_data.size());
+    for (size_t i = 0; i < input_data.size(); i++) {
+        EXPECT_FLOAT_EQ(output_data[i], std::abs(input_data[i])) << "Mismatch at index " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, GlslMathMinMax) {
+    const char* source = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+
+        layout(std430, set = 0, binding = 0) buffer ABuf {
+            float data[];
+        } a;
+
+        layout(std430, set = 0, binding = 1) buffer BBuf {
+            float data[];
+        } b;
+
+        layout(std430, set = 0, binding = 2) buffer MinBuf {
+            float data[];
+        } min_out;
+
+        layout(std430, set = 0, binding = 3) buffer MaxBuf {
+            float data[];
+        } max_out;
+
+        void main() {
+            uint id = gl_GlobalInvocationID.x;
+            min_out.data[id] = min(a.data[id], b.data[id]);
+            max_out.data[id] = max(a.data[id], b.data[id]);
+        }
+    )";
+
+    auto result = wgsl_test::CompileGlsl(source, WGSL_STAGE_COMPUTE);
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> a_data = {1.0f, 5.0f, 3.0f, 8.0f};
+    std::vector<float> b_data = {4.0f, 2.0f, 6.0f, 7.0f};
+    auto a = ctx_->createStorageBuffer(a_data);
+    auto b = ctx_->createStorageBuffer(b_data);
+    auto min_out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
+    auto max_out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {2, &min_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {3, &max_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, static_cast<uint32_t>(a_data.size()));
+
+    auto min_data = min_out.download<float>(a_data.size());
+    auto max_data = max_out.download<float>(a_data.size());
+    for (size_t i = 0; i < a_data.size(); i++) {
+        EXPECT_FLOAT_EQ(min_data[i], std::min(a_data[i], b_data[i])) << "min mismatch at " << i;
+        EXPECT_FLOAT_EQ(max_data[i], std::max(a_data[i], b_data[i])) << "max mismatch at " << i;
+    }
+}
+
+// ============================================================================
+// Mandelbrot Image Tests
+// ============================================================================
+
+static void mandelbrot_colorize(const std::vector<float>& data, uint32_t width, uint32_t height,
+                                 std::vector<uint8_t>& image) {
+    image.resize(width * height * 4);
+    for (uint32_t i = 0; i < width * height; i++) {
+        float t = data[i];
+        uint8_t r, g, b;
+        if (t >= 1.0f) {
+            r = g = b = 0;
+        } else {
+            r = (uint8_t)(9.0f * (1.0f - t) * t * t * t * 255.0f);
+            g = (uint8_t)(15.0f * (1.0f - t) * (1.0f - t) * t * t * 255.0f);
+            b = (uint8_t)(8.5f * (1.0f - t) * (1.0f - t) * (1.0f - t) * t * 255.0f);
+        }
+        image[i * 4 + 0] = r;
+        image[i * 4 + 1] = g;
+        image[i * 4 + 2] = b;
+        image[i * 4 + 3] = 255;
+    }
+}
+
+TEST_F(VulkanComputeTest, WgslMandelbrotImage) {
+    const char* source = R"(
+        struct Buffer { data: array<f32>, };
+        @group(0) @binding(0) var<storage, read_write> output: Buffer;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            var px: u32 = id.x;
+            var py: u32 = id.y;
+            var scale: f32 = 3.5 / 256.0;
+            var cx: f32 = f32(px) * scale - 2.5;
+            var cy: f32 = f32(py) * scale - 1.75;
+            var zr: f32 = cx;
+            var zi: f32 = cy;
+            var zr2: f32 = 0.0;
+            var zi2: f32 = 0.0;
+            var iters: i32 = 0;
+            var mag: f32 = 0.0;
+            var i: i32 = 0;
+
+            for (i = 0; i < 150; i = i + 1) {
+                zr2 = zr * zr - zi * zi + cx;
+                zi2 = 2.0 * zr * zi + cy;
+                zr = zr2;
+                zi = zi2;
+                mag = zr * zr + zi * zi;
+                if (mag > 4.0) {
+                    i = 150;
+                }
+                if (mag <= 4.0) {
+                    iters = iters + 1;
+                }
+            }
+            output.data[py * 256u + px] = f32(iters) / 150.0;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    const uint32_t W = 256, H = 256;
+    auto output = ctx_->createStorageBuffer(W * H * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, W, H);
+
+    auto data = output.download<float>(W * H);
+
+    std::vector<uint8_t> image;
+    mandelbrot_colorize(data, W, H, image);
+    stbi_write_png("mandelbrot_wgsl.png", W, H, 4, image.data(), W * 4);
+
+    int black = 0, nonblack = 0;
+    for (uint32_t i = 0; i < W * H; i++) {
+        if (data[i] >= 1.0f) black++; else nonblack++;
+    }
+    EXPECT_GT(black, 1000) << "Should have substantial set interior";
+    EXPECT_GT(nonblack, 1000) << "Should have substantial set exterior";
+}
+
+TEST_F(VulkanComputeTest, GlslMandelbrotImage) {
+    const char* source = R"(
+        #version 450
+        layout(local_size_x = 1) in;
+
+        layout(std430, set = 0, binding = 0) buffer OutputBuf {
+            float data[];
+        } output_buf;
+
+        void main() {
+            uint px = gl_GlobalInvocationID.x;
+            uint py = gl_GlobalInvocationID.y;
+            float scale = 3.5 / 256.0;
+            float cx = float(px) * scale - 2.5;
+            float cy = float(py) * scale - 1.75;
+            float zr = cx;
+            float zi = cy;
+            float zr2 = 0.0;
+            float zi2 = 0.0;
+            int iters = 0;
+            float mag = 0.0;
+            int i = 0;
+
+            for (i = 0; i < 150; i = i + 1) {
+                zr2 = zr * zr - zi * zi + cx;
+                zi2 = 2.0 * zr * zi + cy;
+                zr = zr2;
+                zi = zi2;
+                mag = zr * zr + zi * zi;
+                if (mag > 4.0) {
+                    i = 150;
+                }
+                if (mag <= 4.0) {
+                    iters = iters + 1;
+                }
+            }
+            output_buf.data[py * 256u + px] = float(iters) / 150.0;
+        }
+    )";
+
+    auto result = wgsl_test::CompileGlsl(source, WGSL_STAGE_COMPUTE);
+    ASSERT_TRUE(result.success) << result.error;
+
+    const uint32_t W = 256, H = 256;
+    auto output = ctx_->createStorageBuffer(W * H * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, W, H);
+
+    auto data = output.download<float>(W * H);
+
+    std::vector<uint8_t> image;
+    mandelbrot_colorize(data, W, H, image);
+    stbi_write_png("mandelbrot_glsl.png", W, H, 4, image.data(), W * 4);
+
+    int black = 0, nonblack = 0;
+    for (uint32_t i = 0; i < W * H; i++) {
+        if (data[i] >= 1.0f) black++; else nonblack++;
+    }
+    EXPECT_GT(black, 1000) << "Should have substantial set interior";
+    EXPECT_GT(nonblack, 1000) << "Should have substantial set exterior";
 }
 
 #endif // WGSL_HAS_VULKAN
