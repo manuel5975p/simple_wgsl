@@ -18,6 +18,7 @@ set(TEST_SOURCES
     spirv_to_ssir_test.cpp
     integration_test.cpp
     expression_test.cpp
+    glsl_parser_test.cpp
 )
 
 if(Vulkan_FOUND)

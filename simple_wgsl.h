@@ -74,7 +74,13 @@ typedef enum WgslNodeType {
     WGSL_NODE_MEMBER,
     WGSL_NODE_INDEX,
     WGSL_NODE_UNARY,
-    WGSL_NODE_TERNARY
+    WGSL_NODE_TERNARY,
+    WGSL_NODE_DO_WHILE,
+    WGSL_NODE_SWITCH,
+    WGSL_NODE_CASE,
+    WGSL_NODE_BREAK,
+    WGSL_NODE_CONTINUE,
+    WGSL_NODE_DISCARD
 } WgslNodeType;
 
 typedef struct WgslAstNode WgslAstNode;
@@ -190,6 +196,7 @@ typedef struct Binary {
 } Binary;
 
 typedef struct Assign {
+    char *op; /* "=" or "+=" etc. NULL treated as "=" */
     WgslAstNode *lhs;
     WgslAstNode *rhs;
 } Assign;
@@ -221,6 +228,23 @@ typedef struct Ternary {
     WgslAstNode *then_expr;
     WgslAstNode *else_expr;
 } Ternary;
+
+typedef struct DoWhileStmt {
+    WgslAstNode *body;
+    WgslAstNode *cond;
+} DoWhileStmt;
+
+typedef struct SwitchStmt {
+    WgslAstNode *expr;
+    int case_count;
+    WgslAstNode **cases;
+} SwitchStmt;
+
+typedef struct CaseClause {
+    WgslAstNode *expr; /* NULL for default */
+    int stmt_count;
+    WgslAstNode **stmts;
+} CaseClause;
 
 typedef struct Program {
     int decl_count;
@@ -256,6 +280,9 @@ struct WgslAstNode {
         Index index;
         Unary unary;
         Ternary ternary;
+        DoWhileStmt do_while_stmt;
+        SwitchStmt switch_stmt;
+        CaseClause case_clause;
     };
 };
 
@@ -263,6 +290,9 @@ WgslAstNode *wgsl_parse(const char *source);
 void wgsl_free_ast(WgslAstNode *node);
 const char *wgsl_node_type_name(WgslNodeType t);
 void wgsl_debug_print(const WgslAstNode *node, int indent);
+
+/* GLSL Parser */
+WgslAstNode *glsl_parse(const char *source);
 
 /* ============================================================================
  * WGSL RESOLVER
