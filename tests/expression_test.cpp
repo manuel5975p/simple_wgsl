@@ -55,7 +55,7 @@ std::vector<std::string> DiscoverExpressionTests() {
 // Disassemble SPIR-V binary to text using spirv-dis
 std::string DisassembleSpirv(const uint32_t* words, size_t word_count, std::string* out_error = nullptr) {
     // Create temp file, then rename to .spv for spirv-dis
-    char temp_path[] = "/tmp/wgsl_expr_test_XXXXXX";
+    char temp_path[] = "wgsl_expr_test_XXXXXX";
     int fd = mkstemp(temp_path);
     std::string spv_path = std::string(temp_path) + ".spv";
     if (fd >= 0) rename(temp_path, spv_path.c_str());

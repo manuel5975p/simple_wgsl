@@ -72,7 +72,7 @@ inline bool WriteSpirvFile(const std::string& path, const uint32_t* words, size_
 // If out_error is provided, fills it with error message on failure
 inline bool ValidateSpirv(const uint32_t* words, size_t word_count, std::string* out_error = nullptr) {
     // Create temp file, then rename to .spv for spirv-val
-    char temp_path[] = "/tmp/wgsl_test_XXXXXX";
+    char temp_path[] = "wgsl_test_XXXXXX";
     int fd = mkstemp(temp_path);
     std::string spv_path = std::string(temp_path) + ".spv";
     if (fd >= 0) rename(temp_path, spv_path.c_str());
