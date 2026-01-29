@@ -7,7 +7,20 @@
 #include <sstream>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <atomic>
+
+#ifdef _WIN32
+#include <process.h>
+#define POPEN _popen
+#define PCLOSE _pclose
+static inline int wgsl_getpid() { return _getpid(); }
+#else
 #include <unistd.h>
+#define POPEN popen
+#define PCLOSE pclose
+static inline int wgsl_getpid() { return getpid(); }
+#endif
 
 extern "C" {
 #include "simple_wgsl.h"
@@ -51,6 +64,14 @@ private:
     uint32_t* words_;
 };
 
+inline std::string MakeTempSpvPath(const char* prefix) {
+    static std::atomic<int> counter{0};
+    int n = counter.fetch_add(1);
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s_%d_%d.spv", prefix, wgsl_getpid(), n);
+    return std::string(buf);
+}
+
 inline std::string ReadFile(const std::string& path) {
     std::ifstream f(path);
     if (!f) return "";
@@ -67,45 +88,29 @@ inline bool WriteSpirvFile(const std::string& path, const uint32_t* words, size_
     return f.good();
 }
 
+// Run an external command, capture stdout+stderr, return exit code
+inline int RunCommand(const std::string& cmd, std::string* output) {
+    FILE* pipe = POPEN(cmd.c_str(), "r");
+    if (!pipe) return -1;
+    if (output) output->clear();
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        if (output) *output += buffer;
+    }
+    return PCLOSE(pipe);
+}
+
 // Validate SPIR-V using spirv-val
-// Returns true if valid, false otherwise
-// If out_error is provided, fills it with error message on failure
 inline bool ValidateSpirv(const uint32_t* words, size_t word_count, std::string* out_error = nullptr) {
-    // Create temp file, then rename to .spv for spirv-val
-    char temp_path[] = "wgsl_test_XXXXXX";
-    int fd = mkstemp(temp_path);
-    std::string spv_path = std::string(temp_path) + ".spv";
-    if (fd >= 0) rename(temp_path, spv_path.c_str());
-    if (fd < 0) {
-        if (out_error) *out_error = "Failed to create temp file";
-        return false;
-    }
-
-    // Write SPIR-V
-    ssize_t written = write(fd, words, word_count * sizeof(uint32_t));
-    close(fd);
-    if (written != static_cast<ssize_t>(word_count * sizeof(uint32_t))) {
-        unlink(spv_path.c_str());
-        if (out_error) *out_error = "Failed to write SPIR-V";
-        return false;
-    }
-
-    // Run spirv-val
-    std::string cmd = "spirv-val --target-env vulkan1.3 " + spv_path + " 2>&1";
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) {
-        unlink(spv_path.c_str());
-        if (out_error) *out_error = "Failed to run spirv-val";
+    std::string spv_path = MakeTempSpvPath("wgsl_val");
+    if (!WriteSpirvFile(spv_path, words, word_count)) {
+        if (out_error) *out_error = "Failed to write temp SPIR-V file";
         return false;
     }
 
     std::string output;
-    char buffer[256];
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        output += buffer;
-    }
-    int ret = pclose(pipe);
-    unlink(spv_path.c_str());
+    int ret = RunCommand("spirv-val --target-env vulkan1.3 " + spv_path + " 2>&1", &output);
+    std::remove(spv_path.c_str());
 
     if (ret != 0) {
         if (out_error) *out_error = output;
