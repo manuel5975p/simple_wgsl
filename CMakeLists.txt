@@ -34,7 +34,8 @@ else()
     FetchContent_Declare(
         spirv_headers
         GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Headers.git
-        GIT_TAG        v1.3.250.0
+        GIT_TAG        vulkan-sdk-1.4.341
+        GIT_SHALLOW    True
     )
     FetchContent_MakeAvailable(spirv_headers)
     target_include_directories(wgsl_compiler PUBLIC ${spirv_headers_SOURCE_DIR}/include)
