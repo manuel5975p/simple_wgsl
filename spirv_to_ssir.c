@@ -1,5 +1,5 @@
 /*
- * SPIR-V to SSIR Converter - Implementation
+ * SPIR-V to SSIR VtsConverter - Implementation
  */
 
 #include "simple_wgsl.h"
@@ -22,36 +22,36 @@
 #define SPV_MAGIC 0x07230203
 
 typedef enum {
-    SPV_ID_UNKNOWN = 0,
-    SPV_ID_TYPE,
-    SPV_ID_CONSTANT,
-    SPV_ID_VARIABLE,
-    SPV_ID_FUNCTION,
-    SPV_ID_LABEL,
-    SPV_ID_INSTRUCTION,
-    SPV_ID_EXT_INST_IMPORT,
-    SPV_ID_PARAM,
-} SpvIdKind;
+    VTS_SPV_ID_UNKNOWN = 0,
+    VTS_SPV_ID_TYPE,
+    VTS_SPV_ID_CONSTANT,
+    VTS_SPV_ID_VARIABLE,
+    VTS_SPV_ID_FUNCTION,
+    VTS_SPV_ID_LABEL,
+    VTS_SPV_ID_INSTRUCTION,
+    VTS_SPV_ID_EXT_INST_IMPORT,
+    VTS_SPV_ID_PARAM,
+} VtsSpvIdKind;
 
 typedef enum {
-    SPV_TYPE_VOID = 0,
-    SPV_TYPE_BOOL,
-    SPV_TYPE_INT,
-    SPV_TYPE_FLOAT,
-    SPV_TYPE_VECTOR,
-    SPV_TYPE_MATRIX,
-    SPV_TYPE_ARRAY,
-    SPV_TYPE_RUNTIME_ARRAY,
-    SPV_TYPE_STRUCT,
-    SPV_TYPE_POINTER,
-    SPV_TYPE_FUNCTION,
-    SPV_TYPE_IMAGE,
-    SPV_TYPE_SAMPLED_IMAGE,
-    SPV_TYPE_SAMPLER,
-} SpvTypeKind;
+    VTS_SPV_TYPE_VOID = 0,
+    VTS_SPV_TYPE_BOOL,
+    VTS_SPV_TYPE_INT,
+    VTS_SPV_TYPE_FLOAT,
+    VTS_SPV_TYPE_VECTOR,
+    VTS_SPV_TYPE_MATRIX,
+    VTS_SPV_TYPE_ARRAY,
+    VTS_SPV_TYPE_RUNTIME_ARRAY,
+    VTS_SPV_TYPE_STRUCT,
+    VTS_SPV_TYPE_POINTER,
+    VTS_SPV_TYPE_FUNCTION,
+    VTS_SPV_TYPE_IMAGE,
+    VTS_SPV_TYPE_SAMPLED_IMAGE,
+    VTS_SPV_TYPE_SAMPLER,
+} VtsSpvTypeKind;
 
 typedef struct {
-    SpvTypeKind kind;
+    VtsSpvTypeKind kind;
     union {
         struct { uint32_t width; uint32_t signedness; } int_type;
         struct { uint32_t width; } float_type;
@@ -65,26 +65,26 @@ typedef struct {
         struct { uint32_t sampled_type; SpvDim dim; uint32_t depth; uint32_t arrayed; uint32_t ms; uint32_t sampled; SpvImageFormat format; } image;
         struct { uint32_t image_type; } sampled_image;
     };
-} SpvTypeInfo;
+} VtsSpvTypeInfo;
 
 typedef struct {
     SpvDecoration decoration;
     uint32_t *literals;
     int literal_count;
-} SpvDecorationEntry;
+} VtsSpvDecorationEntry;
 
 typedef struct {
     uint32_t member_index;
     SpvDecoration decoration;
     uint32_t *literals;
     int literal_count;
-} SpvMemberDecoration;
+} VtsSpvMemberDecoration;
 
 typedef struct {
-    SpvIdKind kind;
+    VtsSpvIdKind kind;
     uint32_t id;
     char *name;
-    SpvTypeInfo type_info;
+    VtsSpvTypeInfo type_info;
     uint32_t ssir_id;
 
     union {
@@ -95,13 +95,13 @@ typedef struct {
         struct { uint32_t type_id; } param;
     };
 
-    SpvDecorationEntry *decorations;
+    VtsSpvDecorationEntry *decorations;
     int decoration_count;
-    SpvMemberDecoration *member_decorations;
+    VtsSpvMemberDecoration *member_decorations;
     int member_decoration_count;
     char **member_names;
     int member_name_count;
-} SpvIdInfo;
+} VtsSpvIdInfo;
 
 typedef struct {
     uint32_t label_id;
@@ -112,7 +112,7 @@ typedef struct {
     uint32_t continue_block;
     int is_loop_header;
     int is_selection_header;
-} SpvBasicBlock;
+} VtsSpvBasicBlock;
 
 typedef struct {
     uint32_t id;
@@ -121,7 +121,7 @@ typedef struct {
     uint32_t func_type;
     uint32_t *params;
     int param_count;
-    SpvBasicBlock *blocks;
+    VtsSpvBasicBlock *blocks;
     int block_count;
     int block_cap;
     SpvExecutionModel exec_model;
@@ -132,7 +132,7 @@ typedef struct {
     uint32_t *local_vars;
     int local_var_count;
     int local_var_cap;
-} SpvFunction;
+} VtsSpvFunction;
 
 typedef struct {
     uint32_t func_id;
@@ -140,12 +140,12 @@ typedef struct {
     char *name;
     uint32_t *interface_vars;
     int interface_var_count;
-} PendingEntryPoint;
+} VtsPendingEntryPoint;
 
 typedef struct {
     uint32_t func_id;
     int workgroup_size[3];
-} PendingWorkgroupSize;
+} VtsPendingWorkgroupSize;
 
 typedef struct {
     const uint32_t *spirv;
@@ -154,16 +154,16 @@ typedef struct {
     uint32_t generator;
     uint32_t id_bound;
 
-    SpvIdInfo *ids;
-    SpvFunction *functions;
+    VtsSpvIdInfo *ids;
+    VtsSpvFunction *functions;
     int function_count;
     int function_cap;
 
-    PendingEntryPoint *pending_eps;
+    VtsPendingEntryPoint *pending_eps;
     int pending_ep_count;
     int pending_ep_cap;
 
-    PendingWorkgroupSize *pending_wgs;
+    VtsPendingWorkgroupSize *pending_wgs;
     int pending_wg_count;
     int pending_wg_cap;
 
@@ -172,16 +172,16 @@ typedef struct {
     SsirModule *mod;
     const SpirvToSsirOptions *opts;
     char last_error[512];
-} Converter;
+} VtsConverter;
 
-static void set_error(Converter *c, const char *msg) {
+static void vts_set_error(VtsConverter *c, const char *msg) {
     size_t n = strlen(msg);
     if (n >= sizeof(c->last_error)) n = sizeof(c->last_error) - 1;
     memcpy(c->last_error, msg, n);
     c->last_error[n] = 0;
 }
 
-static char *read_string(const uint32_t *words, int word_count, int *out_words_read) {
+static char *vts_read_string(const uint32_t *words, int word_count, int *out_words_read) {
     if (word_count <= 0) { *out_words_read = 0; return NULL; }
     int max_chars = word_count * 4;
     const char *str = (const char*)words;
@@ -195,11 +195,11 @@ static char *read_string(const uint32_t *words, int word_count, int *out_words_r
     return copy;
 }
 
-static void add_decoration(Converter *c, uint32_t target, SpvDecoration decor, const uint32_t *literals, int lit_count) {
+static void vts_add_decoration(VtsConverter *c, uint32_t target, SpvDecoration decor, const uint32_t *literals, int lit_count) {
     if (target >= c->id_bound) return;
-    SpvIdInfo *info = &c->ids[target];
+    VtsSpvIdInfo *info = &c->ids[target];
     int idx = info->decoration_count++;
-    info->decorations = (SpvDecorationEntry*)SPIRV_TO_SSIR_REALLOC(info->decorations, info->decoration_count * sizeof(SpvDecorationEntry));
+    info->decorations = (VtsSpvDecorationEntry*)SPIRV_TO_SSIR_REALLOC(info->decorations, info->decoration_count * sizeof(VtsSpvDecorationEntry));
     info->decorations[idx].decoration = decor;
     info->decorations[idx].literal_count = lit_count;
     if (lit_count > 0) {
@@ -210,11 +210,11 @@ static void add_decoration(Converter *c, uint32_t target, SpvDecoration decor, c
     }
 }
 
-static void add_member_decoration(Converter *c, uint32_t struct_id, uint32_t member, SpvDecoration decor, const uint32_t *literals, int lit_count) {
+static void vts_add_member_decoration(VtsConverter *c, uint32_t struct_id, uint32_t member, SpvDecoration decor, const uint32_t *literals, int lit_count) {
     if (struct_id >= c->id_bound) return;
-    SpvIdInfo *info = &c->ids[struct_id];
+    VtsSpvIdInfo *info = &c->ids[struct_id];
     int idx = info->member_decoration_count++;
-    info->member_decorations = (SpvMemberDecoration*)SPIRV_TO_SSIR_REALLOC(info->member_decorations, info->member_decoration_count * sizeof(SpvMemberDecoration));
+    info->member_decorations = (VtsSpvMemberDecoration*)SPIRV_TO_SSIR_REALLOC(info->member_decorations, info->member_decoration_count * sizeof(VtsSpvMemberDecoration));
     info->member_decorations[idx].member_index = member;
     info->member_decorations[idx].decoration = decor;
     info->member_decorations[idx].literal_count = lit_count;
@@ -226,9 +226,9 @@ static void add_member_decoration(Converter *c, uint32_t struct_id, uint32_t mem
     }
 }
 
-static int has_decoration(Converter *c, uint32_t id, SpvDecoration decor, uint32_t *out_value) {
+static int vts_has_decoration(VtsConverter *c, uint32_t id, SpvDecoration decor, uint32_t *out_value) {
     if (id >= c->id_bound) return 0;
-    SpvIdInfo *info = &c->ids[id];
+    VtsSpvIdInfo *info = &c->ids[id];
     for (int i = 0; i < info->decoration_count; i++) {
         if (info->decorations[i].decoration == decor) {
             if (out_value && info->decorations[i].literal_count > 0) {
@@ -240,9 +240,9 @@ static int has_decoration(Converter *c, uint32_t id, SpvDecoration decor, uint32
     return 0;
 }
 
-static int get_member_offset(Converter *c, uint32_t struct_id, uint32_t member, uint32_t *out_offset) {
+static int get_member_offset(VtsConverter *c, uint32_t struct_id, uint32_t member, uint32_t *out_offset) {
     if (struct_id >= c->id_bound) return 0;
-    SpvIdInfo *info = &c->ids[struct_id];
+    VtsSpvIdInfo *info = &c->ids[struct_id];
     for (int i = 0; i < info->member_decoration_count; i++) {
         if (info->member_decorations[i].member_index == member &&
             info->member_decorations[i].decoration == SpvDecorationOffset &&
@@ -254,33 +254,33 @@ static int get_member_offset(Converter *c, uint32_t struct_id, uint32_t member, 
     return 0;
 }
 
-static SpvFunction *add_function(Converter *c) {
+static VtsSpvFunction *vts_add_function(VtsConverter *c) {
     if (c->function_count >= c->function_cap) {
         int ncap = c->function_cap ? c->function_cap * 2 : 8;
-        c->functions = (SpvFunction*)SPIRV_TO_SSIR_REALLOC(c->functions, ncap * sizeof(SpvFunction));
+        c->functions = (VtsSpvFunction*)SPIRV_TO_SSIR_REALLOC(c->functions, ncap * sizeof(VtsSpvFunction));
         c->function_cap = ncap;
     }
-    SpvFunction *fn = &c->functions[c->function_count++];
-    memset(fn, 0, sizeof(SpvFunction));
+    VtsSpvFunction *fn = &c->functions[c->function_count++];
+    memset(fn, 0, sizeof(VtsSpvFunction));
     fn->workgroup_size[0] = 1;
     fn->workgroup_size[1] = 1;
     fn->workgroup_size[2] = 1;
     return fn;
 }
 
-static SpvBasicBlock *add_block(SpvFunction *fn, uint32_t label_id) {
+static VtsSpvBasicBlock *vts_add_block(VtsSpvFunction *fn, uint32_t label_id) {
     if (fn->block_count >= fn->block_cap) {
         int ncap = fn->block_cap ? fn->block_cap * 2 : 8;
-        fn->blocks = (SpvBasicBlock*)SPIRV_TO_SSIR_REALLOC(fn->blocks, ncap * sizeof(SpvBasicBlock));
+        fn->blocks = (VtsSpvBasicBlock*)SPIRV_TO_SSIR_REALLOC(fn->blocks, ncap * sizeof(VtsSpvBasicBlock));
         fn->block_cap = ncap;
     }
-    SpvBasicBlock *blk = &fn->blocks[fn->block_count++];
-    memset(blk, 0, sizeof(SpvBasicBlock));
+    VtsSpvBasicBlock *blk = &fn->blocks[fn->block_count++];
+    memset(blk, 0, sizeof(VtsSpvBasicBlock));
     blk->label_id = label_id;
     return blk;
 }
 
-static void add_block_instr(SpvBasicBlock *blk, uint32_t instr_start) {
+static void vts_add_block_instr(VtsSpvBasicBlock *blk, uint32_t instr_start) {
     if (blk->instruction_count >= blk->instruction_cap) {
         int ncap = blk->instruction_cap ? blk->instruction_cap * 2 : 16;
         blk->instructions = (uint32_t*)SPIRV_TO_SSIR_REALLOC(blk->instructions, ncap * sizeof(uint32_t));
@@ -289,7 +289,7 @@ static void add_block_instr(SpvBasicBlock *blk, uint32_t instr_start) {
     blk->instructions[blk->instruction_count++] = instr_start;
 }
 
-static void add_function_local_var(SpvFunction *fn, uint32_t var_id) {
+static void add_function_local_var(VtsSpvFunction *fn, uint32_t var_id) {
     if (fn->local_var_count >= fn->local_var_cap) {
         int ncap = fn->local_var_cap ? fn->local_var_cap * 2 : 8;
         fn->local_vars = (uint32_t*)SPIRV_TO_SSIR_REALLOC(fn->local_vars, ncap * sizeof(uint32_t));
@@ -298,17 +298,17 @@ static void add_function_local_var(SpvFunction *fn, uint32_t var_id) {
     fn->local_vars[fn->local_var_count++] = var_id;
 }
 
-static SpirvToSsirResult parse_spirv(Converter *c) {
+static SpirvToSsirResult parse_spirv(VtsConverter *c) {
     size_t pos = 5;
-    SpvFunction *current_fn = NULL;
-    SpvBasicBlock *current_block = NULL;
+    VtsSpvFunction *current_fn = NULL;
+    VtsSpvBasicBlock *current_block = NULL;
 
     while (pos < c->word_count) {
         uint32_t word0 = c->spirv[pos];
         uint16_t opcode = word0 & 0xFFFF;
         uint16_t wc = word0 >> 16;
         if (wc == 0 || pos + wc > c->word_count) {
-            set_error(c, "Invalid instruction");
+            vts_set_error(c, "Invalid instruction");
             return SPIRV_TO_SSIR_INVALID_SPIRV;
         }
 
@@ -320,7 +320,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 2) {
                 uint32_t target = operands[0];
                 int str_words;
-                char *name = read_string(&operands[1], operand_count - 1, &str_words);
+                char *name = vts_read_string(&operands[1], operand_count - 1, &str_words);
                 if (target < c->id_bound && name) {
                     c->ids[target].name = name;
                 }
@@ -332,9 +332,9 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 uint32_t struct_id = operands[0];
                 uint32_t member = operands[1];
                 int str_words;
-                char *name = read_string(&operands[2], operand_count - 2, &str_words);
+                char *name = vts_read_string(&operands[2], operand_count - 2, &str_words);
                 if (struct_id < c->id_bound && name) {
-                    SpvIdInfo *info = &c->ids[struct_id];
+                    VtsSpvIdInfo *info = &c->ids[struct_id];
                     if (member >= (uint32_t)info->member_name_count) {
                         int new_count = member + 1;
                         info->member_names = (char**)SPIRV_TO_SSIR_REALLOC(info->member_names, new_count * sizeof(char*));
@@ -353,7 +353,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 2) {
                 uint32_t target = operands[0];
                 SpvDecoration decor = (SpvDecoration)operands[1];
-                add_decoration(c, target, decor, &operands[2], operand_count - 2);
+                vts_add_decoration(c, target, decor, &operands[2], operand_count - 2);
             }
             break;
 
@@ -362,7 +362,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 uint32_t struct_id = operands[0];
                 uint32_t member = operands[1];
                 SpvDecoration decor = (SpvDecoration)operands[2];
-                add_member_decoration(c, struct_id, member, decor, &operands[3], operand_count - 3);
+                vts_add_member_decoration(c, struct_id, member, decor, &operands[3], operand_count - 3);
             }
             break;
 
@@ -370,9 +370,9 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 2) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_EXT_INST_IMPORT;
+                    c->ids[id].kind = VTS_SPV_ID_EXT_INST_IMPORT;
                     int str_words;
-                    char *name = read_string(&operands[1], operand_count - 1, &str_words);
+                    char *name = vts_read_string(&operands[1], operand_count - 1, &str_words);
                     if (name && strcmp(name, "GLSL.std.450") == 0) {
                         c->glsl_ext_id = id;
                     }
@@ -385,8 +385,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 1) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_VOID;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_VOID;
                 }
             }
             break;
@@ -395,8 +395,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 1) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_BOOL;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_BOOL;
                 }
             }
             break;
@@ -405,8 +405,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 3) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_INT;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_INT;
                     c->ids[id].type_info.int_type.width = operands[1];
                     c->ids[id].type_info.int_type.signedness = operands[2];
                 }
@@ -417,8 +417,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 2) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_FLOAT;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_FLOAT;
                     c->ids[id].type_info.float_type.width = operands[1];
                 }
             }
@@ -428,8 +428,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 3) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_VECTOR;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_VECTOR;
                     c->ids[id].type_info.vector.component_type = operands[1];
                     c->ids[id].type_info.vector.count = operands[2];
                 }
@@ -440,8 +440,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 3) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_MATRIX;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_MATRIX;
                     c->ids[id].type_info.matrix.column_type = operands[1];
                     c->ids[id].type_info.matrix.columns = operands[2];
                 }
@@ -452,8 +452,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 3) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_ARRAY;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_ARRAY;
                     c->ids[id].type_info.array.element_type = operands[1];
                     c->ids[id].type_info.array.length_id = operands[2];
                 }
@@ -464,8 +464,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 2) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_RUNTIME_ARRAY;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_RUNTIME_ARRAY;
                     c->ids[id].type_info.runtime_array.element_type = operands[1];
                 }
             }
@@ -475,8 +475,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 1) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_STRUCT;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_STRUCT;
                     int mc = operand_count - 1;
                     c->ids[id].type_info.struct_type.member_count = mc;
                     if (mc > 0) {
@@ -491,8 +491,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 3) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_POINTER;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_POINTER;
                     c->ids[id].type_info.pointer.storage = (SpvStorageClass)operands[1];
                     c->ids[id].type_info.pointer.pointee_type = operands[2];
                 }
@@ -503,8 +503,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 2) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_FUNCTION;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_FUNCTION;
                     c->ids[id].type_info.function.return_type = operands[1];
                     int pc = operand_count - 2;
                     c->ids[id].type_info.function.param_count = pc;
@@ -520,8 +520,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 8) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_IMAGE;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_IMAGE;
                     c->ids[id].type_info.image.sampled_type = operands[1];
                     c->ids[id].type_info.image.dim = (SpvDim)operands[2];
                     c->ids[id].type_info.image.depth = operands[3];
@@ -537,8 +537,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 2) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_SAMPLED_IMAGE;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_SAMPLED_IMAGE;
                     c->ids[id].type_info.sampled_image.image_type = operands[1];
                 }
             }
@@ -548,8 +548,8 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
             if (operand_count >= 1) {
                 uint32_t id = operands[0];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_TYPE;
-                    c->ids[id].type_info.kind = SPV_TYPE_SAMPLER;
+                    c->ids[id].kind = VTS_SPV_ID_TYPE;
+                    c->ids[id].type_info.kind = VTS_SPV_TYPE_SAMPLER;
                 }
             }
             break;
@@ -561,7 +561,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 uint32_t type_id = operands[0];
                 uint32_t id = operands[1];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_CONSTANT;
+                    c->ids[id].kind = VTS_SPV_ID_CONSTANT;
                     c->ids[id].constant.type_id = type_id;
                     c->ids[id].constant.is_composite = 0;
                     int vc = operand_count - 2;
@@ -588,7 +588,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 uint32_t type_id = operands[0];
                 uint32_t id = operands[1];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_CONSTANT;
+                    c->ids[id].kind = VTS_SPV_ID_CONSTANT;
                     c->ids[id].constant.type_id = type_id;
                     c->ids[id].constant.is_composite = 1;
                     int vc = operand_count - 2;
@@ -607,7 +607,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 uint32_t id = operands[1];
                 SpvStorageClass sc = (SpvStorageClass)operands[2];
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_VARIABLE;
+                    c->ids[id].kind = VTS_SPV_ID_VARIABLE;
                     c->ids[id].variable.type_id = type_id;
                     c->ids[id].variable.storage_class = sc;
                     c->ids[id].variable.initializer = (operand_count > 3) ? operands[3] : 0;
@@ -623,18 +623,18 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 SpvExecutionModel model = (SpvExecutionModel)operands[0];
                 uint32_t fn_id = operands[1];
                 int str_words;
-                char *name = read_string(&operands[2], operand_count - 2, &str_words);
+                char *name = vts_read_string(&operands[2], operand_count - 2, &str_words);
                 if (fn_id < c->id_bound) {
-                    c->ids[fn_id].kind = SPV_ID_FUNCTION;
+                    c->ids[fn_id].kind = VTS_SPV_ID_FUNCTION;
                     if (c->ids[fn_id].name) SPIRV_TO_SSIR_FREE(c->ids[fn_id].name);
                     c->ids[fn_id].name = name ? strdup(name) : NULL;
                 }
                 if (c->pending_ep_count >= c->pending_ep_cap) {
                     int ncap = c->pending_ep_cap ? c->pending_ep_cap * 2 : 4;
-                    c->pending_eps = (PendingEntryPoint*)SPIRV_TO_SSIR_REALLOC(c->pending_eps, ncap * sizeof(PendingEntryPoint));
+                    c->pending_eps = (VtsPendingEntryPoint*)SPIRV_TO_SSIR_REALLOC(c->pending_eps, ncap * sizeof(VtsPendingEntryPoint));
                     c->pending_ep_cap = ncap;
                 }
-                PendingEntryPoint *ep = &c->pending_eps[c->pending_ep_count++];
+                VtsPendingEntryPoint *ep = &c->pending_eps[c->pending_ep_count++];
                 ep->func_id = fn_id;
                 ep->exec_model = model;
                 ep->name = name ? strdup(name) : NULL;
@@ -659,10 +659,10 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 if (mode == SpvExecutionModeLocalSize && operand_count >= 5) {
                     if (c->pending_wg_count >= c->pending_wg_cap) {
                         int ncap = c->pending_wg_cap ? c->pending_wg_cap * 2 : 4;
-                        c->pending_wgs = (PendingWorkgroupSize*)SPIRV_TO_SSIR_REALLOC(c->pending_wgs, ncap * sizeof(PendingWorkgroupSize));
+                        c->pending_wgs = (VtsPendingWorkgroupSize*)SPIRV_TO_SSIR_REALLOC(c->pending_wgs, ncap * sizeof(VtsPendingWorkgroupSize));
                         c->pending_wg_cap = ncap;
                     }
-                    PendingWorkgroupSize *wg = &c->pending_wgs[c->pending_wg_count++];
+                    VtsPendingWorkgroupSize *wg = &c->pending_wgs[c->pending_wg_count++];
                     wg->func_id = fn_id;
                     wg->workgroup_size[0] = operands[2];
                     wg->workgroup_size[1] = operands[3];
@@ -676,12 +676,12 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 uint32_t ret_type = operands[0];
                 uint32_t id = operands[1];
                 uint32_t func_type = operands[3];
-                current_fn = add_function(c);
+                current_fn = vts_add_function(c);
                 current_fn->id = id;
                 current_fn->return_type = ret_type;
                 current_fn->func_type = func_type;
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_FUNCTION;
+                    c->ids[id].kind = VTS_SPV_ID_FUNCTION;
                     c->ids[id].function.return_type = ret_type;
                     c->ids[id].function.func_type = func_type;
                     if (c->ids[id].name) {
@@ -700,7 +700,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                 current_fn->params = (uint32_t*)SPIRV_TO_SSIR_REALLOC(current_fn->params, current_fn->param_count * sizeof(uint32_t));
                 current_fn->params[idx] = id;
                 if (id < c->id_bound) {
-                    c->ids[id].kind = SPV_ID_PARAM;
+                    c->ids[id].kind = VTS_SPV_ID_PARAM;
                     c->ids[id].param.type_id = type_id;
                 }
             }
@@ -714,9 +714,9 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
         case SpvOpLabel:
             if (current_fn && operand_count >= 1) {
                 uint32_t label_id = operands[0];
-                current_block = add_block(current_fn, label_id);
+                current_block = vts_add_block(current_fn, label_id);
                 if (label_id < c->id_bound) {
-                    c->ids[label_id].kind = SPV_ID_LABEL;
+                    c->ids[label_id].kind = VTS_SPV_ID_LABEL;
                 }
             }
             break;
@@ -738,7 +738,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
 
         default:
             if (current_block) {
-                add_block_instr(current_block, pos);
+                vts_add_block_instr(current_block, pos);
             }
             if (operand_count >= 2) {
                 SpvOp op = (SpvOp)opcode;
@@ -778,7 +778,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
                     uint32_t type_id = operands[0];
                     uint32_t result_id = operands[1];
                     if (result_id < c->id_bound) {
-                        c->ids[result_id].kind = SPV_ID_INSTRUCTION;
+                        c->ids[result_id].kind = VTS_SPV_ID_INSTRUCTION;
                         c->ids[result_id].instruction.type_id = type_id;
                         c->ids[result_id].instruction.opcode = op;
                         int remaining = operand_count - 2;
@@ -797,7 +797,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
     }
 
     for (int i = 0; i < c->pending_ep_count; i++) {
-        PendingEntryPoint *ep = &c->pending_eps[i];
+        VtsPendingEntryPoint *ep = &c->pending_eps[i];
         for (int j = 0; j < c->function_count; j++) {
             if (c->functions[j].id == ep->func_id) {
                 c->functions[j].exec_model = ep->exec_model;
@@ -814,7 +814,7 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
     }
 
     for (int i = 0; i < c->pending_wg_count; i++) {
-        PendingWorkgroupSize *wg = &c->pending_wgs[i];
+        VtsPendingWorkgroupSize *wg = &c->pending_wgs[i];
         for (int j = 0; j < c->function_count; j++) {
             if (c->functions[j].id == wg->func_id) {
                 c->functions[j].workgroup_size[0] = wg->workgroup_size[0];
@@ -828,24 +828,24 @@ static SpirvToSsirResult parse_spirv(Converter *c) {
     return SPIRV_TO_SSIR_SUCCESS;
 }
 
-static uint32_t convert_type(Converter *c, uint32_t spv_type_id);
+static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id);
 
-static uint32_t convert_scalar_type(Converter *c, uint32_t spv_type_id) {
+static uint32_t convert_scalar_type(VtsConverter *c, uint32_t spv_type_id) {
     if (spv_type_id >= c->id_bound) return 0;
-    SpvIdInfo *info = &c->ids[spv_type_id];
-    if (info->kind != SPV_ID_TYPE) return 0;
+    VtsSpvIdInfo *info = &c->ids[spv_type_id];
+    if (info->kind != VTS_SPV_ID_TYPE) return 0;
 
     switch (info->type_info.kind) {
-    case SPV_TYPE_VOID:
+    case VTS_SPV_TYPE_VOID:
         return ssir_type_void(c->mod);
-    case SPV_TYPE_BOOL:
+    case VTS_SPV_TYPE_BOOL:
         return ssir_type_bool(c->mod);
-    case SPV_TYPE_INT:
+    case VTS_SPV_TYPE_INT:
         if (info->type_info.int_type.width == 32) {
             return info->type_info.int_type.signedness ? ssir_type_i32(c->mod) : ssir_type_u32(c->mod);
         }
         return 0;
-    case SPV_TYPE_FLOAT:
+    case VTS_SPV_TYPE_FLOAT:
         if (info->type_info.float_type.width == 32) return ssir_type_f32(c->mod);
         if (info->type_info.float_type.width == 16) return ssir_type_f16(c->mod);
         return 0;
@@ -880,41 +880,41 @@ static SsirTextureDim spv_dim_to_ssir(SpvDim dim, uint32_t arrayed, uint32_t ms)
     }
 }
 
-static uint32_t convert_type(Converter *c, uint32_t spv_type_id) {
+static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
     if (spv_type_id >= c->id_bound) return 0;
-    SpvIdInfo *info = &c->ids[spv_type_id];
-    if (info->kind != SPV_ID_TYPE) return 0;
+    VtsSpvIdInfo *info = &c->ids[spv_type_id];
+    if (info->kind != VTS_SPV_ID_TYPE) return 0;
     if (info->ssir_id) return info->ssir_id;
 
     uint32_t result = 0;
 
     switch (info->type_info.kind) {
-    case SPV_TYPE_VOID:
-    case SPV_TYPE_BOOL:
-    case SPV_TYPE_INT:
-    case SPV_TYPE_FLOAT:
+    case VTS_SPV_TYPE_VOID:
+    case VTS_SPV_TYPE_BOOL:
+    case VTS_SPV_TYPE_INT:
+    case VTS_SPV_TYPE_FLOAT:
         result = convert_scalar_type(c, spv_type_id);
         break;
 
-    case SPV_TYPE_VECTOR: {
+    case VTS_SPV_TYPE_VECTOR: {
         uint32_t elem = convert_type(c, info->type_info.vector.component_type);
         result = ssir_type_vec(c->mod, elem, (uint8_t)info->type_info.vector.count);
         break;
     }
 
-    case SPV_TYPE_MATRIX: {
+    case VTS_SPV_TYPE_MATRIX: {
         uint32_t col = convert_type(c, info->type_info.matrix.column_type);
-        SpvIdInfo *col_info = &c->ids[info->type_info.matrix.column_type];
+        VtsSpvIdInfo *col_info = &c->ids[info->type_info.matrix.column_type];
         uint8_t rows = (uint8_t)col_info->type_info.vector.count;
         result = ssir_type_mat(c->mod, col, (uint8_t)info->type_info.matrix.columns, rows);
         break;
     }
 
-    case SPV_TYPE_ARRAY: {
+    case VTS_SPV_TYPE_ARRAY: {
         uint32_t elem = convert_type(c, info->type_info.array.element_type);
         uint32_t len_id = info->type_info.array.length_id;
         uint32_t len = 0;
-        if (len_id < c->id_bound && c->ids[len_id].kind == SPV_ID_CONSTANT) {
+        if (len_id < c->id_bound && c->ids[len_id].kind == VTS_SPV_ID_CONSTANT) {
             if (c->ids[len_id].constant.value_count > 0) {
                 len = c->ids[len_id].constant.values[0];
             }
@@ -923,13 +923,13 @@ static uint32_t convert_type(Converter *c, uint32_t spv_type_id) {
         break;
     }
 
-    case SPV_TYPE_RUNTIME_ARRAY: {
+    case VTS_SPV_TYPE_RUNTIME_ARRAY: {
         uint32_t elem = convert_type(c, info->type_info.runtime_array.element_type);
         result = ssir_type_runtime_array(c->mod, elem);
         break;
     }
 
-    case SPV_TYPE_STRUCT: {
+    case VTS_SPV_TYPE_STRUCT: {
         int mc = info->type_info.struct_type.member_count;
         uint32_t *members = NULL;
         uint32_t *offsets = NULL;
@@ -950,18 +950,18 @@ static uint32_t convert_type(Converter *c, uint32_t spv_type_id) {
         break;
     }
 
-    case SPV_TYPE_POINTER: {
+    case VTS_SPV_TYPE_POINTER: {
         uint32_t pointee = convert_type(c, info->type_info.pointer.pointee_type);
         SsirAddressSpace space = storage_class_to_addr_space(info->type_info.pointer.storage);
         result = ssir_type_ptr(c->mod, pointee, space);
         break;
     }
 
-    case SPV_TYPE_SAMPLER:
+    case VTS_SPV_TYPE_SAMPLER:
         result = ssir_type_sampler(c->mod);
         break;
 
-    case SPV_TYPE_IMAGE: {
+    case VTS_SPV_TYPE_IMAGE: {
         SsirTextureDim dim = spv_dim_to_ssir(info->type_info.image.dim,
                                               info->type_info.image.arrayed,
                                               info->type_info.image.ms);
@@ -976,12 +976,12 @@ static uint32_t convert_type(Converter *c, uint32_t spv_type_id) {
         break;
     }
 
-    case SPV_TYPE_SAMPLED_IMAGE: {
+    case VTS_SPV_TYPE_SAMPLED_IMAGE: {
         result = convert_type(c, info->type_info.sampled_image.image_type);
         break;
     }
 
-    case SPV_TYPE_FUNCTION:
+    case VTS_SPV_TYPE_FUNCTION:
         return 0;
 
     default:
@@ -992,10 +992,10 @@ static uint32_t convert_type(Converter *c, uint32_t spv_type_id) {
     return result;
 }
 
-static uint32_t convert_constant(Converter *c, uint32_t spv_const_id) {
+static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
     if (spv_const_id >= c->id_bound) return 0;
-    SpvIdInfo *info = &c->ids[spv_const_id];
-    if (info->kind != SPV_ID_CONSTANT) return 0;
+    VtsSpvIdInfo *info = &c->ids[spv_const_id];
+    if (info->kind != VTS_SPV_ID_CONSTANT) return 0;
     if (info->ssir_id) return info->ssir_id;
 
     uint32_t type_id = convert_type(c, info->constant.type_id);
@@ -1064,10 +1064,10 @@ static SsirBuiltinVar spv_builtin_to_ssir(SpvBuiltIn builtin) {
     }
 }
 
-static void convert_global_vars(Converter *c) {
+static void convert_global_vars(VtsConverter *c) {
     for (uint32_t i = 1; i < c->id_bound; i++) {
-        SpvIdInfo *info = &c->ids[i];
-        if (info->kind != SPV_ID_VARIABLE) continue;
+        VtsSpvIdInfo *info = &c->ids[i];
+        if (info->kind != VTS_SPV_ID_VARIABLE) continue;
         if (info->variable.storage_class == SpvStorageClassFunction) continue;
 
         uint32_t ptr_type = convert_type(c, info->variable.type_id);
@@ -1078,22 +1078,22 @@ static void convert_global_vars(Converter *c) {
         info->ssir_id = gid;
 
         uint32_t group_val, binding_val, location_val, builtin_val;
-        if (has_decoration(c, i, SpvDecorationDescriptorSet, &group_val)) {
+        if (vts_has_decoration(c, i, SpvDecorationDescriptorSet, &group_val)) {
             ssir_global_set_group(c->mod, gid, group_val);
         }
-        if (has_decoration(c, i, SpvDecorationBinding, &binding_val)) {
+        if (vts_has_decoration(c, i, SpvDecorationBinding, &binding_val)) {
             ssir_global_set_binding(c->mod, gid, binding_val);
         }
-        if (has_decoration(c, i, SpvDecorationLocation, &location_val)) {
+        if (vts_has_decoration(c, i, SpvDecorationLocation, &location_val)) {
             ssir_global_set_location(c->mod, gid, location_val);
         }
-        if (has_decoration(c, i, SpvDecorationBuiltIn, &builtin_val)) {
+        if (vts_has_decoration(c, i, SpvDecorationBuiltIn, &builtin_val)) {
             SsirBuiltinVar bv = spv_builtin_to_ssir((SpvBuiltIn)builtin_val);
             ssir_global_set_builtin(c->mod, gid, bv);
         }
-        if (has_decoration(c, i, SpvDecorationFlat, NULL)) {
+        if (vts_has_decoration(c, i, SpvDecorationFlat, NULL)) {
             ssir_global_set_interpolation(c->mod, gid, SSIR_INTERP_FLAT);
-        } else if (has_decoration(c, i, SpvDecorationNoPerspective, NULL)) {
+        } else if (vts_has_decoration(c, i, SpvDecorationNoPerspective, NULL)) {
             ssir_global_set_interpolation(c->mod, gid, SSIR_INTERP_LINEAR);
         }
 
@@ -1106,19 +1106,19 @@ static void convert_global_vars(Converter *c) {
     }
 }
 
-static uint32_t get_ssir_id(Converter *c, uint32_t spv_id) {
+static uint32_t get_ssir_id(VtsConverter *c, uint32_t spv_id) {
     if (spv_id >= c->id_bound) return 0;
-    SpvIdInfo *info = &c->ids[spv_id];
+    VtsSpvIdInfo *info = &c->ids[spv_id];
     if (info->ssir_id) return info->ssir_id;
 
     switch (info->kind) {
-    case SPV_ID_TYPE:
+    case VTS_SPV_ID_TYPE:
         return convert_type(c, spv_id);
-    case SPV_ID_CONSTANT:
+    case VTS_SPV_ID_CONSTANT:
         return convert_constant(c, spv_id);
-    case SPV_ID_VARIABLE:
-    case SPV_ID_INSTRUCTION:
-    case SPV_ID_PARAM:
+    case VTS_SPV_ID_VARIABLE:
+    case VTS_SPV_ID_INSTRUCTION:
+    case VTS_SPV_ID_PARAM:
         return info->ssir_id;
     default:
         return 0;
@@ -1179,7 +1179,7 @@ static SsirBuiltinId glsl_ext_to_ssir_builtin(enum GLSLstd450 glsl_op) {
     }
 }
 
-static void convert_function(Converter *c, SpvFunction *fn) {
+static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
     uint32_t ret_type = convert_type(c, fn->return_type);
     const char *name = fn->name ? fn->name : "fn";
     uint32_t func_id = ssir_function_create(c->mod, name, ret_type);
@@ -1188,7 +1188,7 @@ static void convert_function(Converter *c, SpvFunction *fn) {
     for (int i = 0; i < fn->param_count; i++) {
         uint32_t param_spv = fn->params[i];
         if (param_spv >= c->id_bound) continue;
-        SpvIdInfo *param_info = &c->ids[param_spv];
+        VtsSpvIdInfo *param_info = &c->ids[param_spv];
         uint32_t param_type = convert_type(c, param_info->param.type_id);
         const char *param_name = param_info->name;
         uint32_t param_id = ssir_function_add_param(c->mod, func_id, param_name, param_type);
@@ -1198,7 +1198,7 @@ static void convert_function(Converter *c, SpvFunction *fn) {
     for (int i = 0; i < fn->local_var_count; i++) {
         uint32_t var_spv = fn->local_vars[i];
         if (var_spv >= c->id_bound) continue;
-        SpvIdInfo *var_info = &c->ids[var_spv];
+        VtsSpvIdInfo *var_info = &c->ids[var_spv];
         uint32_t var_type = convert_type(c, var_info->variable.type_id);
         const char *var_name = var_info->name;
         uint32_t local_id = ssir_function_add_local(c->mod, func_id, var_name, var_type);
@@ -1206,7 +1206,7 @@ static void convert_function(Converter *c, SpvFunction *fn) {
     }
 
     for (int bi = 0; bi < fn->block_count; bi++) {
-        SpvBasicBlock *blk = &fn->blocks[bi];
+        VtsSpvBasicBlock *blk = &fn->blocks[bi];
         const char *blk_name = NULL;
         if (blk->label_id < c->id_bound) {
             blk_name = c->ids[blk->label_id].name;
@@ -1218,7 +1218,7 @@ static void convert_function(Converter *c, SpvFunction *fn) {
     }
 
     for (int bi = 0; bi < fn->block_count; bi++) {
-        SpvBasicBlock *blk = &fn->blocks[bi];
+        VtsSpvBasicBlock *blk = &fn->blocks[bi];
         uint32_t block_id = c->ids[blk->label_id].ssir_id;
 
         if (blk->is_loop_header) {
@@ -1805,9 +1805,9 @@ static SsirStage exec_model_to_stage(SpvExecutionModel model) {
     }
 }
 
-static void convert_entry_points(Converter *c) {
+static void convert_entry_points(VtsConverter *c) {
     for (int i = 0; i < c->function_count; i++) {
-        SpvFunction *fn = &c->functions[i];
+        VtsSpvFunction *fn = &c->functions[i];
         if (!fn->is_entry_point) continue;
 
         uint32_t func_ssir_id = c->ids[fn->id].ssir_id;
@@ -1833,7 +1833,7 @@ static void convert_entry_points(Converter *c) {
     }
 }
 
-static void free_converter(Converter *c) {
+static void free_converter(VtsConverter *c) {
     if (!c) return;
     if (c->ids) {
         for (uint32_t i = 0; i < c->id_bound; i++) {
@@ -1856,18 +1856,18 @@ static void free_converter(Converter *c) {
                 }
                 SPIRV_TO_SSIR_FREE(c->ids[i].member_names);
             }
-            if (c->ids[i].kind == SPV_ID_TYPE) {
-                if (c->ids[i].type_info.kind == SPV_TYPE_STRUCT && c->ids[i].type_info.struct_type.member_types) {
+            if (c->ids[i].kind == VTS_SPV_ID_TYPE) {
+                if (c->ids[i].type_info.kind == VTS_SPV_TYPE_STRUCT && c->ids[i].type_info.struct_type.member_types) {
                     SPIRV_TO_SSIR_FREE(c->ids[i].type_info.struct_type.member_types);
                 }
-                if (c->ids[i].type_info.kind == SPV_TYPE_FUNCTION && c->ids[i].type_info.function.param_types) {
+                if (c->ids[i].type_info.kind == VTS_SPV_TYPE_FUNCTION && c->ids[i].type_info.function.param_types) {
                     SPIRV_TO_SSIR_FREE(c->ids[i].type_info.function.param_types);
                 }
             }
-            if (c->ids[i].kind == SPV_ID_CONSTANT && c->ids[i].constant.values) {
+            if (c->ids[i].kind == VTS_SPV_ID_CONSTANT && c->ids[i].constant.values) {
                 SPIRV_TO_SSIR_FREE(c->ids[i].constant.values);
             }
-            if (c->ids[i].kind == SPV_ID_INSTRUCTION && c->ids[i].instruction.operands) {
+            if (c->ids[i].kind == VTS_SPV_ID_INSTRUCTION && c->ids[i].instruction.operands) {
                 SPIRV_TO_SSIR_FREE(c->ids[i].instruction.operands);
             }
         }
@@ -1913,7 +1913,7 @@ SpirvToSsirResult spirv_to_ssir(
         return SPIRV_TO_SSIR_INVALID_SPIRV;
     }
 
-    Converter c;
+    VtsConverter c;
     memset(&c, 0, sizeof(c));
     c.spirv = spirv;
     c.word_count = word_count;
@@ -1922,12 +1922,12 @@ SpirvToSsirResult spirv_to_ssir(
     c.id_bound = spirv[3];
     c.opts = opts;
 
-    c.ids = (SpvIdInfo*)SPIRV_TO_SSIR_MALLOC(c.id_bound * sizeof(SpvIdInfo));
+    c.ids = (VtsSpvIdInfo*)SPIRV_TO_SSIR_MALLOC(c.id_bound * sizeof(VtsSpvIdInfo));
     if (!c.ids) {
         if (out_error) *out_error = strdup("Out of memory");
         return SPIRV_TO_SSIR_INTERNAL_ERROR;
     }
-    memset(c.ids, 0, c.id_bound * sizeof(SpvIdInfo));
+    memset(c.ids, 0, c.id_bound * sizeof(VtsSpvIdInfo));
     for (uint32_t i = 0; i < c.id_bound; i++) {
         c.ids[i].id = i;
     }
@@ -1948,13 +1948,13 @@ SpirvToSsirResult spirv_to_ssir(
     }
 
     for (uint32_t i = 1; i < c.id_bound; i++) {
-        if (c.ids[i].kind == SPV_ID_TYPE) {
+        if (c.ids[i].kind == VTS_SPV_ID_TYPE) {
             convert_type(&c, i);
         }
     }
 
     for (uint32_t i = 1; i < c.id_bound; i++) {
-        if (c.ids[i].kind == SPV_ID_CONSTANT) {
+        if (c.ids[i].kind == VTS_SPV_ID_CONSTANT) {
             convert_constant(&c, i);
         }
     }

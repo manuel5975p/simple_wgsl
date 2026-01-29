@@ -34,22 +34,22 @@ typedef struct {
     size_t len;
     size_t cap;
     int indent;
-} StringBuffer;
+} StwStringBuffer;
 
-static void sb_init(StringBuffer *sb) {
+static void stw_sb_init(StwStringBuffer *sb) {
     sb->data = NULL;
     sb->len = 0;
     sb->cap = 0;
     sb->indent = 0;
 }
 
-static void sb_free(StringBuffer *sb) {
+static void stw_sb_free(StwStringBuffer *sb) {
     STW_FREE(sb->data);
     sb->data = NULL;
     sb->len = sb->cap = 0;
 }
 
-static int sb_reserve(StringBuffer *sb, size_t need) {
+static int stw_sb_reserve(StwStringBuffer *sb, size_t need) {
     if (sb->len + need + 1 <= sb->cap) return 1;
     size_t ncap = sb->cap ? sb->cap : 256;
     while (ncap < sb->len + need + 1) ncap *= 2;
@@ -60,33 +60,33 @@ static int sb_reserve(StringBuffer *sb, size_t need) {
     return 1;
 }
 
-static void sb_append(StringBuffer *sb, const char *s) {
+static void stw_sb_append(StwStringBuffer *sb, const char *s) {
     size_t slen = strlen(s);
-    if (!sb_reserve(sb, slen)) return;
+    if (!stw_sb_reserve(sb, slen)) return;
     memcpy(sb->data + sb->len, s, slen);
     sb->len += slen;
     sb->data[sb->len] = '\0';
 }
 
-static void sb_appendf(StringBuffer *sb, const char *fmt, ...) {
+static void stw_sb_appendf(StwStringBuffer *sb, const char *fmt, ...) {
     char buf[1024];
     va_list args;
     va_start(args, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
     if (n > 0) {
-        sb_append(sb, buf);
+        stw_sb_append(sb, buf);
     }
 }
 
-static void sb_indent(StringBuffer *sb) {
+static void stw_sb_indent(StwStringBuffer *sb) {
     for (int i = 0; i < sb->indent; i++) {
-        sb_append(sb, "    ");
+        stw_sb_append(sb, "    ");
     }
 }
 
-static void sb_newline(StringBuffer *sb) {
-    sb_append(sb, "\n");
+static void stw_sb_newline(StwStringBuffer *sb) {
+    stw_sb_append(sb, "\n");
 }
 
 /* ============================================================================
@@ -96,7 +96,7 @@ static void sb_newline(StringBuffer *sb) {
 typedef struct {
     const SsirModule *mod;
     SsirToWgslOptions opts;
-    StringBuffer sb;
+    StwStringBuffer sb;
 
     /* ID-to-name mapping */
     char **id_names;
@@ -113,7 +113,7 @@ static void ctx_init(SsirToWgslContext *ctx, const SsirModule *mod, const SsirTo
     memset(ctx, 0, sizeof(*ctx));
     ctx->mod = mod;
     if (opts) ctx->opts = *opts;
-    sb_init(&ctx->sb);
+    stw_sb_init(&ctx->sb);
 
     ctx->id_names_cap = mod->next_id;
     ctx->id_names = (char **)STW_MALLOC(ctx->id_names_cap * sizeof(char *));
@@ -126,10 +126,10 @@ static void ctx_free(SsirToWgslContext *ctx) {
         }
         STW_FREE(ctx->id_names);
     }
-    sb_free(&ctx->sb);
+    stw_sb_free(&ctx->sb);
 }
 
-static const char *get_id_name(SsirToWgslContext *ctx, uint32_t id) {
+static const char *stw_get_id_name(SsirToWgslContext *ctx, uint32_t id) {
     if (id < ctx->id_names_cap && ctx->id_names[id]) {
         return ctx->id_names[id];
     }
@@ -263,24 +263,24 @@ static const char *texture_dim_to_wgsl(SsirTextureDim dim) {
  * Type Emission
  * ============================================================================ */
 
-static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StringBuffer *out);
+static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StwStringBuffer *out);
 
-static void emit_scalar_type(SsirToWgslContext *ctx, const SsirType *t, StringBuffer *out) {
+static void emit_scalar_type(SsirToWgslContext *ctx, const SsirType *t, StwStringBuffer *out) {
     switch (t->kind) {
-    case SSIR_TYPE_VOID: sb_append(out, "void"); break;
-    case SSIR_TYPE_BOOL: sb_append(out, "bool"); break;
-    case SSIR_TYPE_I32:  sb_append(out, "i32"); break;
-    case SSIR_TYPE_U32:  sb_append(out, "u32"); break;
-    case SSIR_TYPE_F32:  sb_append(out, "f32"); break;
-    case SSIR_TYPE_F16:  sb_append(out, "f16"); break;
-    default: sb_append(out, "unknown"); break;
+    case SSIR_TYPE_VOID: stw_sb_append(out, "void"); break;
+    case SSIR_TYPE_BOOL: stw_sb_append(out, "bool"); break;
+    case SSIR_TYPE_I32:  stw_sb_append(out, "i32"); break;
+    case SSIR_TYPE_U32:  stw_sb_append(out, "u32"); break;
+    case SSIR_TYPE_F32:  stw_sb_append(out, "f32"); break;
+    case SSIR_TYPE_F16:  stw_sb_append(out, "f16"); break;
+    default: stw_sb_append(out, "unknown"); break;
     }
 }
 
-static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StringBuffer *out) {
+static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StwStringBuffer *out) {
     SsirType *t = ssir_get_type((SsirModule *)ctx->mod, type_id);
     if (!t) {
-        sb_appendf(out, "_type%u", type_id);
+        stw_sb_appendf(out, "_type%u", type_id);
         return;
     }
 
@@ -295,39 +295,39 @@ static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StringBuffer *ou
         break;
 
     case SSIR_TYPE_VEC: {
-        sb_appendf(out, "vec%u<", t->vec.size);
+        stw_sb_appendf(out, "vec%u<", t->vec.size);
         emit_type(ctx, t->vec.elem, out);
-        sb_append(out, ">");
+        stw_sb_append(out, ">");
         break;
     }
 
     case SSIR_TYPE_MAT: {
-        sb_appendf(out, "mat%ux%u<", t->mat.cols, t->mat.rows);
+        stw_sb_appendf(out, "mat%ux%u<", t->mat.cols, t->mat.rows);
         /* Get the scalar type from the column vector */
         SsirType *col_t = ssir_get_type((SsirModule *)ctx->mod, t->mat.elem);
         if (col_t && col_t->kind == SSIR_TYPE_VEC) {
             emit_type(ctx, col_t->vec.elem, out);
         } else {
-            sb_append(out, "f32");
+            stw_sb_append(out, "f32");
         }
-        sb_append(out, ">");
+        stw_sb_append(out, ">");
         break;
     }
 
     case SSIR_TYPE_ARRAY:
-        sb_append(out, "array<");
+        stw_sb_append(out, "array<");
         emit_type(ctx, t->array.elem, out);
-        sb_appendf(out, ", %u>", t->array.length);
+        stw_sb_appendf(out, ", %u>", t->array.length);
         break;
 
     case SSIR_TYPE_RUNTIME_ARRAY:
-        sb_append(out, "array<");
+        stw_sb_append(out, "array<");
         emit_type(ctx, t->runtime_array.elem, out);
-        sb_append(out, ">");
+        stw_sb_append(out, ">");
         break;
 
     case SSIR_TYPE_STRUCT:
-        sb_append(out, t->struc.name ? t->struc.name : "_Struct");
+        stw_sb_append(out, t->struc.name ? t->struc.name : "_Struct");
         break;
 
     case SSIR_TYPE_PTR:
@@ -336,40 +336,40 @@ static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StringBuffer *ou
         break;
 
     case SSIR_TYPE_SAMPLER:
-        sb_append(out, "sampler");
+        stw_sb_append(out, "sampler");
         break;
 
     case SSIR_TYPE_SAMPLER_COMPARISON:
-        sb_append(out, "sampler_comparison");
+        stw_sb_append(out, "sampler_comparison");
         break;
 
     case SSIR_TYPE_TEXTURE: {
-        sb_appendf(out, "texture_%s<", texture_dim_to_wgsl(t->texture.dim));
+        stw_sb_appendf(out, "texture_%s<", texture_dim_to_wgsl(t->texture.dim));
         emit_type(ctx, t->texture.sampled_type, out);
-        sb_append(out, ">");
+        stw_sb_append(out, ">");
         break;
     }
 
     case SSIR_TYPE_TEXTURE_STORAGE: {
-        sb_appendf(out, "texture_storage_%s<", texture_dim_to_wgsl(t->texture_storage.dim));
+        stw_sb_appendf(out, "texture_storage_%s<", texture_dim_to_wgsl(t->texture_storage.dim));
         /* Would need format enum to string conversion */
-        sb_append(out, "rgba8unorm");
-        sb_append(out, ", ");
+        stw_sb_append(out, "rgba8unorm");
+        stw_sb_append(out, ", ");
         switch (t->texture_storage.access) {
-        case SSIR_ACCESS_READ: sb_append(out, "read"); break;
-        case SSIR_ACCESS_WRITE: sb_append(out, "write"); break;
-        case SSIR_ACCESS_READ_WRITE: sb_append(out, "read_write"); break;
+        case SSIR_ACCESS_READ: stw_sb_append(out, "read"); break;
+        case SSIR_ACCESS_WRITE: stw_sb_append(out, "write"); break;
+        case SSIR_ACCESS_READ_WRITE: stw_sb_append(out, "read_write"); break;
         }
-        sb_append(out, ">");
+        stw_sb_append(out, ">");
         break;
     }
 
     case SSIR_TYPE_TEXTURE_DEPTH:
-        sb_appendf(out, "texture_depth_%s", texture_dim_to_wgsl(t->texture_depth.dim));
+        stw_sb_appendf(out, "texture_depth_%s", texture_dim_to_wgsl(t->texture_depth.dim));
         break;
 
     default:
-        sb_appendf(out, "_unknown_type_%u", type_id);
+        stw_sb_appendf(out, "_unknown_type_%u", type_id);
         break;
     }
 }
@@ -378,62 +378,62 @@ static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StringBuffer *ou
  * Constant Emission
  * ============================================================================ */
 
-static void emit_constant(SsirToWgslContext *ctx, SsirConstant *c, StringBuffer *out);
+static void stw_emit_constant(SsirToWgslContext *ctx, SsirConstant *c, StwStringBuffer *out);
 
-static void emit_constant(SsirToWgslContext *ctx, SsirConstant *c, StringBuffer *out) {
+static void stw_emit_constant(SsirToWgslContext *ctx, SsirConstant *c, StwStringBuffer *out) {
     switch (c->kind) {
     case SSIR_CONST_BOOL:
-        sb_append(out, c->bool_val ? "true" : "false");
+        stw_sb_append(out, c->bool_val ? "true" : "false");
         break;
 
     case SSIR_CONST_I32:
-        sb_appendf(out, "%di", c->i32_val);
+        stw_sb_appendf(out, "%di", c->i32_val);
         break;
 
     case SSIR_CONST_U32:
-        sb_appendf(out, "%uu", c->u32_val);
+        stw_sb_appendf(out, "%uu", c->u32_val);
         break;
 
     case SSIR_CONST_F32: {
         float f = c->f32_val;
         if (floorf(f) == f && fabsf(f) < 1e6f) {
-            sb_appendf(out, "%.1f", (double)f);
+            stw_sb_appendf(out, "%.1f", (double)f);
         } else {
-            sb_appendf(out, "%g", (double)f);
+            stw_sb_appendf(out, "%g", (double)f);
         }
         break;
     }
 
     case SSIR_CONST_F16:
         /* Half-precision - emit as hex for now */
-        sb_appendf(out, "0x%xh", c->f16_val);
+        stw_sb_appendf(out, "0x%xh", c->f16_val);
         break;
 
     case SSIR_CONST_COMPOSITE: {
         /* Emit type constructor */
         emit_type(ctx, c->type, out);
-        sb_append(out, "(");
+        stw_sb_append(out, "(");
         for (uint32_t i = 0; i < c->composite.count; i++) {
-            if (i > 0) sb_append(out, ", ");
+            if (i > 0) stw_sb_append(out, ", ");
             SsirConstant *elem = ssir_get_constant((SsirModule *)ctx->mod, c->composite.components[i]);
             if (elem) {
-                emit_constant(ctx, elem, out);
+                stw_emit_constant(ctx, elem, out);
             } else {
-                sb_appendf(out, "_const%u", c->composite.components[i]);
+                stw_sb_appendf(out, "_const%u", c->composite.components[i]);
             }
         }
-        sb_append(out, ")");
+        stw_sb_append(out, ")");
         break;
     }
 
     case SSIR_CONST_NULL:
         /* Zero value for type */
         emit_type(ctx, c->type, out);
-        sb_append(out, "()");
+        stw_sb_append(out, "()");
         break;
 
     default:
-        sb_appendf(out, "_const%u", c->id);
+        stw_sb_appendf(out, "_const%u", c->id);
         break;
     }
 }
@@ -443,7 +443,7 @@ static void emit_constant(SsirToWgslContext *ctx, SsirConstant *c, StringBuffer 
  * ============================================================================ */
 
 /* Forward declaration */
-static void emit_expression(SsirToWgslContext *ctx, uint32_t id, StringBuffer *out);
+static void stw_emit_expression(SsirToWgslContext *ctx, uint32_t id, StwStringBuffer *out);
 
 /* Find instruction by result ID in current function */
 static SsirInst *find_instruction(SsirToWgslContext *ctx, uint32_t id) {
@@ -482,102 +482,102 @@ static SsirLocalVar *find_local(SsirToWgslContext *ctx, uint32_t id) {
     return NULL;
 }
 
-static void emit_binary_op(SsirToWgslContext *ctx, SsirInst *inst, const char *op, StringBuffer *out) {
-    sb_append(out, "(");
-    emit_expression(ctx, inst->operands[0], out);
-    sb_append(out, op);
-    emit_expression(ctx, inst->operands[1], out);
-    sb_append(out, ")");
+static void stw_emit_binary_op(SsirToWgslContext *ctx, SsirInst *inst, const char *op, StwStringBuffer *out) {
+    stw_sb_append(out, "(");
+    stw_emit_expression(ctx, inst->operands[0], out);
+    stw_sb_append(out, op);
+    stw_emit_expression(ctx, inst->operands[1], out);
+    stw_sb_append(out, ")");
 }
 
-static void emit_unary_op(SsirToWgslContext *ctx, SsirInst *inst, const char *op, StringBuffer *out) {
-    sb_append(out, "(");
-    sb_append(out, op);
-    emit_expression(ctx, inst->operands[0], out);
-    sb_append(out, ")");
+static void stw_emit_unary_op(SsirToWgslContext *ctx, SsirInst *inst, const char *op, StwStringBuffer *out) {
+    stw_sb_append(out, "(");
+    stw_sb_append(out, op);
+    stw_emit_expression(ctx, inst->operands[0], out);
+    stw_sb_append(out, ")");
 }
 
-static void emit_expression(SsirToWgslContext *ctx, uint32_t id, StringBuffer *out) {
+static void stw_emit_expression(SsirToWgslContext *ctx, uint32_t id, StwStringBuffer *out) {
     /* Check if it's a constant */
     SsirConstant *c = ssir_get_constant((SsirModule *)ctx->mod, id);
     if (c) {
-        emit_constant(ctx, c, out);
+        stw_emit_constant(ctx, c, out);
         return;
     }
 
     /* Check if it's a global variable */
     SsirGlobalVar *g = ssir_get_global((SsirModule *)ctx->mod, id);
     if (g) {
-        sb_append(out, get_id_name(ctx, id));
+        stw_sb_append(out, stw_get_id_name(ctx, id));
         return;
     }
 
     /* Check if it's a function parameter */
     SsirFunctionParam *param = find_param(ctx, id);
     if (param) {
-        sb_append(out, get_id_name(ctx, id));
+        stw_sb_append(out, stw_get_id_name(ctx, id));
         return;
     }
 
     /* Check if it's a local variable */
     SsirLocalVar *local = find_local(ctx, id);
     if (local) {
-        sb_append(out, get_id_name(ctx, id));
+        stw_sb_append(out, stw_get_id_name(ctx, id));
         return;
     }
 
     /* Look for instruction in current function */
     SsirInst *inst = find_instruction(ctx, id);
     if (!inst) {
-        sb_append(out, get_id_name(ctx, id));
+        stw_sb_append(out, stw_get_id_name(ctx, id));
         return;
     }
 
     switch (inst->op) {
     /* Arithmetic */
-    case SSIR_OP_ADD: emit_binary_op(ctx, inst, " + ", out); break;
-    case SSIR_OP_SUB: emit_binary_op(ctx, inst, " - ", out); break;
-    case SSIR_OP_MUL: emit_binary_op(ctx, inst, " * ", out); break;
-    case SSIR_OP_DIV: emit_binary_op(ctx, inst, " / ", out); break;
-    case SSIR_OP_MOD: emit_binary_op(ctx, inst, " % ", out); break;
-    case SSIR_OP_NEG: emit_unary_op(ctx, inst, "-", out); break;
+    case SSIR_OP_ADD: stw_emit_binary_op(ctx, inst, " + ", out); break;
+    case SSIR_OP_SUB: stw_emit_binary_op(ctx, inst, " - ", out); break;
+    case SSIR_OP_MUL: stw_emit_binary_op(ctx, inst, " * ", out); break;
+    case SSIR_OP_DIV: stw_emit_binary_op(ctx, inst, " / ", out); break;
+    case SSIR_OP_MOD: stw_emit_binary_op(ctx, inst, " % ", out); break;
+    case SSIR_OP_NEG: stw_emit_unary_op(ctx, inst, "-", out); break;
 
     /* Matrix */
-    case SSIR_OP_MAT_MUL: emit_binary_op(ctx, inst, " * ", out); break;
+    case SSIR_OP_MAT_MUL: stw_emit_binary_op(ctx, inst, " * ", out); break;
     case SSIR_OP_MAT_TRANSPOSE:
-        sb_append(out, "transpose(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "transpose(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ")");
         break;
 
     /* Bitwise */
-    case SSIR_OP_BIT_AND: emit_binary_op(ctx, inst, " & ", out); break;
-    case SSIR_OP_BIT_OR:  emit_binary_op(ctx, inst, " | ", out); break;
-    case SSIR_OP_BIT_XOR: emit_binary_op(ctx, inst, " ^ ", out); break;
-    case SSIR_OP_BIT_NOT: emit_unary_op(ctx, inst, "~", out); break;
-    case SSIR_OP_SHL:     emit_binary_op(ctx, inst, " << ", out); break;
+    case SSIR_OP_BIT_AND: stw_emit_binary_op(ctx, inst, " & ", out); break;
+    case SSIR_OP_BIT_OR:  stw_emit_binary_op(ctx, inst, " | ", out); break;
+    case SSIR_OP_BIT_XOR: stw_emit_binary_op(ctx, inst, " ^ ", out); break;
+    case SSIR_OP_BIT_NOT: stw_emit_unary_op(ctx, inst, "~", out); break;
+    case SSIR_OP_SHL:     stw_emit_binary_op(ctx, inst, " << ", out); break;
     case SSIR_OP_SHR:
     case SSIR_OP_SHR_LOGICAL:
-        emit_binary_op(ctx, inst, " >> ", out);
+        stw_emit_binary_op(ctx, inst, " >> ", out);
         break;
 
     /* Comparison */
-    case SSIR_OP_EQ: emit_binary_op(ctx, inst, " == ", out); break;
-    case SSIR_OP_NE: emit_binary_op(ctx, inst, " != ", out); break;
-    case SSIR_OP_LT: emit_binary_op(ctx, inst, " < ", out); break;
-    case SSIR_OP_LE: emit_binary_op(ctx, inst, " <= ", out); break;
-    case SSIR_OP_GT: emit_binary_op(ctx, inst, " > ", out); break;
-    case SSIR_OP_GE: emit_binary_op(ctx, inst, " >= ", out); break;
+    case SSIR_OP_EQ: stw_emit_binary_op(ctx, inst, " == ", out); break;
+    case SSIR_OP_NE: stw_emit_binary_op(ctx, inst, " != ", out); break;
+    case SSIR_OP_LT: stw_emit_binary_op(ctx, inst, " < ", out); break;
+    case SSIR_OP_LE: stw_emit_binary_op(ctx, inst, " <= ", out); break;
+    case SSIR_OP_GT: stw_emit_binary_op(ctx, inst, " > ", out); break;
+    case SSIR_OP_GE: stw_emit_binary_op(ctx, inst, " >= ", out); break;
 
     /* Logical */
-    case SSIR_OP_AND: emit_binary_op(ctx, inst, " && ", out); break;
-    case SSIR_OP_OR:  emit_binary_op(ctx, inst, " || ", out); break;
-    case SSIR_OP_NOT: emit_unary_op(ctx, inst, "!", out); break;
+    case SSIR_OP_AND: stw_emit_binary_op(ctx, inst, " && ", out); break;
+    case SSIR_OP_OR:  stw_emit_binary_op(ctx, inst, " || ", out); break;
+    case SSIR_OP_NOT: stw_emit_unary_op(ctx, inst, "!", out); break;
 
     /* Composite */
     case SSIR_OP_CONSTRUCT: {
         emit_type(ctx, inst->type, out);
-        sb_append(out, "(");
+        stw_sb_append(out, "(");
         /* Components are either in operands or extra */
         uint32_t count = inst->operand_count;
         const uint32_t *comps = inst->operands;
@@ -586,23 +586,23 @@ static void emit_expression(SsirToWgslContext *ctx, uint32_t id, StringBuffer *o
             comps = inst->extra;
         }
         for (uint32_t i = 0; i < count; i++) {
-            if (i > 0) sb_append(out, ", ");
-            emit_expression(ctx, comps[i], out);
+            if (i > 0) stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, comps[i], out);
         }
-        sb_append(out, ")");
+        stw_sb_append(out, ")");
         break;
     }
 
     case SSIR_OP_EXTRACT: {
-        emit_expression(ctx, inst->operands[0], out);
+        stw_emit_expression(ctx, inst->operands[0], out);
         /* Check if extracting from vector - use swizzle */
         SsirType *base_t = ssir_get_type((SsirModule *)ctx->mod, inst->type);
         uint32_t idx = inst->operands[1];
         if (idx < 4) {
             const char swizzle[] = "xyzw";
-            sb_appendf(out, ".%c", swizzle[idx]);
+            stw_sb_appendf(out, ".%c", swizzle[idx]);
         } else {
-            sb_appendf(out, "[%u]", idx);
+            stw_sb_appendf(out, "[%u]", idx);
         }
         break;
     }
@@ -610,80 +610,80 @@ static void emit_expression(SsirToWgslContext *ctx, uint32_t id, StringBuffer *o
     case SSIR_OP_INSERT: {
         /* composite, value, index - not directly expressible in WGSL */
         /* Would need a temp var, for now just reference the result */
-        sb_append(out, get_id_name(ctx, id));
+        stw_sb_append(out, stw_get_id_name(ctx, id));
         break;
     }
 
     case SSIR_OP_SHUFFLE: {
         emit_type(ctx, inst->type, out);
-        sb_append(out, "(");
+        stw_sb_append(out, "(");
         /* Indices in extra array */
         for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) sb_append(out, ", ");
+            if (i > 0) stw_sb_append(out, ", ");
             uint32_t src_idx = inst->extra[i];
             /* First operand is v1, second is v2 */
             uint32_t v1_size = 4; /* Assume vec4 for simplicity */
             if (src_idx < v1_size) {
-                emit_expression(ctx, inst->operands[0], out);
+                stw_emit_expression(ctx, inst->operands[0], out);
             } else {
-                emit_expression(ctx, inst->operands[1], out);
+                stw_emit_expression(ctx, inst->operands[1], out);
                 src_idx -= v1_size;
             }
             if (src_idx < 4) {
                 const char swizzle[] = "xyzw";
-                sb_appendf(out, ".%c", swizzle[src_idx]);
+                stw_sb_appendf(out, ".%c", swizzle[src_idx]);
             }
         }
-        sb_append(out, ")");
+        stw_sb_append(out, ")");
         break;
     }
 
     case SSIR_OP_SPLAT: {
         emit_type(ctx, inst->type, out);
-        sb_append(out, "(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ")");
         break;
     }
 
     case SSIR_OP_EXTRACT_DYN:
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, "[");
-        emit_expression(ctx, inst->operands[1], out);
-        sb_append(out, "]");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, "[");
+        stw_emit_expression(ctx, inst->operands[1], out);
+        stw_sb_append(out, "]");
         break;
 
     /* Memory */
     case SSIR_OP_LOAD:
         /* Dereference pointer - in WGSL just use the variable */
-        emit_expression(ctx, inst->operands[0], out);
+        stw_emit_expression(ctx, inst->operands[0], out);
         break;
 
     case SSIR_OP_ACCESS: {
         /* Base pointer + indices */
-        emit_expression(ctx, inst->operands[0], out);
+        stw_emit_expression(ctx, inst->operands[0], out);
         /* Indices in extra array */
         for (uint16_t i = 0; i < inst->extra_count; i++) {
             uint32_t idx = inst->extra[i];
             /* Check if constant index */
             SsirConstant *idx_c = ssir_get_constant((SsirModule *)ctx->mod, idx);
             if (idx_c && idx_c->kind == SSIR_CONST_U32) {
-                sb_appendf(out, ".member%u", idx_c->u32_val);
+                stw_sb_appendf(out, ".member%u", idx_c->u32_val);
             } else if (idx_c && idx_c->kind == SSIR_CONST_I32) {
-                sb_appendf(out, ".member%d", idx_c->i32_val);
+                stw_sb_appendf(out, ".member%d", idx_c->i32_val);
             } else {
-                sb_append(out, "[");
-                emit_expression(ctx, idx, out);
-                sb_append(out, "]");
+                stw_sb_append(out, "[");
+                stw_emit_expression(ctx, idx, out);
+                stw_sb_append(out, "]");
             }
         }
         break;
     }
 
     case SSIR_OP_ARRAY_LEN:
-        sb_append(out, "arrayLength(&");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "arrayLength(&");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ")");
         break;
 
     /* Call */
@@ -691,136 +691,136 @@ static void emit_expression(SsirToWgslContext *ctx, uint32_t id, StringBuffer *o
         uint32_t callee_id = inst->operands[0];
         SsirFunction *callee = ssir_get_function((SsirModule *)ctx->mod, callee_id);
         if (callee && callee->name) {
-            sb_append(out, callee->name);
+            stw_sb_append(out, callee->name);
         } else {
-            sb_append(out, get_id_name(ctx, callee_id));
+            stw_sb_append(out, stw_get_id_name(ctx, callee_id));
         }
-        sb_append(out, "(");
+        stw_sb_append(out, "(");
         for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) sb_append(out, ", ");
-            emit_expression(ctx, inst->extra[i], out);
+            if (i > 0) stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->extra[i], out);
         }
-        sb_append(out, ")");
+        stw_sb_append(out, ")");
         break;
     }
 
     case SSIR_OP_BUILTIN: {
         SsirBuiltinId builtin_id = (SsirBuiltinId)inst->operands[0];
-        sb_append(out, builtin_func_to_wgsl(builtin_id));
-        sb_append(out, "(");
+        stw_sb_append(out, builtin_func_to_wgsl(builtin_id));
+        stw_sb_append(out, "(");
         for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) sb_append(out, ", ");
-            emit_expression(ctx, inst->extra[i], out);
+            if (i > 0) stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->extra[i], out);
         }
-        sb_append(out, ")");
+        stw_sb_append(out, ")");
         break;
     }
 
     /* Conversion */
     case SSIR_OP_CONVERT:
         emit_type(ctx, inst->type, out);
-        sb_append(out, "(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ")");
         break;
 
     case SSIR_OP_BITCAST:
-        sb_append(out, "bitcast<");
+        stw_sb_append(out, "bitcast<");
         emit_type(ctx, inst->type, out);
-        sb_append(out, ">(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ")");
+        stw_sb_append(out, ">(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ")");
         break;
 
     /* Texture */
     case SSIR_OP_TEX_SAMPLE:
-        sb_append(out, "textureSample(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[1], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[2], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "textureSample(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[1], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[2], out);
+        stw_sb_append(out, ")");
         break;
 
     case SSIR_OP_TEX_SAMPLE_BIAS:
-        sb_append(out, "textureSampleBias(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[1], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[2], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[3], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "textureSampleBias(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[1], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[2], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[3], out);
+        stw_sb_append(out, ")");
         break;
 
     case SSIR_OP_TEX_SAMPLE_LEVEL:
-        sb_append(out, "textureSampleLevel(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[1], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[2], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[3], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "textureSampleLevel(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[1], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[2], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[3], out);
+        stw_sb_append(out, ")");
         break;
 
     case SSIR_OP_TEX_SAMPLE_GRAD:
-        sb_append(out, "textureSampleGrad(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[1], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[2], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[3], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[4], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "textureSampleGrad(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[1], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[2], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[3], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[4], out);
+        stw_sb_append(out, ")");
         break;
 
     case SSIR_OP_TEX_SAMPLE_CMP:
-        sb_append(out, "textureSampleCompare(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[1], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[2], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[3], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "textureSampleCompare(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[1], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[2], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[3], out);
+        stw_sb_append(out, ")");
         break;
 
     case SSIR_OP_TEX_LOAD:
-        sb_append(out, "textureLoad(");
-        emit_expression(ctx, inst->operands[0], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[1], out);
-        sb_append(out, ", ");
-        emit_expression(ctx, inst->operands[2], out);
-        sb_append(out, ")");
+        stw_sb_append(out, "textureLoad(");
+        stw_emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[1], out);
+        stw_sb_append(out, ", ");
+        stw_emit_expression(ctx, inst->operands[2], out);
+        stw_sb_append(out, ")");
         break;
 
     case SSIR_OP_TEX_SIZE:
-        sb_append(out, "textureDimensions(");
-        emit_expression(ctx, inst->operands[0], out);
+        stw_sb_append(out, "textureDimensions(");
+        stw_emit_expression(ctx, inst->operands[0], out);
         if (inst->operand_count > 1 && inst->operands[1] != 0) {
-            sb_append(out, ", ");
-            emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
         }
-        sb_append(out, ")");
+        stw_sb_append(out, ")");
         break;
 
     /* Phi - not directly representable, use the name */
     case SSIR_OP_PHI:
-        sb_append(out, get_id_name(ctx, id));
+        stw_sb_append(out, stw_get_id_name(ctx, id));
         break;
 
     default:
         /* Fallback to ID name */
-        sb_append(out, get_id_name(ctx, id));
+        stw_sb_append(out, stw_get_id_name(ctx, id));
         break;
     }
 }
@@ -832,18 +832,18 @@ static void emit_expression(SsirToWgslContext *ctx, uint32_t id, StringBuffer *o
 static void emit_struct(SsirToWgslContext *ctx, SsirType *t) {
     if (t->kind != SSIR_TYPE_STRUCT) return;
 
-    sb_appendf(&ctx->sb, "struct %s {\n", t->struc.name ? t->struc.name : "_Struct");
+    stw_sb_appendf(&ctx->sb, "struct %s {\n", t->struc.name ? t->struc.name : "_Struct");
     ctx->sb.indent++;
 
     for (uint32_t i = 0; i < t->struc.member_count; i++) {
-        sb_indent(&ctx->sb);
-        sb_appendf(&ctx->sb, "member%u: ", i);
+        stw_sb_indent(&ctx->sb);
+        stw_sb_appendf(&ctx->sb, "member%u: ", i);
         emit_type(ctx, t->struc.members[i], &ctx->sb);
-        sb_append(&ctx->sb, ",\n");
+        stw_sb_append(&ctx->sb, ",\n");
     }
 
     ctx->sb.indent--;
-    sb_append(&ctx->sb, "}\n\n");
+    stw_sb_append(&ctx->sb, "}\n\n");
 }
 
 /* ============================================================================
@@ -860,20 +860,20 @@ static void emit_global(SsirToWgslContext *ctx, SsirGlobalVar *g) {
     }
 
     /* Emit attributes */
-    if (g->has_group) sb_appendf(&ctx->sb, "@group(%u) ", g->group);
-    if (g->has_binding) sb_appendf(&ctx->sb, "@binding(%u) ", g->binding);
+    if (g->has_group) stw_sb_appendf(&ctx->sb, "@group(%u) ", g->group);
+    if (g->has_binding) stw_sb_appendf(&ctx->sb, "@binding(%u) ", g->binding);
 
     /* Get pointee type */
     uint32_t pointee = ptr_t ? ptr_t->ptr.pointee : g->type;
     const char *addr_space = ptr_t ? address_space_to_wgsl(ptr_t->ptr.space) : NULL;
 
     if (addr_space) {
-        sb_appendf(&ctx->sb, "var<%s> %s: ", addr_space, get_id_name(ctx, g->id));
+        stw_sb_appendf(&ctx->sb, "var<%s> %s: ", addr_space, stw_get_id_name(ctx, g->id));
     } else {
-        sb_appendf(&ctx->sb, "var %s: ", get_id_name(ctx, g->id));
+        stw_sb_appendf(&ctx->sb, "var %s: ", stw_get_id_name(ctx, g->id));
     }
     emit_type(ctx, pointee, &ctx->sb);
-    sb_append(&ctx->sb, ";\n");
+    stw_sb_append(&ctx->sb, ";\n");
 }
 
 /* ============================================================================
@@ -895,39 +895,39 @@ typedef struct {
     uint32_t count;
 } BlockEmitState;
 
-static void emit_block(SsirToWgslContext *ctx, SsirBlock *blk, SsirFunction *fn, BlockEmitState *state);
+static void stw_emit_block(SsirToWgslContext *ctx, SsirBlock *blk, SsirFunction *fn, BlockEmitState *state);
 
 static void emit_statement(SsirToWgslContext *ctx, SsirInst *inst, SsirBlock *blk, SsirFunction *fn, BlockEmitState *state) {
     switch (inst->op) {
     case SSIR_OP_STORE:
-        sb_indent(&ctx->sb);
-        emit_expression(ctx, inst->operands[0], &ctx->sb);
-        sb_append(&ctx->sb, " = ");
-        emit_expression(ctx, inst->operands[1], &ctx->sb);
-        sb_append(&ctx->sb, ";\n");
+        stw_sb_indent(&ctx->sb);
+        stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
+        stw_sb_append(&ctx->sb, " = ");
+        stw_emit_expression(ctx, inst->operands[1], &ctx->sb);
+        stw_sb_append(&ctx->sb, ";\n");
         break;
 
     case SSIR_OP_TEX_STORE:
-        sb_indent(&ctx->sb);
-        sb_append(&ctx->sb, "textureStore(");
-        emit_expression(ctx, inst->operands[0], &ctx->sb);
-        sb_append(&ctx->sb, ", ");
-        emit_expression(ctx, inst->operands[1], &ctx->sb);
-        sb_append(&ctx->sb, ", ");
-        emit_expression(ctx, inst->operands[2], &ctx->sb);
-        sb_append(&ctx->sb, ");\n");
+        stw_sb_indent(&ctx->sb);
+        stw_sb_append(&ctx->sb, "textureStore(");
+        stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
+        stw_sb_append(&ctx->sb, ", ");
+        stw_emit_expression(ctx, inst->operands[1], &ctx->sb);
+        stw_sb_append(&ctx->sb, ", ");
+        stw_emit_expression(ctx, inst->operands[2], &ctx->sb);
+        stw_sb_append(&ctx->sb, ");\n");
         break;
 
     case SSIR_OP_RETURN_VOID:
-        sb_indent(&ctx->sb);
-        sb_append(&ctx->sb, "return;\n");
+        stw_sb_indent(&ctx->sb);
+        stw_sb_append(&ctx->sb, "return;\n");
         break;
 
     case SSIR_OP_RETURN:
-        sb_indent(&ctx->sb);
-        sb_append(&ctx->sb, "return ");
-        emit_expression(ctx, inst->operands[0], &ctx->sb);
-        sb_append(&ctx->sb, ";\n");
+        stw_sb_indent(&ctx->sb);
+        stw_sb_append(&ctx->sb, "return ");
+        stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
+        stw_sb_append(&ctx->sb, ";\n");
         break;
 
     case SSIR_OP_BRANCH:
@@ -936,7 +936,7 @@ static void emit_statement(SsirToWgslContext *ctx, SsirInst *inst, SsirBlock *bl
             uint32_t target = inst->operands[0];
             for (uint32_t i = 0; i < fn->block_count; i++) {
                 if (fn->blocks[i].id == target && !state->emitted[i]) {
-                    emit_block(ctx, &fn->blocks[i], fn, state);
+                    stw_emit_block(ctx, &fn->blocks[i], fn, state);
                     break;
                 }
             }
@@ -948,45 +948,45 @@ static void emit_statement(SsirToWgslContext *ctx, SsirInst *inst, SsirBlock *bl
         uint32_t true_block = inst->operands[1];
         uint32_t false_block = inst->operands[2];
 
-        sb_indent(&ctx->sb);
-        sb_append(&ctx->sb, "if (");
-        emit_expression(ctx, cond, &ctx->sb);
-        sb_append(&ctx->sb, ") {\n");
+        stw_sb_indent(&ctx->sb);
+        stw_sb_append(&ctx->sb, "if (");
+        stw_emit_expression(ctx, cond, &ctx->sb);
+        stw_sb_append(&ctx->sb, ") {\n");
         ctx->sb.indent++;
 
         /* Emit true block */
         for (uint32_t i = 0; i < fn->block_count; i++) {
             if (fn->blocks[i].id == true_block && !state->emitted[i]) {
-                emit_block(ctx, &fn->blocks[i], fn, state);
+                stw_emit_block(ctx, &fn->blocks[i], fn, state);
                 break;
             }
         }
 
         ctx->sb.indent--;
-        sb_indent(&ctx->sb);
-        sb_append(&ctx->sb, "} else {\n");
+        stw_sb_indent(&ctx->sb);
+        stw_sb_append(&ctx->sb, "} else {\n");
         ctx->sb.indent++;
 
         /* Emit false block */
         for (uint32_t i = 0; i < fn->block_count; i++) {
             if (fn->blocks[i].id == false_block && !state->emitted[i]) {
-                emit_block(ctx, &fn->blocks[i], fn, state);
+                stw_emit_block(ctx, &fn->blocks[i], fn, state);
                 break;
             }
         }
 
         ctx->sb.indent--;
-        sb_indent(&ctx->sb);
-        sb_append(&ctx->sb, "}\n");
+        stw_sb_indent(&ctx->sb);
+        stw_sb_append(&ctx->sb, "}\n");
         break;
     }
 
     case SSIR_OP_BARRIER:
-        sb_indent(&ctx->sb);
+        stw_sb_indent(&ctx->sb);
         if (inst->operands[0] == SSIR_BARRIER_WORKGROUP) {
-            sb_append(&ctx->sb, "workgroupBarrier();\n");
+            stw_sb_append(&ctx->sb, "workgroupBarrier();\n");
         } else {
-            sb_append(&ctx->sb, "storageBarrier();\n");
+            stw_sb_append(&ctx->sb, "storageBarrier();\n");
         }
         break;
 
@@ -998,16 +998,16 @@ static void emit_statement(SsirToWgslContext *ctx, SsirInst *inst, SsirBlock *bl
     default:
         /* Value-producing instruction - emit as let if needed */
         if (inst->result != 0) {
-            sb_indent(&ctx->sb);
-            sb_appendf(&ctx->sb, "let %s = ", get_id_name(ctx, inst->result));
-            emit_expression(ctx, inst->result, &ctx->sb);
-            sb_append(&ctx->sb, ";\n");
+            stw_sb_indent(&ctx->sb);
+            stw_sb_appendf(&ctx->sb, "let %s = ", stw_get_id_name(ctx, inst->result));
+            stw_emit_expression(ctx, inst->result, &ctx->sb);
+            stw_sb_append(&ctx->sb, ";\n");
         }
         break;
     }
 }
 
-static void emit_block(SsirToWgslContext *ctx, SsirBlock *blk, SsirFunction *fn, BlockEmitState *state) {
+static void stw_emit_block(SsirToWgslContext *ctx, SsirBlock *blk, SsirFunction *fn, BlockEmitState *state) {
     /* Find block index and mark as emitted */
     for (uint32_t i = 0; i < fn->block_count; i++) {
         if (fn->blocks[i].id == blk->id) {
@@ -1023,27 +1023,27 @@ static void emit_block(SsirToWgslContext *ctx, SsirBlock *blk, SsirFunction *fn,
     }
 }
 
-static void emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
+static void stw_emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
     SsirEntryPoint *ep = find_entry_point(ctx, fn->id);
 
     /* Entry point attributes */
     if (ep) {
         switch (ep->stage) {
         case SSIR_STAGE_VERTEX:
-            sb_append(&ctx->sb, "@vertex\n");
+            stw_sb_append(&ctx->sb, "@vertex\n");
             break;
         case SSIR_STAGE_FRAGMENT:
-            sb_append(&ctx->sb, "@fragment\n");
+            stw_sb_append(&ctx->sb, "@fragment\n");
             break;
         case SSIR_STAGE_COMPUTE:
-            sb_appendf(&ctx->sb, "@compute @workgroup_size(%u, %u, %u)\n",
+            stw_sb_appendf(&ctx->sb, "@compute @workgroup_size(%u, %u, %u)\n",
                        ep->workgroup_size[0], ep->workgroup_size[1], ep->workgroup_size[2]);
             break;
         }
     }
 
     /* Function signature */
-    sb_appendf(&ctx->sb, "fn %s(", fn->name ? fn->name : get_id_name(ctx, fn->id));
+    stw_sb_appendf(&ctx->sb, "fn %s(", fn->name ? fn->name : stw_get_id_name(ctx, fn->id));
 
     /* Parameters - for entry points, include interface variables */
     int first_param = 1;
@@ -1056,32 +1056,32 @@ static void emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
             if (!ptr_t || ptr_t->kind != SSIR_TYPE_PTR) continue;
             if (ptr_t->ptr.space != SSIR_ADDR_INPUT) continue;
 
-            if (!first_param) sb_append(&ctx->sb, ", ");
+            if (!first_param) stw_sb_append(&ctx->sb, ", ");
             first_param = 0;
 
             /* Emit parameter attributes */
             if (g->has_location) {
-                sb_appendf(&ctx->sb, "@location(%u) ", g->location);
+                stw_sb_appendf(&ctx->sb, "@location(%u) ", g->location);
             }
             if (g->builtin != SSIR_BUILTIN_NONE) {
-                sb_appendf(&ctx->sb, "@builtin(%s) ", builtin_var_to_wgsl(g->builtin));
+                stw_sb_appendf(&ctx->sb, "@builtin(%s) ", builtin_var_to_wgsl(g->builtin));
             }
 
-            sb_appendf(&ctx->sb, "%s: ", get_id_name(ctx, g->id));
+            stw_sb_appendf(&ctx->sb, "%s: ", stw_get_id_name(ctx, g->id));
             emit_type(ctx, ptr_t->ptr.pointee, &ctx->sb);
         }
     }
 
     /* Regular function parameters */
     for (uint32_t i = 0; i < fn->param_count; i++) {
-        if (!first_param) sb_append(&ctx->sb, ", ");
+        if (!first_param) stw_sb_append(&ctx->sb, ", ");
         first_param = 0;
 
-        sb_appendf(&ctx->sb, "%s: ", get_id_name(ctx, fn->params[i].id));
+        stw_sb_appendf(&ctx->sb, "%s: ", stw_get_id_name(ctx, fn->params[i].id));
         emit_type(ctx, fn->params[i].type, &ctx->sb);
     }
 
-    sb_append(&ctx->sb, ")");
+    stw_sb_append(&ctx->sb, ")");
 
     /* Return type - for entry points, check output interface variables first */
     int has_return_type = 0;
@@ -1093,14 +1093,14 @@ static void emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
             if (!ptr_t || ptr_t->kind != SSIR_TYPE_PTR) continue;
             if (ptr_t->ptr.space != SSIR_ADDR_OUTPUT) continue;
 
-            sb_append(&ctx->sb, " -> ");
+            stw_sb_append(&ctx->sb, " -> ");
 
             /* Emit return attributes */
             if (g->has_location) {
-                sb_appendf(&ctx->sb, "@location(%u) ", g->location);
+                stw_sb_appendf(&ctx->sb, "@location(%u) ", g->location);
             }
             if (g->builtin != SSIR_BUILTIN_NONE) {
-                sb_appendf(&ctx->sb, "@builtin(%s) ", builtin_var_to_wgsl(g->builtin));
+                stw_sb_appendf(&ctx->sb, "@builtin(%s) ", builtin_var_to_wgsl(g->builtin));
             }
 
             emit_type(ctx, ptr_t->ptr.pointee, &ctx->sb);
@@ -1113,12 +1113,12 @@ static void emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
     if (!has_return_type) {
         SsirType *ret_t = ssir_get_type((SsirModule *)ctx->mod, fn->return_type);
         if (ret_t && ret_t->kind != SSIR_TYPE_VOID) {
-            sb_append(&ctx->sb, " -> ");
+            stw_sb_append(&ctx->sb, " -> ");
             emit_type(ctx, fn->return_type, &ctx->sb);
         }
     }
 
-    sb_append(&ctx->sb, " {\n");
+    stw_sb_append(&ctx->sb, " {\n");
     ctx->sb.indent++;
 
     /* Set current function for expression lookup */
@@ -1130,19 +1130,19 @@ static void emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
         SsirType *ptr_t = ssir_get_type((SsirModule *)ctx->mod, local->type);
         uint32_t pointee = (ptr_t && ptr_t->kind == SSIR_TYPE_PTR) ? ptr_t->ptr.pointee : local->type;
 
-        sb_indent(&ctx->sb);
-        sb_appendf(&ctx->sb, "var %s: ", get_id_name(ctx, local->id));
+        stw_sb_indent(&ctx->sb);
+        stw_sb_appendf(&ctx->sb, "var %s: ", stw_get_id_name(ctx, local->id));
         emit_type(ctx, pointee, &ctx->sb);
 
         if (local->has_initializer) {
-            sb_append(&ctx->sb, " = ");
+            stw_sb_append(&ctx->sb, " = ");
             SsirConstant *init = ssir_get_constant((SsirModule *)ctx->mod, local->initializer);
             if (init) {
-                emit_constant(ctx, init, &ctx->sb);
+                stw_emit_constant(ctx, init, &ctx->sb);
             }
         }
 
-        sb_append(&ctx->sb, ";\n");
+        stw_sb_append(&ctx->sb, ";\n");
     }
 
     /* Emit function body (basic blocks) */
@@ -1152,7 +1152,7 @@ static void emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
         state.emitted = (bool *)STW_MALLOC(fn->block_count * sizeof(bool));
         if (state.emitted) {
             memset(state.emitted, 0, fn->block_count * sizeof(bool));
-            emit_block(ctx, &fn->blocks[0], fn, &state);
+            stw_emit_block(ctx, &fn->blocks[0], fn, &state);
             STW_FREE(state.emitted);
         }
     }
@@ -1160,7 +1160,7 @@ static void emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
     ctx->current_func = NULL;
 
     ctx->sb.indent--;
-    sb_append(&ctx->sb, "}\n\n");
+    stw_sb_append(&ctx->sb, "}\n\n");
 }
 
 /* ============================================================================
@@ -1250,12 +1250,12 @@ SsirToWgslResult ssir_to_wgsl(const SsirModule *mod,
     }
 
     if (mod->global_count > 0) {
-        sb_newline(&ctx.sb);
+        stw_sb_newline(&ctx.sb);
     }
 
     /* Phase 4: Emit functions */
     for (uint32_t i = 0; i < mod->function_count; i++) {
-        emit_function(&ctx, &mod->functions[i]);
+        stw_emit_function(&ctx, &mod->functions[i]);
     }
 
     /* Return result */

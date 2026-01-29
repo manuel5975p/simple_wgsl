@@ -177,7 +177,7 @@ struct WgslRaiser {
     StringBuffer sb;
 };
 
-static void set_error(WgslRaiser *r, const char *msg) {
+static void wr_set_error(WgslRaiser *r, const char *msg) {
     size_t n = strlen(msg);
     if (n >= sizeof(r->last_error)) n = sizeof(r->last_error) - 1;
     memcpy(r->last_error, msg, n);
@@ -208,7 +208,7 @@ static int sb_reserve(StringBuffer *sb, size_t need) {
     return 1;
 }
 
-static void sb_append(StringBuffer *sb, const char *s) {
+static void wr_sb_append(StringBuffer *sb, const char *s) {
     size_t n = strlen(s);
     if (!sb_reserve(sb, n)) return;
     memcpy(sb->data + sb->len, s, n);
@@ -216,21 +216,21 @@ static void sb_append(StringBuffer *sb, const char *s) {
     sb->data[sb->len] = 0;
 }
 
-static void sb_appendf(StringBuffer *sb, const char *fmt, ...) {
+static void wr_sb_appendf(StringBuffer *sb, const char *fmt, ...) {
     char buf[1024];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buf, sizeof(buf), fmt, args);
     va_end(args);
-    sb_append(sb, buf);
+    wr_sb_append(sb, buf);
 }
 
 static void sb_indent(StringBuffer *sb) {
-    for (int i = 0; i < sb->indent; i++) sb_append(sb, "    ");
+    for (int i = 0; i < sb->indent; i++) wr_sb_append(sb, "    ");
 }
 
 static void sb_newline(StringBuffer *sb) {
-    sb_append(sb, "\n");
+    wr_sb_append(sb, "\n");
 }
 
 static const char *read_string(const uint32_t *words, int word_count, int *out_words_read) {
@@ -441,7 +441,7 @@ WgslRaiseResult wgsl_raise_parse(WgslRaiser *r) {
         uint16_t opcode = word0 & 0xFFFF;
         uint16_t wc = word0 >> 16;
         if (wc == 0 || pos + wc > r->word_count) {
-            set_error(r, "Invalid instruction");
+            wr_set_error(r, "Invalid instruction");
             return WGSL_RAISE_INVALID_SPIRV;
         }
 
@@ -1084,7 +1084,7 @@ static void emit_struct_decl(WgslRaiser *r, uint32_t type_id) {
     if (info->kind != SPV_ID_TYPE || info->type_info.kind != SPV_TYPE_STRUCT) return;
 
     const char *name = info->name ? info->name : "UnnamedStruct";
-    sb_appendf(&r->sb, "struct %s {\n", name);
+    wr_sb_appendf(&r->sb, "struct %s {\n", name);
     r->sb.indent++;
 
     for (int i = 0; i < info->type_info.struct_type.member_count; i++) {
@@ -1096,9 +1096,9 @@ static void emit_struct_decl(WgslRaiser *r, uint32_t type_id) {
             if (info->member_decorations[j].member_index == (uint32_t)i) {
                 SpvDecoration d = info->member_decorations[j].decoration;
                 if (d == SpvDecorationLocation && info->member_decorations[j].literal_count > 0) {
-                    sb_appendf(&r->sb, "@location(%u) ", info->member_decorations[j].literals[0]);
+                    wr_sb_appendf(&r->sb, "@location(%u) ", info->member_decorations[j].literals[0]);
                 } else if (d == SpvDecorationBuiltIn && info->member_decorations[j].literal_count > 0) {
-                    sb_appendf(&r->sb, "@builtin(%s) ", get_builtin_name((SpvBuiltIn)info->member_decorations[j].literals[0]));
+                    wr_sb_appendf(&r->sb, "@builtin(%s) ", get_builtin_name((SpvBuiltIn)info->member_decorations[j].literals[0]));
                 }
             }
         }
@@ -1108,14 +1108,14 @@ static void emit_struct_decl(WgslRaiser *r, uint32_t type_id) {
             member_name = info->member_names[i];
         }
         if (member_name) {
-            sb_appendf(&r->sb, "%s: %s,\n", member_name, type_to_wgsl(r, member_type));
+            wr_sb_appendf(&r->sb, "%s: %s,\n", member_name, type_to_wgsl(r, member_type));
         } else {
-            sb_appendf(&r->sb, "member%d: %s,\n", i, type_to_wgsl(r, member_type));
+            wr_sb_appendf(&r->sb, "member%d: %s,\n", i, type_to_wgsl(r, member_type));
         }
     }
 
     r->sb.indent--;
-    sb_append(&r->sb, "};\n\n");
+    wr_sb_append(&r->sb, "};\n\n");
 }
 
 static void emit_global_var(WgslRaiser *r, uint32_t var_id) {
@@ -1137,8 +1137,8 @@ static void emit_global_var(WgslRaiser *r, uint32_t var_id) {
         return;
     }
 
-    if (has_group) sb_appendf(&r->sb, "@group(%u) ", group);
-    if (has_binding) sb_appendf(&r->sb, "@binding(%u) ", binding);
+    if (has_group) wr_sb_appendf(&r->sb, "@group(%u) ", group);
+    if (has_binding) wr_sb_appendf(&r->sb, "@binding(%u) ", binding);
 
     uint32_t ptr_type = info->variable.type_id;
     uint32_t pointee_type = 0;
@@ -1157,26 +1157,26 @@ static void emit_global_var(WgslRaiser *r, uint32_t var_id) {
     const char *name = info->name;
 
     if (sc == SpvStorageClassUniform) {
-        sb_appendf(&r->sb, "var<uniform> %s: %s;\n", name, type_str);
+        wr_sb_appendf(&r->sb, "var<uniform> %s: %s;\n", name, type_str);
     } else if (sc == SpvStorageClassStorageBuffer) {
-        sb_appendf(&r->sb, "var<storage, read_write> %s: %s;\n", name, type_str);
+        wr_sb_appendf(&r->sb, "var<storage, read_write> %s: %s;\n", name, type_str);
     } else if (sc == SpvStorageClassUniformConstant) {
         if (r->ids[pointee_type].kind == SPV_ID_TYPE) {
             SpvTypeKind tk = r->ids[pointee_type].type_info.kind;
             if (tk == SPV_TYPE_IMAGE || tk == SPV_TYPE_SAMPLED_IMAGE) {
-                sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
+                wr_sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
             } else if (tk == SPV_TYPE_SAMPLER) {
-                sb_appendf(&r->sb, "var %s: sampler;\n", name);
+                wr_sb_appendf(&r->sb, "var %s: sampler;\n", name);
             } else {
-                sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
+                wr_sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
             }
         } else {
-            sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
+            wr_sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
         }
     } else if (sc == SpvStorageClassPrivate) {
-        sb_appendf(&r->sb, "var<private> %s: %s;\n", name, type_str);
+        wr_sb_appendf(&r->sb, "var<private> %s: %s;\n", name, type_str);
     } else if (sc == SpvStorageClassWorkgroup) {
-        sb_appendf(&r->sb, "var<workgroup> %s: %s;\n", name, type_str);
+        wr_sb_appendf(&r->sb, "var<workgroup> %s: %s;\n", name, type_str);
     }
 }
 
@@ -1194,45 +1194,45 @@ static const char *get_id_name(WgslRaiser *r, uint32_t id) {
 static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out);
 
 static void emit_constant(WgslRaiser *r, uint32_t id, StringBuffer *out) {
-    if (id >= r->id_bound) { sb_append(out, "0"); return; }
+    if (id >= r->id_bound) { wr_sb_append(out, "0"); return; }
     SpvIdInfo *info = &r->ids[id];
-    if (info->kind != SPV_ID_CONSTANT) { sb_append(out, "0"); return; }
+    if (info->kind != SPV_ID_CONSTANT) { wr_sb_append(out, "0"); return; }
 
     uint32_t type_id = info->constant.type_id;
-    if (type_id >= r->id_bound) { sb_append(out, "0"); return; }
+    if (type_id >= r->id_bound) { wr_sb_append(out, "0"); return; }
     SpvIdInfo *type_info = &r->ids[type_id];
 
     if (type_info->kind == SPV_ID_TYPE) {
         SpvTypeKind tk = type_info->type_info.kind;
         if (tk == SPV_TYPE_BOOL) {
-            sb_append(out, info->constant.value[0] ? "true" : "false");
+            wr_sb_append(out, info->constant.value[0] ? "true" : "false");
         } else if (tk == SPV_TYPE_INT) {
             if (type_info->type_info.int_type.signedness) {
-                sb_appendf(out, "%di", (int32_t)info->constant.value[0]);
+                wr_sb_appendf(out, "%di", (int32_t)info->constant.value[0]);
             } else {
-                sb_appendf(out, "%uu", info->constant.value[0]);
+                wr_sb_appendf(out, "%uu", info->constant.value[0]);
             }
         } else if (tk == SPV_TYPE_FLOAT) {
             union { uint32_t u; float f; } conv;
             conv.u = info->constant.value[0];
             if (conv.f == (float)(int)conv.f) {
-                sb_appendf(out, "%.1f", conv.f);
+                wr_sb_appendf(out, "%.1f", conv.f);
             } else {
-                sb_appendf(out, "%g", conv.f);
+                wr_sb_appendf(out, "%g", conv.f);
             }
         } else if (tk == SPV_TYPE_VECTOR) {
             const char *t = type_to_wgsl(r, type_id);
-            sb_appendf(out, "%s(", t);
+            wr_sb_appendf(out, "%s(", t);
             for (int i = 0; i < info->constant.value_count; i++) {
-                if (i > 0) sb_append(out, ", ");
+                if (i > 0) wr_sb_append(out, ", ");
                 emit_expression(r, info->constant.value[i], out);
             }
-            sb_append(out, ")");
+            wr_sb_append(out, ")");
         } else {
-            sb_appendf(out, "%u", info->constant.value[0]);
+            wr_sb_appendf(out, "%u", info->constant.value[0]);
         }
     } else {
-        sb_appendf(out, "%u", info->constant.value[0]);
+        wr_sb_appendf(out, "%u", info->constant.value[0]);
     }
 }
 
@@ -1288,7 +1288,7 @@ static const char *glsl_extinst_name(uint32_t inst) {
 }
 
 static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
-    if (id >= r->id_bound) { sb_appendf(out, "_id%u", id); return; }
+    if (id >= r->id_bound) { wr_sb_appendf(out, "_id%u", id); return; }
     SpvIdInfo *info = &r->ids[id];
 
     switch (info->kind) {
@@ -1296,7 +1296,7 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
         emit_constant(r, id, out);
         break;
     case SPV_ID_VARIABLE:
-        sb_append(out, get_id_name(r, id));
+        wr_sb_append(out, get_id_name(r, id));
         break;
     case SPV_ID_INSTRUCTION: {
         SpvOp op = info->instruction.opcode;
@@ -1323,211 +1323,211 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
                                 uint32_t pointee = r->ids[ptr_type].type_info.pointer.pointee_type;
                                 if (pointee < r->id_bound && r->ids[pointee].kind == SPV_ID_TYPE &&
                                     r->ids[pointee].type_info.kind == SPV_TYPE_STRUCT) {
-                                    sb_appendf(out, ".member%u", idx);
+                                    wr_sb_appendf(out, ".member%u", idx);
                                     continue;
                                 }
                             }
                         }
-                        sb_appendf(out, "[%u]", idx);
+                        wr_sb_appendf(out, "[%u]", idx);
                     } else {
-                        sb_append(out, "[");
+                        wr_sb_append(out, "[");
                         emit_expression(r, idx_id, out);
-                        sb_append(out, "]");
+                        wr_sb_append(out, "]");
                     }
                 }
             }
             break;
         case SpvOpFAdd: case SpvOpIAdd:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " + ");
+                wr_sb_append(out, " + ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFSub: case SpvOpISub:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " - ");
+                wr_sb_append(out, " - ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFMul: case SpvOpIMul:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " * ");
+                wr_sb_append(out, " * ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFDiv: case SpvOpSDiv: case SpvOpUDiv:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " / ");
+                wr_sb_append(out, " / ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFRem: case SpvOpSRem: case SpvOpUMod:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " % ");
+                wr_sb_append(out, " % ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFNegate: case SpvOpSNegate:
             if (op_count >= 1) {
-                sb_append(out, "(-");
+                wr_sb_append(out, "(-");
                 emit_expression(r, ops[0], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFOrdEqual: case SpvOpIEqual: case SpvOpLogicalEqual:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " == ");
+                wr_sb_append(out, " == ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFOrdNotEqual: case SpvOpINotEqual: case SpvOpLogicalNotEqual:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " != ");
+                wr_sb_append(out, " != ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFOrdLessThan: case SpvOpSLessThan: case SpvOpULessThan:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " < ");
+                wr_sb_append(out, " < ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFOrdGreaterThan: case SpvOpSGreaterThan: case SpvOpUGreaterThan:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " > ");
+                wr_sb_append(out, " > ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFOrdLessThanEqual: case SpvOpSLessThanEqual: case SpvOpULessThanEqual:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " <= ");
+                wr_sb_append(out, " <= ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpFOrdGreaterThanEqual: case SpvOpSGreaterThanEqual: case SpvOpUGreaterThanEqual:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " >= ");
+                wr_sb_append(out, " >= ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpLogicalAnd:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " && ");
+                wr_sb_append(out, " && ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpLogicalOr:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " || ");
+                wr_sb_append(out, " || ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpLogicalNot:
             if (op_count >= 1) {
-                sb_append(out, "(!");
+                wr_sb_append(out, "(!");
                 emit_expression(r, ops[0], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpBitwiseAnd:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " & ");
+                wr_sb_append(out, " & ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpBitwiseOr:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " | ");
+                wr_sb_append(out, " | ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpBitwiseXor:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " ^ ");
+                wr_sb_append(out, " ^ ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpNot:
             if (op_count >= 1) {
-                sb_append(out, "(~");
+                wr_sb_append(out, "(~");
                 emit_expression(r, ops[0], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpShiftLeftLogical:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " << ");
+                wr_sb_append(out, " << ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpShiftRightLogical: case SpvOpShiftRightArithmetic:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " >> ");
+                wr_sb_append(out, " >> ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpCompositeConstruct: {
             const char *t = type_to_wgsl(r, info->instruction.type_id);
-            sb_appendf(out, "%s(", t);
+            wr_sb_appendf(out, "%s(", t);
             for (int i = 0; i < op_count; i++) {
-                if (i > 0) sb_append(out, ", ");
+                if (i > 0) wr_sb_append(out, ", ");
                 emit_expression(r, ops[i], out);
             }
-            sb_append(out, ")");
+            wr_sb_append(out, ")");
             break;
         }
         case SpvOpCompositeExtract:
@@ -1537,9 +1537,9 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
                     uint32_t idx = ops[i];
                     const char *swiz = "xyzw";
                     if (idx < 4) {
-                        sb_appendf(out, ".%c", swiz[idx]);
+                        wr_sb_appendf(out, ".%c", swiz[idx]);
                     } else {
-                        sb_appendf(out, "[%u]", idx);
+                        wr_sb_appendf(out, "[%u]", idx);
                     }
                 }
             }
@@ -1547,105 +1547,105 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
         case SpvOpVectorShuffle:
             if (op_count >= 2) {
                 emit_expression(r, ops[0], out);
-                sb_append(out, ".");
+                wr_sb_append(out, ".");
                 for (int i = 2; i < op_count; i++) {
                     uint32_t idx = ops[i];
                     const char *swiz = "xyzw";
                     if (idx < 4) {
-                        sb_appendf(out, "%c", swiz[idx]);
+                        wr_sb_appendf(out, "%c", swiz[idx]);
                     }
                 }
             }
             break;
         case SpvOpConvertFToS:
             if (op_count >= 1) {
-                sb_append(out, "i32(");
+                wr_sb_append(out, "i32(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpConvertFToU:
             if (op_count >= 1) {
-                sb_append(out, "u32(");
+                wr_sb_append(out, "u32(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpConvertSToF: case SpvOpConvertUToF:
             if (op_count >= 1) {
-                sb_append(out, "f32(");
+                wr_sb_append(out, "f32(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpBitcast: case SpvOpFConvert: case SpvOpSConvert: case SpvOpUConvert: {
             const char *t = type_to_wgsl(r, info->instruction.type_id);
             if (op_count >= 1) {
-                sb_appendf(out, "%s(", t);
+                wr_sb_appendf(out, "%s(", t);
                 emit_expression(r, ops[0], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         }
         case SpvOpSelect:
             if (op_count >= 3) {
-                sb_append(out, "select(");
+                wr_sb_append(out, "select(");
                 emit_expression(r, ops[2], out);
-                sb_append(out, ", ");
+                wr_sb_append(out, ", ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ", ");
+                wr_sb_append(out, ", ");
                 emit_expression(r, ops[0], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpDot:
             if (op_count >= 2) {
-                sb_append(out, "dot(");
+                wr_sb_append(out, "dot(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, ", ");
+                wr_sb_append(out, ", ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpVectorTimesScalar:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " * ");
+                wr_sb_append(out, " * ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpMatrixTimesScalar:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " * ");
+                wr_sb_append(out, " * ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpVectorTimesMatrix:
         case SpvOpMatrixTimesVector:
         case SpvOpMatrixTimesMatrix:
             if (op_count >= 2) {
-                sb_append(out, "(");
+                wr_sb_append(out, "(");
                 emit_expression(r, ops[0], out);
-                sb_append(out, " * ");
+                wr_sb_append(out, " * ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpExtInst:
             if (op_count >= 2) {
                 uint32_t inst = ops[1];
                 const char *fn = glsl_extinst_name(inst);
-                sb_appendf(out, "%s(", fn);
+                wr_sb_appendf(out, "%s(", fn);
                 for (int i = 2; i < op_count; i++) {
-                    if (i > 2) sb_append(out, ", ");
+                    if (i > 2) wr_sb_append(out, ", ");
                     emit_expression(r, ops[i], out);
                 }
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         case SpvOpSampledImage:
@@ -1656,31 +1656,31 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
         case SpvOpImageSampleImplicitLod:
         case SpvOpImageSampleExplicitLod:
             if (op_count >= 2) {
-                sb_append(out, "textureSample(");
+                wr_sb_append(out, "textureSample(");
                 uint32_t sampled_img = ops[0];
                 if (sampled_img < r->id_bound && r->ids[sampled_img].kind == SPV_ID_INSTRUCTION &&
                     r->ids[sampled_img].instruction.opcode == SpvOpSampledImage) {
                     uint32_t *si_ops = r->ids[sampled_img].instruction.operands;
                     emit_expression(r, si_ops[0], out);
-                    sb_append(out, ", ");
+                    wr_sb_append(out, ", ");
                     emit_expression(r, si_ops[1], out);
                 } else {
                     emit_expression(r, ops[0], out);
-                    sb_append(out, ", sampler_placeholder");
+                    wr_sb_append(out, ", sampler_placeholder");
                 }
-                sb_append(out, ", ");
+                wr_sb_append(out, ", ");
                 emit_expression(r, ops[1], out);
-                sb_append(out, ")");
+                wr_sb_append(out, ")");
             }
             break;
         default:
-            sb_appendf(out, "_id%u", id);
+            wr_sb_appendf(out, "_id%u", id);
             break;
         }
         break;
     }
     default:
-        sb_append(out, get_id_name(r, id));
+        wr_sb_append(out, get_id_name(r, id));
         break;
     }
 }
@@ -1724,9 +1724,9 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
                         if ((SpvOp)copcode == SpvOpBranchConditional && coperand_count >= 3) {
                             // Emit: while (cond) { ... }
                             sb_indent(&r->sb);
-                            sb_append(&r->sb, "while (");
+                            wr_sb_append(&r->sb, "while (");
                             emit_expression(r, coperands[0], &r->sb);
-                            sb_append(&r->sb, ") {\n");
+                            wr_sb_append(&r->sb, ") {\n");
                             r->sb.indent++;
 
                             // Emit body block (true branch)
@@ -1739,7 +1739,7 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
 
                             r->sb.indent--;
                             sb_indent(&r->sb);
-                            sb_append(&r->sb, "}\n");
+                            wr_sb_append(&r->sb, "}\n");
                         }
                     }
                 }
@@ -1765,21 +1765,21 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
             if (operand_count >= 2) {
                 sb_indent(&r->sb);
                 emit_expression(r, operands[0], &r->sb);
-                sb_append(&r->sb, " = ");
+                wr_sb_append(&r->sb, " = ");
                 emit_expression(r, operands[1], &r->sb);
-                sb_append(&r->sb, ";\n");
+                wr_sb_append(&r->sb, ";\n");
             }
             break;
         case SpvOpReturn:
             sb_indent(&r->sb);
-            sb_append(&r->sb, "return;\n");
+            wr_sb_append(&r->sb, "return;\n");
             break;
         case SpvOpReturnValue:
             if (operand_count >= 1) {
                 sb_indent(&r->sb);
-                sb_append(&r->sb, "return ");
+                wr_sb_append(&r->sb, "return ");
                 emit_expression(r, operands[0], &r->sb);
-                sb_append(&r->sb, ";\n");
+                wr_sb_append(&r->sb, ";\n");
             }
             break;
         case SpvOpBranch:
@@ -1787,9 +1787,9 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
         case SpvOpBranchConditional:
             if (operand_count >= 3) {
                 sb_indent(&r->sb);
-                sb_append(&r->sb, "if (");
+                wr_sb_append(&r->sb, "if (");
                 emit_expression(r, operands[0], &r->sb);
-                sb_append(&r->sb, ") {\n");
+                wr_sb_append(&r->sb, ") {\n");
                 r->sb.indent++;
                 for (int j = 0; j < fn->block_count; j++) {
                     if (fn->blocks[j].label_id == operands[1]) {
@@ -1799,7 +1799,7 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
                 }
                 r->sb.indent--;
                 sb_indent(&r->sb);
-                sb_append(&r->sb, "} else {\n");
+                wr_sb_append(&r->sb, "} else {\n");
                 r->sb.indent++;
                 for (int j = 0; j < fn->block_count; j++) {
                     if (fn->blocks[j].label_id == operands[2]) {
@@ -1809,7 +1809,7 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
                 }
                 r->sb.indent--;
                 sb_indent(&r->sb);
-                sb_append(&r->sb, "}\n");
+                wr_sb_append(&r->sb, "}\n");
             }
             break;
         case SpvOpVariable:
@@ -1826,7 +1826,7 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
                     const char *type_str = type_to_wgsl(r, pointee);
                     const char *name = get_id_name(r, var_id);
                     sb_indent(&r->sb);
-                    sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
+                    wr_sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
                 }
             }
             break;
@@ -1842,13 +1842,13 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
     if (fn->is_entry_point) {
         switch (fn->exec_model) {
         case SpvExecutionModelVertex:
-            sb_append(&r->sb, "@vertex ");
+            wr_sb_append(&r->sb, "@vertex ");
             break;
         case SpvExecutionModelFragment:
-            sb_append(&r->sb, "@fragment ");
+            wr_sb_append(&r->sb, "@fragment ");
             break;
         case SpvExecutionModelGLCompute:
-            sb_appendf(&r->sb, "@compute @workgroup_size(%d, %d, %d) ",
+            wr_sb_appendf(&r->sb, "@compute @workgroup_size(%d, %d, %d) ",
                        fn->workgroup_size[0], fn->workgroup_size[1], fn->workgroup_size[2]);
             break;
         default:
@@ -1856,7 +1856,7 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
         }
     }
 
-    sb_appendf(&r->sb, "fn %s(", name);
+    wr_sb_appendf(&r->sb, "fn %s(", name);
 
     int first_param = 1;
     for (int i = 0; i < fn->interface_var_count; i++) {
@@ -1873,7 +1873,7 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
             pointee = r->ids[ptr_type].type_info.pointer.pointee_type;
         }
 
-        if (!first_param) sb_append(&r->sb, ", ");
+        if (!first_param) wr_sb_append(&r->sb, ", ");
         first_param = 0;
 
         uint32_t loc = 0, builtin_val = 0;
@@ -1881,9 +1881,9 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
         int has_builtin = has_decoration(r, var_id, SpvDecorationBuiltIn, &builtin_val);
 
         if (has_loc) {
-            sb_appendf(&r->sb, "@location(%u) ", loc);
+            wr_sb_appendf(&r->sb, "@location(%u) ", loc);
         } else if (has_builtin) {
-            sb_appendf(&r->sb, "@builtin(%s) ", get_builtin_name((SpvBuiltIn)builtin_val));
+            wr_sb_appendf(&r->sb, "@builtin(%s) ", get_builtin_name((SpvBuiltIn)builtin_val));
         }
 
         if (!info->name) {
@@ -1892,10 +1892,10 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
         }
         const char *pname = info->name;
         const char *ptype = type_to_wgsl(r, pointee);
-        sb_appendf(&r->sb, "%s: %s", pname, ptype);
+        wr_sb_appendf(&r->sb, "%s: %s", pname, ptype);
     }
 
-    sb_append(&r->sb, ")");
+    wr_sb_append(&r->sb, ")");
 
     int has_output = 0;
     for (int i = 0; i < fn->interface_var_count; i++) {
@@ -1912,19 +1912,19 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
             pointee = r->ids[ptr_type].type_info.pointer.pointee_type;
         }
 
-        sb_append(&r->sb, " -> ");
+        wr_sb_append(&r->sb, " -> ");
 
         uint32_t loc = 0, builtin_val = 0;
         int has_loc = has_decoration(r, var_id, SpvDecorationLocation, &loc);
         int has_builtin = has_decoration(r, var_id, SpvDecorationBuiltIn, &builtin_val);
 
         if (has_loc) {
-            sb_appendf(&r->sb, "@location(%u) ", loc);
+            wr_sb_appendf(&r->sb, "@location(%u) ", loc);
         } else if (has_builtin) {
-            sb_appendf(&r->sb, "@builtin(%s) ", get_builtin_name((SpvBuiltIn)builtin_val));
+            wr_sb_appendf(&r->sb, "@builtin(%s) ", get_builtin_name((SpvBuiltIn)builtin_val));
         }
 
-        sb_append(&r->sb, type_to_wgsl(r, pointee));
+        wr_sb_append(&r->sb, type_to_wgsl(r, pointee));
         has_output = 1;
         break;
     }
@@ -1932,12 +1932,12 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
     if (!has_output && fn->return_type < r->id_bound) {
         SpvIdInfo *ret_info = &r->ids[fn->return_type];
         if (ret_info->kind == SPV_ID_TYPE && ret_info->type_info.kind != SPV_TYPE_VOID) {
-            sb_append(&r->sb, " -> ");
-            sb_append(&r->sb, type_to_wgsl(r, fn->return_type));
+            wr_sb_append(&r->sb, " -> ");
+            wr_sb_append(&r->sb, type_to_wgsl(r, fn->return_type));
         }
     }
 
-    sb_append(&r->sb, " {\n");
+    wr_sb_append(&r->sb, " {\n");
     r->sb.indent++;
 
     // Emit function-local variable declarations
@@ -1954,7 +1954,7 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
             const char *type_str = type_to_wgsl(r, pointee);
             const char *vname = get_id_name(r, i);
             sb_indent(&r->sb);
-            sb_appendf(&r->sb, "var %s: %s;\n", vname, type_str);
+            wr_sb_appendf(&r->sb, "var %s: %s;\n", vname, type_str);
         }
     }
 
@@ -1968,7 +1968,7 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
     }
 
     r->sb.indent--;
-    sb_append(&r->sb, "}\n\n");
+    wr_sb_append(&r->sb, "}\n\n");
 }
 
 const char *wgsl_raise_emit(WgslRaiser *r, const WgslRaiseOptions *options) {
