@@ -7,7 +7,14 @@ set(CMAKE_CXX_STANDARD 17)
 include(FetchContent)
 
 option(WGSL_BUILD_TESTS "Build tests" ON)
+option(WGSL_BUILD_EXPRESSION_TESTS "Build expression golden-file tests (requires expressions/ data)" OFF)
 option(WGSL_USE_ASAN "Enable Address Sanitizer" OFF)
+
+if(WGSL_USE_ASAN)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+endif()
 
 add_library(wgsl_compiler STATIC
     wgsl_parser.c
@@ -47,9 +54,4 @@ target_link_libraries(example wgsl_compiler)
 if(WGSL_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
-endif()
-
-if(WGSL_USE_ASAN)
-    target_compile_options(wgsl_compiler PRIVATE -fsanitize=address -fno-omit-frame-pointer)
-    target_link_options(wgsl_compiler PRIVATE -fsanitize=address)
 endif()

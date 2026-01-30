@@ -17,9 +17,12 @@ set(TEST_SOURCES
     ssir_raise_test.cpp
     spirv_to_ssir_test.cpp
     integration_test.cpp
-    expression_test.cpp
     glsl_parser_test.cpp
 )
+
+if(WGSL_BUILD_EXPRESSION_TESTS)
+    list(APPEND TEST_SOURCES expression_test.cpp)
+endif()
 
 if(Vulkan_FOUND)
     list(APPEND TEST_SOURCES
@@ -47,10 +50,11 @@ endif()
 
 target_include_directories(wgsl_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-# Set source directory for expression tests to find test data
-target_compile_definitions(wgsl_tests PRIVATE
-    WGSL_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
+if(WGSL_BUILD_EXPRESSION_TESTS)
+    target_compile_definitions(wgsl_tests PRIVATE
+        WGSL_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
+endif()
 
 include(GoogleTest)
 gtest_discover_tests(wgsl_tests
