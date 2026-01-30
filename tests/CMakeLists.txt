@@ -27,6 +27,7 @@ if(Vulkan_FOUND)
         vulkan_compute_test.cpp
         vulkan_graphics_harness.cpp
         vulkan_graphics_test.cpp
+        vulkan_graphics_complex_test.cpp
     )
 endif()
 
