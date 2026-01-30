@@ -662,6 +662,19 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
                     sts_emit_member_decorate(c, spv_id, i, SpvDecorationOffset, &t->struc.offsets[i], 1);
                 }
             }
+            /* Emit ColMajor + MatrixStride for matrix members */
+            for (uint32_t i = 0; i < t->struc.member_count; ++i) {
+                SsirType *mt = ssir_get_type((SsirModule *)c->mod, t->struc.members[i]);
+                if (mt && mt->kind == SSIR_TYPE_MAT) {
+                    sts_emit_member_decorate(c, spv_id, i, SpvDecorationColMajor, NULL, 0);
+                    uint32_t comp_size = 4;
+                    SsirType *elem_t = ssir_get_type((SsirModule *)c->mod, mt->mat.elem);
+                    if (elem_t && elem_t->kind == SSIR_TYPE_F16) comp_size = 2;
+                    uint32_t stride = mt->mat.rows * comp_size;
+                    if (stride < 16) stride = 16;
+                    sts_emit_member_decorate(c, spv_id, i, SpvDecorationMatrixStride, &stride, 1);
+                }
+            }
             break;
         }
         case SSIR_TYPE_PTR: {
@@ -1157,15 +1170,31 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
         /* Matrix */
         case SSIR_OP_MAT_MUL: {
             /* Determine operation based on operand types */
-            int left_mat = is_matrix_ssir_type(c, inst->type); /* result is mat if mat*mat */
-            int left_vec = is_vector_ssir_type(c, inst->type); /* result is vec if mat*vec or vec*mat */
-            if (left_mat) {
+            int op0_mat = is_matrix_ssir_type(c, op0_type);
+            int op1_mat = is_matrix_ssir_type(c, op1_type);
+            int op0_vec = is_vector_ssir_type(c, op0_type);
+            int op1_vec = is_vector_ssir_type(c, op1_type);
+            int op0_scalar = is_scalar_ssir_type(c, op0_type);
+            int op1_scalar = is_scalar_ssir_type(c, op1_type);
+
+            if (op0_mat && op1_mat) {
                 sts_emit_op(wb, SpvOpMatrixTimesMatrix, 5);
-            } else if (left_vec) {
-                /* Could be mat*vec or vec*mat - check result type */
+            } else if (op0_mat && op1_vec) {
                 sts_emit_op(wb, SpvOpMatrixTimesVector, 5);
-            } else {
+            } else if (op0_vec && op1_mat) {
+                sts_emit_op(wb, SpvOpVectorTimesMatrix, 5);
+            } else if (op0_mat && op1_scalar) {
                 sts_emit_op(wb, SpvOpMatrixTimesScalar, 5);
+            } else if (op0_scalar && op1_mat) {
+                /* scalar * mat -> emit as MatrixTimesScalar with swapped operands */
+                sts_emit_op(wb, SpvOpMatrixTimesScalar, 5);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[1]));
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+                break;
+            } else {
+                sts_emit_op(wb, SpvOpFMul, 5);
             }
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);

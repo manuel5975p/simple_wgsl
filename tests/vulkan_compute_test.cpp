@@ -1657,4 +1657,312 @@ TEST_F(VulkanComputeTest, GlslMandelbrotImage) {
     EXPECT_GT(nonblack, 1000) << "Should have substantial set exterior";
 }
 
+// ============================================================================
+// Matrix operation GPU verification tests
+// ============================================================================
+
+TEST_F(VulkanComputeTest, MatrixTimesVector_Identity3x3) {
+    const char* source = R"(
+        struct In  { v: vec3<f32>, };
+        struct Out { v: array<f32>, };
+        @group(0) @binding(0) var<storage, read> input: In;
+        @group(0) @binding(1) var<storage, read_write> output: Out;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            let m = mat3x3<f32>(
+                vec3<f32>(1.,0.,0.),
+                vec3<f32>(0.,1.,0.),
+                vec3<f32>(0.,0.,1.));
+            let r = m * input.v;
+            output.v[0] = r.x;
+            output.v[1] = r.y;
+            output.v[2] = r.z;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    // Identity * (1,2,3) = (1,2,3)
+    std::vector<float> in_data = {1.0f, 2.0f, 3.0f, 0.0f}; // padded to 16 bytes
+    auto input = ctx_->createStorageBuffer(in_data);
+    auto output = ctx_->createStorageBuffer(3 * sizeof(float));
+
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto out = output.download<float>(3);
+    EXPECT_FLOAT_EQ(out[0], 1.0f);
+    EXPECT_FLOAT_EQ(out[1], 2.0f);
+    EXPECT_FLOAT_EQ(out[2], 3.0f);
+}
+
+TEST_F(VulkanComputeTest, MatrixTimesVector_Scale3x3) {
+    const char* source = R"(
+        struct Out { v: array<f32>, };
+        @group(0) @binding(0) var<storage, read_write> output: Out;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            let m = mat3x3<f32>(
+                vec3<f32>(2.,0.,0.),
+                vec3<f32>(0.,3.,0.),
+                vec3<f32>(0.,0.,4.));
+            let v = vec3<f32>(1., 1., 1.);
+            let r = m * v;
+            output.v[0] = r.x;
+            output.v[1] = r.y;
+            output.v[2] = r.z;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(3 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto out = output.download<float>(3);
+    EXPECT_FLOAT_EQ(out[0], 2.0f);
+    EXPECT_FLOAT_EQ(out[1], 3.0f);
+    EXPECT_FLOAT_EQ(out[2], 4.0f);
+}
+
+TEST_F(VulkanComputeTest, MatrixTimesVector_4x4_Translation) {
+    const char* source = R"(
+        struct Out { v: array<f32>, };
+        @group(0) @binding(0) var<storage, read_write> output: Out;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            // Translation matrix: translate by (10, 20, 30)
+            let m = mat4x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.),
+                vec4<f32>(0.,0.,1.,0.),
+                vec4<f32>(10.,20.,30.,1.));
+            let v = vec4<f32>(1., 2., 3., 1.);
+            let r = m * v;
+            output.v[0] = r.x;
+            output.v[1] = r.y;
+            output.v[2] = r.z;
+            output.v[3] = r.w;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(4 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto out = output.download<float>(4);
+    EXPECT_FLOAT_EQ(out[0], 11.0f);  // 1 + 10*1
+    EXPECT_FLOAT_EQ(out[1], 22.0f);  // 2 + 20*1
+    EXPECT_FLOAT_EQ(out[2], 33.0f);  // 3 + 30*1
+    EXPECT_FLOAT_EQ(out[3], 1.0f);
+}
+
+TEST_F(VulkanComputeTest, VectorTimesMatrix_3x3) {
+    const char* source = R"(
+        struct Out { v: array<f32>, };
+        @group(0) @binding(0) var<storage, read_write> output: Out;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            let v = vec3<f32>(1., 2., 3.);
+            let m = mat3x3<f32>(
+                vec3<f32>(2.,0.,0.),
+                vec3<f32>(0.,3.,0.),
+                vec3<f32>(0.,0.,4.));
+            let r = v * m;
+            output.v[0] = r.x;
+            output.v[1] = r.y;
+            output.v[2] = r.z;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(3 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto out = output.download<float>(3);
+    EXPECT_FLOAT_EQ(out[0], 2.0f);   // (1,2,3) dot col0=(2,0,0)
+    EXPECT_FLOAT_EQ(out[1], 6.0f);   // (1,2,3) dot col1=(0,3,0)
+    EXPECT_FLOAT_EQ(out[2], 12.0f);  // (1,2,3) dot col2=(0,0,4)
+}
+
+TEST_F(VulkanComputeTest, MatrixTimesMatrix_3x3_Identity) {
+    const char* source = R"(
+        struct Out { v: array<f32>, };
+        @group(0) @binding(0) var<storage, read_write> output: Out;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            let a = mat3x3<f32>(
+                vec3<f32>(1.,2.,3.),
+                vec3<f32>(4.,5.,6.),
+                vec3<f32>(7.,8.,9.));
+            let id = mat3x3<f32>(
+                vec3<f32>(1.,0.,0.),
+                vec3<f32>(0.,1.,0.),
+                vec3<f32>(0.,0.,1.));
+            let r = a * id;
+            // Extract first column of result
+            let c0 = r * vec3<f32>(1.,0.,0.);
+            output.v[0] = c0.x;
+            output.v[1] = c0.y;
+            output.v[2] = c0.z;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(3 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto out = output.download<float>(3);
+    // a * identity = a, so first column should be (1,2,3)
+    EXPECT_FLOAT_EQ(out[0], 1.0f);
+    EXPECT_FLOAT_EQ(out[1], 2.0f);
+    EXPECT_FLOAT_EQ(out[2], 3.0f);
+}
+
+TEST_F(VulkanComputeTest, MatrixTimesScalar_3x3) {
+    const char* source = R"(
+        struct Out { v: array<f32>, };
+        @group(0) @binding(0) var<storage, read_write> output: Out;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            let m = mat3x3<f32>(
+                vec3<f32>(1.,2.,3.),
+                vec3<f32>(4.,5.,6.),
+                vec3<f32>(7.,8.,9.));
+            let scaled = m * 2.0;
+            // Extract first column
+            let c0 = scaled * vec3<f32>(1.,0.,0.);
+            output.v[0] = c0.x;
+            output.v[1] = c0.y;
+            output.v[2] = c0.z;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(3 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto out = output.download<float>(3);
+    EXPECT_FLOAT_EQ(out[0], 2.0f);
+    EXPECT_FLOAT_EQ(out[1], 4.0f);
+    EXPECT_FLOAT_EQ(out[2], 6.0f);
+}
+
+TEST_F(VulkanComputeTest, MatVecChain_ModelViewProjection) {
+    const char* source = R"(
+        struct Out { v: array<f32>, };
+        @group(0) @binding(0) var<storage, read_write> output: Out;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            // Scale by 2
+            let model = mat4x4<f32>(
+                vec4<f32>(2.,0.,0.,0.),
+                vec4<f32>(0.,2.,0.,0.),
+                vec4<f32>(0.,0.,2.,0.),
+                vec4<f32>(0.,0.,0.,1.));
+            // Translate by (1,0,0)
+            let view = mat4x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.),
+                vec4<f32>(0.,0.,1.,0.),
+                vec4<f32>(1.,0.,0.,1.));
+            let pos = vec4<f32>(1., 0., 0., 1.);
+            let mvp = view * model;
+            let r = mvp * pos;
+            output.v[0] = r.x;
+            output.v[1] = r.y;
+            output.v[2] = r.z;
+            output.v[3] = r.w;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(4 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto out = output.download<float>(4);
+    // model * (1,0,0,1) = (2,0,0,1)
+    // view * (2,0,0,1) = (2+1, 0, 0, 1) = (3,0,0,1)
+    EXPECT_FLOAT_EQ(out[0], 3.0f);
+    EXPECT_FLOAT_EQ(out[1], 0.0f);
+    EXPECT_FLOAT_EQ(out[2], 0.0f);
+    EXPECT_FLOAT_EQ(out[3], 1.0f);
+}
+
+TEST_F(VulkanComputeTest, MatrixTimesVector_GeneralMultiply) {
+    const char* source = R"(
+        struct Out { v: array<f32>, };
+        @group(0) @binding(0) var<storage, read_write> output: Out;
+
+        @compute @workgroup_size(1)
+        fn main() {
+            // Non-trivial matrix
+            let m = mat3x3<f32>(
+                vec3<f32>(1., 4., 7.),
+                vec3<f32>(2., 5., 8.),
+                vec3<f32>(3., 6., 9.));
+            let v = vec3<f32>(1., 1., 1.);
+            let r = m * v;
+            output.v[0] = r.x;
+            output.v[1] = r.y;
+            output.v[2] = r.z;
+        }
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(3 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {
+        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
+    }, 1);
+
+    auto out = output.download<float>(3);
+    // m * (1,1,1) = col0 + col1 + col2 = (1+2+3, 4+5+6, 7+8+9) = (6, 15, 24)
+    EXPECT_FLOAT_EQ(out[0], 6.0f);
+    EXPECT_FLOAT_EQ(out[1], 15.0f);
+    EXPECT_FLOAT_EQ(out[2], 24.0f);
+}
+
 #endif // WGSL_HAS_VULKAN

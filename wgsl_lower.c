@@ -1401,6 +1401,11 @@ static int add_struct_to_cache(WgslLower *l, const char *name, uint32_t spv_id, 
     return 1;
 }
 
+// Forward declarations for type helpers used by lower_structs
+static int get_vector_component_count(uint32_t type_id, WgslLower *l);
+static int is_matrix_type(uint32_t type_id, WgslLower *l);
+static int get_matrix_info(uint32_t type_id, WgslLower *l, uint32_t *out_col_type, int *out_col_count);
+
 // Lower all struct declarations in the program
 static int lower_structs(WgslLower *l) {
     if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return 1;
@@ -1484,6 +1489,22 @@ static int lower_structs(WgslLower *l) {
             const WgslAstNode *field_node = sd->fields[f];
             if (field_node && field_node->type == WGSL_NODE_STRUCT_FIELD) {
                 emit_member_name(l, struct_id, f, field_node->struct_field.name);
+            }
+        }
+
+        // Add ColMajor + MatrixStride decorations for matrix members
+        for (int f = 0; f < sd->field_count; ++f) {
+            if (is_matrix_type(member_types[f], l)) {
+                emit_member_decorate(l, struct_id, f, SpvDecorationColMajor, NULL, 0);
+                uint32_t col_type;
+                int col_count;
+                if (get_matrix_info(member_types[f], l, &col_type, &col_count)) {
+                    int vec_count = get_vector_component_count(col_type, l);
+                    // MatrixStride = column vector size rounded up to vec4 alignment (16 bytes)
+                    uint32_t stride = (uint32_t)(vec_count * 4);
+                    if (stride < 16) stride = 16;  // std140: columns are vec4-aligned
+                    emit_member_decorate(l, struct_id, f, SpvDecorationMatrixStride, &stride, 1);
+                }
             }
         }
 
@@ -1828,11 +1849,11 @@ static int emit_binary_op(WgslLower *l, SpvOp op, uint32_t result_type, uint32_t
                                                   l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFMul: case SpvOpIMul: case SpvOpVectorTimesScalar:
-                case SpvOpMatrixTimesScalar: case SpvOpVectorTimesMatrix: case SpvOpMatrixTimesVector:
                     ssir_result = ssir_build_mul(l->ssir, l->fn_ctx.ssir_func_id,
                                                   l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
                     break;
-                case SpvOpMatrixTimesMatrix:
+                case SpvOpMatrixTimesScalar: case SpvOpVectorTimesMatrix:
+                case SpvOpMatrixTimesVector: case SpvOpMatrixTimesMatrix:
                     ssir_result = ssir_build_mat_mul(l->ssir, l->fn_ctx.ssir_func_id,
                                                       l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
                     break;
@@ -3214,17 +3235,36 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
                 int right_is_matrix = is_matrix_type(right.type_id, l);
 
                 if (left_is_matrix && right_is_matrix) {
-                    // matrix × matrix
+                    // matrix × matrix: mat<K,R> * mat<C,K> -> mat<C,R>
                     op = SpvOpMatrixTimesMatrix;
-                    result_type = left.type_id;  // Result is same matrix type
+                    uint32_t left_col_type;
+                    int right_col_count;
+                    if (get_matrix_info(left.type_id, l, &left_col_type, NULL) &&
+                        get_matrix_info(right.type_id, l, NULL, &right_col_count)) {
+                        result_type = emit_type_matrix(l, left_col_type, right_col_count);
+                    } else {
+                        result_type = left.type_id;
+                    }
                 } else if (left_is_matrix && right_vec_count > 0) {
-                    // matrix × vector
+                    // matrix × vector: mat<C,R> * vec<C> -> vec<R>
                     op = SpvOpMatrixTimesVector;
-                    result_type = right.type_id;  // Result is vector
+                    uint32_t col_type;
+                    if (get_matrix_info(left.type_id, l, &col_type, NULL)) {
+                        result_type = col_type;
+                    } else {
+                        result_type = right.type_id;
+                    }
                 } else if (left_vec_count > 0 && right_is_matrix) {
-                    // vector × matrix
+                    // vector × matrix: vec<R> * mat<C,R> -> vec<C>
                     op = SpvOpVectorTimesMatrix;
-                    result_type = left.type_id;  // Result is vector
+                    int col_count;
+                    uint32_t col_type;
+                    if (get_matrix_info(right.type_id, l, &col_type, &col_count)) {
+                        uint32_t scalar = get_scalar_type(left.type_id, l);
+                        result_type = emit_type_vector(l, scalar, col_count);
+                    } else {
+                        result_type = left.type_id;
+                    }
                 } else if (left_is_matrix && right_is_scalar) {
                     // matrix × scalar
                     op = SpvOpMatrixTimesScalar;
@@ -5081,7 +5121,135 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
         }
     }
 
-    // For fragment shaders, handle parameters with @location attributes (varying inputs)
+    // For fragment shaders, handle struct-typed input parameters with @location/@builtin attributes
+    if (ep->stage == WGSL_STAGE_FRAGMENT && fn->param_count > 0) {
+        for (int p = 0; p < fn->param_count; ++p) {
+            const WgslAstNode *param_node = fn->params[p];
+            if (!param_node || param_node->type != WGSL_NODE_PARAM) continue;
+
+            const Param *param = &param_node->param;
+
+            // Check if the parameter type is a struct (TYPE node with a name)
+            if (!param->type || param->type->type != WGSL_NODE_TYPE) continue;
+            const char *type_name = param->type->type_node.name;
+
+            // Find the struct definition
+            if (!l->program || l->program->type != WGSL_NODE_PROGRAM) continue;
+            const Program *prog = &l->program->program;
+
+            for (int d = 0; d < prog->decl_count; ++d) {
+                const WgslAstNode *decl = prog->decls[d];
+                if (!decl || decl->type != WGSL_NODE_STRUCT) continue;
+
+                const StructDecl *sd = &decl->struct_decl;
+                if (!sd->name || strcmp(sd->name, type_name) != 0) continue;
+
+                // Found the struct, process each field
+                for (int f = 0; f < sd->field_count; ++f) {
+                    const WgslAstNode *field_node = sd->fields[f];
+                    if (!field_node || field_node->type != WGSL_NODE_STRUCT_FIELD) continue;
+
+                    const StructField *field = &field_node->struct_field;
+
+                    for (int a = 0; a < field->attr_count; ++a) {
+                        const WgslAstNode *attr = field->attrs[a];
+                        if (attr->type != WGSL_NODE_ATTRIBUTE) continue;
+
+                        if (strcmp(attr->attribute.name, "location") == 0) {
+                            // Handle @location field
+                            int loc = 0;
+                            if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL) {
+                                loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                            }
+
+                            uint32_t field_type = lower_type(l, field->type);
+                            uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassInput, field_type);
+                            uint32_t var_id = emit_global_variable(l, ptr_type, SpvStorageClassInput, field->name, 0);
+
+                            // Create SSIR global for input
+                            uint32_t ssir_var = 0;
+                            if (l->ssir) {
+                                uint32_t ssir_elem_type = spv_type_to_ssir(l, field_type);
+                                uint32_t ssir_ptr_type = ssir_type_ptr(l->ssir, ssir_elem_type, SSIR_ADDR_INPUT);
+                                ssir_var = ssir_global_var(l->ssir, field->name, ssir_ptr_type);
+                                ssir_global_set_location(l->ssir, ssir_var, (uint32_t)loc);
+                                ssir_id_map_set(l, var_id, ssir_var);
+                            }
+
+                            // Decorate with location
+                            uint32_t loc_val = (uint32_t)loc;
+                            emit_decorate(l, var_id, SpvDecorationLocation, &loc_val, 1);
+
+                            // Check for @interpolate(flat)
+                            for (int ia = 0; ia < field->attr_count; ++ia) {
+                                const WgslAstNode *iattr = field->attrs[ia];
+                                if (iattr->type == WGSL_NODE_ATTRIBUTE && strcmp(iattr->attribute.name, "interpolate") == 0) {
+                                    if (iattr->attribute.arg_count > 0 && iattr->attribute.args[0]->type == WGSL_NODE_IDENT) {
+                                        if (strcmp(iattr->attribute.args[0]->ident.name, "flat") == 0) {
+                                            uint32_t flat_val = SpvDecorationFlat;
+                                            emit_decorate(l, var_id, SpvDecorationFlat, NULL, 0);
+                                            if (l->ssir) ssir_global_set_interpolation(l->ssir, ssir_var, SSIR_INTERP_FLAT);
+                                        }
+                                    }
+                                }
+                            }
+
+                            ADD_INTERFACE(var_id);
+
+                            // Build compound name: "param.field" for lookup
+                            char compound_name[256];
+                            snprintf(compound_name, sizeof(compound_name), "%s.%s", param->name, field->name);
+
+                            // Store in global_map for later access
+                            char *name_copy = (char*)WGSL_MALLOC(strlen(compound_name) + 1);
+                            if (name_copy) {
+                                strcpy(name_copy, compound_name);
+                                add_global_map_entry(l, -1, var_id, ssir_var, field_type, SpvStorageClassInput, name_copy);
+                            }
+                        } else if (strcmp(attr->attribute.name, "builtin") == 0) {
+                            // Handle @builtin field (e.g., @builtin(position) -> FragCoord)
+                            if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_IDENT) {
+                                const char *builtin_name = attr->attribute.args[0]->ident.name;
+                                SpvBuiltIn spv_bi;
+                                SsirBuiltinVar ssir_bi;
+                                if (resolve_builtin_name(builtin_name, &spv_bi, &ssir_bi)) {
+                                    uint32_t field_type = lower_type(l, field->type);
+                                    uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassInput, field_type);
+                                    uint32_t var_id = emit_global_variable(l, ptr_type, SpvStorageClassInput, field->name, 0);
+
+                                    uint32_t bi_val = (uint32_t)spv_bi;
+                                    emit_decorate(l, var_id, SpvDecorationBuiltIn, &bi_val, 1);
+
+                                    uint32_t ssir_var = 0;
+                                    if (l->ssir) {
+                                        uint32_t ssir_elem_type = spv_type_to_ssir(l, field_type);
+                                        uint32_t ssir_ptr_type = ssir_type_ptr(l->ssir, ssir_elem_type, SSIR_ADDR_INPUT);
+                                        ssir_var = ssir_global_var(l->ssir, field->name, ssir_ptr_type);
+                                        ssir_global_set_builtin(l->ssir, ssir_var, ssir_bi);
+                                        ssir_id_map_set(l, var_id, ssir_var);
+                                    }
+
+                                    ADD_INTERFACE(var_id);
+
+                                    char compound_name[256];
+                                    snprintf(compound_name, sizeof(compound_name), "%s.%s", param->name, field->name);
+
+                                    char *name_copy = (char*)WGSL_MALLOC(strlen(compound_name) + 1);
+                                    if (name_copy) {
+                                        strcpy(name_copy, compound_name);
+                                        add_global_map_entry(l, -1, var_id, ssir_var, field_type, SpvStorageClassInput, name_copy);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                break; // Found the struct
+            }
+        }
+    }
+
+    // For fragment shaders, handle direct parameters with @location attributes (varying inputs)
     if (ep->stage == WGSL_STAGE_FRAGMENT && fn->param_count > 0) {
         for (int p = 0; p < fn->param_count; ++p) {
             const WgslAstNode *param_node = fn->params[p];

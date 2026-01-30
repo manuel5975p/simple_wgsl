@@ -422,3 +422,450 @@ TEST(LowerTest, IntegerVariables) {
     auto result = wgsl_test::CompileWgsl(source);
     EXPECT_TRUE(result.success) << "Validation error: " << result.error;
 }
+
+// ============================================================================
+// Matrix × Vector tests (OpMatrixTimesVector)
+// ============================================================================
+
+TEST(LowerTest, MatrixTimesVector_Mat2x2_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let m = mat2x2<f32>(vec2<f32>(1.,0.), vec2<f32>(0.,1.));
+            let v = vec2<f32>(2., 3.);
+            let r = m * v;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesVector_Mat3x3_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let m = mat3x3<f32>(
+                vec3<f32>(1.,0.,0.),
+                vec3<f32>(0.,1.,0.),
+                vec3<f32>(0.,0.,1.));
+            let v = vec3<f32>(1., 2., 3.);
+            let r = m * v;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesVector_Mat4x4_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let m = mat4x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.),
+                vec4<f32>(0.,0.,1.,0.),
+                vec4<f32>(0.,0.,0.,1.));
+            let v = vec4<f32>(1., 2., 3., 4.);
+            let r = m * v;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesVector_NonSquare_Mat3x2_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let m = mat3x2<f32>(
+                vec2<f32>(1.,0.),
+                vec2<f32>(0.,1.),
+                vec2<f32>(1.,1.));
+            let v = vec3<f32>(1., 2., 3.);
+            let r = m * v;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesVector_NonSquare_Mat4x3_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let m = mat4x3<f32>(
+                vec3<f32>(1.,0.,0.),
+                vec3<f32>(0.,1.,0.),
+                vec3<f32>(0.,0.,1.),
+                vec3<f32>(1.,1.,1.));
+            let v = vec4<f32>(1., 2., 3., 4.);
+            let r = m * v;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesVector_NonSquare_Mat2x4_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let m = mat2x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.));
+            let v = vec2<f32>(1., 2.);
+            let r = m * v;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// ============================================================================
+// Vector × Matrix tests (OpVectorTimesMatrix)
+// ============================================================================
+
+TEST(LowerTest, VectorTimesMatrix_Vec2_Mat2x2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let v = vec2<f32>(2., 3.);
+            let m = mat2x2<f32>(vec2<f32>(1.,0.), vec2<f32>(0.,1.));
+            let r = v * m;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, VectorTimesMatrix_Vec3_Mat3x3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let v = vec3<f32>(1., 2., 3.);
+            let m = mat3x3<f32>(
+                vec3<f32>(1.,0.,0.),
+                vec3<f32>(0.,1.,0.),
+                vec3<f32>(0.,0.,1.));
+            let r = v * m;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, VectorTimesMatrix_Vec4_Mat4x4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let v = vec4<f32>(1., 2., 3., 4.);
+            let m = mat4x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.),
+                vec4<f32>(0.,0.,1.,0.),
+                vec4<f32>(0.,0.,0.,1.));
+            let r = v * m;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, VectorTimesMatrix_NonSquare_Vec2_Mat3x2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let v = vec2<f32>(1., 2.);
+            let m = mat3x2<f32>(
+                vec2<f32>(1.,0.),
+                vec2<f32>(0.,1.),
+                vec2<f32>(1.,1.));
+            let r = v * m;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// ============================================================================
+// Matrix × Matrix tests (OpMatrixTimesMatrix)
+// ============================================================================
+
+TEST(LowerTest, MatrixTimesMatrix_Mat2x2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let a = mat2x2<f32>(vec2<f32>(1.,2.), vec2<f32>(3.,4.));
+            let b = mat2x2<f32>(vec2<f32>(5.,6.), vec2<f32>(7.,8.));
+            let r = a * b;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesMatrix_Mat3x3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let a = mat3x3<f32>(
+                vec3<f32>(1.,2.,3.),
+                vec3<f32>(4.,5.,6.),
+                vec3<f32>(7.,8.,9.));
+            let b = mat3x3<f32>(
+                vec3<f32>(-1.,-2.,-3.),
+                vec3<f32>(-4.,-5.,-6.),
+                vec3<f32>(-7.,-8.,-9.));
+            let r = a * b;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesMatrix_Mat4x4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let a = mat4x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.),
+                vec4<f32>(0.,0.,1.,0.),
+                vec4<f32>(0.,0.,0.,1.));
+            let b = mat4x4<f32>(
+                vec4<f32>(2.,0.,0.,0.),
+                vec4<f32>(0.,2.,0.,0.),
+                vec4<f32>(0.,0.,2.,0.),
+                vec4<f32>(0.,0.,0.,2.));
+            let r = a * b;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesMatrix_NonSquare_Mat2x3_Mat3x2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let a = mat2x3<f32>(vec3<f32>(1.,2.,3.), vec3<f32>(4.,5.,6.));
+            let b = mat3x2<f32>(vec2<f32>(1.,2.), vec2<f32>(3.,4.), vec2<f32>(5.,6.));
+            let r = a * b;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// ============================================================================
+// Matrix × Scalar tests (OpMatrixTimesScalar)
+// ============================================================================
+
+TEST(LowerTest, MatrixTimesScalar_Mat3x3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let m = mat3x3<f32>(
+                vec3<f32>(1.,0.,0.),
+                vec3<f32>(0.,1.,0.),
+                vec3<f32>(0.,0.,1.));
+            let s = 2.0;
+            let r = m * s;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, ScalarTimesMatrix_Mat4x4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let s = 3.0;
+            let m = mat4x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.),
+                vec4<f32>(0.,0.,1.,0.),
+                vec4<f32>(0.,0.,0.,1.));
+            let r = s * m;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// ============================================================================
+// Matrix operations with uniform struct (tests MatrixStride decorations)
+// ============================================================================
+
+TEST(LowerTest, MatrixTimesVector_UniformStruct_Mat3x3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct S {
+            matrix : mat3x3<f32>,
+            vector : vec3<f32>,
+        };
+        @group(0) @binding(0) var<uniform> data: S;
+        @fragment fn main() {
+            let x = data.matrix * data.vector;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesVector_UniformStruct_Mat4x4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct S {
+            matrix : mat4x4<f32>,
+            vector : vec4<f32>,
+        };
+        @group(0) @binding(0) var<uniform> data: S;
+        @fragment fn main() {
+            let x = data.matrix * data.vector;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, VectorTimesMatrix_UniformStruct_Vec3_Mat3x3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct S {
+            matrix : mat3x3<f32>,
+            vector : vec3<f32>,
+        };
+        @group(0) @binding(0) var<uniform> data: S;
+        @fragment fn main() {
+            let x = data.vector * data.matrix;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixTimesMatrix_UniformStruct) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct S {
+            a : mat4x4<f32>,
+            b : mat4x4<f32>,
+        };
+        @group(0) @binding(0) var<uniform> data: S;
+        @fragment fn main() {
+            let x = data.a * data.b;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// ============================================================================
+// Fragment shader struct parameter bug (known issue)
+// ============================================================================
+
+TEST(LowerTest, FragmentShaderFlatParameter) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @fragment fn fs_main(@location(0) col: vec4f) -> @location(0) vec4f {
+            return col;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// ============================================================================
+// Mixed matrix operations in complex expressions
+// ============================================================================
+
+TEST(LowerTest, MatrixVectorChain) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let model = mat4x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.),
+                vec4<f32>(0.,0.,1.,0.),
+                vec4<f32>(0.,0.,0.,1.));
+            let view = mat4x4<f32>(
+                vec4<f32>(1.,0.,0.,0.),
+                vec4<f32>(0.,1.,0.,0.),
+                vec4<f32>(0.,0.,1.,0.),
+                vec4<f32>(0.,0.,0.,1.));
+            let pos = vec4<f32>(1., 2., 3., 1.);
+            let transformed = view * model * pos;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, MatrixScaleAndTransform) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        @compute @workgroup_size(1) fn f() {
+            let m = mat3x3<f32>(
+                vec3<f32>(1.,0.,0.),
+                vec3<f32>(0.,1.,0.),
+                vec3<f32>(0.,0.,1.));
+            let scaled = m * 2.0;
+            let v = vec3<f32>(1., 2., 3.);
+            let r = scaled * v;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// ============================================================================
+// Fragment shader struct parameter tests
+// ============================================================================
+
+TEST(LowerTest, FragmentShaderStructParam_LocationFields) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct FsIn {
+            @location(0) col: vec4f,
+        };
+        @fragment fn fs_main(in: FsIn) -> @location(0) vec4f {
+            return in.col;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, FragmentShaderStructParam_MultipleLocations) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct FsIn {
+            @location(0) col: vec4f,
+            @location(1) uv: vec2f,
+        };
+        @fragment fn fs_main(in: FsIn) -> @location(0) vec4f {
+            return in.col;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, FragmentShaderStructParam_UseMultipleFields) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct FsIn {
+            @location(0) col: vec4f,
+            @location(1) uv: vec2f,
+        };
+        @fragment fn fs_main(in: FsIn) -> @location(0) vec4f {
+            let c = in.col;
+            let u = in.uv;
+            return vec4f(u.x, u.y, 0.0, 1.0);
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, FragmentShaderStructParam_BuiltinPosition) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct FsIn {
+            @builtin(position) pos: vec4f,
+            @location(0) col: vec4f,
+        };
+        @fragment fn fs_main(in: FsIn) -> @location(0) vec4f {
+            return in.col;
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, FragmentShaderStructParam_InterpolateFlat) {
+    auto r = wgsl_test::CompileWgsl(R"(
+        struct FsIn {
+            @location(0) @interpolate(flat) id: u32,
+        };
+        @fragment fn fs_main(in: FsIn) -> @location(0) vec4f {
+            return vec4f(1.0, 0.0, 0.0, 1.0);
+        }
+    )");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(LowerTest, FragmentShaderStructParam_VertexFragmentPipeline) {
+    // Vertex and fragment shaders compiled separately (normal workflow)
+    auto vs = wgsl_test::CompileWgsl(R"(
+        struct VsOut {
+            @builtin(position) pos: vec4f,
+            @location(0) col: vec4f,
+        };
+        @vertex fn vs_main(@location(0) pos: vec3f) -> VsOut {
+            var out: VsOut;
+            out.pos = vec4f(pos, 1.0);
+            out.col = vec4f(1.0, 0.0, 0.0, 1.0);
+            return out;
+        }
+    )");
+    EXPECT_TRUE(vs.success) << vs.error;
+
+    auto fs = wgsl_test::CompileWgsl(R"(
+        struct FsIn {
+            @location(0) col: vec4f,
+        };
+        @fragment fn fs_main(in: FsIn) -> @location(0) vec4f {
+            return in.col;
+        }
+    )");
+    EXPECT_TRUE(fs.success) << fs.error;
+}
