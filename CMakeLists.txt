@@ -9,6 +9,7 @@ include(FetchContent)
 option(WGSL_BUILD_TESTS "Build tests" ON)
 option(WGSL_BUILD_EXPRESSION_TESTS "Build expression golden-file tests (requires expressions/ data)" OFF)
 option(WGSL_USE_ASAN "Enable Address Sanitizer" OFF)
+option(WGSL_BUILD_EGL_TESTS "Build EGL/OpenGL compute shader validation tests" OFF)
 
 if(WGSL_USE_ASAN)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
@@ -25,6 +26,7 @@ add_library(wgsl_compiler STATIC
     ssir.c
     ssir_to_spirv.c
     ssir_to_wgsl.c
+    ssir_to_glsl.c
     spirv_to_ssir.c
 )
 

@@ -18,6 +18,7 @@ set(TEST_SOURCES
     spirv_to_ssir_test.cpp
     integration_test.cpp
     glsl_parser_test.cpp
+    glsl_raise_test.cpp
 )
 
 if(WGSL_BUILD_EXPRESSION_TESTS)
@@ -35,6 +36,19 @@ if(Vulkan_FOUND)
     )
 endif()
 
+if(WGSL_BUILD_EGL_TESTS)
+    find_package(OpenGL COMPONENTS EGL OpenGL)
+    if(OpenGL_EGL_FOUND)
+        list(APPEND TEST_SOURCES
+            egl_compute_harness.cpp
+            egl_compute_test.cpp
+            egl_graphics_test.cpp
+        )
+    else()
+        message(WARNING "WGSL_BUILD_EGL_TESTS enabled but EGL not found")
+    endif()
+endif()
+
 add_executable(wgsl_tests ${TEST_SOURCES})
 
 target_link_libraries(wgsl_tests
@@ -46,6 +60,11 @@ target_link_libraries(wgsl_tests
 if(Vulkan_FOUND)
     target_link_libraries(wgsl_tests Vulkan::Vulkan)
     target_compile_definitions(wgsl_tests PRIVATE WGSL_HAS_VULKAN=1)
+endif()
+
+if(WGSL_BUILD_EGL_TESTS AND OpenGL_EGL_FOUND)
+    target_link_libraries(wgsl_tests OpenGL::EGL OpenGL::OpenGL)
+    target_compile_definitions(wgsl_tests PRIVATE WGSL_HAS_EGL=1)
 endif()
 
 target_include_directories(wgsl_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

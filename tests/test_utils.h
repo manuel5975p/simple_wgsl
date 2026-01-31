@@ -242,4 +242,34 @@ inline RaiseResult RaiseSpirvToWgsl(const std::vector<uint32_t>& spirv) {
     return result;
 }
 
+struct GlslRaiseResult {
+    bool success;
+    std::string error;
+    std::string glsl;
+};
+
+inline GlslRaiseResult RaiseSsirToGlsl(const SsirModule *ssir, SsirStage stage) {
+    GlslRaiseResult result;
+    result.success = false;
+
+    char *glsl = nullptr;
+    char *error = nullptr;
+    SsirToGlslOptions opts = {};
+    opts.preserve_names = 1;
+
+    SsirToGlslResult raise_result = ssir_to_glsl(ssir, stage, &opts, &glsl, &error);
+
+    if (raise_result != SSIR_TO_GLSL_OK) {
+        result.error = error ? error : "GLSL raise failed";
+        if (error) ssir_to_glsl_free(error);
+        if (glsl) ssir_to_glsl_free(glsl);
+        return result;
+    }
+
+    result.glsl = glsl;
+    ssir_to_glsl_free(glsl);
+    result.success = true;
+    return result;
+}
+
 } // namespace wgsl_test

@@ -1265,6 +1265,33 @@ void ssir_to_wgsl_free(void *p);
 const char *ssir_to_wgsl_result_string(SsirToWgslResult result);
 
 /* ============================================================================
+ * SSIR TO GLSL
+ * ============================================================================ */
+
+typedef enum SsirToGlslResult {
+    SSIR_TO_GLSL_OK = 0,
+    SSIR_TO_GLSL_ERR_INVALID_INPUT,
+    SSIR_TO_GLSL_ERR_UNSUPPORTED,
+    SSIR_TO_GLSL_ERR_INTERNAL,
+    SSIR_TO_GLSL_ERR_OOM,
+} SsirToGlslResult;
+
+typedef struct SsirToGlslOptions {
+    int preserve_names;
+    int target_opengl; /* suppress Vulkan-only qualifiers (set = N) */
+} SsirToGlslOptions;
+
+SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
+                               SsirStage stage,
+                               const SsirToGlslOptions *opts,
+                               char **out_glsl,
+                               char **out_error);
+
+void ssir_to_glsl_free(void *p);
+
+const char *ssir_to_glsl_result_string(SsirToGlslResult result);
+
+/* ============================================================================
  * SPIR-V TO SSIR
  * ============================================================================ */
 

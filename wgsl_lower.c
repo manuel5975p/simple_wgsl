@@ -5309,8 +5309,8 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
         }
     }
 
-    // For compute shaders, handle builtin parameters
-    if (ep->stage == WGSL_STAGE_COMPUTE && fn->param_count > 0) {
+    // Handle direct @builtin parameters for all shader stages
+    if (fn->param_count > 0) {
         for (int p = 0; p < fn->param_count; ++p) {
             const WgslAstNode *param_node = fn->params[p];
             if (!param_node || param_node->type != WGSL_NODE_PARAM) continue;
@@ -5325,35 +5325,18 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
                 if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_IDENT) {
                     const char *builtin_name = attr->attribute.args[0]->ident.name;
-                    uint32_t param_type = lower_type(l, param->type);
 
+                    SpvBuiltIn spv_bi;
+                    SsirBuiltinVar ssir_bi;
+                    if (!resolve_builtin_name(builtin_name, &spv_bi, &ssir_bi))
+                        continue;
+
+                    uint32_t param_type = lower_type(l, param->type);
                     uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassInput, param_type);
                     uint32_t var_id = emit_global_variable(l, ptr_type, SpvStorageClassInput, param->name, 0);
 
-                    // Decorate with the appropriate builtin
-                    SpvBuiltIn builtin = SpvBuiltInMax;
-                    SsirBuiltinVar ssir_builtin = SSIR_BUILTIN_NONE;
-                    if (strcmp(builtin_name, "global_invocation_id") == 0) {
-                        builtin = SpvBuiltInGlobalInvocationId;
-                        ssir_builtin = SSIR_BUILTIN_GLOBAL_INVOCATION_ID;
-                    } else if (strcmp(builtin_name, "local_invocation_id") == 0) {
-                        builtin = SpvBuiltInLocalInvocationId;
-                        ssir_builtin = SSIR_BUILTIN_LOCAL_INVOCATION_ID;
-                    } else if (strcmp(builtin_name, "workgroup_id") == 0) {
-                        builtin = SpvBuiltInWorkgroupId;
-                        ssir_builtin = SSIR_BUILTIN_WORKGROUP_ID;
-                    } else if (strcmp(builtin_name, "num_workgroups") == 0) {
-                        builtin = SpvBuiltInNumWorkgroups;
-                        ssir_builtin = SSIR_BUILTIN_NUM_WORKGROUPS;
-                    } else if (strcmp(builtin_name, "local_invocation_index") == 0) {
-                        builtin = SpvBuiltInLocalInvocationIndex;
-                        ssir_builtin = SSIR_BUILTIN_LOCAL_INVOCATION_INDEX;
-                    }
-
-                    if (builtin != SpvBuiltInMax) {
-                        uint32_t builtin_val = (uint32_t)builtin;
-                        emit_decorate(l, var_id, SpvDecorationBuiltIn, &builtin_val, 1);
-                    }
+                    uint32_t bi_val = (uint32_t)spv_bi;
+                    emit_decorate(l, var_id, SpvDecorationBuiltIn, &bi_val, 1);
 
                     ADD_INTERFACE(var_id);
 
@@ -5363,31 +5346,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                         uint32_t ssir_elem_type = spv_type_to_ssir(l, param_type);
                         uint32_t ssir_ptr_type = ssir_type_ptr(l->ssir, ssir_elem_type, SSIR_ADDR_INPUT);
                         ssir_var = ssir_global_var(l->ssir, param->name, ssir_ptr_type);
-                        if (ssir_builtin != SSIR_BUILTIN_NONE) {
-                            ssir_global_set_builtin(l->ssir, ssir_var, ssir_builtin);
-                        }
+                        ssir_global_set_builtin(l->ssir, ssir_var, ssir_bi);
                         ssir_id_map_set(l, var_id, ssir_var);
                     }
 
-                    // Store mapping so we can look up this parameter later
-                    // Add to global_map for now (hack) so lower_ident can find it
-                    if (l->global_map_count >= l->global_map_cap) {
-                        int new_cap = l->global_map_cap ? l->global_map_cap * 2 : 16;
-                        void *mp = WGSL_REALLOC(l->global_map, new_cap * sizeof(l->global_map[0]));
-                        if (mp) {
-                            l->global_map = (__typeof__(l->global_map))mp;
-                            l->global_map_cap = new_cap;
-                        }
-                    }
-                    if (l->global_map_count < l->global_map_cap) {
-                        l->global_map[l->global_map_count].symbol_id = -1;  // Not a real symbol
-                        l->global_map[l->global_map_count].spv_id = var_id;
-                        l->global_map[l->global_map_count].ssir_id = ssir_var;
-                        l->global_map[l->global_map_count].type_id = param_type;
-                        l->global_map[l->global_map_count].sc = SpvStorageClassInput;
-                        l->global_map[l->global_map_count].name = param->name;
-                        l->global_map_count++;
-                    }
+                    add_global_map_entry(l, -1, var_id, ssir_var, param_type,
+                                         SpvStorageClassInput, param->name);
                 }
             }
         }
