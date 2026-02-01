@@ -20,6 +20,8 @@ set(TEST_SOURCES
     glsl_parser_test.cpp
     glsl_raise_test.cpp
     ssir_to_hlsl_test.cpp
+    ssir_to_msl_test.cpp
+    msl_parser_test.cpp
 )
 
 if(WGSL_BUILD_EXPRESSION_TESTS)
