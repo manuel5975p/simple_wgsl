@@ -10,6 +10,7 @@ option(WGSL_BUILD_TESTS "Build tests" ON)
 option(WGSL_BUILD_EXPRESSION_TESTS "Build expression golden-file tests (requires expressions/ data)" OFF)
 option(WGSL_USE_ASAN "Enable Address Sanitizer" OFF)
 option(WGSL_BUILD_EGL_TESTS "Build EGL/OpenGL compute shader validation tests" OFF)
+option(WGSL_BUILD_METAL_EXAMPLES "Build Metal/MSL example programs (macOS only)" OFF)
 
 if(WGSL_USE_ASAN)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
@@ -27,7 +28,10 @@ add_library(wgsl_compiler STATIC
     ssir_to_spirv.c
     ssir_to_wgsl.c
     ssir_to_glsl.c
+    ssir_to_msl.c
+    ssir_to_hlsl.c
     spirv_to_ssir.c
+    msl_parser.c
 )
 
 target_include_directories(wgsl_compiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -52,6 +56,19 @@ endif()
 
 add_executable(example example/example.c)
 target_link_libraries(example wgsl_compiler)
+
+if(WGSL_BUILD_METAL_EXAMPLES AND APPLE)
+    enable_language(OBJC)
+
+    add_executable(metal_compute example/metal_compute.m)
+    target_link_libraries(metal_compute wgsl_compiler "-framework Metal" "-framework Foundation")
+
+    add_executable(metal_triangle example/metal_triangle.m)
+    target_link_libraries(metal_triangle wgsl_compiler "-framework Metal" "-framework Foundation")
+
+    add_executable(msl_roundtrip example/msl_roundtrip.m)
+    target_link_libraries(msl_roundtrip wgsl_compiler "-framework Metal" "-framework Foundation")
+endif()
 
 if(WGSL_BUILD_TESTS)
     enable_testing()

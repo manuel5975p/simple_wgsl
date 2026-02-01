@@ -1292,6 +1292,31 @@ void ssir_to_glsl_free(void *p);
 const char *ssir_to_glsl_result_string(SsirToGlslResult result);
 
 /* ============================================================================
+ * SSIR TO MSL (Metal Shading Language)
+ * ============================================================================ */
+
+typedef enum SsirToMslResult {
+    SSIR_TO_MSL_OK = 0,
+    SSIR_TO_MSL_ERR_INVALID_INPUT,
+    SSIR_TO_MSL_ERR_UNSUPPORTED,
+    SSIR_TO_MSL_ERR_INTERNAL,
+    SSIR_TO_MSL_ERR_OOM,
+} SsirToMslResult;
+
+typedef struct SsirToMslOptions {
+    int preserve_names;
+} SsirToMslOptions;
+
+SsirToMslResult ssir_to_msl(const SsirModule *mod,
+                              const SsirToMslOptions *opts,
+                              char **out_msl,
+                              char **out_error);
+
+void ssir_to_msl_free(void *p);
+
+const char *ssir_to_msl_result_string(SsirToMslResult result);
+
+/* ============================================================================
  * SPIR-V TO SSIR
  * ============================================================================ */
 
@@ -1318,6 +1343,56 @@ SpirvToSsirResult spirv_to_ssir(
 const char *spirv_to_ssir_result_string(SpirvToSsirResult result);
 
 void spirv_to_ssir_free(void *p);
+
+/* ============================================================================
+ * SSIR TO HLSL
+ * ============================================================================ */
+
+typedef enum SsirToHlslResult {
+    SSIR_TO_HLSL_OK = 0,
+    SSIR_TO_HLSL_ERR_INVALID_INPUT,
+    SSIR_TO_HLSL_ERR_UNSUPPORTED,
+    SSIR_TO_HLSL_ERR_INTERNAL,
+    SSIR_TO_HLSL_ERR_OOM,
+} SsirToHlslResult;
+
+typedef struct SsirToHlslOptions {
+    int preserve_names;
+    int shader_model_major; // e.g., 6
+    int shader_model_minor; // e.g., 0
+} SsirToHlslOptions;
+
+SsirToHlslResult ssir_to_hlsl(const SsirModule *mod,
+                              SsirStage stage,
+                              const SsirToHlslOptions *opts,
+                              char **out_hlsl,
+                              char **out_error);
+
+void ssir_to_hlsl_free(void *p);
+
+const char *ssir_to_hlsl_result_string(SsirToHlslResult result);
+
+/* ============================================================================
+ * MSL TO SSIR (Metal Shading Language Parser)
+ * ============================================================================ */
+
+typedef enum {
+    MSL_TO_SSIR_OK = 0,
+    MSL_TO_SSIR_PARSE_ERROR,
+    MSL_TO_SSIR_TYPE_ERROR,
+    MSL_TO_SSIR_UNSUPPORTED,
+} MslToSsirResult;
+
+typedef struct {
+    int preserve_names;
+} MslToSsirOptions;
+
+MslToSsirResult msl_to_ssir(const char *msl_source, const MslToSsirOptions *opts,
+                              SsirModule **out_module, char **out_error);
+
+void msl_to_ssir_free(char *str);
+
+const char *msl_to_ssir_result_string(MslToSsirResult r);
 
 #ifdef __cplusplus
 }

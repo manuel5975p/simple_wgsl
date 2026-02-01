@@ -5405,6 +5405,32 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
     // Emit pending initializers (stores happen after all OpVariable)
     emit_pending_initializers(l);
 
+    // Pre-load fragment input parameters as local value bindings.
+    // This is needed because find_global_by_name returns the first match,
+    // and vertex output globals (e.g. "color") may shadow fragment input
+    // globals with the same name. By registering as locals, lower_ident
+    // finds them before checking the global map.
+    if (ep->stage == WGSL_STAGE_FRAGMENT && fn->param_count > 0) {
+        for (int p = 0; p < fn->param_count; ++p) {
+            const WgslAstNode *param_node = fn->params[p];
+            if (!param_node || param_node->type != WGSL_NODE_PARAM) continue;
+            const Param *param = &param_node->param;
+
+            // Find the input global for this parameter in global_map
+            for (int g = 0; g < l->global_map_count; ++g) {
+                if (l->global_map[g].sc == SpvStorageClassInput &&
+                    l->global_map[g].name && param->name &&
+                    strcmp(l->global_map[g].name, param->name) == 0) {
+                    uint32_t loaded;
+                    if (emit_load(l, l->global_map[g].type_id, &loaded, l->global_map[g].spv_id)) {
+                        fn_ctx_add_local_ex(l, param->name, loaded, l->global_map[g].type_id, 1);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     // Register module-scope const declarations as value bindings
     if (l->program && l->program->type == WGSL_NODE_PROGRAM) {
         const Program *mprog = &l->program->program;
