@@ -143,9 +143,10 @@ TEST(SsirToHlsl, DISABLED_StructOps) {
 
 TEST(SsirToHlsl, MathIntrinsics) {
     const char* source = R"(
-        @fragment fn fs() {
+        @fragment fn fs() -> @location(0) vec4f {
             let a = sin(1.0);
             let b = max(1.0, 2.0);
+            return vec4f(a, b, 0.0, 1.0);
         }
     )";
     auto res = WgslToHlsl(source, SSIR_STAGE_FRAGMENT);

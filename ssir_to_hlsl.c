@@ -99,6 +99,9 @@ typedef struct {
     const SsirFunction *current_func;
     SsirEntryPoint *active_ep;
     bool in_entry_point;
+    uint32_t *use_counts;
+    SsirInst **inst_map;
+    uint32_t inst_map_cap;
 
 } HlslCtx;
 
@@ -117,6 +120,8 @@ static void hctx_free(HlslCtx *c) {
         for (uint32_t i = 0; i < c->id_names_cap; i++) STM_FREE(c->id_names[i]);
         STM_FREE(c->id_names);
     }
+    STM_FREE(c->use_counts);
+    STM_FREE(c->inst_map);
     hb_free(&c->sb);
 }
 
@@ -179,6 +184,13 @@ static void emit_type(HlslCtx *c, uint32_t tid, HlslBuf *b) {
     case SSIR_TYPE_U32:  hb_append(b, "uint"); break;
     case SSIR_TYPE_F32:  hb_append(b, "float"); break;
     case SSIR_TYPE_F16:  hb_append(b, "min16float"); break;
+    case SSIR_TYPE_F64:  hb_append(b, "double"); break;
+    case SSIR_TYPE_I8:   hb_append(b, "int"); break;
+    case SSIR_TYPE_U8:   hb_append(b, "uint"); break;
+    case SSIR_TYPE_I16:  hb_append(b, "int16_t"); break;
+    case SSIR_TYPE_U16:  hb_append(b, "uint16_t"); break;
+    case SSIR_TYPE_I64:  hb_append(b, "int64_t"); break;
+    case SSIR_TYPE_U64:  hb_append(b, "uint64_t"); break;
 
     case SSIR_TYPE_VEC: {
         SsirType *el = ssir_get_type((SsirModule *)c->mod, t->vec.elem);
@@ -251,6 +263,9 @@ static void emit_type(HlslCtx *c, uint32_t tid, HlslBuf *b) {
         case SSIR_TEX_2D_ARRAY:        hb_appendf(b, "Texture2DArray<%s4>", elem); break;
         case SSIR_TEX_CUBE_ARRAY:      hb_appendf(b, "TextureCubeArray<%s4>", elem); break;
         case SSIR_TEX_MULTISAMPLED_2D: hb_appendf(b, "Texture2DMS<%s4>", elem); break;
+        case SSIR_TEX_1D_ARRAY:        hb_appendf(b, "Texture1DArray<%s4>", elem); break;
+        case SSIR_TEX_BUFFER:          hb_appendf(b, "Buffer<%s4>", elem); break;
+        case SSIR_TEX_MULTISAMPLED_2D_ARRAY: hb_appendf(b, "Texture2DMSArray<%s4>", elem); break;
         default:                       hb_appendf(b, "Texture2D<%s4>", elem); break;
         }
         break;
@@ -319,8 +334,39 @@ static void emit_constant(HlslCtx *c, SsirConstant *k, HlslBuf *b) {
             hb_appendf(b, "%g", (double)f);
         break;
     }
-    case SSIR_CONST_F16:
-        hb_appendf(b, "min16float(%.1f)", 0.0);
+    case SSIR_CONST_F16: {
+        float fv = ssir_f16_to_f32(k->f16_val);
+        if (floorf(fv) == fv && fabsf(fv) < 1e6f)
+            hb_appendf(b, "min16float(%.1f)", (double)fv);
+        else
+            hb_appendf(b, "min16float(%g)", (double)fv);
+        break;
+    }
+    case SSIR_CONST_F64: {
+        double d = k->f64_val;
+        if (floor(d) == d && fabs(d) < 1e15)
+            hb_appendf(b, "%.1f", d);
+        else
+            hb_appendf(b, "%g", d);
+        break;
+    }
+    case SSIR_CONST_I8:
+        hb_appendf(b, "%d", (int)k->i8_val);
+        break;
+    case SSIR_CONST_U8:
+        hb_appendf(b, "%uu", (unsigned)k->u8_val);
+        break;
+    case SSIR_CONST_I16:
+        hb_appendf(b, "%d", (int)k->i16_val);
+        break;
+    case SSIR_CONST_U16:
+        hb_appendf(b, "%uu", (unsigned)k->u16_val);
+        break;
+    case SSIR_CONST_I64:
+        hb_appendf(b, "%lldL", (long long)k->i64_val);
+        break;
+    case SSIR_CONST_U64:
+        hb_appendf(b, "%lluUL", (unsigned long long)k->u64_val);
         break;
     case SSIR_CONST_COMPOSITE: {
         /* HLSL construction: type(a, b, c) */
@@ -412,6 +458,25 @@ static const char *bfunc_to_hlsl(SsirBuiltinId id) {
     case SSIR_BUILTIN_DPDY_COARSE:   return "ddy_coarse";
     case SSIR_BUILTIN_DPDX_FINE:     return "ddx_fine";
     case SSIR_BUILTIN_DPDY_FINE:     return "ddy_fine";
+    case SSIR_BUILTIN_FMA:           return "mad";
+    case SSIR_BUILTIN_ISINF:         return "isinf";
+    case SSIR_BUILTIN_ISNAN:         return "isnan";
+    case SSIR_BUILTIN_DEGREES:       return "degrees";
+    case SSIR_BUILTIN_RADIANS:       return "radians";
+    case SSIR_BUILTIN_MODF:          return "modf";
+    case SSIR_BUILTIN_FREXP:         return "frexp";
+    case SSIR_BUILTIN_LDEXP:         return "ldexp";
+    case SSIR_BUILTIN_DETERMINANT:   return "determinant";
+    case SSIR_BUILTIN_TRANSPOSE:     return "transpose";
+    case SSIR_BUILTIN_SUBGROUP_BALLOT: return "WaveBallot";
+    case SSIR_BUILTIN_SUBGROUP_BROADCAST: return "WaveReadLaneFirst";
+    case SSIR_BUILTIN_SUBGROUP_ADD: return "WaveActiveSum";
+    case SSIR_BUILTIN_SUBGROUP_MIN: return "WaveActiveMin";
+    case SSIR_BUILTIN_SUBGROUP_MAX: return "WaveActiveMax";
+    case SSIR_BUILTIN_SUBGROUP_ALL: return "WaveActiveAllTrue";
+    case SSIR_BUILTIN_SUBGROUP_ANY: return "WaveActiveAnyTrue";
+    case SSIR_BUILTIN_SUBGROUP_SHUFFLE: return "WaveReadLaneAt";
+    case SSIR_BUILTIN_SUBGROUP_PREFIX_ADD: return "WavePrefixSum";
     default: return NULL;
     }
 }
@@ -423,13 +488,7 @@ static const char *bfunc_to_hlsl(SsirBuiltinId id) {
 static void emit_expr(HlslCtx *c, uint32_t id, HlslBuf *b);
 
 static SsirInst *find_inst(HlslCtx *c, uint32_t id) {
-    if (!c->current_func) return NULL;
-    for (uint32_t bi = 0; bi < c->current_func->block_count; bi++) {
-        SsirBlock *blk = &c->current_func->blocks[bi];
-        for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
-            if (blk->insts[ii].result == id) return &blk->insts[ii];
-        }
-    }
+    if (c->inst_map && id < c->inst_map_cap) return c->inst_map[id];
     return NULL;
 }
 
@@ -453,12 +512,31 @@ static void emit_expr(HlslCtx *c, uint32_t id, HlslBuf *b) {
     SsirInst *inst = find_inst(c, id);
     if (!inst) { hb_append(b, get_name(c, id)); return; }
 
+    /* If materialized as a temporary (multi-use), emit the name */
+    if (id < c->id_names_cap && c->id_names[id]) {
+        hb_append(b, c->id_names[id]);
+        return;
+    }
+
     switch (inst->op) {
     case SSIR_OP_ADD: hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " + "); emit_expr(c, inst->operands[1], b); hb_append(b, ")"); break;
     case SSIR_OP_SUB: hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " - "); emit_expr(c, inst->operands[1], b); hb_append(b, ")"); break;
     case SSIR_OP_MUL: hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " * "); emit_expr(c, inst->operands[1], b); hb_append(b, ")"); break;
     case SSIR_OP_DIV: hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " / "); emit_expr(c, inst->operands[1], b); hb_append(b, ")"); break;
     case SSIR_OP_MOD: hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " % "); emit_expr(c, inst->operands[1], b); hb_append(b, ")"); break;
+    case SSIR_OP_REM: {
+        SsirType *rem_t = ssir_get_type((SsirModule *)c->mod, inst->type);
+        if (rem_t && ssir_type_is_float(rem_t)) {
+            hb_append(b, "fmod(");
+            emit_expr(c, inst->operands[0], b);
+            hb_append(b, ", ");
+            emit_expr(c, inst->operands[1], b);
+            hb_append(b, ")");
+        } else {
+            hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " % "); emit_expr(c, inst->operands[1], b); hb_append(b, ")");
+        }
+        break;
+    }
     case SSIR_OP_NEG: hb_append(b, "(-"); emit_expr(c, inst->operands[0], b); hb_append(b, ")"); break;
 
     case SSIR_OP_MAT_MUL: hb_append(b, "mul("); emit_expr(c, inst->operands[0], b); hb_append(b, ", "); emit_expr(c, inst->operands[1], b); hb_append(b, ")"); break;
@@ -481,6 +559,32 @@ static void emit_expr(HlslCtx *c, uint32_t id, HlslBuf *b) {
     case SSIR_OP_BIT_NOT: hb_append(b, "(~"); emit_expr(c, inst->operands[0], b); hb_append(b, ")"); break;
     case SSIR_OP_SHL:     hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " << "); emit_expr(c, inst->operands[1], b); hb_append(b, ")"); break;
     case SSIR_OP_SHR:     hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " >> "); emit_expr(c, inst->operands[1], b); hb_append(b, ")"); break;
+    case SSIR_OP_SHR_LOGICAL: {
+        SsirType *shr_type = ssir_get_type((SsirModule *)c->mod, inst->type);
+        bool shr_signed = shr_type && (ssir_type_is_signed(shr_type) ||
+            (shr_type->kind == SSIR_TYPE_VEC &&
+             ssir_type_is_signed(ssir_get_type((SsirModule *)c->mod, shr_type->vec.elem))));
+        if (shr_signed) {
+            hb_append(b, "(");
+            emit_type(c, inst->type, b);
+            hb_append(b, ")((");
+            if (shr_type->kind == SSIR_TYPE_VEC) {
+                uint32_t uvec = ssir_type_vec((SsirModule *)c->mod,
+                    ssir_type_u32((SsirModule *)c->mod), shr_type->vec.size);
+                emit_type(c, uvec, b);
+            } else {
+                hb_append(b, "uint");
+            }
+            hb_append(b, ")(");
+            emit_expr(c, inst->operands[0], b);
+            hb_append(b, ") >> ");
+            emit_expr(c, inst->operands[1], b);
+            hb_append(b, ")");
+        } else {
+            hb_append(b, "("); emit_expr(c, inst->operands[0], b); hb_append(b, " >> "); emit_expr(c, inst->operands[1], b); hb_append(b, ")");
+        }
+        break;
+    }
 
     case SSIR_OP_CONSTRUCT: {
         emit_type(c, inst->type, b);
@@ -509,31 +613,260 @@ static void emit_expr(HlslCtx *c, uint32_t id, HlslBuf *b) {
     }
 
     case SSIR_OP_ACCESS: {
+        SsirModule *amod = (SsirModule *)c->mod;
         emit_expr(c, inst->operands[0], b);
+        /* Trace struct type through the access chain for member names */
+        uint32_t cur_type_id = 0;
+        {
+            SsirGlobalVar *ag = ssir_get_global(amod, inst->operands[0]);
+            if (ag) {
+                SsirType *pt = ssir_get_type(amod, ag->type);
+                if (pt && pt->kind == SSIR_TYPE_PTR)
+                    cur_type_id = pt->ptr.pointee;
+            }
+            if (!cur_type_id) {
+                SsirInst *ai = find_inst(c, inst->operands[0]);
+                if (ai && ai->op == SSIR_OP_LOAD) {
+                    SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
+                    if (lg) {
+                        SsirType *pt = ssir_get_type(amod, lg->type);
+                        if (pt && pt->kind == SSIR_TYPE_PTR)
+                            cur_type_id = pt->ptr.pointee;
+                    }
+                }
+            }
+        }
         for (uint16_t i = 0; i < inst->extra_count; i++) {
             uint32_t idx = inst->extra[i];
-            SsirConstant *ic = ssir_get_constant((SsirModule *)c->mod, idx);
-            if (ic && ic->kind == SSIR_CONST_U32)
-                hb_appendf(b, ".member%u", ic->u32_val); // Struct member hack
-            else if (ic && ic->kind == SSIR_CONST_I32)
-                hb_appendf(b, ".member%d", ic->i32_val); 
-            else {
+            SsirConstant *ic = ssir_get_constant(amod, idx);
+            SsirType *cur_st = cur_type_id ? ssir_get_type(amod, cur_type_id) : NULL;
+            if (ic && (ic->kind == SSIR_CONST_U32 || ic->kind == SSIR_CONST_I32)) {
+                uint32_t midx = (ic->kind == SSIR_CONST_U32) ? ic->u32_val : (uint32_t)ic->i32_val;
+                const char *mname = NULL;
+                if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
+                    cur_st->struc.member_names && midx < cur_st->struc.member_count)
+                    mname = cur_st->struc.member_names[midx];
+                if (mname)
+                    hb_appendf(b, ".%s", mname);
+                else
+                    hb_appendf(b, ".member%u", midx);
+                /* Advance type through struct member */
+                if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
+                    cur_type_id = cur_st->struc.members[midx];
+                else
+                    cur_type_id = 0;
+            } else {
                 hb_append(b, "[");
                 emit_expr(c, idx, b);
                 hb_append(b, "]");
+                /* Advance type through array element */
+                if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
+                    cur_type_id = cur_st->array.elem;
+                else
+                    cur_type_id = 0;
             }
         }
         break;
     }
 
+    case SSIR_OP_LOAD:
+        emit_expr(c, inst->operands[0], b);
+        break;
+
     case SSIR_OP_TEX_SAMPLE:
         emit_expr(c, inst->operands[0], b);
         hb_append(b, ".Sample(");
-        emit_expr(c, inst->operands[1], b); // Sampler
+        emit_expr(c, inst->operands[1], b);
         hb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b); // Coords
+        emit_expr(c, inst->operands[2], b);
         hb_append(b, ")");
         break;
+
+    case SSIR_OP_TEX_SAMPLE_BIAS:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleBias(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_LEVEL:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleLevel(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_GRAD:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleGrad(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_CMP:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleCmp(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleCmpLevelZero(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_OFFSET:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".Sample(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleBias(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleLevel(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleGrad(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[5], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".SampleCmp(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_GATHER:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".Gather(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_GATHER_CMP:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".GatherCmp(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_GATHER_OFFSET:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".Gather(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_LOAD:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".Load(int3(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, "))");
+        break;
+
+    case SSIR_OP_TEX_SIZE: {
+        hb_append(b, "uint2(0, 0)");
+        break;
+    }
+
+    case SSIR_OP_TEX_QUERY_LOD:
+        emit_expr(c, inst->operands[0], b);
+        hb_append(b, ".CalculateLevelOfDetail(");
+        emit_expr(c, inst->operands[1], b);
+        hb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        hb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_QUERY_LEVELS: {
+        hb_append(b, "0");
+        break;
+    }
+
+    case SSIR_OP_TEX_QUERY_SAMPLES: {
+        hb_append(b, "0");
+        break;
+    }
 
     case SSIR_OP_BUILTIN: {
         SsirBuiltinId bid = (SsirBuiltinId)inst->operands[0];
@@ -641,49 +974,50 @@ static void emit_block(HlslCtx *c, SsirBlock *blk, SsirFunction *fn, bool *emitt
                  }
             }
 
-        } else if ((inst->op != SSIR_OP_PHI && inst->result != 0) &&
-                   (inst->op != SSIR_OP_LOOP_MERGE && inst->op != SSIR_OP_UNREACHABLE)) 
-        {
-             // Assignment
+        } else if (inst->op == SSIR_OP_DISCARD) {
+            hb_indent(&c->sb);
+            hb_append(&c->sb, "discard;\n");
+        } else if (inst->op == SSIR_OP_BARRIER) {
+            hb_indent(&c->sb);
+            switch ((SsirBarrierScope)inst->operands[0]) {
+            case SSIR_BARRIER_WORKGROUP: hb_append(&c->sb, "GroupMemoryBarrierWithGroupSync();\n"); break;
+            case SSIR_BARRIER_STORAGE:   hb_append(&c->sb, "DeviceMemoryBarrier();\n"); break;
+            case SSIR_BARRIER_SUBGROUP:  hb_append(&c->sb, "/* subgroup barrier */;\n"); break;
+            case SSIR_BARRIER_IMAGE:     hb_append(&c->sb, "DeviceMemoryBarrier();\n"); break;
+            }
+        } else if (inst->op == SSIR_OP_INSERT_DYN) {
             hb_indent(&c->sb);
             emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
             hb_append(&c->sb, " = ");
-            emit_expr(c, inst->result, &c->sb); // Recursive emit of expr through ID? No, emit_expr handles the RHS logic if we pass IT there
-            // Actually emit_expr(c, inst->result) just emits the name.
-            // We need to emit the RHS expression here logic
-            // Hacky: re-use emit_expr but pass ID. But emit_expr finds the inst by ID. 
-            // So calling emit_expr(c, inst->result) calls 'find_inst' -> gets this inst -> switch(op) -> emits RHS.
-            // Check emit_expr:
-            // SsirInst *inst = find_inst(c, id);
-            // switch(inst->op) ... emits "A + B"
-            // So yes, calling emit_expr(c, inst->result) emits the RHS.
-            // But wait, emit_expr also has a check: if(find_local/global) ...
-            // Since this result ID is NOT a local var (it's an SSA value), it falls through to find_inst.
-            // Correct.
-            // BUT, if we just defined it: "float _v5 = _v5" infinite recursion?
-            // emit_expr(c, inst->result) will find inst.
-            // So we need a specialized emit_inst_rhs(inst)
-            // Let's refactor emit_expr slightly?
-            // Helper: emit_expr_internal(inst)
-            // But emit_expr takes ID.
-            // If we pass an ID that resolves to the current instruction, we need to AVOID emitting the name.
-            // Actually, emit_expr(c, id) does NOT emit the name if it finds the inst. It emits result of switch.
-            // EXCEPT for the "default" case which emits name.
-            // The default case covers ops that don't have special handling.
-            
-            // To properly emit "float _v5 = (3 + 4);", we need to run the switch for inst.
-            // Let's modify logic:
-            
-            // We are manually running the switch logic by calling emit_expr?
-            // No, emit_expr(c, inst->result) calls find_inst(val) which returns inst.
-            // Then it runs switch.
-            // If switch hits default, it prints name. "float _v5 = _v5". BAD.
-            // We need to ensure all handled ops are identifying themselves.
-            // The ops loop in emit_expr covers most expression ops.
-            // We are safe.
-            emit_expr(c, inst->result, &c->sb);
-            
+            emit_expr(c, inst->operands[0], &c->sb);
             hb_append(&c->sb, ";\n");
+            hb_indent(&c->sb);
+            hb_append(&c->sb, get_name(c, inst->result));
+            hb_append(&c->sb, "[");
+            emit_expr(c, inst->operands[2], &c->sb);
+            hb_append(&c->sb, "] = ");
+            emit_expr(c, inst->operands[1], &c->sb);
+            hb_append(&c->sb, ";\n");
+        } else if ((inst->op != SSIR_OP_PHI && inst->result != 0) &&
+                   (inst->op != SSIR_OP_LOOP_MERGE && inst->op != SSIR_OP_SELECTION_MERGE && inst->op != SSIR_OP_UNREACHABLE))
+        {
+            SsirType *rt = ssir_get_type((SsirModule *)c->mod, inst->type);
+            bool is_void = (rt && rt->kind == SSIR_TYPE_VOID);
+            bool has_side_effects = (inst->op == SSIR_OP_CALL ||
+                                     inst->op == SSIR_OP_ATOMIC);
+            uint32_t uses = (c->use_counts && inst->result < c->mod->next_id)
+                            ? c->use_counts[inst->result] : 2;
+            if (!(is_void && !has_side_effects) && (has_side_effects || uses > 1)) {
+                hb_indent(&c->sb);
+                if (!is_void) {
+                    emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+                    hb_append(&c->sb, " = ");
+                }
+                emit_expr(c, inst->result, &c->sb);
+                hb_append(&c->sb, ";\n");
+                if (!is_void)
+                    set_name(c, inst->result, get_name(c, inst->result));
+            }
         }
     }
 }
@@ -715,6 +1049,30 @@ static void emit_function(HlslCtx *c, SsirFunction *fn) {
      
      c->current_func = fn;
      c->sb.indent++;
+
+     /* Compute use counts for inlining decisions */
+     STM_FREE(c->use_counts);
+     c->use_counts = (uint32_t *)STM_MALLOC(c->mod->next_id * sizeof(uint32_t));
+     if (c->use_counts) {
+         memset(c->use_counts, 0, c->mod->next_id * sizeof(uint32_t));
+         ssir_count_uses((SsirFunction *)fn, c->use_counts, c->mod->next_id);
+     }
+
+     /* Build instruction lookup map */
+     STM_FREE(c->inst_map);
+     c->inst_map_cap = c->mod->next_id;
+     c->inst_map = (SsirInst **)STM_MALLOC(c->inst_map_cap * sizeof(SsirInst *));
+     if (c->inst_map) {
+         memset(c->inst_map, 0, c->inst_map_cap * sizeof(SsirInst *));
+         for (uint32_t bi = 0; bi < fn->block_count; bi++) {
+             SsirBlock *blk = &fn->blocks[bi];
+             for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+                 uint32_t rid = blk->insts[ii].result;
+                 if (rid && rid < c->inst_map_cap)
+                     c->inst_map[rid] = &blk->insts[ii];
+             }
+         }
+     }
 
      // Locals
      for (uint32_t i = 0; i < fn->local_count; i++) {
@@ -794,17 +1152,8 @@ SsirToHlslResult ssir_to_hlsl(const SsirModule *mod,
              if(l->name && ctx.opts.preserve_names) set_name(&ctx, l->id, l->name);
              else { char b[32]; snprintf(b,32,"_l%u", l->id); set_name(&ctx, l->id, b); }
         }
-        // Instructions results (SSA values)
-        for(uint32_t b=0; b<f->block_count; b++) {
-            SsirBlock *blk = &f->blocks[b];
-            for(uint32_t k=0; k<blk->inst_count; k++) {
-                SsirInst *in = &blk->insts[k];
-                if (in->result != 0) {
-                     char buf[32]; snprintf(buf, 32, "_v%u", in->result);
-                     set_name(&ctx, in->result, buf);
-                }
-            }
-        }
+        /* Instruction result names are set lazily during emission
+           (only for materialized temps, not inlined values) */
     }
 
     // 2. Structs (Emit first so globals can use them)
@@ -813,14 +1162,27 @@ SsirToHlslResult ssir_to_hlsl(const SsirModule *mod,
         if (t->kind == SSIR_TYPE_STRUCT) {
              hb_appendf(&ctx.sb, "struct %s {\n", t->struc.name ? t->struc.name : "_Struct");
              for(uint32_t m=0; m<t->struc.member_count; m++) {
-                 // Hack member name
-                 char mn[32]; snprintf(mn, 32, "member%u", m);
+                 char mn_buf[32];
+                 const char *mn = (t->struc.member_names && t->struc.member_names[m])
+                     ? t->struc.member_names[m] : NULL;
+                 if (!mn) { snprintf(mn_buf, sizeof(mn_buf), "member%u", m); mn = mn_buf; }
                  hb_append(&ctx.sb, "    ");
                  emit_decl(&ctx, t->struc.members[m], mn, &ctx.sb);
                  hb_append(&ctx.sb, ";\n");
              }
              hb_append(&ctx.sb, "};\n\n");
         }
+    }
+
+    // 2b. Specialization constants (as static const with comment)
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        SsirConstant *k = &mod->constants[i];
+        if (!k->is_specialization) continue;
+        hb_appendf(&ctx.sb, "/* spec_id(%u) */ static const ", k->spec_id);
+        emit_decl(&ctx, k->type, k->name ? k->name : "spec_const", &ctx.sb);
+        hb_append(&ctx.sb, " = ");
+        emit_constant(&ctx, k, &ctx.sb);
+        hb_append(&ctx.sb, ";\n");
     }
 
     // 3. Globals and Resources
@@ -934,6 +1296,30 @@ SsirToHlslResult ssir_to_hlsl(const SsirModule *mod,
         
         ctx.current_func = fn;
         ctx.sb.indent++;
+
+        /* Compute use counts for inlining decisions */
+        STM_FREE(ctx.use_counts);
+        ctx.use_counts = (uint32_t *)STM_MALLOC(ctx.mod->next_id * sizeof(uint32_t));
+        if (ctx.use_counts) {
+            memset(ctx.use_counts, 0, ctx.mod->next_id * sizeof(uint32_t));
+            ssir_count_uses((SsirFunction *)fn, ctx.use_counts, ctx.mod->next_id);
+        }
+
+        /* Build instruction lookup map */
+        STM_FREE(ctx.inst_map);
+        ctx.inst_map_cap = ctx.mod->next_id;
+        ctx.inst_map = (SsirInst **)STM_MALLOC(ctx.inst_map_cap * sizeof(SsirInst *));
+        if (ctx.inst_map) {
+            memset(ctx.inst_map, 0, ctx.inst_map_cap * sizeof(SsirInst *));
+            for (uint32_t bi = 0; bi < fn->block_count; bi++) {
+                SsirBlock *blk = &fn->blocks[bi];
+                for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+                    uint32_t rid = blk->insts[ii].result;
+                    if (rid && rid < ctx.inst_map_cap)
+                        ctx.inst_map[rid] = &blk->insts[ii];
+                }
+            }
+        }
 
         // Locals
         for (uint32_t i = 0; i < fn->local_count; i++) {

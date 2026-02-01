@@ -533,6 +533,13 @@ typedef enum SsirTypeKind {
     SSIR_TYPE_U32,
     SSIR_TYPE_F32,
     SSIR_TYPE_F16,
+    SSIR_TYPE_F64,
+    SSIR_TYPE_I8,
+    SSIR_TYPE_U8,
+    SSIR_TYPE_I16,
+    SSIR_TYPE_U16,
+    SSIR_TYPE_I64,
+    SSIR_TYPE_U64,
     SSIR_TYPE_VEC,
     SSIR_TYPE_MAT,
     SSIR_TYPE_ARRAY,
@@ -556,7 +563,22 @@ typedef enum SsirAddressSpace {
     SSIR_ADDR_INPUT,
     SSIR_ADDR_OUTPUT,
     SSIR_ADDR_PUSH_CONSTANT,
+    SSIR_ADDR_PHYSICAL_STORAGE_BUFFER,
 } SsirAddressSpace;
+
+typedef enum SsirLayoutRule {
+    SSIR_LAYOUT_NONE,
+    SSIR_LAYOUT_STD140,
+    SSIR_LAYOUT_STD430,
+    SSIR_LAYOUT_SCALAR,
+} SsirLayoutRule;
+
+typedef enum SsirClipSpaceConvention {
+    SSIR_CLIP_SPACE_VULKAN,   /* Y-down, Z [0,1] */
+    SSIR_CLIP_SPACE_OPENGL,   /* Y-up, Z [-1,1] */
+    SSIR_CLIP_SPACE_DIRECTX,  /* Y-up, Z [0,1] */
+    SSIR_CLIP_SPACE_METAL,    /* Y-up, Z [0,1] (same as DirectX) */
+} SsirClipSpaceConvention;
 
 typedef enum SsirTextureDim {
     SSIR_TEX_1D,
@@ -566,6 +588,9 @@ typedef enum SsirTextureDim {
     SSIR_TEX_2D_ARRAY,
     SSIR_TEX_CUBE_ARRAY,
     SSIR_TEX_MULTISAMPLED_2D,
+    SSIR_TEX_1D_ARRAY,
+    SSIR_TEX_BUFFER,
+    SSIR_TEX_MULTISAMPLED_2D_ARRAY,
 } SsirTextureDim;
 
 typedef enum SsirAccessMode {
@@ -581,6 +606,13 @@ typedef enum SsirInterpolation {
     SSIR_INTERP_FLAT,
 } SsirInterpolation;
 
+typedef enum SsirInterpolationSampling {
+    SSIR_INTERP_SAMPLING_NONE,
+    SSIR_INTERP_SAMPLING_CENTER,
+    SSIR_INTERP_SAMPLING_CENTROID,
+    SSIR_INTERP_SAMPLING_SAMPLE,
+} SsirInterpolationSampling;
+
 typedef enum SsirBuiltinVar {
     SSIR_BUILTIN_NONE = 0,
     SSIR_BUILTIN_VERTEX_INDEX,
@@ -595,12 +627,29 @@ typedef enum SsirBuiltinVar {
     SSIR_BUILTIN_GLOBAL_INVOCATION_ID,
     SSIR_BUILTIN_WORKGROUP_ID,
     SSIR_BUILTIN_NUM_WORKGROUPS,
+    SSIR_BUILTIN_POINT_SIZE,
+    SSIR_BUILTIN_CLIP_DISTANCE,
+    SSIR_BUILTIN_CULL_DISTANCE,
+    SSIR_BUILTIN_LAYER,
+    SSIR_BUILTIN_VIEWPORT_INDEX,
+    SSIR_BUILTIN_FRAG_COORD,
+    SSIR_BUILTIN_HELPER_INVOCATION,
+    SSIR_BUILTIN_PRIMITIVE_ID,
+    SSIR_BUILTIN_BASE_VERTEX,
+    SSIR_BUILTIN_BASE_INSTANCE,
+    SSIR_BUILTIN_SUBGROUP_SIZE,
+    SSIR_BUILTIN_SUBGROUP_INVOCATION_ID,
+    SSIR_BUILTIN_SUBGROUP_ID,
+    SSIR_BUILTIN_NUM_SUBGROUPS,
 } SsirBuiltinVar;
 
 typedef enum SsirStage {
     SSIR_STAGE_VERTEX,
     SSIR_STAGE_FRAGMENT,
     SSIR_STAGE_COMPUTE,
+    SSIR_STAGE_GEOMETRY,
+    SSIR_STAGE_TESS_CONTROL,
+    SSIR_STAGE_TESS_EVAL,
 } SsirStage;
 
 struct SsirType {
@@ -619,6 +668,7 @@ struct SsirType {
         struct {
             uint32_t elem;
             uint32_t length;
+            uint32_t stride;
         } array;
         struct {
             uint32_t elem;
@@ -628,6 +678,10 @@ struct SsirType {
             uint32_t *members;
             uint32_t member_count;
             uint32_t *offsets;
+            const char **member_names;
+            uint8_t *matrix_major;    /* 0=unset, 1=col-major, 2=row-major */
+            uint32_t *matrix_strides; /* 0=unset, else MatrixStride value */
+            SsirLayoutRule layout_rule;
         } struc;
         struct {
             uint32_t pointee;
@@ -681,6 +735,7 @@ typedef enum SsirOpcode {
     SSIR_OP_SHUFFLE,
     SSIR_OP_SPLAT,
     SSIR_OP_EXTRACT_DYN,
+    SSIR_OP_INSERT_DYN,
     SSIR_OP_LOAD,
     SSIR_OP_STORE,
     SSIR_OP_ACCESS,
@@ -701,12 +756,27 @@ typedef enum SsirOpcode {
     SSIR_OP_TEX_SAMPLE_LEVEL,
     SSIR_OP_TEX_SAMPLE_GRAD,
     SSIR_OP_TEX_SAMPLE_CMP,
+    SSIR_OP_TEX_SAMPLE_CMP_LEVEL,
+    SSIR_OP_TEX_SAMPLE_OFFSET,
+    SSIR_OP_TEX_SAMPLE_BIAS_OFFSET,
+    SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET,
+    SSIR_OP_TEX_SAMPLE_GRAD_OFFSET,
+    SSIR_OP_TEX_SAMPLE_CMP_OFFSET,
+    SSIR_OP_TEX_GATHER,
+    SSIR_OP_TEX_GATHER_CMP,
+    SSIR_OP_TEX_GATHER_OFFSET,
     SSIR_OP_TEX_LOAD,
     SSIR_OP_TEX_STORE,
     SSIR_OP_TEX_SIZE,
+    SSIR_OP_TEX_QUERY_LOD,
+    SSIR_OP_TEX_QUERY_LEVELS,
+    SSIR_OP_TEX_QUERY_SAMPLES,
     SSIR_OP_BARRIER,
     SSIR_OP_ATOMIC,
     SSIR_OP_LOOP_MERGE,
+    SSIR_OP_DISCARD,
+    SSIR_OP_REM,
+    SSIR_OP_SELECTION_MERGE,
     SSIR_OP_COUNT
 } SsirOpcode;
 
@@ -769,6 +839,36 @@ typedef enum SsirBuiltinId {
     SSIR_BUILTIN_DPDY_COARSE,
     SSIR_BUILTIN_DPDX_FINE,
     SSIR_BUILTIN_DPDY_FINE,
+    SSIR_BUILTIN_FMA,
+    SSIR_BUILTIN_ISINF,
+    SSIR_BUILTIN_ISNAN,
+    SSIR_BUILTIN_DEGREES,
+    SSIR_BUILTIN_RADIANS,
+    SSIR_BUILTIN_MODF,
+    SSIR_BUILTIN_FREXP,
+    SSIR_BUILTIN_LDEXP,
+    SSIR_BUILTIN_DETERMINANT,
+    SSIR_BUILTIN_TRANSPOSE,
+    SSIR_BUILTIN_PACK4X8SNORM,
+    SSIR_BUILTIN_PACK4X8UNORM,
+    SSIR_BUILTIN_PACK2X16SNORM,
+    SSIR_BUILTIN_PACK2X16UNORM,
+    SSIR_BUILTIN_PACK2X16FLOAT,
+    SSIR_BUILTIN_UNPACK4X8SNORM,
+    SSIR_BUILTIN_UNPACK4X8UNORM,
+    SSIR_BUILTIN_UNPACK2X16SNORM,
+    SSIR_BUILTIN_UNPACK2X16UNORM,
+    SSIR_BUILTIN_UNPACK2X16FLOAT,
+    /* Subgroup operations */
+    SSIR_BUILTIN_SUBGROUP_BALLOT,
+    SSIR_BUILTIN_SUBGROUP_BROADCAST,
+    SSIR_BUILTIN_SUBGROUP_ADD,
+    SSIR_BUILTIN_SUBGROUP_MIN,
+    SSIR_BUILTIN_SUBGROUP_MAX,
+    SSIR_BUILTIN_SUBGROUP_ALL,
+    SSIR_BUILTIN_SUBGROUP_ANY,
+    SSIR_BUILTIN_SUBGROUP_SHUFFLE,
+    SSIR_BUILTIN_SUBGROUP_PREFIX_ADD,
     SSIR_BUILTIN_COUNT
 } SsirBuiltinId;
 
@@ -786,9 +886,26 @@ typedef enum SsirAtomicOp {
     SSIR_ATOMIC_COMPARE_EXCHANGE,
 } SsirAtomicOp;
 
+typedef enum SsirMemoryScope {
+    SSIR_SCOPE_DEVICE,
+    SSIR_SCOPE_WORKGROUP,
+    SSIR_SCOPE_SUBGROUP,
+    SSIR_SCOPE_INVOCATION,
+} SsirMemoryScope;
+
+typedef enum SsirMemorySemantics {
+    SSIR_SEMANTICS_RELAXED,
+    SSIR_SEMANTICS_ACQUIRE,
+    SSIR_SEMANTICS_RELEASE,
+    SSIR_SEMANTICS_ACQUIRE_RELEASE,
+    SSIR_SEMANTICS_SEQ_CST,
+} SsirMemorySemantics;
+
 typedef enum SsirBarrierScope {
     SSIR_BARRIER_WORKGROUP,
     SSIR_BARRIER_STORAGE,
+    SSIR_BARRIER_SUBGROUP,
+    SSIR_BARRIER_IMAGE,
 } SsirBarrierScope;
 
 #define SSIR_MAX_OPERANDS 8
@@ -811,6 +928,13 @@ typedef enum SsirConstantKind {
     SSIR_CONST_U32,
     SSIR_CONST_F32,
     SSIR_CONST_F16,
+    SSIR_CONST_F64,
+    SSIR_CONST_I8,
+    SSIR_CONST_U8,
+    SSIR_CONST_I16,
+    SSIR_CONST_U16,
+    SSIR_CONST_I64,
+    SSIR_CONST_U64,
     SSIR_CONST_COMPOSITE,
     SSIR_CONST_NULL,
 } SsirConstantKind;
@@ -820,12 +944,21 @@ struct SsirConstant {
     uint32_t type;
     SsirConstantKind kind;
     const char *name;
+    bool is_specialization;
+    uint32_t spec_id;
     union {
         bool bool_val;
         int32_t i32_val;
         uint32_t u32_val;
         float f32_val;
         uint16_t f16_val;
+        double f64_val;
+        int8_t i8_val;
+        uint8_t u8_val;
+        int16_t i16_val;
+        uint16_t u16_val;
+        int64_t i64_val;
+        uint64_t u64_val;
         struct {
             uint32_t *components;
             uint32_t count;
@@ -887,6 +1020,9 @@ struct SsirGlobalVar {
     uint32_t location;
     SsirBuiltinVar builtin;
     SsirInterpolation interp;
+    SsirInterpolationSampling interp_sampling;
+    bool non_writable;
+    bool invariant;
     bool has_initializer;
     uint32_t initializer;
 };
@@ -900,6 +1036,9 @@ struct SsirEntryPoint {
     uint32_t *interface;
     uint32_t interface_count;
     uint32_t workgroup_size[3];
+    bool depth_replacing;
+    bool origin_upper_left;
+    bool early_fragment_tests;
 };
 
 /* Module */
@@ -929,6 +1068,8 @@ struct SsirModule {
     uint32_t name_count;
     uint32_t name_capacity;
     uint32_t next_id;
+    SsirClipSpaceConvention clip_space;
+    void *_lookup_cache; /* Internal: ID lookup acceleration, do not access directly */
 };
 
 /* Result Codes */
@@ -955,6 +1096,7 @@ SsirModule *ssir_module_create(void);
 void ssir_module_destroy(SsirModule *mod);
 uint32_t ssir_module_alloc_id(SsirModule *mod);
 void ssir_set_name(SsirModule *mod, uint32_t id, const char *name);
+void ssir_module_set_clip_space(SsirModule *mod, SsirClipSpaceConvention convention);
 
 /* Type API */
 
@@ -964,14 +1106,26 @@ uint32_t ssir_type_i32(SsirModule *mod);
 uint32_t ssir_type_u32(SsirModule *mod);
 uint32_t ssir_type_f32(SsirModule *mod);
 uint32_t ssir_type_f16(SsirModule *mod);
+uint32_t ssir_type_f64(SsirModule *mod);
+uint32_t ssir_type_i8(SsirModule *mod);
+uint32_t ssir_type_u8(SsirModule *mod);
+uint32_t ssir_type_i16(SsirModule *mod);
+uint32_t ssir_type_u16(SsirModule *mod);
+uint32_t ssir_type_i64(SsirModule *mod);
+uint32_t ssir_type_u64(SsirModule *mod);
 
 uint32_t ssir_type_vec(SsirModule *mod, uint32_t elem_type, uint8_t size);
 uint32_t ssir_type_mat(SsirModule *mod, uint32_t col_type, uint8_t cols, uint8_t rows);
 uint32_t ssir_type_array(SsirModule *mod, uint32_t elem_type, uint32_t length);
+uint32_t ssir_type_array_stride(SsirModule *mod, uint32_t elem_type, uint32_t length, uint32_t stride);
 uint32_t ssir_type_runtime_array(SsirModule *mod, uint32_t elem_type);
 uint32_t ssir_type_struct(SsirModule *mod, const char *name,
                           const uint32_t *members, uint32_t member_count,
                           const uint32_t *offsets);
+uint32_t ssir_type_struct_named(SsirModule *mod, const char *name,
+                                const uint32_t *members, uint32_t member_count,
+                                const uint32_t *offsets,
+                                const char *const *member_names);
 uint32_t ssir_type_ptr(SsirModule *mod, uint32_t pointee_type, SsirAddressSpace space);
 
 uint32_t ssir_type_sampler(SsirModule *mod);
@@ -1002,9 +1156,20 @@ uint32_t ssir_const_i32(SsirModule *mod, int32_t val);
 uint32_t ssir_const_u32(SsirModule *mod, uint32_t val);
 uint32_t ssir_const_f32(SsirModule *mod, float val);
 uint32_t ssir_const_f16(SsirModule *mod, uint16_t val);
+uint32_t ssir_const_f64(SsirModule *mod, double val);
+uint32_t ssir_const_i8(SsirModule *mod, int8_t val);
+uint32_t ssir_const_u8(SsirModule *mod, uint8_t val);
+uint32_t ssir_const_i16(SsirModule *mod, int16_t val);
+uint32_t ssir_const_u16(SsirModule *mod, uint16_t val);
+uint32_t ssir_const_i64(SsirModule *mod, int64_t val);
+uint32_t ssir_const_u64(SsirModule *mod, uint64_t val);
 uint32_t ssir_const_composite(SsirModule *mod, uint32_t type_id,
                               const uint32_t *components, uint32_t count);
 uint32_t ssir_const_null(SsirModule *mod, uint32_t type_id);
+uint32_t ssir_const_spec_bool(SsirModule *mod, bool default_val, uint32_t spec_id);
+uint32_t ssir_const_spec_i32(SsirModule *mod, int32_t default_val, uint32_t spec_id);
+uint32_t ssir_const_spec_u32(SsirModule *mod, uint32_t default_val, uint32_t spec_id);
+uint32_t ssir_const_spec_f32(SsirModule *mod, float default_val, uint32_t spec_id);
 
 SsirConstant *ssir_get_constant(SsirModule *mod, uint32_t const_id);
 
@@ -1018,6 +1183,9 @@ void ssir_global_set_binding(SsirModule *mod, uint32_t global_id, uint32_t bindi
 void ssir_global_set_location(SsirModule *mod, uint32_t global_id, uint32_t location);
 void ssir_global_set_builtin(SsirModule *mod, uint32_t global_id, SsirBuiltinVar builtin);
 void ssir_global_set_interpolation(SsirModule *mod, uint32_t global_id, SsirInterpolation interp);
+void ssir_global_set_interp_sampling(SsirModule *mod, uint32_t global_id, SsirInterpolationSampling sampling);
+void ssir_global_set_non_writable(SsirModule *mod, uint32_t global_id, bool non_writable);
+void ssir_global_set_invariant(SsirModule *mod, uint32_t global_id, bool invariant);
 void ssir_global_set_initializer(SsirModule *mod, uint32_t global_id, uint32_t const_id);
 
 /* Function API */
@@ -1105,6 +1273,8 @@ uint32_t ssir_build_splat(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                           uint32_t type, uint32_t scalar);
 uint32_t ssir_build_extract_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                                 uint32_t type, uint32_t composite, uint32_t index);
+uint32_t ssir_build_insert_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                               uint32_t type, uint32_t vector, uint32_t value, uint32_t index);
 
 uint32_t ssir_build_load(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                          uint32_t type, uint32_t ptr);
@@ -1125,6 +1295,8 @@ void ssir_build_branch_cond_merge(SsirModule *mod, uint32_t func_id, uint32_t bl
                                   uint32_t merge_block);
 void ssir_build_loop_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                            uint32_t merge_block, uint32_t continue_block);
+void ssir_build_selection_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                uint32_t merge_block);
 void ssir_build_switch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                        uint32_t selector, uint32_t default_block,
                        const uint32_t *cases, uint32_t case_count);
@@ -1162,18 +1334,60 @@ uint32_t ssir_build_tex_sample_grad(SsirModule *mod, uint32_t func_id, uint32_t 
 uint32_t ssir_build_tex_sample_cmp(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                                    uint32_t type, uint32_t texture, uint32_t sampler,
                                    uint32_t coord, uint32_t ref);
+uint32_t ssir_build_tex_sample_cmp_level(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                         uint32_t type, uint32_t texture, uint32_t sampler,
+                                         uint32_t coord, uint32_t ref, uint32_t lod);
+uint32_t ssir_build_tex_sample_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                      uint32_t type, uint32_t texture, uint32_t sampler,
+                                      uint32_t coord, uint32_t offset);
+uint32_t ssir_build_tex_sample_bias_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                           uint32_t type, uint32_t texture, uint32_t sampler,
+                                           uint32_t coord, uint32_t bias, uint32_t offset);
+uint32_t ssir_build_tex_sample_level_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                            uint32_t type, uint32_t texture, uint32_t sampler,
+                                            uint32_t coord, uint32_t lod, uint32_t offset);
+uint32_t ssir_build_tex_sample_grad_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                           uint32_t type, uint32_t texture, uint32_t sampler,
+                                           uint32_t coord, uint32_t ddx, uint32_t ddy,
+                                           uint32_t offset);
+uint32_t ssir_build_tex_sample_cmp_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                          uint32_t type, uint32_t texture, uint32_t sampler,
+                                          uint32_t coord, uint32_t ref, uint32_t offset);
+uint32_t ssir_build_tex_gather(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                               uint32_t type, uint32_t texture, uint32_t sampler,
+                               uint32_t coord, uint32_t component);
+uint32_t ssir_build_tex_gather_cmp(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                   uint32_t type, uint32_t texture, uint32_t sampler,
+                                   uint32_t coord, uint32_t ref);
+uint32_t ssir_build_tex_gather_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                      uint32_t type, uint32_t texture, uint32_t sampler,
+                                      uint32_t coord, uint32_t component, uint32_t offset);
 uint32_t ssir_build_tex_load(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                              uint32_t type, uint32_t texture, uint32_t coord, uint32_t level);
 void ssir_build_tex_store(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                           uint32_t texture, uint32_t coord, uint32_t value);
 uint32_t ssir_build_tex_size(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                              uint32_t type, uint32_t texture, uint32_t level);
+uint32_t ssir_build_tex_query_lod(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                  uint32_t type, uint32_t texture, uint32_t sampler,
+                                  uint32_t coord);
+uint32_t ssir_build_tex_query_levels(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                     uint32_t type, uint32_t texture);
+uint32_t ssir_build_tex_query_samples(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                      uint32_t type, uint32_t texture);
 
 void ssir_build_barrier(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                         SsirBarrierScope scope);
 uint32_t ssir_build_atomic(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                            uint32_t type, SsirAtomicOp op, uint32_t ptr,
                            uint32_t value, uint32_t comparator);
+uint32_t ssir_build_atomic_ex(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                              uint32_t type, SsirAtomicOp op, uint32_t ptr,
+                              uint32_t value, uint32_t comparator,
+                              SsirMemoryScope scope, SsirMemorySemantics semantics);
+void ssir_build_discard(SsirModule *mod, uint32_t func_id, uint32_t block_id);
+uint32_t ssir_build_rem(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                        uint32_t type, uint32_t a, uint32_t b);
 
 /* Entry Point API */
 
@@ -1184,6 +1398,9 @@ SsirEntryPoint *ssir_get_entry_point(SsirModule *mod, uint32_t index);
 void ssir_entry_point_add_interface(SsirModule *mod, uint32_t ep_index, uint32_t global_id);
 void ssir_entry_point_set_workgroup_size(SsirModule *mod, uint32_t ep_index,
                                          uint32_t x, uint32_t y, uint32_t z);
+void ssir_entry_point_set_depth_replacing(SsirModule *mod, uint32_t ep_index, bool v);
+void ssir_entry_point_set_origin_upper_left(SsirModule *mod, uint32_t ep_index, bool v);
+void ssir_entry_point_set_early_fragment_tests(SsirModule *mod, uint32_t ep_index, bool v);
 
 /* Validation API */
 
@@ -1205,12 +1422,18 @@ typedef struct SsirValidationResult {
 SsirValidationResult *ssir_validate(SsirModule *mod);
 void ssir_validation_result_free(SsirValidationResult *result);
 
+/* Analysis API */
+
+void ssir_count_uses(SsirFunction *f, uint32_t *use_counts, uint32_t max_id);
+void ssir_module_build_lookup(SsirModule *mod);
+
 /* Debug/Utility API */
 
 const char *ssir_opcode_name(SsirOpcode op);
 const char *ssir_builtin_name(SsirBuiltinId id);
 const char *ssir_type_kind_name(SsirTypeKind kind);
 char *ssir_module_to_string(SsirModule *mod);
+float ssir_f16_to_f32(uint16_t h);
 
 /* ============================================================================
  * SSIR TO SPIR-V

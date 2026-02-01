@@ -502,6 +502,7 @@ static SpvStorageClass addr_space_to_storage_class(SsirAddressSpace space) {
         case SSIR_ADDR_INPUT:           return SpvStorageClassInput;
         case SSIR_ADDR_OUTPUT:          return SpvStorageClassOutput;
         case SSIR_ADDR_PUSH_CONSTANT:   return SpvStorageClassPushConstant;
+        case SSIR_ADDR_PHYSICAL_STORAGE_BUFFER: return SpvStorageClassPhysicalStorageBuffer;
         default:                        return SpvStorageClassFunction;
     }
 }
@@ -545,6 +546,9 @@ static SpvDim texture_dim_to_spv(SsirTextureDim dim) {
         case SSIR_TEX_2D_ARRAY:       return SpvDim2D;
         case SSIR_TEX_CUBE_ARRAY:     return SpvDimCube;
         case SSIR_TEX_MULTISAMPLED_2D: return SpvDim2D;
+        case SSIR_TEX_1D_ARRAY:       return SpvDim1D;
+        case SSIR_TEX_BUFFER:         return SpvDimBuffer;
+        case SSIR_TEX_MULTISAMPLED_2D_ARRAY: return SpvDim2D;
         default:                       return SpvDim2D;
     }
 }
@@ -610,6 +614,34 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
                 c->has_float16_cap = 1;
             }
             break;
+        case SSIR_TYPE_F64:
+            spv_id = sts_emit_type_float(c, 64);
+            sts_emit_capability(c, SpvCapabilityFloat64);
+            break;
+        case SSIR_TYPE_I8:
+            spv_id = sts_emit_type_int(c, 8, 1);
+            sts_emit_capability(c, SpvCapabilityInt8);
+            break;
+        case SSIR_TYPE_U8:
+            spv_id = sts_emit_type_int(c, 8, 0);
+            sts_emit_capability(c, SpvCapabilityInt8);
+            break;
+        case SSIR_TYPE_I16:
+            spv_id = sts_emit_type_int(c, 16, 1);
+            sts_emit_capability(c, SpvCapabilityInt16);
+            break;
+        case SSIR_TYPE_U16:
+            spv_id = sts_emit_type_int(c, 16, 0);
+            sts_emit_capability(c, SpvCapabilityInt16);
+            break;
+        case SSIR_TYPE_I64:
+            spv_id = sts_emit_type_int(c, 64, 1);
+            sts_emit_capability(c, SpvCapabilityInt64);
+            break;
+        case SSIR_TYPE_U64:
+            spv_id = sts_emit_type_int(c, 64, 0);
+            sts_emit_capability(c, SpvCapabilityInt64);
+            break;
         case SSIR_TYPE_VEC: {
             uint32_t elem_spv = sts_emit_type(c, t->vec.elem);
             spv_id = sts_emit_type_vector(c, elem_spv, t->vec.size);
@@ -633,7 +665,7 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             wb_push(wb, t->array.length);
             spv_id = sts_emit_type_array(c, elem_spv, len_id);
             /* Decorate array stride */
-            uint32_t stride = compute_array_stride(c, t->array.elem);
+            uint32_t stride = t->array.stride ? t->array.stride : compute_array_stride(c, t->array.elem);
             sts_emit_decorate(c, spv_id, SpvDecorationArrayStride, &stride, 1);
             break;
         }
@@ -657,21 +689,34 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             if (t->struc.name) {
                 sts_emit_name(c, spv_id, t->struc.name);
             }
+            if (t->struc.member_names) {
+                for (uint32_t i = 0; i < t->struc.member_count; ++i) {
+                    if (t->struc.member_names[i])
+                        sts_emit_member_name(c, spv_id, i, t->struc.member_names[i]);
+                }
+            }
             if (t->struc.offsets) {
                 for (uint32_t i = 0; i < t->struc.member_count; ++i) {
                     sts_emit_member_decorate(c, spv_id, i, SpvDecorationOffset, &t->struc.offsets[i], 1);
                 }
             }
-            /* Emit ColMajor + MatrixStride for matrix members */
+            /* Emit ColMajor/RowMajor + MatrixStride for matrix members */
             for (uint32_t i = 0; i < t->struc.member_count; ++i) {
                 SsirType *mt = ssir_get_type((SsirModule *)c->mod, t->struc.members[i]);
                 if (mt && mt->kind == SSIR_TYPE_MAT) {
-                    sts_emit_member_decorate(c, spv_id, i, SpvDecorationColMajor, NULL, 0);
-                    uint32_t comp_size = 4;
-                    SsirType *elem_t = ssir_get_type((SsirModule *)c->mod, mt->mat.elem);
-                    if (elem_t && elem_t->kind == SSIR_TYPE_F16) comp_size = 2;
-                    uint32_t stride = mt->mat.rows * comp_size;
-                    if (stride < 16) stride = 16;
+                    uint8_t major = (t->struc.matrix_major && t->struc.matrix_major[i]) ? t->struc.matrix_major[i] : 1;
+                    SpvDecoration maj_dec = (major == 2) ? SpvDecorationRowMajor : SpvDecorationColMajor;
+                    sts_emit_member_decorate(c, spv_id, i, maj_dec, NULL, 0);
+                    uint32_t stride;
+                    if (t->struc.matrix_strides && t->struc.matrix_strides[i]) {
+                        stride = t->struc.matrix_strides[i];
+                    } else {
+                        uint32_t comp_size = 4;
+                        SsirType *elem_t = ssir_get_type((SsirModule *)c->mod, mt->mat.elem);
+                        if (elem_t && elem_t->kind == SSIR_TYPE_F16) comp_size = 2;
+                        stride = mt->mat.rows * comp_size;
+                        if (stride < 16) stride = 16;
+                    }
                     sts_emit_member_decorate(c, spv_id, i, SpvDecorationMatrixStride, &stride, 1);
                 }
             }
@@ -691,22 +736,26 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             break;
         case SSIR_TYPE_TEXTURE: {
             uint32_t sampled_spv = sts_emit_type(c, t->texture.sampled_type);
-            uint32_t arrayed = (t->texture.dim == SSIR_TEX_2D_ARRAY || t->texture.dim == SSIR_TEX_CUBE_ARRAY) ? 1 : 0;
-            uint32_t ms = (t->texture.dim == SSIR_TEX_MULTISAMPLED_2D) ? 1 : 0;
-            spv_id = sts_emit_type_image(c, t->texture.dim, sampled_spv, 0, arrayed, ms, 1, SpvImageFormatUnknown);
+            SsirTextureDim dim = t->texture.dim;
+            uint32_t arrayed = (dim == SSIR_TEX_2D_ARRAY || dim == SSIR_TEX_CUBE_ARRAY ||
+                                dim == SSIR_TEX_1D_ARRAY || dim == SSIR_TEX_MULTISAMPLED_2D_ARRAY) ? 1 : 0;
+            uint32_t ms = (dim == SSIR_TEX_MULTISAMPLED_2D || dim == SSIR_TEX_MULTISAMPLED_2D_ARRAY) ? 1 : 0;
+            spv_id = sts_emit_type_image(c, dim, sampled_spv, 0, arrayed, ms, 1, SpvImageFormatUnknown);
             break;
         }
         case SSIR_TYPE_TEXTURE_STORAGE: {
             uint32_t f32_type = c->spv_f32 ? c->spv_f32 : sts_emit_type_float(c, 32);
-            uint32_t arrayed = (t->texture_storage.dim == SSIR_TEX_2D_ARRAY) ? 1 : 0;
+            SsirTextureDim dim = t->texture_storage.dim;
+            uint32_t arrayed = (dim == SSIR_TEX_2D_ARRAY || dim == SSIR_TEX_1D_ARRAY) ? 1 : 0;
             uint32_t sampled = 2; /* storage image */
-            spv_id = sts_emit_type_image(c, t->texture_storage.dim, f32_type, 0, arrayed, 0, sampled, (SpvImageFormat)t->texture_storage.format);
+            spv_id = sts_emit_type_image(c, dim, f32_type, 0, arrayed, 0, sampled, (SpvImageFormat)t->texture_storage.format);
             break;
         }
         case SSIR_TYPE_TEXTURE_DEPTH: {
             uint32_t f32_type = c->spv_f32 ? c->spv_f32 : sts_emit_type_float(c, 32);
-            uint32_t arrayed = (t->texture_depth.dim == SSIR_TEX_2D_ARRAY || t->texture_depth.dim == SSIR_TEX_CUBE_ARRAY) ? 1 : 0;
-            spv_id = sts_emit_type_image(c, t->texture_depth.dim, f32_type, 1, arrayed, 0, 1, SpvImageFormatUnknown);
+            SsirTextureDim dim = t->texture_depth.dim;
+            uint32_t arrayed = (dim == SSIR_TEX_2D_ARRAY || dim == SSIR_TEX_CUBE_ARRAY || dim == SSIR_TEX_1D_ARRAY) ? 1 : 0;
+            spv_id = sts_emit_type_image(c, dim, f32_type, 1, arrayed, 0, 1, SpvImageFormatUnknown);
             break;
         }
     }
@@ -723,30 +772,42 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
  * Constant Emission
  * ============================================================================ */
 
+static uint32_t sts_emit_const_u32(Ctx *c, uint32_t value) {
+    StsWordBuf *wb = &c->sections.types_constants;
+    uint32_t u32_type = c->spv_u32 ? c->spv_u32 : sts_emit_type_int(c, 32, 0);
+    uint32_t id = sts_fresh_id(c);
+    sts_emit_op(wb, SpvOpConstant, 4);
+    wb_push(wb, u32_type);
+    wb_push(wb, id);
+    wb_push(wb, value);
+    return id;
+}
+
 static uint32_t sts_emit_constant(Ctx *c, const SsirConstant *cnst) {
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t type_spv = sts_emit_type(c, cnst->type);
     uint32_t id = get_spv_id(c, cnst->id);
 
+    bool spec = cnst->is_specialization;
     switch (cnst->kind) {
         case SSIR_CONST_BOOL:
             if (cnst->bool_val) {
-                sts_emit_op(wb, SpvOpConstantTrue, 3);
+                sts_emit_op(wb, spec ? SpvOpSpecConstantTrue : SpvOpConstantTrue, 3);
             } else {
-                sts_emit_op(wb, SpvOpConstantFalse, 3);
+                sts_emit_op(wb, spec ? SpvOpSpecConstantFalse : SpvOpConstantFalse, 3);
             }
             wb_push(wb, type_spv);
             wb_push(wb, id);
             break;
         case SSIR_CONST_I32:
         case SSIR_CONST_U32:
-            sts_emit_op(wb, SpvOpConstant, 4);
+            sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 4);
             wb_push(wb, type_spv);
             wb_push(wb, id);
             wb_push(wb, cnst->u32_val);
             break;
         case SSIR_CONST_F32: {
-            sts_emit_op(wb, SpvOpConstant, 4);
+            sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 4);
             wb_push(wb, type_spv);
             wb_push(wb, id);
             uint32_t bits;
@@ -755,13 +816,48 @@ static uint32_t sts_emit_constant(Ctx *c, const SsirConstant *cnst) {
             break;
         }
         case SSIR_CONST_F16:
-            sts_emit_op(wb, SpvOpConstant, 4);
+            sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 4);
             wb_push(wb, type_spv);
             wb_push(wb, id);
             wb_push(wb, cnst->f16_val);
             break;
+        case SSIR_CONST_F64: {
+            sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 5);
+            wb_push(wb, type_spv);
+            wb_push(wb, id);
+            uint32_t dw[2];
+            memcpy(dw, &cnst->f64_val, sizeof(double));
+            wb_push(wb, dw[0]);
+            wb_push(wb, dw[1]);
+            break;
+        }
+        case SSIR_CONST_I8:
+        case SSIR_CONST_U8:
+            sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 4);
+            wb_push(wb, type_spv);
+            wb_push(wb, id);
+            wb_push(wb, (uint32_t)cnst->u8_val);
+            break;
+        case SSIR_CONST_I16:
+        case SSIR_CONST_U16:
+            sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 4);
+            wb_push(wb, type_spv);
+            wb_push(wb, id);
+            wb_push(wb, (uint32_t)cnst->u16_val);
+            break;
+        case SSIR_CONST_I64:
+        case SSIR_CONST_U64: {
+            sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 5);
+            wb_push(wb, type_spv);
+            wb_push(wb, id);
+            uint32_t qw[2];
+            memcpy(qw, &cnst->u64_val, sizeof(uint64_t));
+            wb_push(wb, qw[0]);
+            wb_push(wb, qw[1]);
+            break;
+        }
         case SSIR_CONST_COMPOSITE: {
-            sts_emit_op(wb, SpvOpConstantComposite, 3 + cnst->composite.count);
+            sts_emit_op(wb, spec ? SpvOpSpecConstantComposite : SpvOpConstantComposite, 3 + cnst->composite.count);
             wb_push(wb, type_spv);
             wb_push(wb, id);
             for (uint32_t i = 0; i < cnst->composite.count; ++i) {
@@ -774,6 +870,11 @@ static uint32_t sts_emit_constant(Ctx *c, const SsirConstant *cnst) {
             wb_push(wb, type_spv);
             wb_push(wb, id);
             break;
+    }
+
+    /* Emit SpecId decoration for specialization constants */
+    if (spec) {
+        sts_emit_decorate(c, id, SpvDecorationSpecId, &cnst->spec_id, 1);
     }
 
     /* Emit debug name for named constants */
@@ -803,6 +904,20 @@ static SpvBuiltIn builtin_var_to_spv(SsirBuiltinVar b) {
         case SSIR_BUILTIN_GLOBAL_INVOCATION_ID:  return SpvBuiltInGlobalInvocationId;
         case SSIR_BUILTIN_WORKGROUP_ID:          return SpvBuiltInWorkgroupId;
         case SSIR_BUILTIN_NUM_WORKGROUPS:        return SpvBuiltInNumWorkgroups;
+        case SSIR_BUILTIN_POINT_SIZE:            return SpvBuiltInPointSize;
+        case SSIR_BUILTIN_CLIP_DISTANCE:         return SpvBuiltInClipDistance;
+        case SSIR_BUILTIN_CULL_DISTANCE:         return SpvBuiltInCullDistance;
+        case SSIR_BUILTIN_LAYER:                 return SpvBuiltInLayer;
+        case SSIR_BUILTIN_VIEWPORT_INDEX:        return SpvBuiltInViewportIndex;
+        case SSIR_BUILTIN_FRAG_COORD:            return SpvBuiltInFragCoord;
+        case SSIR_BUILTIN_HELPER_INVOCATION:     return SpvBuiltInHelperInvocation;
+        case SSIR_BUILTIN_PRIMITIVE_ID:          return SpvBuiltInPrimitiveId;
+        case SSIR_BUILTIN_BASE_VERTEX:           return SpvBuiltInBaseVertex;
+        case SSIR_BUILTIN_BASE_INSTANCE:         return SpvBuiltInBaseInstance;
+        case SSIR_BUILTIN_SUBGROUP_SIZE:         return SpvBuiltInSubgroupSize;
+        case SSIR_BUILTIN_SUBGROUP_INVOCATION_ID: return SpvBuiltInSubgroupLocalInvocationId;
+        case SSIR_BUILTIN_SUBGROUP_ID:           return SpvBuiltInSubgroupId;
+        case SSIR_BUILTIN_NUM_SUBGROUPS:         return SpvBuiltInNumSubgroups;
         default:                                  return SpvBuiltInMax;
     }
 }
@@ -849,6 +964,17 @@ static uint32_t sts_emit_global_var(Ctx *c, const SsirGlobalVar *g) {
         sts_emit_decorate(c, id, SpvDecorationFlat, NULL, 0);
     } else if (g->interp == SSIR_INTERP_LINEAR) {
         sts_emit_decorate(c, id, SpvDecorationNoPerspective, NULL, 0);
+    }
+    if (g->interp_sampling == SSIR_INTERP_SAMPLING_CENTROID) {
+        sts_emit_decorate(c, id, SpvDecorationCentroid, NULL, 0);
+    } else if (g->interp_sampling == SSIR_INTERP_SAMPLING_SAMPLE) {
+        sts_emit_decorate(c, id, SpvDecorationSample, NULL, 0);
+    }
+    if (g->non_writable) {
+        sts_emit_decorate(c, id, SpvDecorationNonWritable, NULL, 0);
+    }
+    if (g->invariant) {
+        sts_emit_decorate(c, id, SpvDecorationInvariant, NULL, 0);
     }
 
     /* Block decoration for uniform/storage buffers */
@@ -976,6 +1102,23 @@ static int builtin_to_glsl_op(SsirBuiltinId id) {
         case SSIR_BUILTIN_MIX: return GLSLstd450FMix;
         case SSIR_BUILTIN_STEP: return GLSLstd450Step;
         case SSIR_BUILTIN_SMOOTHSTEP: return GLSLstd450SmoothStep;
+        case SSIR_BUILTIN_FMA: return GLSLstd450Fma;
+        case SSIR_BUILTIN_DEGREES: return GLSLstd450Degrees;
+        case SSIR_BUILTIN_RADIANS: return GLSLstd450Radians;
+        case SSIR_BUILTIN_MODF: return GLSLstd450Modf;
+        case SSIR_BUILTIN_FREXP: return GLSLstd450Frexp;
+        case SSIR_BUILTIN_LDEXP: return GLSLstd450Ldexp;
+        case SSIR_BUILTIN_DETERMINANT: return GLSLstd450Determinant;
+        case SSIR_BUILTIN_PACK4X8SNORM: return GLSLstd450PackSnorm4x8;
+        case SSIR_BUILTIN_PACK4X8UNORM: return GLSLstd450PackUnorm4x8;
+        case SSIR_BUILTIN_PACK2X16SNORM: return GLSLstd450PackSnorm2x16;
+        case SSIR_BUILTIN_PACK2X16UNORM: return GLSLstd450PackUnorm2x16;
+        case SSIR_BUILTIN_PACK2X16FLOAT: return GLSLstd450PackHalf2x16;
+        case SSIR_BUILTIN_UNPACK4X8SNORM: return GLSLstd450UnpackSnorm4x8;
+        case SSIR_BUILTIN_UNPACK4X8UNORM: return GLSLstd450UnpackUnorm4x8;
+        case SSIR_BUILTIN_UNPACK2X16SNORM: return GLSLstd450UnpackSnorm2x16;
+        case SSIR_BUILTIN_UNPACK2X16UNORM: return GLSLstd450UnpackUnorm2x16;
+        case SSIR_BUILTIN_UNPACK2X16FLOAT: return GLSLstd450UnpackHalf2x16;
         default: return -1;
     }
 }
@@ -1143,6 +1286,20 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             break;
 
         case SSIR_OP_MOD:
+            if (is_float_ssir_type(c, op0_type)) {
+                sts_emit_op(wb, SpvOpFMod, 5);
+            } else if (is_signed_ssir_type(c, op0_type)) {
+                sts_emit_op(wb, SpvOpSMod, 5);
+            } else {
+                sts_emit_op(wb, SpvOpUMod, 5);
+            }
+            wb_push(wb, type_spv);
+            wb_push(wb, result_spv);
+            wb_push(wb, get_spv_id(c, inst->operands[0]));
+            wb_push(wb, get_spv_id(c, inst->operands[1]));
+            break;
+
+        case SSIR_OP_REM:
             if (is_float_ssir_type(c, op0_type)) {
                 sts_emit_op(wb, SpvOpFRem, 5);
             } else if (is_signed_ssir_type(c, op0_type)) {
@@ -1449,6 +1606,15 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             wb_push(wb, get_spv_id(c, inst->operands[1]));
             break;
 
+        case SSIR_OP_INSERT_DYN:
+            sts_emit_op(wb, SpvOpVectorInsertDynamic, 6);
+            wb_push(wb, type_spv);
+            wb_push(wb, result_spv);
+            wb_push(wb, get_spv_id(c, inst->operands[0])); /* vector */
+            wb_push(wb, get_spv_id(c, inst->operands[1])); /* component */
+            wb_push(wb, get_spv_id(c, inst->operands[2])); /* index */
+            break;
+
         /* Memory */
         case SSIR_OP_LOAD:
             sts_emit_op(wb, SpvOpLoad, 4);
@@ -1544,6 +1710,16 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             wb_push(wb, get_spv_id(c, inst->operands[0])); /* merge block */
             wb_push(wb, get_spv_id(c, inst->operands[1])); /* continue block */
             wb_push(wb, 0); /* LoopControlMaskNone */
+            break;
+
+        case SSIR_OP_SELECTION_MERGE:
+            sts_emit_op(wb, SpvOpSelectionMerge, 3);
+            wb_push(wb, get_spv_id(c, inst->operands[0])); /* merge block */
+            wb_push(wb, 0); /* SelectionControlMaskNone */
+            break;
+
+        case SSIR_OP_DISCARD:
+            sts_emit_op(wb, SpvOpKill, 1);
             break;
 
         /* Call */
@@ -1701,6 +1877,21 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
                 wb_push(wb, type_spv);
                 wb_push(wb, result_spv);
                 wb_push(wb, get_spv_id(c, inst->extra[0]));
+            } else if (builtin_id == SSIR_BUILTIN_ISINF) {
+                sts_emit_op(wb, SpvOpIsInf, 4);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->extra[0]));
+            } else if (builtin_id == SSIR_BUILTIN_ISNAN) {
+                sts_emit_op(wb, SpvOpIsNan, 4);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->extra[0]));
+            } else if (builtin_id == SSIR_BUILTIN_TRANSPOSE) {
+                sts_emit_op(wb, SpvOpTranspose, 4);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->extra[0]));
             } else if (glsl_op >= 0) {
                 /* Generic GLSL.std.450 function */
                 sts_emit_op(wb, SpvOpExtInst, 5 + inst->extra_count);
@@ -1741,29 +1932,349 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             wb_push(wb, get_spv_id(c, inst->operands[0]));
             break;
 
-        /* Texture - basic implementations */
+        /* Texture operations */
         case SSIR_OP_TEX_SAMPLE:
         case SSIR_OP_TEX_SAMPLE_BIAS:
         case SSIR_OP_TEX_SAMPLE_LEVEL:
         case SSIR_OP_TEX_SAMPLE_GRAD:
         case SSIR_OP_TEX_SAMPLE_CMP:
+        case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
+        case SSIR_OP_TEX_SAMPLE_OFFSET:
+        case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
+        case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
+        case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
+        case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
+        case SSIR_OP_TEX_GATHER:
+        case SSIR_OP_TEX_GATHER_CMP:
+        case SSIR_OP_TEX_GATHER_OFFSET: {
+            /* Create OpSampledImage from texture + sampler */
+            uint32_t tex_ssir_type = get_ssir_type(c, inst->operands[0]);
+            uint32_t img_spv = sts_emit_type(c, tex_ssir_type);
+            uint32_t si_type = sts_emit_type_sampled_image(c, img_spv);
+            uint32_t si_id = sts_fresh_id(c);
+            sts_emit_op(wb, SpvOpSampledImage, 5);
+            wb_push(wb, si_type);
+            wb_push(wb, si_id);
+            wb_push(wb, get_spv_id(c, inst->operands[0]));
+            wb_push(wb, get_spv_id(c, inst->operands[1]));
+
+            uint32_t coord_spv = get_spv_id(c, inst->operands[2]);
+
+            switch (inst->op) {
+            case SSIR_OP_TEX_SAMPLE:
+                sts_emit_op(wb, SpvOpImageSampleImplicitLod, 5);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                break;
+            case SSIR_OP_TEX_SAMPLE_BIAS:
+                sts_emit_op(wb, SpvOpImageSampleImplicitLod, 7);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, 0x1); /* Bias */
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_LEVEL:
+                sts_emit_op(wb, SpvOpImageSampleExplicitLod, 7);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, 0x2); /* Lod */
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_GRAD:
+                sts_emit_op(wb, SpvOpImageSampleExplicitLod, 8);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, 0x4); /* Grad */
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                wb_push(wb, get_spv_id(c, inst->operands[4]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_CMP:
+                sts_emit_op(wb, SpvOpImageSampleDrefImplicitLod, 6);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
+                sts_emit_op(wb, SpvOpImageSampleDrefExplicitLod, 8);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                wb_push(wb, 0x2); /* Lod */
+                wb_push(wb, get_spv_id(c, inst->operands[4]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_OFFSET:
+                sts_emit_op(wb, SpvOpImageSampleImplicitLod, 7);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, 0x10); /* ConstOffset */
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
+                sts_emit_op(wb, SpvOpImageSampleImplicitLod, 8);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, 0x1 | 0x10); /* Bias | ConstOffset */
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                wb_push(wb, get_spv_id(c, inst->operands[4]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
+                sts_emit_op(wb, SpvOpImageSampleExplicitLod, 8);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, 0x2 | 0x10); /* Lod | ConstOffset */
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                wb_push(wb, get_spv_id(c, inst->operands[4]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
+                sts_emit_op(wb, SpvOpImageSampleExplicitLod, 9);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, 0x4 | 0x10); /* Grad | ConstOffset */
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                wb_push(wb, get_spv_id(c, inst->operands[4]));
+                wb_push(wb, get_spv_id(c, inst->operands[5]));
+                break;
+            case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
+                sts_emit_op(wb, SpvOpImageSampleDrefImplicitLod, 8);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                wb_push(wb, 0x10); /* ConstOffset */
+                wb_push(wb, get_spv_id(c, inst->operands[4]));
+                break;
+            case SSIR_OP_TEX_GATHER:
+                sts_emit_op(wb, SpvOpImageGather, 7);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                break;
+            case SSIR_OP_TEX_GATHER_CMP:
+                sts_emit_op(wb, SpvOpImageDrefGather, 7);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                break;
+            case SSIR_OP_TEX_GATHER_OFFSET:
+                sts_emit_op(wb, SpvOpImageGather, 8);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, si_id);
+                wb_push(wb, coord_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[3]));
+                wb_push(wb, 0x10); /* ConstOffset */
+                wb_push(wb, get_spv_id(c, inst->operands[4]));
+                break;
+            default: break;
+            }
+            break;
+        }
+
         case SSIR_OP_TEX_LOAD:
+            sts_emit_op(wb, SpvOpImageRead, 5);
+            wb_push(wb, type_spv);
+            wb_push(wb, result_spv);
+            wb_push(wb, get_spv_id(c, inst->operands[0]));
+            wb_push(wb, get_spv_id(c, inst->operands[1]));
+            break;
+
         case SSIR_OP_TEX_STORE:
+            sts_emit_op(wb, SpvOpImageWrite, 4);
+            wb_push(wb, get_spv_id(c, inst->operands[0]));
+            wb_push(wb, get_spv_id(c, inst->operands[1]));
+            wb_push(wb, get_spv_id(c, inst->operands[2]));
+            break;
+
         case SSIR_OP_TEX_SIZE:
-            /* TODO: implement texture operations */
+            sts_emit_op(wb, SpvOpImageQuerySizeLod, 5);
+            wb_push(wb, type_spv);
+            wb_push(wb, result_spv);
+            wb_push(wb, get_spv_id(c, inst->operands[0]));
+            wb_push(wb, get_spv_id(c, inst->operands[1]));
+            break;
+
+        case SSIR_OP_TEX_QUERY_LOD: {
+            uint32_t tex_ssir_type = get_ssir_type(c, inst->operands[0]);
+            uint32_t img_spv = sts_emit_type(c, tex_ssir_type);
+            uint32_t si_type = sts_emit_type_sampled_image(c, img_spv);
+            uint32_t si_id = sts_fresh_id(c);
+            sts_emit_op(wb, SpvOpSampledImage, 5);
+            wb_push(wb, si_type);
+            wb_push(wb, si_id);
+            wb_push(wb, get_spv_id(c, inst->operands[0]));
+            wb_push(wb, get_spv_id(c, inst->operands[1]));
+            sts_emit_op(wb, SpvOpImageQueryLod, 5);
+            wb_push(wb, type_spv);
+            wb_push(wb, result_spv);
+            wb_push(wb, si_id);
+            wb_push(wb, get_spv_id(c, inst->operands[2]));
+            break;
+        }
+
+        case SSIR_OP_TEX_QUERY_LEVELS:
+            sts_emit_op(wb, SpvOpImageQueryLevels, 4);
+            wb_push(wb, type_spv);
+            wb_push(wb, result_spv);
+            wb_push(wb, get_spv_id(c, inst->operands[0]));
+            break;
+
+        case SSIR_OP_TEX_QUERY_SAMPLES:
+            sts_emit_op(wb, SpvOpImageQuerySamples, 4);
+            wb_push(wb, type_spv);
+            wb_push(wb, result_spv);
+            wb_push(wb, get_spv_id(c, inst->operands[0]));
             break;
 
         /* Sync */
-        case SSIR_OP_BARRIER:
-            sts_emit_op(wb, SpvOpControlBarrier, 4);
-            wb_push(wb, 2); /* Workgroup scope */
-            wb_push(wb, 2); /* Workgroup scope */
-            wb_push(wb, 0x100); /* AcquireRelease */
+        case SSIR_OP_BARRIER: {
+            SsirBarrierScope bscope = (SsirBarrierScope)inst->operands[0];
+            switch (bscope) {
+            case SSIR_BARRIER_WORKGROUP: {
+                uint32_t wg = sts_emit_const_u32(c, SpvScopeWorkgroup);
+                uint32_t sem = sts_emit_const_u32(c, 0x108); /* AcquireRelease | WorkgroupMemory */
+                sts_emit_op(wb, SpvOpControlBarrier, 4);
+                wb_push(wb, wg); wb_push(wb, wg); wb_push(wb, sem);
+                break;
+            }
+            case SSIR_BARRIER_STORAGE: {
+                uint32_t wg = sts_emit_const_u32(c, SpvScopeWorkgroup);
+                uint32_t sem = sts_emit_const_u32(c, 0x48); /* AcquireRelease | UniformMemory */
+                sts_emit_op(wb, SpvOpMemoryBarrier, 3);
+                wb_push(wb, wg); wb_push(wb, sem);
+                break;
+            }
+            case SSIR_BARRIER_SUBGROUP: {
+                uint32_t sg = sts_emit_const_u32(c, SpvScopeSubgroup);
+                uint32_t sem = sts_emit_const_u32(c, 0x108); /* AcquireRelease | WorkgroupMemory */
+                sts_emit_op(wb, SpvOpControlBarrier, 4);
+                wb_push(wb, sg); wb_push(wb, sg); wb_push(wb, sem);
+                break;
+            }
+            case SSIR_BARRIER_IMAGE: {
+                uint32_t wg = sts_emit_const_u32(c, SpvScopeWorkgroup);
+                uint32_t sem = sts_emit_const_u32(c, 0x808); /* AcquireRelease | ImageMemory */
+                sts_emit_op(wb, SpvOpMemoryBarrier, 3);
+                wb_push(wb, wg); wb_push(wb, sem);
+                break;
+            }
+            }
             break;
+        }
 
-        case SSIR_OP_ATOMIC:
-            /* TODO: implement atomic operations */
+        case SSIR_OP_ATOMIC: {
+            SsirAtomicOp aop = (SsirAtomicOp)inst->operands[0];
+            uint32_t a_ptr = get_spv_id(c, inst->operands[1]);
+            uint32_t a_val = inst->operands[2] ? get_spv_id(c, inst->operands[2]) : 0;
+            uint32_t a_cmp = inst->operands[3] ? get_spv_id(c, inst->operands[3]) : 0;
+            /* Scope and semantics: use from extended form or defaults */
+            uint32_t scope_val = (inst->operand_count >= 6) ? inst->operands[4] : 0; /* SSIR_SCOPE_DEVICE */
+            uint32_t sem_val = (inst->operand_count >= 6) ? inst->operands[5] : 0; /* SSIR_SEMANTICS_RELAXED */
+            /* Convert SSIR scope to SPIR-V scope */
+            SpvScope spv_scope;
+            switch ((SsirMemoryScope)scope_val) {
+            case SSIR_SCOPE_WORKGROUP: spv_scope = SpvScopeWorkgroup; break;
+            case SSIR_SCOPE_SUBGROUP: spv_scope = SpvScopeSubgroup; break;
+            case SSIR_SCOPE_INVOCATION: spv_scope = SpvScopeInvocation; break;
+            default: spv_scope = SpvScopeDevice; break;
+            }
+            /* Convert SSIR semantics to SPIR-V memory semantics */
+            SpvMemorySemanticsMask spv_sem;
+            switch ((SsirMemorySemantics)sem_val) {
+            case SSIR_SEMANTICS_ACQUIRE: spv_sem = SpvMemorySemanticsMaskNone | 0x2; break; /* Acquire */
+            case SSIR_SEMANTICS_RELEASE: spv_sem = SpvMemorySemanticsMaskNone | 0x4; break; /* Release */
+            case SSIR_SEMANTICS_ACQUIRE_RELEASE: spv_sem = SpvMemorySemanticsMaskNone | 0x8; break; /* AcquireRelease */
+            case SSIR_SEMANTICS_SEQ_CST: spv_sem = SpvMemorySemanticsMaskNone | 0x10; break; /* SequentiallyConsistent */
+            default: spv_sem = SpvMemorySemanticsMaskNone; break; /* Relaxed */
+            }
+            /* Emit scope and semantics as constants */
+            uint32_t scope_id = sts_emit_const_u32(c, (uint32_t)spv_scope);
+            uint32_t sem_id = sts_emit_const_u32(c, (uint32_t)spv_sem);
+            uint32_t sem_equal_id = sem_id; /* For compare exchange, equal semantics */
+            uint32_t sem_unequal_id = sts_emit_const_u32(c, (uint32_t)SpvMemorySemanticsMaskNone); /* Unequal gets relaxed */
+            switch (aop) {
+            case SSIR_ATOMIC_LOAD:
+                sts_emit_op(wb, SpvOpAtomicLoad, 5);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id);
+                break;
+            case SSIR_ATOMIC_STORE:
+                sts_emit_op(wb, SpvOpAtomicStore, 5);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_ADD:
+                sts_emit_op(wb, SpvOpAtomicIAdd, 7);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_SUB:
+                sts_emit_op(wb, SpvOpAtomicISub, 7);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_MAX:
+                sts_emit_op(wb, SpvOpAtomicUMax, 7);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_MIN:
+                sts_emit_op(wb, SpvOpAtomicUMin, 7);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_AND:
+                sts_emit_op(wb, SpvOpAtomicAnd, 7);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_OR:
+                sts_emit_op(wb, SpvOpAtomicOr, 7);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_XOR:
+                sts_emit_op(wb, SpvOpAtomicXor, 7);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_EXCHANGE:
+                sts_emit_op(wb, SpvOpAtomicExchange, 7);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
+                break;
+            case SSIR_ATOMIC_COMPARE_EXCHANGE:
+                sts_emit_op(wb, SpvOpAtomicCompareExchange, 9);
+                wb_push(wb, type_spv); wb_push(wb, result_spv);
+                wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_equal_id);
+                wb_push(wb, sem_unequal_id); wb_push(wb, a_val); wb_push(wb, a_cmp);
+                break;
+            }
             break;
+        }
 
         default:
             break;
@@ -1847,6 +2358,9 @@ static SpvExecutionModel stage_to_execution_model(SsirStage stage) {
         case SSIR_STAGE_VERTEX:   return SpvExecutionModelVertex;
         case SSIR_STAGE_FRAGMENT: return SpvExecutionModelFragment;
         case SSIR_STAGE_COMPUTE:  return SpvExecutionModelGLCompute;
+        case SSIR_STAGE_GEOMETRY: return SpvExecutionModelGeometry;
+        case SSIR_STAGE_TESS_CONTROL: return SpvExecutionModelTessellationControl;
+        case SSIR_STAGE_TESS_EVAL:    return SpvExecutionModelTessellationEvaluation;
         default:                  return SpvExecutionModelVertex;
     }
 }
@@ -1891,10 +2405,27 @@ static int sts_emit_entry_point(Ctx *c, const SsirEntryPoint *ep) {
     wb = &c->sections.execution_modes;
 
     if (ep->stage == SSIR_STAGE_FRAGMENT) {
-        /* OriginUpperLeft for fragment shaders */
-        sts_emit_op(wb, SpvOpExecutionMode, 3);
-        wb_push(wb, func_spv);
-        wb_push(wb, SpvExecutionModeOriginUpperLeft);
+        /* OriginUpperLeft for fragment shaders (default unless explicitly disabled) */
+        if (!ep->origin_upper_left) {
+            /* Still emit OriginUpperLeft as default, since most APIs expect it */
+            sts_emit_op(wb, SpvOpExecutionMode, 3);
+            wb_push(wb, func_spv);
+            wb_push(wb, SpvExecutionModeOriginUpperLeft);
+        } else {
+            sts_emit_op(wb, SpvOpExecutionMode, 3);
+            wb_push(wb, func_spv);
+            wb_push(wb, SpvExecutionModeOriginUpperLeft);
+        }
+        if (ep->depth_replacing) {
+            sts_emit_op(wb, SpvOpExecutionMode, 3);
+            wb_push(wb, func_spv);
+            wb_push(wb, SpvExecutionModeDepthReplacing);
+        }
+        if (ep->early_fragment_tests) {
+            sts_emit_op(wb, SpvOpExecutionMode, 3);
+            wb_push(wb, func_spv);
+            wb_push(wb, SpvExecutionModeEarlyFragmentTests);
+        }
     }
 
     if (ep->stage == SSIR_STAGE_COMPUTE) {

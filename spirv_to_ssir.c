@@ -88,7 +88,7 @@ typedef struct {
     uint32_t ssir_id;
 
     union {
-        struct { uint32_t type_id; uint32_t *values; int value_count; int is_composite; } constant;
+        struct { uint32_t type_id; uint32_t *values; int value_count; int is_composite; int is_spec; uint32_t spec_id; } constant;
         struct { uint32_t type_id; SpvStorageClass storage_class; uint32_t initializer; } variable;
         struct { uint32_t return_type; uint32_t func_type; } function;
         struct { uint32_t type_id; SpvOp opcode; uint32_t *operands; int operand_count; } instruction;
@@ -129,6 +129,9 @@ typedef struct {
     uint32_t *interface_vars;
     int interface_var_count;
     int workgroup_size[3];
+    bool depth_replacing;
+    bool origin_upper_left;
+    bool early_fragment_tests;
     uint32_t *local_vars;
     int local_var_count;
     int local_var_cap;
@@ -146,6 +149,11 @@ typedef struct {
     uint32_t func_id;
     int workgroup_size[3];
 } VtsPendingWorkgroupSize;
+
+typedef struct {
+    uint32_t func_id;
+    SpvExecutionMode mode;
+} VtsPendingExecMode;
 
 typedef struct {
     const uint32_t *spirv;
@@ -166,6 +174,10 @@ typedef struct {
     VtsPendingWorkgroupSize *pending_wgs;
     int pending_wg_count;
     int pending_wg_cap;
+
+    VtsPendingExecMode *pending_exec_modes;
+    int pending_exec_mode_count;
+    int pending_exec_mode_cap;
 
     uint32_t glsl_ext_id;
 
@@ -557,6 +569,9 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
         case SpvOpConstant:
         case SpvOpConstantTrue:
         case SpvOpConstantFalse:
+        case SpvOpSpecConstant:
+        case SpvOpSpecConstantTrue:
+        case SpvOpSpecConstantFalse:
             if (operand_count >= 2) {
                 uint32_t type_id = operands[0];
                 uint32_t id = operands[1];
@@ -564,17 +579,20 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     c->ids[id].kind = VTS_SPV_ID_CONSTANT;
                     c->ids[id].constant.type_id = type_id;
                     c->ids[id].constant.is_composite = 0;
+                    c->ids[id].constant.is_spec = ((SpvOp)opcode == SpvOpSpecConstant ||
+                        (SpvOp)opcode == SpvOpSpecConstantTrue ||
+                        (SpvOp)opcode == SpvOpSpecConstantFalse);
                     int vc = operand_count - 2;
                     c->ids[id].constant.value_count = vc;
                     if (vc > 0) {
                         c->ids[id].constant.values = (uint32_t*)SPIRV_TO_SSIR_MALLOC(vc * sizeof(uint32_t));
                         memcpy(c->ids[id].constant.values, &operands[2], vc * sizeof(uint32_t));
                     }
-                    if ((SpvOp)opcode == SpvOpConstantTrue) {
+                    if ((SpvOp)opcode == SpvOpConstantTrue || (SpvOp)opcode == SpvOpSpecConstantTrue) {
                         c->ids[id].constant.values = (uint32_t*)SPIRV_TO_SSIR_MALLOC(sizeof(uint32_t));
                         c->ids[id].constant.values[0] = 1;
                         c->ids[id].constant.value_count = 1;
-                    } else if ((SpvOp)opcode == SpvOpConstantFalse) {
+                    } else if ((SpvOp)opcode == SpvOpConstantFalse || (SpvOp)opcode == SpvOpSpecConstantFalse) {
                         c->ids[id].constant.values = (uint32_t*)SPIRV_TO_SSIR_MALLOC(sizeof(uint32_t));
                         c->ids[id].constant.values[0] = 0;
                         c->ids[id].constant.value_count = 1;
@@ -667,6 +685,20 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     wg->workgroup_size[0] = operands[2];
                     wg->workgroup_size[1] = operands[3];
                     wg->workgroup_size[2] = operands[4];
+                }
+                /* Store execution modes for later application */
+                if (mode == SpvExecutionModeDepthReplacing ||
+                    mode == SpvExecutionModeOriginUpperLeft ||
+                    mode == SpvExecutionModeEarlyFragmentTests) {
+                    if (c->pending_exec_mode_count >= c->pending_exec_mode_cap) {
+                        int ncap = c->pending_exec_mode_cap ? c->pending_exec_mode_cap * 2 : 4;
+                        c->pending_exec_modes = (VtsPendingExecMode*)SPIRV_TO_SSIR_REALLOC(
+                            c->pending_exec_modes, ncap * sizeof(VtsPendingExecMode));
+                        c->pending_exec_mode_cap = ncap;
+                    }
+                    VtsPendingExecMode *em = &c->pending_exec_modes[c->pending_exec_mode_count++];
+                    em->func_id = fn_id;
+                    em->mode = mode;
                 }
             }
             break;
@@ -765,9 +797,13 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                 case SpvOpSelect: case SpvOpPhi: case SpvOpDot: case SpvOpVectorTimesScalar: case SpvOpMatrixTimesScalar:
                 case SpvOpVectorTimesMatrix: case SpvOpMatrixTimesVector: case SpvOpMatrixTimesMatrix:
                 case SpvOpExtInst: case SpvOpImageSampleImplicitLod: case SpvOpImageSampleExplicitLod:
+                case SpvOpImageSampleDrefImplicitLod: case SpvOpImageSampleDrefExplicitLod:
+                case SpvOpImageGather: case SpvOpImageDrefGather:
+                case SpvOpImageRead: case SpvOpImageQuerySizeLod: case SpvOpImageQuerySize:
+                case SpvOpImageQueryLod: case SpvOpImageQueryLevels: case SpvOpImageQuerySamples:
                 case SpvOpSampledImage: case SpvOpFunctionCall: case SpvOpTranspose:
-                case SpvOpCopyObject: case SpvOpVectorExtractDynamic:
-                case SpvOpArrayLength:
+                case SpvOpCopyObject: case SpvOpVectorExtractDynamic: case SpvOpVectorInsertDynamic:
+                case SpvOpArrayLength: case SpvOpIsInf: case SpvOpIsNan:
                     has_result_type = 1;
                     has_result = 1;
                     break;
@@ -825,6 +861,22 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
         }
     }
 
+    /* Apply pending execution modes to functions */
+    for (int i = 0; i < c->pending_exec_mode_count; i++) {
+        VtsPendingExecMode *em = &c->pending_exec_modes[i];
+        for (int j = 0; j < c->function_count; j++) {
+            if (c->functions[j].id == em->func_id) {
+                if (em->mode == SpvExecutionModeDepthReplacing)
+                    c->functions[j].depth_replacing = true;
+                else if (em->mode == SpvExecutionModeOriginUpperLeft)
+                    c->functions[j].origin_upper_left = true;
+                else if (em->mode == SpvExecutionModeEarlyFragmentTests)
+                    c->functions[j].early_fragment_tests = true;
+                break;
+            }
+        }
+    }
+
     return SPIRV_TO_SSIR_SUCCESS;
 }
 
@@ -841,14 +893,20 @@ static uint32_t convert_scalar_type(VtsConverter *c, uint32_t spv_type_id) {
     case VTS_SPV_TYPE_BOOL:
         return ssir_type_bool(c->mod);
     case VTS_SPV_TYPE_INT:
-        if (info->type_info.int_type.width == 32) {
-            return info->type_info.int_type.signedness ? ssir_type_i32(c->mod) : ssir_type_u32(c->mod);
+        switch (info->type_info.int_type.width) {
+        case 8:  return info->type_info.int_type.signedness ? ssir_type_i8(c->mod) : ssir_type_u8(c->mod);
+        case 16: return info->type_info.int_type.signedness ? ssir_type_i16(c->mod) : ssir_type_u16(c->mod);
+        case 32: return info->type_info.int_type.signedness ? ssir_type_i32(c->mod) : ssir_type_u32(c->mod);
+        case 64: return info->type_info.int_type.signedness ? ssir_type_i64(c->mod) : ssir_type_u64(c->mod);
+        default: return 0;
         }
-        return 0;
     case VTS_SPV_TYPE_FLOAT:
-        if (info->type_info.float_type.width == 32) return ssir_type_f32(c->mod);
-        if (info->type_info.float_type.width == 16) return ssir_type_f16(c->mod);
-        return 0;
+        switch (info->type_info.float_type.width) {
+        case 16: return ssir_type_f16(c->mod);
+        case 32: return ssir_type_f32(c->mod);
+        case 64: return ssir_type_f64(c->mod);
+        default: return 0;
+        }
     default:
         return 0;
     }
@@ -865,17 +923,19 @@ static SsirAddressSpace storage_class_to_addr_space(SpvStorageClass sc) {
     case SpvStorageClassInput: return SSIR_ADDR_INPUT;
     case SpvStorageClassOutput: return SSIR_ADDR_OUTPUT;
     case SpvStorageClassPushConstant: return SSIR_ADDR_PUSH_CONSTANT;
+    case SpvStorageClassPhysicalStorageBuffer: return SSIR_ADDR_PHYSICAL_STORAGE_BUFFER;
     default: return SSIR_ADDR_FUNCTION;
     }
 }
 
 static SsirTextureDim spv_dim_to_ssir(SpvDim dim, uint32_t arrayed, uint32_t ms) {
-    if (ms) return SSIR_TEX_MULTISAMPLED_2D;
+    if (ms) return arrayed ? SSIR_TEX_MULTISAMPLED_2D_ARRAY : SSIR_TEX_MULTISAMPLED_2D;
     switch (dim) {
-    case SpvDim1D: return SSIR_TEX_1D;
+    case SpvDim1D: return arrayed ? SSIR_TEX_1D_ARRAY : SSIR_TEX_1D;
     case SpvDim2D: return arrayed ? SSIR_TEX_2D_ARRAY : SSIR_TEX_2D;
     case SpvDim3D: return SSIR_TEX_3D;
     case SpvDimCube: return arrayed ? SSIR_TEX_CUBE_ARRAY : SSIR_TEX_CUBE;
+    case SpvDimBuffer: return SSIR_TEX_BUFFER;
     default: return SSIR_TEX_2D;
     }
 }
@@ -919,7 +979,12 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
                 len = c->ids[len_id].constant.values[0];
             }
         }
-        result = ssir_type_array(c->mod, elem, len);
+        uint32_t stride = 0;
+        vts_has_decoration(c, spv_type_id, SpvDecorationArrayStride, &stride);
+        if (stride)
+            result = ssir_type_array_stride(c->mod, elem, len, stride);
+        else
+            result = ssir_type_array(c->mod, elem, len);
         break;
     }
 
@@ -933,6 +998,7 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
         int mc = info->type_info.struct_type.member_count;
         uint32_t *members = NULL;
         uint32_t *offsets = NULL;
+        const char **mnames = NULL;
         if (mc > 0) {
             members = (uint32_t*)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint32_t));
             offsets = (uint32_t*)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint32_t));
@@ -942,11 +1008,47 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
                     offsets[i] = 0;
                 }
             }
+            /* Collect member names from OpMemberName */
+            if (info->member_name_count > 0) {
+                mnames = (const char **)SPIRV_TO_SSIR_MALLOC(mc * sizeof(const char *));
+                for (int i = 0; i < mc; i++) {
+                    mnames[i] = (i < info->member_name_count) ? info->member_names[i] : NULL;
+                }
+            }
         }
         const char *name = info->name;
-        result = ssir_type_struct(c->mod, name, members, mc, offsets);
+        result = ssir_type_struct_named(c->mod, name, members, mc, offsets, mnames);
+        /* Parse matrix layout member decorations */
+        if (mc > 0 && result) {
+            SsirType *st = ssir_get_type(c->mod, result);
+            if (st) {
+                uint8_t *majors = NULL;
+                uint32_t *mstrides = NULL;
+                for (int i = 0; i < info->member_decoration_count; i++) {
+                    SpvDecoration dec = (SpvDecoration)info->member_decorations[i].decoration;
+                    uint32_t mi = info->member_decorations[i].member_index;
+                    if (mi >= (uint32_t)mc) continue;
+                    if (dec == SpvDecorationColMajor || dec == SpvDecorationRowMajor) {
+                        if (!majors) {
+                            majors = (uint8_t *)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint8_t));
+                            memset(majors, 0, mc * sizeof(uint8_t));
+                        }
+                        majors[mi] = (dec == SpvDecorationColMajor) ? 1 : 2;
+                    } else if (dec == SpvDecorationMatrixStride && info->member_decorations[i].literal_count > 0) {
+                        if (!mstrides) {
+                            mstrides = (uint32_t *)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint32_t));
+                            memset(mstrides, 0, mc * sizeof(uint32_t));
+                        }
+                        mstrides[mi] = info->member_decorations[i].literals[0];
+                    }
+                }
+                st->struc.matrix_major = majors;
+                st->struc.matrix_strides = mstrides;
+            }
+        }
         SPIRV_TO_SSIR_FREE(members);
         SPIRV_TO_SSIR_FREE(offsets);
+        SPIRV_TO_SSIR_FREE(mnames);
         break;
     }
 
@@ -1015,6 +1117,29 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
         }
         result = ssir_const_composite(c->mod, type_id, components, count);
         SPIRV_TO_SSIR_FREE(components);
+    } else if (info->constant.is_spec) {
+        /* Specialization constant */
+        uint32_t sid = 0;
+        vts_has_decoration(c, spv_const_id, SpvDecorationSpecId, &sid);
+        switch (type->kind) {
+        case SSIR_TYPE_BOOL:
+            result = ssir_const_spec_bool(c->mod, info->constant.value_count > 0 && info->constant.values[0] != 0, sid);
+            break;
+        case SSIR_TYPE_I32:
+            result = ssir_const_spec_i32(c->mod, info->constant.value_count > 0 ? (int32_t)info->constant.values[0] : 0, sid);
+            break;
+        case SSIR_TYPE_U32:
+            result = ssir_const_spec_u32(c->mod, info->constant.value_count > 0 ? info->constant.values[0] : 0, sid);
+            break;
+        case SSIR_TYPE_F32: {
+            float fval = 0.0f;
+            if (info->constant.value_count > 0) memcpy(&fval, &info->constant.values[0], sizeof(float));
+            result = ssir_const_spec_f32(c->mod, fval, sid);
+            break;
+        }
+        default:
+            return 0;
+        }
     } else {
         switch (type->kind) {
         case SSIR_TYPE_BOOL:
@@ -1037,9 +1162,54 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
         case SSIR_TYPE_F16:
             result = ssir_const_f16(c->mod, info->constant.value_count > 0 ? (uint16_t)info->constant.values[0] : 0);
             break;
+        case SSIR_TYPE_F64: {
+            double dval = 0.0;
+            if (info->constant.value_count >= 2) {
+                uint32_t dw[2] = { info->constant.values[0], info->constant.values[1] };
+                memcpy(&dval, dw, sizeof(double));
+            }
+            result = ssir_const_f64(c->mod, dval);
+            break;
+        }
+        case SSIR_TYPE_I8:
+            result = ssir_const_i8(c->mod, info->constant.value_count > 0 ? (int8_t)info->constant.values[0] : 0);
+            break;
+        case SSIR_TYPE_U8:
+            result = ssir_const_u8(c->mod, info->constant.value_count > 0 ? (uint8_t)info->constant.values[0] : 0);
+            break;
+        case SSIR_TYPE_I16:
+            result = ssir_const_i16(c->mod, info->constant.value_count > 0 ? (int16_t)info->constant.values[0] : 0);
+            break;
+        case SSIR_TYPE_U16:
+            result = ssir_const_u16(c->mod, info->constant.value_count > 0 ? (uint16_t)info->constant.values[0] : 0);
+            break;
+        case SSIR_TYPE_I64: {
+            int64_t ival = 0;
+            if (info->constant.value_count >= 2) {
+                uint32_t qw[2] = { info->constant.values[0], info->constant.values[1] };
+                memcpy(&ival, qw, sizeof(int64_t));
+            }
+            result = ssir_const_i64(c->mod, ival);
+            break;
+        }
+        case SSIR_TYPE_U64: {
+            uint64_t uval = 0;
+            if (info->constant.value_count >= 2) {
+                uint32_t qw[2] = { info->constant.values[0], info->constant.values[1] };
+                memcpy(&uval, qw, sizeof(uint64_t));
+            }
+            result = ssir_const_u64(c->mod, uval);
+            break;
+        }
         default:
             return 0;
         }
+    }
+
+    /* Copy name to SSIR constant if available */
+    if (result && info->name) {
+        SsirConstant *sc = ssir_get_constant(c->mod, result);
+        if (sc) sc->name = info->name;
     }
 
     info->ssir_id = result;
@@ -1060,6 +1230,20 @@ static SsirBuiltinVar spv_builtin_to_ssir(SpvBuiltIn builtin) {
     case SpvBuiltInGlobalInvocationId: return SSIR_BUILTIN_GLOBAL_INVOCATION_ID;
     case SpvBuiltInWorkgroupId: return SSIR_BUILTIN_WORKGROUP_ID;
     case SpvBuiltInNumWorkgroups: return SSIR_BUILTIN_NUM_WORKGROUPS;
+    case SpvBuiltInPointSize: return SSIR_BUILTIN_POINT_SIZE;
+    case SpvBuiltInClipDistance: return SSIR_BUILTIN_CLIP_DISTANCE;
+    case SpvBuiltInCullDistance: return SSIR_BUILTIN_CULL_DISTANCE;
+    case SpvBuiltInLayer: return SSIR_BUILTIN_LAYER;
+    case SpvBuiltInViewportIndex: return SSIR_BUILTIN_VIEWPORT_INDEX;
+    case SpvBuiltInFragCoord: return SSIR_BUILTIN_FRAG_COORD;
+    case SpvBuiltInHelperInvocation: return SSIR_BUILTIN_HELPER_INVOCATION;
+    case SpvBuiltInPrimitiveId: return SSIR_BUILTIN_PRIMITIVE_ID;
+    case SpvBuiltInBaseVertex: return SSIR_BUILTIN_BASE_VERTEX;
+    case SpvBuiltInBaseInstance: return SSIR_BUILTIN_BASE_INSTANCE;
+    case SpvBuiltInSubgroupSize: return SSIR_BUILTIN_SUBGROUP_SIZE;
+    case SpvBuiltInSubgroupLocalInvocationId: return SSIR_BUILTIN_SUBGROUP_INVOCATION_ID;
+    case SpvBuiltInSubgroupId: return SSIR_BUILTIN_SUBGROUP_ID;
+    case SpvBuiltInNumSubgroups: return SSIR_BUILTIN_NUM_SUBGROUPS;
     default: return SSIR_BUILTIN_NONE;
     }
 }
@@ -1095,6 +1279,17 @@ static void convert_global_vars(VtsConverter *c) {
             ssir_global_set_interpolation(c->mod, gid, SSIR_INTERP_FLAT);
         } else if (vts_has_decoration(c, i, SpvDecorationNoPerspective, NULL)) {
             ssir_global_set_interpolation(c->mod, gid, SSIR_INTERP_LINEAR);
+        }
+        if (vts_has_decoration(c, i, SpvDecorationCentroid, NULL)) {
+            ssir_global_set_interp_sampling(c->mod, gid, SSIR_INTERP_SAMPLING_CENTROID);
+        } else if (vts_has_decoration(c, i, SpvDecorationSample, NULL)) {
+            ssir_global_set_interp_sampling(c->mod, gid, SSIR_INTERP_SAMPLING_SAMPLE);
+        }
+        if (vts_has_decoration(c, i, SpvDecorationNonWritable, NULL)) {
+            ssir_global_set_non_writable(c->mod, gid, true);
+        }
+        if (vts_has_decoration(c, i, SpvDecorationInvariant, NULL)) {
+            ssir_global_set_invariant(c->mod, gid, true);
         }
 
         if (info->variable.initializer) {
@@ -1175,6 +1370,25 @@ static SsirBuiltinId glsl_ext_to_ssir_builtin(enum GLSLstd450 glsl_op) {
     case GLSLstd450FaceForward: return SSIR_BUILTIN_FACEFORWARD;
     case GLSLstd450Reflect: return SSIR_BUILTIN_REFLECT;
     case GLSLstd450Refract: return SSIR_BUILTIN_REFRACT;
+    case GLSLstd450Fma: return SSIR_BUILTIN_FMA;
+    case GLSLstd450Degrees: return SSIR_BUILTIN_DEGREES;
+    case GLSLstd450Radians: return SSIR_BUILTIN_RADIANS;
+    case GLSLstd450Modf:
+    case GLSLstd450ModfStruct: return SSIR_BUILTIN_MODF;
+    case GLSLstd450Frexp:
+    case GLSLstd450FrexpStruct: return SSIR_BUILTIN_FREXP;
+    case GLSLstd450Ldexp: return SSIR_BUILTIN_LDEXP;
+    case GLSLstd450Determinant: return SSIR_BUILTIN_DETERMINANT;
+    case GLSLstd450PackSnorm4x8: return SSIR_BUILTIN_PACK4X8SNORM;
+    case GLSLstd450PackUnorm4x8: return SSIR_BUILTIN_PACK4X8UNORM;
+    case GLSLstd450PackSnorm2x16: return SSIR_BUILTIN_PACK2X16SNORM;
+    case GLSLstd450PackUnorm2x16: return SSIR_BUILTIN_PACK2X16UNORM;
+    case GLSLstd450PackHalf2x16: return SSIR_BUILTIN_PACK2X16FLOAT;
+    case GLSLstd450UnpackSnorm4x8: return SSIR_BUILTIN_UNPACK4X8SNORM;
+    case GLSLstd450UnpackUnorm4x8: return SSIR_BUILTIN_UNPACK4X8UNORM;
+    case GLSLstd450UnpackSnorm2x16: return SSIR_BUILTIN_UNPACK2X16SNORM;
+    case GLSLstd450UnpackUnorm2x16: return SSIR_BUILTIN_UNPACK2X16UNORM;
+    case GLSLstd450UnpackHalf2x16: return SSIR_BUILTIN_UNPACK2X16FLOAT;
     default: return SSIR_BUILTIN_COUNT;
     }
 }
@@ -1227,6 +1441,12 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
             if (blk->continue_block < c->id_bound) cont_id = c->ids[blk->continue_block].ssir_id;
             if (merge_id && cont_id) {
                 ssir_build_loop_merge(c->mod, func_id, block_id, merge_id, cont_id);
+            }
+        } else if (blk->is_selection_header) {
+            uint32_t merge_id = 0;
+            if (blk->merge_block < c->id_bound) merge_id = c->ids[blk->merge_block].ssir_id;
+            if (merge_id) {
+                ssir_build_selection_merge(c->mod, func_id, block_id, merge_id);
             }
         }
 
@@ -1323,13 +1543,24 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                 }
                 break;
 
-            case SpvOpFRem: case SpvOpFMod: case SpvOpSRem: case SpvOpSMod: case SpvOpUMod:
+            case SpvOpFMod: case SpvOpSMod: case SpvOpUMod:
                 if (operand_count >= 4) {
                     uint32_t type_id = convert_type(c, operands[0]);
                     uint32_t result_id = operands[1];
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_mod(c->mod, func_id, block_id, type_id, a, b);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpFRem: case SpvOpSRem:
+                if (operand_count >= 4) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t a = get_ssir_id(c, operands[2]);
+                    uint32_t b = get_ssir_id(c, operands[3]);
+                    uint32_t r = ssir_build_rem(c->mod, func_id, block_id, type_id, a, b);
                     c->ids[result_id].ssir_id = r;
                 }
                 break;
@@ -1375,6 +1606,28 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t m = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_mat_transpose(c->mod, func_id, block_id, type_id, m);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpIsInf:
+                if (operand_count >= 3) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t a = get_ssir_id(c, operands[2]);
+                    uint32_t args[] = {a};
+                    uint32_t r = ssir_build_builtin(c->mod, func_id, block_id, type_id, SSIR_BUILTIN_ISINF, args, 1);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpIsNan:
+                if (operand_count >= 3) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t a = get_ssir_id(c, operands[2]);
+                    uint32_t args[] = {a};
+                    uint32_t r = ssir_build_builtin(c->mod, func_id, block_id, type_id, SSIR_BUILTIN_ISNAN, args, 1);
                     c->ids[result_id].ssir_id = r;
                 }
                 break;
@@ -1623,6 +1876,18 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                 }
                 break;
 
+            case SpvOpVectorInsertDynamic:
+                if (operand_count >= 5) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t vec = get_ssir_id(c, operands[2]);
+                    uint32_t val = get_ssir_id(c, operands[3]);
+                    uint32_t idx = get_ssir_id(c, operands[4]);
+                    uint32_t r = ssir_build_insert_dyn(c->mod, func_id, block_id, type_id, vec, val, idx);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
             case SpvOpSelect:
                 if (operand_count >= 5) {
                     uint32_t type_id = convert_type(c, operands[0]);
@@ -1732,6 +1997,10 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                 ssir_build_unreachable(c->mod, func_id, block_id);
                 break;
 
+            case SpvOpKill:
+                ssir_build_discard(c->mod, func_id, block_id);
+                break;
+
             case SpvOpFunctionCall:
                 if (operand_count >= 3) {
                     uint32_t type_id = convert_type(c, operands[0]);
@@ -1789,6 +2058,187 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                 ssir_build_barrier(c->mod, func_id, block_id, SSIR_BARRIER_WORKGROUP);
                 break;
 
+            /* Texture operations */
+            case SpvOpImageSampleImplicitLod:
+            case SpvOpImageSampleExplicitLod:
+            case SpvOpImageSampleDrefImplicitLod:
+            case SpvOpImageSampleDrefExplicitLod:
+            case SpvOpImageGather:
+            case SpvOpImageDrefGather:
+                if (operand_count >= 4) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t si_id = operands[2];
+                    uint32_t coord_id = operands[3];
+                    /* Resolve OpSampledImage to get image + sampler */
+                    uint32_t image_spv = 0, sampler_spv = 0;
+                    if (si_id < c->id_bound &&
+                        c->ids[si_id].kind == VTS_SPV_ID_INSTRUCTION &&
+                        c->ids[si_id].instruction.opcode == SpvOpSampledImage &&
+                        c->ids[si_id].instruction.operand_count >= 2) {
+                        image_spv = c->ids[si_id].instruction.operands[0];
+                        sampler_spv = c->ids[si_id].instruction.operands[1];
+                    }
+                    uint32_t tex = get_ssir_id(c, image_spv);
+                    uint32_t samp = get_ssir_id(c, sampler_spv);
+                    uint32_t coord = get_ssir_id(c, coord_id);
+                    uint32_t r = 0;
+
+                    if (op == SpvOpImageSampleImplicitLod) {
+                        uint32_t mask = (operand_count > 4) ? operands[4] : 0;
+                        if (mask == 0) {
+                            r = ssir_build_tex_sample(c->mod, func_id, block_id, type_id, tex, samp, coord);
+                        } else if (mask == 0x1 && operand_count > 5) { /* Bias */
+                            uint32_t bias = get_ssir_id(c, operands[5]);
+                            r = ssir_build_tex_sample_bias(c->mod, func_id, block_id, type_id, tex, samp, coord, bias);
+                        } else if (mask == 0x10 && operand_count > 5) { /* ConstOffset */
+                            uint32_t off = get_ssir_id(c, operands[5]);
+                            r = ssir_build_tex_sample_offset(c->mod, func_id, block_id, type_id, tex, samp, coord, off);
+                        } else if (mask == (0x1|0x10) && operand_count > 6) { /* Bias|ConstOffset */
+                            uint32_t bias = get_ssir_id(c, operands[5]);
+                            uint32_t off = get_ssir_id(c, operands[6]);
+                            r = ssir_build_tex_sample_bias_offset(c->mod, func_id, block_id, type_id, tex, samp, coord, bias, off);
+                        } else {
+                            r = ssir_build_tex_sample(c->mod, func_id, block_id, type_id, tex, samp, coord);
+                        }
+                    } else if (op == SpvOpImageSampleExplicitLod) {
+                        uint32_t mask = (operand_count > 4) ? operands[4] : 0;
+                        if ((mask & 0x2) && operand_count > 5) { /* Lod */
+                            uint32_t lod = get_ssir_id(c, operands[5]);
+                            if (mask & 0x10 && operand_count > 6) { /* Lod|ConstOffset */
+                                uint32_t off = get_ssir_id(c, operands[6]);
+                                r = ssir_build_tex_sample_level_offset(c->mod, func_id, block_id, type_id, tex, samp, coord, lod, off);
+                            } else {
+                                r = ssir_build_tex_sample_level(c->mod, func_id, block_id, type_id, tex, samp, coord, lod);
+                            }
+                        } else if ((mask & 0x4) && operand_count > 6) { /* Grad */
+                            uint32_t ddx = get_ssir_id(c, operands[5]);
+                            uint32_t ddy = get_ssir_id(c, operands[6]);
+                            if (mask & 0x10 && operand_count > 7) { /* Grad|ConstOffset */
+                                uint32_t off = get_ssir_id(c, operands[7]);
+                                r = ssir_build_tex_sample_grad_offset(c->mod, func_id, block_id, type_id, tex, samp, coord, ddx, ddy, off);
+                            } else {
+                                r = ssir_build_tex_sample_grad(c->mod, func_id, block_id, type_id, tex, samp, coord, ddx, ddy);
+                            }
+                        }
+                    } else if (op == SpvOpImageSampleDrefImplicitLod && operand_count >= 5) {
+                        uint32_t ref = get_ssir_id(c, operands[4]);
+                        uint32_t mask = (operand_count > 5) ? operands[5] : 0;
+                        if (mask == 0x10 && operand_count > 6) { /* ConstOffset */
+                            uint32_t off = get_ssir_id(c, operands[6]);
+                            r = ssir_build_tex_sample_cmp_offset(c->mod, func_id, block_id, type_id, tex, samp, coord, ref, off);
+                        } else {
+                            r = ssir_build_tex_sample_cmp(c->mod, func_id, block_id, type_id, tex, samp, coord, ref);
+                        }
+                    } else if (op == SpvOpImageSampleDrefExplicitLod && operand_count >= 6) {
+                        uint32_t ref = get_ssir_id(c, operands[4]);
+                        uint32_t lod_mask = operands[5];
+                        if ((lod_mask & 0x2) && operand_count > 6) {
+                            uint32_t lod = get_ssir_id(c, operands[6]);
+                            r = ssir_build_tex_sample_cmp_level(c->mod, func_id, block_id, type_id, tex, samp, coord, ref, lod);
+                        } else {
+                            r = ssir_build_tex_sample_cmp(c->mod, func_id, block_id, type_id, tex, samp, coord, ref);
+                        }
+                    } else if (op == SpvOpImageGather && operand_count >= 5) {
+                        uint32_t comp = get_ssir_id(c, operands[4]);
+                        uint32_t mask = (operand_count > 5) ? operands[5] : 0;
+                        if (mask == 0x10 && operand_count > 6) { /* ConstOffset */
+                            uint32_t off = get_ssir_id(c, operands[6]);
+                            r = ssir_build_tex_gather_offset(c->mod, func_id, block_id, type_id, tex, samp, coord, comp, off);
+                        } else {
+                            r = ssir_build_tex_gather(c->mod, func_id, block_id, type_id, tex, samp, coord, comp);
+                        }
+                    } else if (op == SpvOpImageDrefGather && operand_count >= 5) {
+                        uint32_t ref = get_ssir_id(c, operands[4]);
+                        r = ssir_build_tex_gather_cmp(c->mod, func_id, block_id, type_id, tex, samp, coord, ref);
+                    }
+                    if (r) c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpImageRead:
+                if (operand_count >= 4) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t tex = get_ssir_id(c, operands[2]);
+                    uint32_t coord = get_ssir_id(c, operands[3]);
+                    uint32_t r = ssir_build_tex_load(c->mod, func_id, block_id, type_id, tex, coord, 0);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpImageWrite:
+                if (operand_count >= 3) {
+                    uint32_t tex = get_ssir_id(c, operands[0]);
+                    uint32_t coord = get_ssir_id(c, operands[1]);
+                    uint32_t val = get_ssir_id(c, operands[2]);
+                    ssir_build_tex_store(c->mod, func_id, block_id, tex, coord, val);
+                }
+                break;
+
+            case SpvOpImageQuerySizeLod:
+                if (operand_count >= 4) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t tex = get_ssir_id(c, operands[2]);
+                    uint32_t lod = get_ssir_id(c, operands[3]);
+                    uint32_t r = ssir_build_tex_size(c->mod, func_id, block_id, type_id, tex, lod);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpImageQuerySize:
+                if (operand_count >= 3) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t tex = get_ssir_id(c, operands[2]);
+                    uint32_t r = ssir_build_tex_size(c->mod, func_id, block_id, type_id, tex, 0);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpImageQueryLod:
+                if (operand_count >= 4) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    /* operands[2] is sampled image */
+                    uint32_t si_id = operands[2];
+                    uint32_t image_spv = 0, sampler_spv = 0;
+                    if (si_id < c->id_bound &&
+                        c->ids[si_id].kind == VTS_SPV_ID_INSTRUCTION &&
+                        c->ids[si_id].instruction.opcode == SpvOpSampledImage &&
+                        c->ids[si_id].instruction.operand_count >= 2) {
+                        image_spv = c->ids[si_id].instruction.operands[0];
+                        sampler_spv = c->ids[si_id].instruction.operands[1];
+                    }
+                    uint32_t tex = get_ssir_id(c, image_spv);
+                    uint32_t samp = get_ssir_id(c, sampler_spv);
+                    uint32_t coord = get_ssir_id(c, operands[3]);
+                    uint32_t r = ssir_build_tex_query_lod(c->mod, func_id, block_id, type_id, tex, samp, coord);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpImageQueryLevels:
+                if (operand_count >= 3) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t tex = get_ssir_id(c, operands[2]);
+                    uint32_t r = ssir_build_tex_query_levels(c->mod, func_id, block_id, type_id, tex);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
+            case SpvOpImageQuerySamples:
+                if (operand_count >= 3) {
+                    uint32_t type_id = convert_type(c, operands[0]);
+                    uint32_t result_id = operands[1];
+                    uint32_t tex = get_ssir_id(c, operands[2]);
+                    uint32_t r = ssir_build_tex_query_samples(c->mod, func_id, block_id, type_id, tex);
+                    c->ids[result_id].ssir_id = r;
+                }
+                break;
+
             default:
                 break;
             }
@@ -1801,6 +2251,9 @@ static SsirStage exec_model_to_stage(SpvExecutionModel model) {
     case SpvExecutionModelVertex: return SSIR_STAGE_VERTEX;
     case SpvExecutionModelFragment: return SSIR_STAGE_FRAGMENT;
     case SpvExecutionModelGLCompute: return SSIR_STAGE_COMPUTE;
+    case SpvExecutionModelGeometry: return SSIR_STAGE_GEOMETRY;
+    case SpvExecutionModelTessellationControl: return SSIR_STAGE_TESS_CONTROL;
+    case SpvExecutionModelTessellationEvaluation: return SSIR_STAGE_TESS_EVAL;
     default: return SSIR_STAGE_COMPUTE;
     }
 }
@@ -1830,6 +2283,12 @@ static void convert_entry_points(VtsConverter *c) {
             ssir_entry_point_set_workgroup_size(c->mod, ep_idx,
                 fn->workgroup_size[0], fn->workgroup_size[1], fn->workgroup_size[2]);
         }
+        if (fn->depth_replacing)
+            ssir_entry_point_set_depth_replacing(c->mod, ep_idx, true);
+        if (fn->origin_upper_left)
+            ssir_entry_point_set_origin_upper_left(c->mod, ep_idx, true);
+        if (fn->early_fragment_tests)
+            ssir_entry_point_set_early_fragment_tests(c->mod, ep_idx, true);
     }
 }
 
@@ -1894,6 +2353,7 @@ static void free_converter(VtsConverter *c) {
         SPIRV_TO_SSIR_FREE(c->pending_eps);
     }
     SPIRV_TO_SSIR_FREE(c->pending_wgs);
+    SPIRV_TO_SSIR_FREE(c->pending_exec_modes);
 }
 
 SpirvToSsirResult spirv_to_ssir(
@@ -1968,6 +2428,7 @@ SpirvToSsirResult spirv_to_ssir(
     convert_entry_points(&c);
 
     *out_module = c.mod;
+    ssir_module_build_lookup(c.mod);
     free_converter(&c);
     return SPIRV_TO_SSIR_SUCCESS;
 }

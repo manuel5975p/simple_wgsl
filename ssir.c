@@ -31,6 +31,39 @@ static char *ssir_strdup(const char *s) {
 }
 
 /* ============================================================================
+ * ID Lookup Cache (forward declarations for use in getters)
+ * ============================================================================ */
+
+#define STAG_TYPE    1
+#define STAG_CONST   2
+#define STAG_GLOBAL  3
+#define STAG_FUNC    4
+#define STAG_MASK    7u
+
+typedef struct {
+    uintptr_t *entries; /* Tagged pointers: (ptr | tag) */
+    uint32_t cap;
+} SsirLookupCache;
+
+static uintptr_t stag_encode(void *ptr, int tag) {
+    return (uintptr_t)ptr | (uintptr_t)tag;
+}
+
+static void *stag_decode(uintptr_t entry, int expected_tag) {
+    if ((entry & STAG_MASK) != (uintptr_t)expected_tag) return NULL;
+    return (void *)(entry & ~(uintptr_t)STAG_MASK);
+}
+
+static void ssir_module_free_lookup(SsirModule *mod) {
+    if (mod->_lookup_cache) {
+        SsirLookupCache *lc = (SsirLookupCache *)mod->_lookup_cache;
+        free(lc->entries);
+        free(lc);
+        mod->_lookup_cache = NULL;
+    }
+}
+
+/* ============================================================================
  * Module API
  * ============================================================================ */
 
@@ -48,6 +81,13 @@ static void ssir_free_type(SsirType *t) {
         SSIR_FREE((void *)t->struc.name);
         SSIR_FREE(t->struc.members);
         SSIR_FREE(t->struc.offsets);
+        if (t->struc.member_names) {
+            for (uint32_t i = 0; i < t->struc.member_count; i++)
+                SSIR_FREE((void *)t->struc.member_names[i]);
+            SSIR_FREE(t->struc.member_names);
+        }
+        SSIR_FREE(t->struc.matrix_major);
+        SSIR_FREE(t->struc.matrix_strides);
     }
 }
 
@@ -128,6 +168,8 @@ void ssir_module_destroy(SsirModule *mod) {
     }
     SSIR_FREE(mod->names);
 
+    ssir_module_free_lookup(mod);
+
     SSIR_FREE(mod);
 }
 
@@ -147,6 +189,10 @@ void ssir_set_name(SsirModule *mod, uint32_t id, const char *name) {
     mod->names[mod->name_count].id = id;
     mod->names[mod->name_count].name = ssir_strdup(name);
     mod->name_count++;
+}
+
+void ssir_module_set_clip_space(SsirModule *mod, SsirClipSpaceConvention convention) {
+    if (mod) mod->clip_space = convention;
 }
 
 /* ============================================================================
@@ -307,6 +353,55 @@ uint32_t ssir_type_f16(SsirModule *mod) {
     return ssir_add_type(mod, &t);
 }
 
+uint32_t ssir_type_f64(SsirModule *mod) {
+    uint32_t id = ssir_find_type(mod, SSIR_TYPE_F64);
+    if (id != UINT32_MAX) return id;
+    SsirType t = { .kind = SSIR_TYPE_F64 };
+    return ssir_add_type(mod, &t);
+}
+
+uint32_t ssir_type_i8(SsirModule *mod) {
+    uint32_t id = ssir_find_type(mod, SSIR_TYPE_I8);
+    if (id != UINT32_MAX) return id;
+    SsirType t = { .kind = SSIR_TYPE_I8 };
+    return ssir_add_type(mod, &t);
+}
+
+uint32_t ssir_type_u8(SsirModule *mod) {
+    uint32_t id = ssir_find_type(mod, SSIR_TYPE_U8);
+    if (id != UINT32_MAX) return id;
+    SsirType t = { .kind = SSIR_TYPE_U8 };
+    return ssir_add_type(mod, &t);
+}
+
+uint32_t ssir_type_i16(SsirModule *mod) {
+    uint32_t id = ssir_find_type(mod, SSIR_TYPE_I16);
+    if (id != UINT32_MAX) return id;
+    SsirType t = { .kind = SSIR_TYPE_I16 };
+    return ssir_add_type(mod, &t);
+}
+
+uint32_t ssir_type_u16(SsirModule *mod) {
+    uint32_t id = ssir_find_type(mod, SSIR_TYPE_U16);
+    if (id != UINT32_MAX) return id;
+    SsirType t = { .kind = SSIR_TYPE_U16 };
+    return ssir_add_type(mod, &t);
+}
+
+uint32_t ssir_type_i64(SsirModule *mod) {
+    uint32_t id = ssir_find_type(mod, SSIR_TYPE_I64);
+    if (id != UINT32_MAX) return id;
+    SsirType t = { .kind = SSIR_TYPE_I64 };
+    return ssir_add_type(mod, &t);
+}
+
+uint32_t ssir_type_u64(SsirModule *mod) {
+    uint32_t id = ssir_find_type(mod, SSIR_TYPE_U64);
+    if (id != UINT32_MAX) return id;
+    SsirType t = { .kind = SSIR_TYPE_U64 };
+    return ssir_add_type(mod, &t);
+}
+
 uint32_t ssir_type_vec(SsirModule *mod, uint32_t elem_type, uint8_t size) {
     uint32_t id = ssir_find_vec_type(mod, elem_type, size);
     if (id != UINT32_MAX) return id;
@@ -335,6 +430,14 @@ uint32_t ssir_type_array(SsirModule *mod, uint32_t elem_type, uint32_t length) {
     return ssir_add_type(mod, &t);
 }
 
+uint32_t ssir_type_array_stride(SsirModule *mod, uint32_t elem_type, uint32_t length, uint32_t stride) {
+    SsirType t = { .kind = SSIR_TYPE_ARRAY };
+    t.array.elem = elem_type;
+    t.array.length = length;
+    t.array.stride = stride;
+    return ssir_add_type(mod, &t);
+}
+
 uint32_t ssir_type_runtime_array(SsirModule *mod, uint32_t elem_type) {
     uint32_t id = ssir_find_runtime_array_type(mod, elem_type);
     if (id != UINT32_MAX) return id;
@@ -343,12 +446,14 @@ uint32_t ssir_type_runtime_array(SsirModule *mod, uint32_t elem_type) {
     return ssir_add_type(mod, &t);
 }
 
-uint32_t ssir_type_struct(SsirModule *mod, const char *name,
-                          const uint32_t *members, uint32_t member_count,
-                          const uint32_t *offsets) {
+uint32_t ssir_type_struct_named(SsirModule *mod, const char *name,
+                                const uint32_t *members, uint32_t member_count,
+                                const uint32_t *offsets,
+                                const char *const *member_names) {
     /* Structs are not deduplicated (they can have the same layout but different names) */
     SsirType t = { .kind = SSIR_TYPE_STRUCT };
     t.struc.name = ssir_strdup(name);
+    t.struc.member_names = NULL;
     if (member_count > 0) {
         t.struc.members = (uint32_t *)SSIR_MALLOC(member_count * sizeof(uint32_t));
         if (!t.struc.members) return UINT32_MAX;
@@ -362,9 +467,23 @@ uint32_t ssir_type_struct(SsirModule *mod, const char *name,
             }
             memcpy(t.struc.offsets, offsets, member_count * sizeof(uint32_t));
         }
+
+        if (member_names) {
+            t.struc.member_names = (const char **)SSIR_MALLOC(member_count * sizeof(const char *));
+            if (t.struc.member_names) {
+                for (uint32_t i = 0; i < member_count; i++)
+                    t.struc.member_names[i] = member_names[i] ? ssir_strdup(member_names[i]) : NULL;
+            }
+        }
     }
     t.struc.member_count = member_count;
     return ssir_add_type(mod, &t);
+}
+
+uint32_t ssir_type_struct(SsirModule *mod, const char *name,
+                          const uint32_t *members, uint32_t member_count,
+                          const uint32_t *offsets) {
+    return ssir_type_struct_named(mod, name, members, member_count, offsets, NULL);
 }
 
 uint32_t ssir_type_ptr(SsirModule *mod, uint32_t pointee_type, SsirAddressSpace space) {
@@ -419,6 +538,12 @@ uint32_t ssir_type_texture_depth(SsirModule *mod, SsirTextureDim dim) {
 }
 
 SsirType *ssir_get_type(SsirModule *mod, uint32_t type_id) {
+    if (mod->_lookup_cache) {
+        SsirLookupCache *lc = (SsirLookupCache *)mod->_lookup_cache;
+        if (type_id < lc->cap)
+            return (SsirType *)stag_decode(lc->entries[type_id], STAG_TYPE);
+        return NULL;
+    }
     for (uint32_t i = 0; i < mod->type_count; i++) {
         if (mod->types[i].id == type_id) {
             return &mod->types[i];
@@ -442,22 +567,27 @@ bool ssir_type_is_scalar(const SsirType *t) {
 
 bool ssir_type_is_integer(const SsirType *t) {
     if (!t) return false;
-    return t->kind == SSIR_TYPE_I32 || t->kind == SSIR_TYPE_U32;
+    return t->kind == SSIR_TYPE_I32 || t->kind == SSIR_TYPE_U32 ||
+           t->kind == SSIR_TYPE_I8 || t->kind == SSIR_TYPE_U8 ||
+           t->kind == SSIR_TYPE_I16 || t->kind == SSIR_TYPE_U16 ||
+           t->kind == SSIR_TYPE_I64 || t->kind == SSIR_TYPE_U64;
 }
 
 bool ssir_type_is_signed(const SsirType *t) {
     if (!t) return false;
-    return t->kind == SSIR_TYPE_I32;
+    return t->kind == SSIR_TYPE_I32 || t->kind == SSIR_TYPE_I8 ||
+           t->kind == SSIR_TYPE_I16 || t->kind == SSIR_TYPE_I64;
 }
 
 bool ssir_type_is_unsigned(const SsirType *t) {
     if (!t) return false;
-    return t->kind == SSIR_TYPE_U32;
+    return t->kind == SSIR_TYPE_U32 || t->kind == SSIR_TYPE_U8 ||
+           t->kind == SSIR_TYPE_U16 || t->kind == SSIR_TYPE_U64;
 }
 
 bool ssir_type_is_float(const SsirType *t) {
     if (!t) return false;
-    return t->kind == SSIR_TYPE_F32 || t->kind == SSIR_TYPE_F16;
+    return t->kind == SSIR_TYPE_F32 || t->kind == SSIR_TYPE_F16 || t->kind == SSIR_TYPE_F64;
 }
 
 bool ssir_type_is_bool(const SsirType *t) {
@@ -592,6 +722,118 @@ uint32_t ssir_const_f16(SsirModule *mod, uint16_t val) {
     return ssir_add_constant(mod, &c);
 }
 
+uint32_t ssir_const_f64(SsirModule *mod, double val) {
+    uint32_t f64_type = ssir_type_f64(mod);
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        if (mod->constants[i].kind == SSIR_CONST_F64 &&
+            memcmp(&mod->constants[i].f64_val, &val, sizeof(double)) == 0) {
+            return mod->constants[i].id;
+        }
+    }
+    SsirConstant c = {
+        .type = f64_type,
+        .kind = SSIR_CONST_F64,
+        .f64_val = val
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_i8(SsirModule *mod, int8_t val) {
+    uint32_t i8_type = ssir_type_i8(mod);
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        if (mod->constants[i].kind == SSIR_CONST_I8 &&
+            mod->constants[i].i8_val == val) {
+            return mod->constants[i].id;
+        }
+    }
+    SsirConstant c = {
+        .type = i8_type,
+        .kind = SSIR_CONST_I8,
+        .i8_val = val
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_u8(SsirModule *mod, uint8_t val) {
+    uint32_t u8_type = ssir_type_u8(mod);
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        if (mod->constants[i].kind == SSIR_CONST_U8 &&
+            mod->constants[i].u8_val == val) {
+            return mod->constants[i].id;
+        }
+    }
+    SsirConstant c = {
+        .type = u8_type,
+        .kind = SSIR_CONST_U8,
+        .u8_val = val
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_i16(SsirModule *mod, int16_t val) {
+    uint32_t i16_type = ssir_type_i16(mod);
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        if (mod->constants[i].kind == SSIR_CONST_I16 &&
+            mod->constants[i].i16_val == val) {
+            return mod->constants[i].id;
+        }
+    }
+    SsirConstant c = {
+        .type = i16_type,
+        .kind = SSIR_CONST_I16,
+        .i16_val = val
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_u16(SsirModule *mod, uint16_t val) {
+    uint32_t u16_type = ssir_type_u16(mod);
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        if (mod->constants[i].kind == SSIR_CONST_U16 &&
+            mod->constants[i].u16_val == val) {
+            return mod->constants[i].id;
+        }
+    }
+    SsirConstant c = {
+        .type = u16_type,
+        .kind = SSIR_CONST_U16,
+        .u16_val = val
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_i64(SsirModule *mod, int64_t val) {
+    uint32_t i64_type = ssir_type_i64(mod);
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        if (mod->constants[i].kind == SSIR_CONST_I64 &&
+            mod->constants[i].i64_val == val) {
+            return mod->constants[i].id;
+        }
+    }
+    SsirConstant c = {
+        .type = i64_type,
+        .kind = SSIR_CONST_I64,
+        .i64_val = val
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_u64(SsirModule *mod, uint64_t val) {
+    uint32_t u64_type = ssir_type_u64(mod);
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        if (mod->constants[i].kind == SSIR_CONST_U64 &&
+            mod->constants[i].u64_val == val) {
+            return mod->constants[i].id;
+        }
+    }
+    SsirConstant c = {
+        .type = u64_type,
+        .kind = SSIR_CONST_U64,
+        .u64_val = val
+    };
+    return ssir_add_constant(mod, &c);
+}
+
 uint32_t ssir_const_composite(SsirModule *mod, uint32_t type_id,
                               const uint32_t *components, uint32_t count) {
     SsirConstant c = {
@@ -615,7 +857,57 @@ uint32_t ssir_const_null(SsirModule *mod, uint32_t type_id) {
     return ssir_add_constant(mod, &c);
 }
 
+uint32_t ssir_const_spec_bool(SsirModule *mod, bool default_val, uint32_t spec_id) {
+    SsirConstant c = {
+        .type = ssir_type_bool(mod),
+        .kind = SSIR_CONST_BOOL,
+        .is_specialization = true,
+        .spec_id = spec_id,
+        .bool_val = default_val,
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_spec_i32(SsirModule *mod, int32_t default_val, uint32_t spec_id) {
+    SsirConstant c = {
+        .type = ssir_type_i32(mod),
+        .kind = SSIR_CONST_I32,
+        .is_specialization = true,
+        .spec_id = spec_id,
+        .i32_val = default_val,
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_spec_u32(SsirModule *mod, uint32_t default_val, uint32_t spec_id) {
+    SsirConstant c = {
+        .type = ssir_type_u32(mod),
+        .kind = SSIR_CONST_U32,
+        .is_specialization = true,
+        .spec_id = spec_id,
+        .u32_val = default_val,
+    };
+    return ssir_add_constant(mod, &c);
+}
+
+uint32_t ssir_const_spec_f32(SsirModule *mod, float default_val, uint32_t spec_id) {
+    SsirConstant c = {
+        .type = ssir_type_f32(mod),
+        .kind = SSIR_CONST_F32,
+        .is_specialization = true,
+        .spec_id = spec_id,
+        .f32_val = default_val,
+    };
+    return ssir_add_constant(mod, &c);
+}
+
 SsirConstant *ssir_get_constant(SsirModule *mod, uint32_t const_id) {
+    if (mod->_lookup_cache) {
+        SsirLookupCache *lc = (SsirLookupCache *)mod->_lookup_cache;
+        if (const_id < lc->cap)
+            return (SsirConstant *)stag_decode(lc->entries[const_id], STAG_CONST);
+        return NULL;
+    }
     for (uint32_t i = 0; i < mod->constant_count; i++) {
         if (mod->constants[i].id == const_id) {
             return &mod->constants[i];
@@ -642,6 +934,12 @@ uint32_t ssir_global_var(SsirModule *mod, const char *name, uint32_t ptr_type) {
 }
 
 SsirGlobalVar *ssir_get_global(SsirModule *mod, uint32_t global_id) {
+    if (mod->_lookup_cache) {
+        SsirLookupCache *lc = (SsirLookupCache *)mod->_lookup_cache;
+        if (global_id < lc->cap)
+            return (SsirGlobalVar *)stag_decode(lc->entries[global_id], STAG_GLOBAL);
+        return NULL;
+    }
     for (uint32_t i = 0; i < mod->global_count; i++) {
         if (mod->globals[i].id == global_id) {
             return &mod->globals[i];
@@ -688,6 +986,27 @@ void ssir_global_set_interpolation(SsirModule *mod, uint32_t global_id, SsirInte
     }
 }
 
+void ssir_global_set_interp_sampling(SsirModule *mod, uint32_t global_id, SsirInterpolationSampling sampling) {
+    SsirGlobalVar *g = ssir_get_global(mod, global_id);
+    if (g) {
+        g->interp_sampling = sampling;
+    }
+}
+
+void ssir_global_set_non_writable(SsirModule *mod, uint32_t global_id, bool non_writable) {
+    SsirGlobalVar *g = ssir_get_global(mod, global_id);
+    if (g) {
+        g->non_writable = non_writable;
+    }
+}
+
+void ssir_global_set_invariant(SsirModule *mod, uint32_t global_id, bool invariant) {
+    SsirGlobalVar *g = ssir_get_global(mod, global_id);
+    if (g) {
+        g->invariant = invariant;
+    }
+}
+
 void ssir_global_set_initializer(SsirModule *mod, uint32_t global_id, uint32_t const_id) {
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
     if (g) {
@@ -714,6 +1033,12 @@ uint32_t ssir_function_create(SsirModule *mod, const char *name, uint32_t return
 }
 
 SsirFunction *ssir_get_function(SsirModule *mod, uint32_t func_id) {
+    if (mod->_lookup_cache) {
+        SsirLookupCache *lc = (SsirLookupCache *)mod->_lookup_cache;
+        if (func_id < lc->cap)
+            return (SsirFunction *)stag_decode(lc->entries[func_id], STAG_FUNC);
+        return NULL;
+    }
     for (uint32_t i = 0; i < mod->function_count; i++) {
         if (mod->functions[i].id == func_id) {
             return &mod->functions[i];
@@ -1073,6 +1398,20 @@ uint32_t ssir_build_extract_dyn(SsirModule *mod, uint32_t func_id, uint32_t bloc
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_EXTRACT_DYN, type, composite, index);
 }
 
+uint32_t ssir_build_insert_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                               uint32_t type, uint32_t vector, uint32_t value, uint32_t index) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_INSERT_DYN;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = vector;
+    inst->operands[1] = value;
+    inst->operands[2] = index;
+    inst->operand_count = 3;
+    return inst->result;
+}
+
 /* ============================================================================
  * Instruction Builder - Memory
  * ============================================================================ */
@@ -1165,6 +1504,17 @@ void ssir_build_loop_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     inst->operands[0] = merge_block;
     inst->operands[1] = continue_block;
     inst->operand_count = 2;
+}
+
+void ssir_build_selection_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                uint32_t merge_block) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return;
+    inst->op = SSIR_OP_SELECTION_MERGE;
+    inst->result = 0;
+    inst->type = 0;
+    inst->operands[0] = merge_block;
+    inst->operand_count = 1;
 }
 
 void ssir_build_switch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
@@ -1378,6 +1728,158 @@ uint32_t ssir_build_tex_sample_cmp(SsirModule *mod, uint32_t func_id, uint32_t b
     return inst->result;
 }
 
+uint32_t ssir_build_tex_sample_cmp_level(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                         uint32_t type, uint32_t texture, uint32_t sampler,
+                                         uint32_t coord, uint32_t ref, uint32_t lod) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_SAMPLE_CMP_LEVEL;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = ref;
+    inst->operands[4] = lod;
+    inst->operand_count = 5;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_sample_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                      uint32_t type, uint32_t texture, uint32_t sampler,
+                                      uint32_t coord, uint32_t offset) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_SAMPLE_OFFSET;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = offset;
+    inst->operand_count = 4;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_sample_bias_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                           uint32_t type, uint32_t texture, uint32_t sampler,
+                                           uint32_t coord, uint32_t bias, uint32_t offset) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_SAMPLE_BIAS_OFFSET;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = bias;
+    inst->operands[4] = offset;
+    inst->operand_count = 5;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_sample_level_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                            uint32_t type, uint32_t texture, uint32_t sampler,
+                                            uint32_t coord, uint32_t lod, uint32_t offset) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = lod;
+    inst->operands[4] = offset;
+    inst->operand_count = 5;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_sample_grad_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                           uint32_t type, uint32_t texture, uint32_t sampler,
+                                           uint32_t coord, uint32_t ddx, uint32_t ddy,
+                                           uint32_t offset) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_SAMPLE_GRAD_OFFSET;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = ddx;
+    inst->operands[4] = ddy;
+    inst->operands[5] = offset;
+    inst->operand_count = 6;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_sample_cmp_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                          uint32_t type, uint32_t texture, uint32_t sampler,
+                                          uint32_t coord, uint32_t ref, uint32_t offset) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_SAMPLE_CMP_OFFSET;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = ref;
+    inst->operands[4] = offset;
+    inst->operand_count = 5;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_gather(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                               uint32_t type, uint32_t texture, uint32_t sampler,
+                               uint32_t coord, uint32_t component) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_GATHER;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = component;
+    inst->operand_count = 4;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_gather_cmp(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                   uint32_t type, uint32_t texture, uint32_t sampler,
+                                   uint32_t coord, uint32_t ref) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_GATHER_CMP;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = ref;
+    inst->operand_count = 4;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_gather_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                      uint32_t type, uint32_t texture, uint32_t sampler,
+                                      uint32_t coord, uint32_t component, uint32_t offset) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_GATHER_OFFSET;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operands[3] = component;
+    inst->operands[4] = offset;
+    inst->operand_count = 5;
+    return inst->result;
+}
+
 uint32_t ssir_build_tex_load(SsirModule *mod, uint32_t func_id, uint32_t block_id,
                              uint32_t type, uint32_t texture, uint32_t coord, uint32_t level) {
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
@@ -1418,6 +1920,45 @@ uint32_t ssir_build_tex_size(SsirModule *mod, uint32_t func_id, uint32_t block_i
     return inst->result;
 }
 
+uint32_t ssir_build_tex_query_lod(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                  uint32_t type, uint32_t texture, uint32_t sampler,
+                                  uint32_t coord) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_QUERY_LOD;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operands[1] = sampler;
+    inst->operands[2] = coord;
+    inst->operand_count = 3;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_query_levels(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                     uint32_t type, uint32_t texture) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_QUERY_LEVELS;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operand_count = 1;
+    return inst->result;
+}
+
+uint32_t ssir_build_tex_query_samples(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                                      uint32_t type, uint32_t texture) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_TEX_QUERY_SAMPLES;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = texture;
+    inst->operand_count = 1;
+    return inst->result;
+}
+
 /* ============================================================================
  * Instruction Builder - Sync
  * ============================================================================ */
@@ -1446,6 +1987,47 @@ uint32_t ssir_build_atomic(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     inst->operands[2] = value;
     inst->operands[3] = comparator;
     inst->operand_count = 4;
+    return inst->result;
+}
+
+uint32_t ssir_build_atomic_ex(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                              uint32_t type, SsirAtomicOp op, uint32_t ptr,
+                              uint32_t value, uint32_t comparator,
+                              SsirMemoryScope scope, SsirMemorySemantics semantics) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_ATOMIC;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = (uint32_t)op;
+    inst->operands[1] = ptr;
+    inst->operands[2] = value;
+    inst->operands[3] = comparator;
+    inst->operands[4] = (uint32_t)scope;
+    inst->operands[5] = (uint32_t)semantics;
+    inst->operand_count = 6;
+    return inst->result;
+}
+
+void ssir_build_discard(SsirModule *mod, uint32_t func_id, uint32_t block_id) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return;
+    inst->op = SSIR_OP_DISCARD;
+    inst->result = 0;
+    inst->type = 0;
+    inst->operand_count = 0;
+}
+
+uint32_t ssir_build_rem(SsirModule *mod, uint32_t func_id, uint32_t block_id,
+                        uint32_t type, uint32_t a, uint32_t b) {
+    SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
+    if (!inst) return 0;
+    inst->op = SSIR_OP_REM;
+    inst->result = ssir_module_alloc_id(mod);
+    inst->type = type;
+    inst->operands[0] = a;
+    inst->operands[1] = b;
+    inst->operand_count = 2;
     return inst->result;
 }
 
@@ -1498,6 +2080,131 @@ void ssir_entry_point_set_workgroup_size(SsirModule *mod, uint32_t ep_index,
     ep->workgroup_size[2] = z;
 }
 
+void ssir_entry_point_set_depth_replacing(SsirModule *mod, uint32_t ep_index, bool v) {
+    SsirEntryPoint *ep = ssir_get_entry_point(mod, ep_index);
+    if (ep) ep->depth_replacing = v;
+}
+
+void ssir_entry_point_set_origin_upper_left(SsirModule *mod, uint32_t ep_index, bool v) {
+    SsirEntryPoint *ep = ssir_get_entry_point(mod, ep_index);
+    if (ep) ep->origin_upper_left = v;
+}
+
+void ssir_entry_point_set_early_fragment_tests(SsirModule *mod, uint32_t ep_index, bool v) {
+    SsirEntryPoint *ep = ssir_get_entry_point(mod, ep_index);
+    if (ep) ep->early_fragment_tests = v;
+}
+
+/* ============================================================================
+ * Use Count Analysis
+ * ============================================================================ */
+
+void ssir_count_uses(SsirFunction *f, uint32_t *use_counts, uint32_t max_id) {
+#define SSIR_COUNT_USE(id) do { if ((id) > 0 && (id) < max_id) use_counts[id]++; } while(0)
+    for (uint32_t bi = 0; bi < f->block_count; bi++) {
+        SsirBlock *blk = &f->blocks[bi];
+        for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+            SsirInst *inst = &blk->insts[ii];
+            switch (inst->op) {
+            /* Control flow with no value operands */
+            case SSIR_OP_BRANCH:
+            case SSIR_OP_LOOP_MERGE:
+            case SSIR_OP_SELECTION_MERGE:
+            case SSIR_OP_UNREACHABLE:
+            case SSIR_OP_RETURN_VOID:
+            case SSIR_OP_DISCARD:
+            case SSIR_OP_BARRIER:
+                break;
+            case SSIR_OP_BRANCH_COND:
+                SSIR_COUNT_USE(inst->operands[0]);
+                break;
+            case SSIR_OP_SWITCH:
+                SSIR_COUNT_USE(inst->operands[0]);
+                break;
+            case SSIR_OP_RETURN:
+                if (inst->operand_count >= 1)
+                    SSIR_COUNT_USE(inst->operands[0]);
+                break;
+            case SSIR_OP_PHI:
+                /* extra = pairs of (value, block); count values only */
+                for (uint16_t pi = 0; pi < inst->extra_count; pi += 2)
+                    SSIR_COUNT_USE(inst->extra[pi]);
+                break;
+            case SSIR_OP_BUILTIN:
+            case SSIR_OP_CALL:
+                /* operands[0] = builtin/func ID; rest are value args */
+                for (uint8_t oi = 1; oi < inst->operand_count; oi++)
+                    SSIR_COUNT_USE(inst->operands[oi]);
+                break;
+            case SSIR_OP_ATOMIC:
+                /* operands[0]=op, [1]=ptr, [2]=val, [3]=cmp; [4+]=scope/sem */
+                for (uint8_t oi = 1; oi <= 3 && oi < inst->operand_count; oi++)
+                    SSIR_COUNT_USE(inst->operands[oi]);
+                break;
+            case SSIR_OP_EXTRACT:
+            case SSIR_OP_ACCESS:
+                /* operands[0] = value, rest are literal indices */
+                if (inst->operand_count >= 1)
+                    SSIR_COUNT_USE(inst->operands[0]);
+                break;
+            case SSIR_OP_INSERT:
+                /* operands[0]=composite, [1]=value, [2]=index(literal) */
+                if (inst->operand_count >= 1) SSIR_COUNT_USE(inst->operands[0]);
+                if (inst->operand_count >= 2) SSIR_COUNT_USE(inst->operands[1]);
+                break;
+            case SSIR_OP_SHUFFLE:
+                /* operands[0]=a, [1]=b; extra=shuffle mask (literals) */
+                if (inst->operand_count >= 1) SSIR_COUNT_USE(inst->operands[0]);
+                if (inst->operand_count >= 2) SSIR_COUNT_USE(inst->operands[1]);
+                break;
+            default:
+                /* All operands are value references */
+                for (uint8_t oi = 0; oi < inst->operand_count; oi++)
+                    SSIR_COUNT_USE(inst->operands[oi]);
+                break;
+            }
+        }
+    }
+#undef SSIR_COUNT_USE
+}
+
+void ssir_module_build_lookup(SsirModule *mod) {
+    if (!mod || mod->next_id == 0) return;
+
+    /* Free existing cache */
+    if (mod->_lookup_cache) {
+        SsirLookupCache *old = (SsirLookupCache *)mod->_lookup_cache;
+        free(old->entries);
+        free(old);
+        mod->_lookup_cache = NULL;
+    }
+
+    SsirLookupCache *lc = (SsirLookupCache *)calloc(1, sizeof(*lc));
+    if (!lc) return;
+    lc->cap = mod->next_id;
+    lc->entries = (uintptr_t *)calloc(lc->cap, sizeof(uintptr_t));
+    if (!lc->entries) { free(lc); return; }
+
+    for (uint32_t i = 0; i < mod->type_count; i++) {
+        uint32_t id = mod->types[i].id;
+        if (id < lc->cap) lc->entries[id] = stag_encode(&mod->types[i], STAG_TYPE);
+    }
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        uint32_t id = mod->constants[i].id;
+        if (id < lc->cap) lc->entries[id] = stag_encode(&mod->constants[i], STAG_CONST);
+    }
+    for (uint32_t i = 0; i < mod->global_count; i++) {
+        uint32_t id = mod->globals[i].id;
+        if (id < lc->cap) lc->entries[id] = stag_encode(&mod->globals[i], STAG_GLOBAL);
+    }
+    for (uint32_t i = 0; i < mod->function_count; i++) {
+        uint32_t id = mod->functions[i].id;
+        if (id < lc->cap) lc->entries[id] = stag_encode(&mod->functions[i], STAG_FUNC);
+    }
+
+    mod->_lookup_cache = lc;
+}
+
 /* ============================================================================
  * Validation
  * ============================================================================ */
@@ -1524,6 +2231,54 @@ static bool ssir_is_terminator(SsirOpcode op) {
            op == SSIR_OP_RETURN ||
            op == SSIR_OP_RETURN_VOID ||
            op == SSIR_OP_UNREACHABLE;
+}
+
+/* Resolve the type ID associated with a value ID within a function context */
+static uint32_t val_resolve_type(SsirModule *mod, SsirFunction *f, uint32_t id) {
+    /* Instructions in the function */
+    for (uint32_t bi = 0; bi < f->block_count; bi++) {
+        SsirBlock *blk = &f->blocks[bi];
+        for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+            if (blk->insts[ii].result == id) return blk->insts[ii].type;
+        }
+    }
+    /* Function parameters */
+    for (uint32_t i = 0; i < f->param_count; i++) {
+        if (f->params[i].id == id) return f->params[i].type;
+    }
+    /* Local variables */
+    for (uint32_t i = 0; i < f->local_count; i++) {
+        if (f->locals[i].id == id) return f->locals[i].type;
+    }
+    /* Constants */
+    SsirConstant *c = ssir_get_constant(mod, id);
+    if (c) return c->type;
+    /* Globals */
+    SsirGlobalVar *g = ssir_get_global(mod, id);
+    if (g) return g->type;
+    return 0;
+}
+
+/* Check if block 'target_id' is a successor of block 'b' */
+static bool block_branches_to(SsirBlock *b, uint32_t target_id) {
+    if (b->inst_count == 0) return false;
+    SsirInst *term = &b->insts[b->inst_count - 1];
+    switch (term->op) {
+    case SSIR_OP_BRANCH:
+        return term->operands[0] == target_id;
+    case SSIR_OP_BRANCH_COND:
+        return term->operands[1] == target_id || term->operands[2] == target_id;
+    case SSIR_OP_SWITCH:
+        /* operands[1] = default block */
+        if (term->operands[1] == target_id) return true;
+        /* extra[] = pairs of (value, block) */
+        for (uint16_t i = 1; i < term->extra_count; i += 2) {
+            if (term->extra[i] == target_id) return true;
+        }
+        return false;
+    default:
+        return false;
+    }
 }
 
 SsirValidationResult *ssir_validate(SsirModule *mod) {
@@ -1583,6 +2338,73 @@ SsirValidationResult *ssir_validate(SsirModule *mod) {
                     ssir_add_validation_error(result, SSIR_ERROR_TERMINATOR_MISSING,
                         "Instruction after terminator", f->id, b->id, ii + 1);
                     result->valid = false;
+                }
+
+                /* --- Type consistency checks --- */
+
+                /* LOAD: operand must be pointer, pointee must match result type */
+                if (inst->op == SSIR_OP_LOAD && inst->operand_count >= 1) {
+                    uint32_t ptr_type_id = val_resolve_type(mod, f, inst->operands[0]);
+                    SsirType *ptr_t = ssir_get_type(mod, ptr_type_id);
+                    if (ptr_t && ptr_t->kind != SSIR_TYPE_PTR) {
+                        ssir_add_validation_error(result, SSIR_ERROR_TYPE_MISMATCH,
+                            "LOAD operand is not a pointer type", f->id, b->id, ii);
+                        result->valid = false;
+                    } else if (ptr_t && ptr_t->kind == SSIR_TYPE_PTR &&
+                               inst->type != 0 && ptr_t->ptr.pointee != inst->type) {
+                        ssir_add_validation_error(result, SSIR_ERROR_TYPE_MISMATCH,
+                            "LOAD result type does not match pointer pointee type",
+                            f->id, b->id, ii);
+                        result->valid = false;
+                    }
+                }
+
+                /* STORE: first operand must be pointer */
+                if (inst->op == SSIR_OP_STORE && inst->operand_count >= 1) {
+                    uint32_t ptr_type_id = val_resolve_type(mod, f, inst->operands[0]);
+                    SsirType *ptr_t = ssir_get_type(mod, ptr_type_id);
+                    if (ptr_t && ptr_t->kind != SSIR_TYPE_PTR) {
+                        ssir_add_validation_error(result, SSIR_ERROR_ADDRESS_SPACE,
+                            "STORE target is not a pointer type", f->id, b->id, ii);
+                        result->valid = false;
+                    }
+                }
+
+                /* Binary arithmetic: both operands should have matching types */
+                if ((inst->op >= SSIR_OP_ADD && inst->op <= SSIR_OP_DIV) ||
+                    inst->op == SSIR_OP_MOD || inst->op == SSIR_OP_REM) {
+                    if (inst->operand_count >= 2) {
+                        uint32_t t0 = val_resolve_type(mod, f, inst->operands[0]);
+                        uint32_t t1 = val_resolve_type(mod, f, inst->operands[1]);
+                        if (t0 != 0 && t1 != 0 && t0 != t1) {
+                            ssir_add_validation_error(result, SSIR_ERROR_TYPE_MISMATCH,
+                                "Binary arithmetic operands have mismatched types",
+                                f->id, b->id, ii);
+                            result->valid = false;
+                        }
+                    }
+                }
+
+                /* PHI: each incoming block must be a predecessor of this block */
+                if (inst->op == SSIR_OP_PHI && inst->extra_count >= 2) {
+                    for (uint16_t pi = 1; pi < inst->extra_count; pi += 2) {
+                        uint32_t pred_block_id = inst->extra[pi];
+                        bool found_pred = false;
+                        for (uint32_t pbi = 0; pbi < f->block_count; pbi++) {
+                            if (block_branches_to(&f->blocks[pbi], b->id) &&
+                                f->blocks[pbi].id == pred_block_id) {
+                                found_pred = true;
+                                break;
+                            }
+                        }
+                        if (!found_pred) {
+                            ssir_add_validation_error(result, SSIR_ERROR_PHI_PLACEMENT,
+                                "Phi incoming block is not a predecessor",
+                                f->id, b->id, ii);
+                            result->valid = false;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1656,6 +2478,7 @@ static const char *opcode_names[] = {
     [SSIR_OP_SHUFFLE] = "shuffle",
     [SSIR_OP_SPLAT] = "splat",
     [SSIR_OP_EXTRACT_DYN] = "extract_dyn",
+    [SSIR_OP_INSERT_DYN] = "insert_dyn",
     [SSIR_OP_LOAD] = "load",
     [SSIR_OP_STORE] = "store",
     [SSIR_OP_ACCESS] = "access",
@@ -1676,11 +2499,27 @@ static const char *opcode_names[] = {
     [SSIR_OP_TEX_SAMPLE_LEVEL] = "tex_sample_level",
     [SSIR_OP_TEX_SAMPLE_GRAD] = "tex_sample_grad",
     [SSIR_OP_TEX_SAMPLE_CMP] = "tex_sample_cmp",
+    [SSIR_OP_TEX_SAMPLE_CMP_LEVEL] = "tex_sample_cmp_level",
+    [SSIR_OP_TEX_SAMPLE_OFFSET] = "tex_sample_offset",
+    [SSIR_OP_TEX_SAMPLE_BIAS_OFFSET] = "tex_sample_bias_offset",
+    [SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET] = "tex_sample_level_offset",
+    [SSIR_OP_TEX_SAMPLE_GRAD_OFFSET] = "tex_sample_grad_offset",
+    [SSIR_OP_TEX_SAMPLE_CMP_OFFSET] = "tex_sample_cmp_offset",
+    [SSIR_OP_TEX_GATHER] = "tex_gather",
+    [SSIR_OP_TEX_GATHER_CMP] = "tex_gather_cmp",
+    [SSIR_OP_TEX_GATHER_OFFSET] = "tex_gather_offset",
     [SSIR_OP_TEX_LOAD] = "tex_load",
     [SSIR_OP_TEX_STORE] = "tex_store",
     [SSIR_OP_TEX_SIZE] = "tex_size",
+    [SSIR_OP_TEX_QUERY_LOD] = "tex_query_lod",
+    [SSIR_OP_TEX_QUERY_LEVELS] = "tex_query_levels",
+    [SSIR_OP_TEX_QUERY_SAMPLES] = "tex_query_samples",
     [SSIR_OP_BARRIER] = "barrier",
     [SSIR_OP_ATOMIC] = "atomic",
+    [SSIR_OP_LOOP_MERGE] = "loop_merge",
+    [SSIR_OP_DISCARD] = "discard",
+    [SSIR_OP_REM] = "rem",
+    [SSIR_OP_SELECTION_MERGE] = "selection_merge",
 };
 
 const char *ssir_opcode_name(SsirOpcode op) {
@@ -1747,6 +2586,35 @@ static const char *builtin_names[] = {
     [SSIR_BUILTIN_DPDY_COARSE] = "dpdy_coarse",
     [SSIR_BUILTIN_DPDX_FINE] = "dpdx_fine",
     [SSIR_BUILTIN_DPDY_FINE] = "dpdy_fine",
+    [SSIR_BUILTIN_FMA] = "fma",
+    [SSIR_BUILTIN_ISINF] = "isinf",
+    [SSIR_BUILTIN_ISNAN] = "isnan",
+    [SSIR_BUILTIN_DEGREES] = "degrees",
+    [SSIR_BUILTIN_RADIANS] = "radians",
+    [SSIR_BUILTIN_MODF] = "modf",
+    [SSIR_BUILTIN_FREXP] = "frexp",
+    [SSIR_BUILTIN_LDEXP] = "ldexp",
+    [SSIR_BUILTIN_DETERMINANT] = "determinant",
+    [SSIR_BUILTIN_TRANSPOSE] = "transpose",
+    [SSIR_BUILTIN_PACK4X8SNORM] = "pack4x8snorm",
+    [SSIR_BUILTIN_PACK4X8UNORM] = "pack4x8unorm",
+    [SSIR_BUILTIN_PACK2X16SNORM] = "pack2x16snorm",
+    [SSIR_BUILTIN_PACK2X16UNORM] = "pack2x16unorm",
+    [SSIR_BUILTIN_PACK2X16FLOAT] = "pack2x16float",
+    [SSIR_BUILTIN_UNPACK4X8SNORM] = "unpack4x8snorm",
+    [SSIR_BUILTIN_UNPACK4X8UNORM] = "unpack4x8unorm",
+    [SSIR_BUILTIN_UNPACK2X16SNORM] = "unpack2x16snorm",
+    [SSIR_BUILTIN_UNPACK2X16UNORM] = "unpack2x16unorm",
+    [SSIR_BUILTIN_UNPACK2X16FLOAT] = "unpack2x16float",
+    [SSIR_BUILTIN_SUBGROUP_BALLOT] = "subgroupBallot",
+    [SSIR_BUILTIN_SUBGROUP_BROADCAST] = "subgroupBroadcast",
+    [SSIR_BUILTIN_SUBGROUP_ADD] = "subgroupAdd",
+    [SSIR_BUILTIN_SUBGROUP_MIN] = "subgroupMin",
+    [SSIR_BUILTIN_SUBGROUP_MAX] = "subgroupMax",
+    [SSIR_BUILTIN_SUBGROUP_ALL] = "subgroupAll",
+    [SSIR_BUILTIN_SUBGROUP_ANY] = "subgroupAny",
+    [SSIR_BUILTIN_SUBGROUP_SHUFFLE] = "subgroupShuffle",
+    [SSIR_BUILTIN_SUBGROUP_PREFIX_ADD] = "subgroupPrefixAdd",
 };
 
 const char *ssir_builtin_name(SsirBuiltinId id) {
@@ -1777,6 +2645,30 @@ static const char *type_kind_names[] = {
 const char *ssir_type_kind_name(SsirTypeKind kind) {
     if (kind > SSIR_TYPE_TEXTURE_DEPTH) return "unknown";
     return type_kind_names[kind];
+}
+
+float ssir_f16_to_f32(uint16_t h) {
+    uint32_t sign = (h >> 15) & 0x1;
+    uint32_t exp  = (h >> 10) & 0x1F;
+    uint32_t mant = h & 0x3FF;
+    uint32_t f;
+    if (exp == 0) {
+        if (mant == 0) {
+            f = sign << 31;
+        } else {
+            exp = 1;
+            while (!(mant & 0x400)) { mant <<= 1; exp--; }
+            mant &= 0x3FF;
+            f = (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13);
+        }
+    } else if (exp == 31) {
+        f = (sign << 31) | 0x7F800000u | (mant << 13);
+    } else {
+        f = (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13);
+    }
+    float result;
+    memcpy(&result, &f, sizeof(float));
+    return result;
 }
 
 /* ============================================================================
@@ -1827,6 +2719,13 @@ static void ssir_type_to_string(SsirModule *mod, uint32_t type_id, StringBuilder
         case SSIR_TYPE_U32: sb_append(sb, "u32"); break;
         case SSIR_TYPE_F32: sb_append(sb, "f32"); break;
         case SSIR_TYPE_F16: sb_append(sb, "f16"); break;
+        case SSIR_TYPE_F64: sb_append(sb, "f64"); break;
+        case SSIR_TYPE_I8: sb_append(sb, "i8"); break;
+        case SSIR_TYPE_U8: sb_append(sb, "u8"); break;
+        case SSIR_TYPE_I16: sb_append(sb, "i16"); break;
+        case SSIR_TYPE_U16: sb_append(sb, "u16"); break;
+        case SSIR_TYPE_I64: sb_append(sb, "i64"); break;
+        case SSIR_TYPE_U64: sb_append(sb, "u64"); break;
         case SSIR_TYPE_VEC:
             sb_append(sb, "vec");
             sb_appendf(sb, "%u<", t->vec.size);
@@ -1918,6 +2817,27 @@ char *ssir_module_to_string(SsirModule *mod) {
                     break;
                 case SSIR_CONST_F16:
                     sb_appendf(&sb, "0x%04xh", c->f16_val);
+                    break;
+                case SSIR_CONST_F64:
+                    sb_appendf(&sb, "%f", c->f64_val);
+                    break;
+                case SSIR_CONST_I8:
+                    sb_appendf(&sb, "%d", (int)c->i8_val);
+                    break;
+                case SSIR_CONST_U8:
+                    sb_appendf(&sb, "%uu", (unsigned)c->u8_val);
+                    break;
+                case SSIR_CONST_I16:
+                    sb_appendf(&sb, "%d", (int)c->i16_val);
+                    break;
+                case SSIR_CONST_U16:
+                    sb_appendf(&sb, "%uu", (unsigned)c->u16_val);
+                    break;
+                case SSIR_CONST_I64:
+                    sb_appendf(&sb, "%lldl", (long long)c->i64_val);
+                    break;
+                case SSIR_CONST_U64:
+                    sb_appendf(&sb, "%lluul", (unsigned long long)c->u64_val);
                     break;
                 case SSIR_CONST_COMPOSITE:
                     sb_append(&sb, "composite(");

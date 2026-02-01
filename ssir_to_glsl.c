@@ -99,6 +99,11 @@ typedef struct {
     const SsirFunction *current_func;
     SsirEntryPoint *active_ep;
 
+    uint32_t *use_counts;
+
+    SsirInst **inst_map;
+    uint32_t inst_map_cap;
+
     char last_error[256];
 } GlslCtx;
 
@@ -116,6 +121,8 @@ static void gctx_free(GlslCtx *c) {
         for (uint32_t i = 0; i < c->id_names_cap; i++) STG_FREE(c->id_names[i]);
         STG_FREE(c->id_names);
     }
+    STG_FREE(c->use_counts);
+    STG_FREE(c->inst_map);
     gb_free(&c->sb);
 }
 
@@ -182,6 +189,20 @@ static const char *builtin_to_glsl(SsirBuiltinVar bv, SsirAddressSpace space) {
     case SSIR_BUILTIN_GLOBAL_INVOCATION_ID:   return "gl_GlobalInvocationID";
     case SSIR_BUILTIN_WORKGROUP_ID:           return "gl_WorkGroupID";
     case SSIR_BUILTIN_NUM_WORKGROUPS:         return "gl_NumWorkGroups";
+    case SSIR_BUILTIN_POINT_SIZE:             return "gl_PointSize";
+    case SSIR_BUILTIN_CLIP_DISTANCE:          return "gl_ClipDistance";
+    case SSIR_BUILTIN_CULL_DISTANCE:          return "gl_CullDistance";
+    case SSIR_BUILTIN_LAYER:                  return "gl_Layer";
+    case SSIR_BUILTIN_VIEWPORT_INDEX:         return "gl_ViewportIndex";
+    case SSIR_BUILTIN_FRAG_COORD:             return "gl_FragCoord";
+    case SSIR_BUILTIN_HELPER_INVOCATION:      return "gl_HelperInvocation";
+    case SSIR_BUILTIN_PRIMITIVE_ID:           return "gl_PrimitiveID";
+    case SSIR_BUILTIN_BASE_VERTEX:            return "gl_BaseVertex";
+    case SSIR_BUILTIN_BASE_INSTANCE:          return "gl_BaseInstance";
+    case SSIR_BUILTIN_SUBGROUP_SIZE:          return "gl_SubgroupSize";
+    case SSIR_BUILTIN_SUBGROUP_INVOCATION_ID: return "gl_SubgroupInvocationID";
+    case SSIR_BUILTIN_SUBGROUP_ID:            return "gl_SubgroupID";
+    case SSIR_BUILTIN_NUM_SUBGROUPS:          return "gl_NumSubgroups";
     default: return NULL;
     }
 }
@@ -250,6 +271,35 @@ static const char *bfunc_to_glsl(SsirBuiltinId id) {
     case SSIR_BUILTIN_DPDY_COARSE:   return "dFdyCoarse";
     case SSIR_BUILTIN_DPDX_FINE:     return "dFdxFine";
     case SSIR_BUILTIN_DPDY_FINE:     return "dFdyFine";
+    case SSIR_BUILTIN_FMA:           return "fma";
+    case SSIR_BUILTIN_ISINF:         return "isinf";
+    case SSIR_BUILTIN_ISNAN:         return "isnan";
+    case SSIR_BUILTIN_DEGREES:       return "degrees";
+    case SSIR_BUILTIN_RADIANS:       return "radians";
+    case SSIR_BUILTIN_MODF:          return "modf";
+    case SSIR_BUILTIN_FREXP:         return "frexp";
+    case SSIR_BUILTIN_LDEXP:         return "ldexp";
+    case SSIR_BUILTIN_DETERMINANT:   return "determinant";
+    case SSIR_BUILTIN_TRANSPOSE:     return "transpose";
+    case SSIR_BUILTIN_PACK4X8SNORM:  return "packSnorm4x8";
+    case SSIR_BUILTIN_PACK4X8UNORM:  return "packUnorm4x8";
+    case SSIR_BUILTIN_PACK2X16SNORM: return "packSnorm2x16";
+    case SSIR_BUILTIN_PACK2X16UNORM: return "packUnorm2x16";
+    case SSIR_BUILTIN_PACK2X16FLOAT: return "packHalf2x16";
+    case SSIR_BUILTIN_UNPACK4X8SNORM:  return "unpackSnorm4x8";
+    case SSIR_BUILTIN_UNPACK4X8UNORM:  return "unpackUnorm4x8";
+    case SSIR_BUILTIN_UNPACK2X16SNORM: return "unpackSnorm2x16";
+    case SSIR_BUILTIN_UNPACK2X16UNORM: return "unpackUnorm2x16";
+    case SSIR_BUILTIN_UNPACK2X16FLOAT: return "unpackHalf2x16";
+    case SSIR_BUILTIN_SUBGROUP_BALLOT: return "subgroupBallot";
+    case SSIR_BUILTIN_SUBGROUP_BROADCAST: return "subgroupBroadcastFirst";
+    case SSIR_BUILTIN_SUBGROUP_ADD: return "subgroupAdd";
+    case SSIR_BUILTIN_SUBGROUP_MIN: return "subgroupMin";
+    case SSIR_BUILTIN_SUBGROUP_MAX: return "subgroupMax";
+    case SSIR_BUILTIN_SUBGROUP_ALL: return "subgroupAll";
+    case SSIR_BUILTIN_SUBGROUP_ANY: return "subgroupAny";
+    case SSIR_BUILTIN_SUBGROUP_SHUFFLE: return "subgroupShuffle";
+    case SSIR_BUILTIN_SUBGROUP_PREFIX_ADD: return "subgroupExclusiveAdd";
     default: return "unknown_builtin";
     }
 }
@@ -271,6 +321,13 @@ static void emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
     case SSIR_TYPE_U32:  gb_append(b, "uint"); break;
     case SSIR_TYPE_F32:  gb_append(b, "float"); break;
     case SSIR_TYPE_F16:  gb_append(b, "float"); break;
+    case SSIR_TYPE_F64:  gb_append(b, "double"); break;
+    case SSIR_TYPE_I8:   gb_append(b, "int"); break;
+    case SSIR_TYPE_U8:   gb_append(b, "uint"); break;
+    case SSIR_TYPE_I16:  gb_append(b, "int"); break;
+    case SSIR_TYPE_U16:  gb_append(b, "uint"); break;
+    case SSIR_TYPE_I64:  gb_append(b, "int64_t"); break;
+    case SSIR_TYPE_U64:  gb_append(b, "uint64_t"); break;
 
     case SSIR_TYPE_VEC: {
         SsirType *el = ssir_get_type((SsirModule *)c->mod, t->vec.elem);
@@ -335,6 +392,9 @@ static void emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
         case SSIR_TEX_2D_ARRAY:        gb_appendf(b, "%ssampler2DArray", prefix); break;
         case SSIR_TEX_CUBE_ARRAY:      gb_appendf(b, "%ssamplerCubeArray", prefix); break;
         case SSIR_TEX_MULTISAMPLED_2D: gb_appendf(b, "%ssampler2DMS", prefix); break;
+        case SSIR_TEX_1D_ARRAY:        gb_appendf(b, "%ssampler1DArray", prefix); break;
+        case SSIR_TEX_BUFFER:          gb_appendf(b, "%ssamplerBuffer", prefix); break;
+        case SSIR_TEX_MULTISAMPLED_2D_ARRAY: gb_appendf(b, "%ssampler2DMSArray", prefix); break;
         default:                       gb_appendf(b, "%ssampler2D", prefix); break;
         }
         break;
@@ -406,8 +466,39 @@ static void emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b) {
             gb_appendf(b, "%g", (double)f);
         break;
     }
-    case SSIR_CONST_F16:
-        gb_appendf(b, "%.1f", 0.0);
+    case SSIR_CONST_F16: {
+        float fv = ssir_f16_to_f32(k->f16_val);
+        if (floorf(fv) == fv && fabsf(fv) < 1e6f)
+            gb_appendf(b, "%.1f", (double)fv);
+        else
+            gb_appendf(b, "%g", (double)fv);
+        break;
+    }
+    case SSIR_CONST_F64: {
+        double d = k->f64_val;
+        if (floor(d) == d && fabs(d) < 1e15)
+            gb_appendf(b, "%.1flf", d);
+        else
+            gb_appendf(b, "%glf", d);
+        break;
+    }
+    case SSIR_CONST_I8:
+        gb_appendf(b, "%d", (int)k->i8_val);
+        break;
+    case SSIR_CONST_U8:
+        gb_appendf(b, "%uu", (unsigned)k->u8_val);
+        break;
+    case SSIR_CONST_I16:
+        gb_appendf(b, "%d", (int)k->i16_val);
+        break;
+    case SSIR_CONST_U16:
+        gb_appendf(b, "%uu", (unsigned)k->u16_val);
+        break;
+    case SSIR_CONST_I64:
+        gb_appendf(b, "%lldl", (long long)k->i64_val);
+        break;
+    case SSIR_CONST_U64:
+        gb_appendf(b, "%lluul", (unsigned long long)k->u64_val);
         break;
     case SSIR_CONST_COMPOSITE: {
         emit_type(c, k->type, b);
@@ -438,13 +529,7 @@ static void emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b) {
 static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b);
 
 static SsirInst *find_inst(GlslCtx *c, uint32_t id) {
-    if (!c->current_func) return NULL;
-    for (uint32_t bi = 0; bi < c->current_func->block_count; bi++) {
-        SsirBlock *blk = &c->current_func->blocks[bi];
-        for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
-            if (blk->insts[ii].result == id) return &blk->insts[ii];
-        }
-    }
+    if (c->inst_map && id < c->inst_map_cap) return c->inst_map[id];
     return NULL;
 }
 
@@ -507,6 +592,12 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
     SsirInst *inst = find_inst(c, id);
     if (!inst) { gb_append(b, get_name(c, id)); return; }
 
+    /* If materialized as a temporary (multi-use), emit the name */
+    if (id < c->id_names_cap && c->id_names[id]) {
+        gb_append(b, c->id_names[id]);
+        return;
+    }
+
     switch (inst->op) {
     /* Arithmetic */
     case SSIR_OP_ADD: emit_binop(c, inst, " + ", b); break;
@@ -514,6 +605,23 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
     case SSIR_OP_MUL: emit_binop(c, inst, " * ", b); break;
     case SSIR_OP_DIV: emit_binop(c, inst, " / ", b); break;
     case SSIR_OP_MOD: emit_binop(c, inst, " % ", b); break;
+    case SSIR_OP_REM: {
+        SsirType *rem_t = ssir_get_type((SsirModule *)c->mod, inst->type);
+        if (rem_t && ssir_type_is_float(rem_t)) {
+            gb_append(b, "(");
+            emit_expr(c, inst->operands[0], b);
+            gb_append(b, " - ");
+            emit_expr(c, inst->operands[1], b);
+            gb_append(b, " * trunc(");
+            emit_expr(c, inst->operands[0], b);
+            gb_append(b, " / ");
+            emit_expr(c, inst->operands[1], b);
+            gb_append(b, "))");
+        } else {
+            emit_binop(c, inst, " % ", b);
+        }
+        break;
+    }
     case SSIR_OP_NEG: emit_unop(c, inst, "-", b); break;
 
     /* Matrix */
@@ -530,10 +638,32 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
     case SSIR_OP_BIT_XOR: emit_binop(c, inst, " ^ ", b); break;
     case SSIR_OP_BIT_NOT: emit_unop(c, inst, "~", b); break;
     case SSIR_OP_SHL:     emit_binop(c, inst, " << ", b); break;
-    case SSIR_OP_SHR:
-    case SSIR_OP_SHR_LOGICAL:
-        emit_binop(c, inst, " >> ", b);
+    case SSIR_OP_SHR:    emit_binop(c, inst, " >> ", b); break;
+    case SSIR_OP_SHR_LOGICAL: {
+        SsirType *shr_type = ssir_get_type((SsirModule *)c->mod, inst->type);
+        bool shr_signed = shr_type && (ssir_type_is_signed(shr_type) ||
+            (shr_type->kind == SSIR_TYPE_VEC &&
+             ssir_type_is_signed(ssir_get_type((SsirModule *)c->mod, shr_type->vec.elem))));
+        if (shr_signed) {
+            emit_type(c, inst->type, b);
+            gb_append(b, "(");
+            if (shr_type->kind == SSIR_TYPE_VEC) {
+                uint32_t uvec = ssir_type_vec((SsirModule *)c->mod,
+                    ssir_type_u32((SsirModule *)c->mod), shr_type->vec.size);
+                emit_type(c, uvec, b);
+            } else {
+                gb_append(b, "uint");
+            }
+            gb_append(b, "(");
+            emit_expr(c, inst->operands[0], b);
+            gb_append(b, ") >> ");
+            emit_expr(c, inst->operands[1], b);
+            gb_append(b, ")");
+        } else {
+            emit_binop(c, inst, " >> ", b);
+        }
         break;
+    }
 
     /* Comparison */
     case SSIR_OP_EQ: emit_binop(c, inst, " == ", b); break;
@@ -576,6 +706,7 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
     }
 
     case SSIR_OP_INSERT:
+    case SSIR_OP_INSERT_DYN:
         gb_append(b, get_name(c, id));
         break;
 
@@ -621,18 +752,57 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
         break;
 
     case SSIR_OP_ACCESS: {
+        SsirModule *amod = (SsirModule *)c->mod;
         emit_expr(c, inst->operands[0], b);
+        /* Trace struct type through the access chain for member names */
+        uint32_t cur_type_id = 0;
+        {
+            SsirGlobalVar *ag = ssir_get_global(amod, inst->operands[0]);
+            if (ag) {
+                SsirType *pt = ssir_get_type(amod, ag->type);
+                if (pt && pt->kind == SSIR_TYPE_PTR)
+                    cur_type_id = pt->ptr.pointee;
+            }
+            if (!cur_type_id) {
+                SsirInst *ai = find_inst(c, inst->operands[0]);
+                if (ai && ai->op == SSIR_OP_LOAD) {
+                    SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
+                    if (lg) {
+                        SsirType *pt = ssir_get_type(amod, lg->type);
+                        if (pt && pt->kind == SSIR_TYPE_PTR)
+                            cur_type_id = pt->ptr.pointee;
+                    }
+                }
+            }
+        }
         for (uint16_t i = 0; i < inst->extra_count; i++) {
             uint32_t idx = inst->extra[i];
-            SsirConstant *ic = ssir_get_constant((SsirModule *)c->mod, idx);
-            if (ic && ic->kind == SSIR_CONST_U32)
-                gb_appendf(b, ".member%u", ic->u32_val);
-            else if (ic && ic->kind == SSIR_CONST_I32)
-                gb_appendf(b, ".member%d", ic->i32_val);
-            else {
+            SsirConstant *ic = ssir_get_constant(amod, idx);
+            SsirType *cur_st = cur_type_id ? ssir_get_type(amod, cur_type_id) : NULL;
+            if (ic && (ic->kind == SSIR_CONST_U32 || ic->kind == SSIR_CONST_I32)) {
+                uint32_t midx = (ic->kind == SSIR_CONST_U32) ? ic->u32_val : (uint32_t)ic->i32_val;
+                const char *mname = NULL;
+                if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
+                    cur_st->struc.member_names && midx < cur_st->struc.member_count)
+                    mname = cur_st->struc.member_names[midx];
+                if (mname)
+                    gb_appendf(b, ".%s", mname);
+                else
+                    gb_appendf(b, ".member%u", midx);
+                /* Advance type through struct member */
+                if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
+                    cur_type_id = cur_st->struc.members[midx];
+                else
+                    cur_type_id = 0;
+            } else {
                 gb_append(b, "[");
                 emit_expr(c, idx, b);
                 gb_append(b, "]");
+                /* Advance type through array element */
+                if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
+                    cur_type_id = cur_st->array.elem;
+                else
+                    cur_type_id = 0;
             }
         }
         break;
@@ -773,6 +943,130 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
         gb_append(b, "))");
         break;
 
+    case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
+        gb_append(b, "textureLod(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", vec3(");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, "), ");
+        emit_expr(c, inst->operands[4], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_OFFSET:
+        gb_append(b, "textureOffset(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
+        gb_append(b, "textureOffset(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
+        gb_append(b, "textureLodOffset(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
+        gb_append(b, "textureGradOffset(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[5], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
+        gb_append(b, "textureOffset(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", vec3(");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, "), ");
+        emit_expr(c, inst->operands[4], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_GATHER:
+        gb_append(b, "textureGather(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_GATHER_CMP:
+        gb_append(b, "textureGather(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_GATHER_OFFSET:
+        gb_append(b, "textureGatherOffset(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[4], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[3], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_QUERY_LOD:
+        gb_append(b, "textureQueryLod(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ", ");
+        emit_expr(c, inst->operands[2], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_QUERY_LEVELS:
+        gb_append(b, "textureQueryLevels(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ")");
+        break;
+
+    case SSIR_OP_TEX_QUERY_SAMPLES:
+        gb_append(b, "textureSamples(");
+        emit_expr(c, inst->operands[0], b);
+        gb_append(b, ")");
+        break;
+
     case SSIR_OP_TEX_LOAD:
         gb_append(b, "texelFetch(");
         emit_expr(c, inst->operands[0], b);
@@ -898,26 +1192,60 @@ static void emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
 
     case SSIR_OP_BARRIER:
         gb_indent(&c->sb);
-        if (inst->operands[0] == SSIR_BARRIER_WORKGROUP)
-            gb_append(&c->sb, "barrier();\n");
-        else
-            gb_append(&c->sb, "memoryBarrierBuffer();\n");
+        switch ((SsirBarrierScope)inst->operands[0]) {
+        case SSIR_BARRIER_WORKGROUP: gb_append(&c->sb, "barrier();\n"); break;
+        case SSIR_BARRIER_STORAGE:   gb_append(&c->sb, "memoryBarrierBuffer();\n"); break;
+        case SSIR_BARRIER_SUBGROUP:  gb_append(&c->sb, "subgroupBarrier();\n"); break;
+        case SSIR_BARRIER_IMAGE:     gb_append(&c->sb, "memoryBarrierImage();\n"); break;
+        }
+        break;
+
+    case SSIR_OP_DISCARD:
+        gb_indent(&c->sb);
+        gb_append(&c->sb, "discard;\n");
+        break;
+
+    case SSIR_OP_INSERT_DYN:
+        gb_indent(&c->sb);
+        emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+        gb_append(&c->sb, " = ");
+        emit_expr(c, inst->operands[0], &c->sb);
+        gb_append(&c->sb, ";\n");
+        gb_indent(&c->sb);
+        gb_append(&c->sb, get_name(c, inst->result));
+        gb_append(&c->sb, "[");
+        emit_expr(c, inst->operands[2], &c->sb);
+        gb_append(&c->sb, "] = ");
+        emit_expr(c, inst->operands[1], &c->sb);
+        gb_append(&c->sb, ";\n");
         break;
 
     case SSIR_OP_LOOP_MERGE:
+    case SSIR_OP_SELECTION_MERGE:
     case SSIR_OP_UNREACHABLE:
         break;
 
     default:
         if (inst->result != 0) {
-            /* Check if the type is void - skip if so */
             SsirType *rt = ssir_get_type((SsirModule *)c->mod, inst->type);
-            if (rt && rt->kind == SSIR_TYPE_VOID) break;
-            gb_indent(&c->sb);
-            emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
-            gb_append(&c->sb, " = ");
-            emit_expr(c, inst->result, &c->sb);
-            gb_append(&c->sb, ";\n");
+            bool is_void = (rt && rt->kind == SSIR_TYPE_VOID);
+            bool has_side_effects = (inst->op == SSIR_OP_CALL ||
+                                     inst->op == SSIR_OP_ATOMIC);
+            bool must_materialize = (inst->op == SSIR_OP_PHI || has_side_effects);
+            uint32_t uses = (c->use_counts && inst->result < c->mod->next_id)
+                            ? c->use_counts[inst->result] : 2;
+            if (is_void && !has_side_effects) break;
+            if (must_materialize || uses > 1) {
+                gb_indent(&c->sb);
+                if (!is_void) {
+                    emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+                    gb_append(&c->sb, " = ");
+                }
+                emit_expr(c, inst->result, &c->sb);
+                gb_append(&c->sb, ";\n");
+                if (!is_void)
+                    set_name(c, inst->result, get_name(c, inst->result));
+            }
         }
         break;
     }
@@ -960,8 +1288,10 @@ static void emit_struct_def(GlslCtx *c, SsirType *t) {
     gb_appendf(&c->sb, "struct %s {\n", t->struc.name ? t->struc.name : "_Struct");
     for (uint32_t i = 0; i < t->struc.member_count; i++) {
         gb_append(&c->sb, "    ");
-        char mname[32];
-        snprintf(mname, sizeof(mname), "member%u", i);
+        char mname_buf[32];
+        const char *mname = (t->struc.member_names && t->struc.member_names[i])
+            ? t->struc.member_names[i] : NULL;
+        if (!mname) { snprintf(mname_buf, sizeof(mname_buf), "member%u", i); mname = mname_buf; }
         emit_decl(c, t->struc.members[i], mname, &c->sb);
         gb_append(&c->sb, ";\n");
     }
@@ -990,8 +1320,11 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
         gb_append(&c->sb, "layout(location = ");
         gb_appendf(&c->sb, "%u", g->has_location ? g->location : 0);
         gb_append(&c->sb, ") ");
+        if (g->invariant) gb_append(&c->sb, "invariant ");
         if (g->interp == SSIR_INTERP_FLAT) gb_append(&c->sb, "flat ");
         else if (g->interp == SSIR_INTERP_LINEAR) gb_append(&c->sb, "noperspective ");
+        if (g->interp_sampling == SSIR_INTERP_SAMPLING_CENTROID) gb_append(&c->sb, "centroid ");
+        else if (g->interp_sampling == SSIR_INTERP_SAMPLING_SAMPLE) gb_append(&c->sb, "sample ");
         gb_append(&c->sb, "in ");
         emit_decl(c, pointee_id, vname, &c->sb);
         gb_append(&c->sb, ";\n");
@@ -1001,14 +1334,23 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
     case SSIR_ADDR_OUTPUT: {
         gb_append(&c->sb, "layout(location = ");
         gb_appendf(&c->sb, "%u", g->has_location ? g->location : 0);
-        gb_append(&c->sb, ") out ");
+        gb_append(&c->sb, ") ");
+        if (g->invariant) gb_append(&c->sb, "invariant ");
+        if (g->interp_sampling == SSIR_INTERP_SAMPLING_CENTROID) gb_append(&c->sb, "centroid ");
+        else if (g->interp_sampling == SSIR_INTERP_SAMPLING_SAMPLE) gb_append(&c->sb, "sample ");
+        gb_append(&c->sb, "out ");
         emit_decl(c, pointee_id, vname, &c->sb);
         gb_append(&c->sb, ";\n");
         break;
     }
 
     case SSIR_ADDR_UNIFORM: {
-        gb_append(&c->sb, "layout(std140");
+        const char *layout_str = "std140";
+        if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
+            if (pointee->struc.layout_rule == SSIR_LAYOUT_STD430) layout_str = "std430";
+            else if (pointee->struc.layout_rule == SSIR_LAYOUT_SCALAR) layout_str = "scalar";
+        }
+        gb_appendf(&c->sb, "layout(%s", layout_str);
         if (g->has_group && !c->opts.target_opengl) gb_appendf(&c->sb, ", set = %u", g->group);
         if (g->has_binding) gb_appendf(&c->sb, ", binding = %u", g->binding);
         gb_append(&c->sb, ") uniform ");
@@ -1017,8 +1359,10 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
             gb_appendf(&c->sb, "_UB_%s {\n", vname);
             for (uint32_t m = 0; m < pointee->struc.member_count; m++) {
                 gb_append(&c->sb, "    ");
-                char mn[32];
-                snprintf(mn, sizeof(mn), "member%u", m);
+                char mn_buf[32];
+                const char *mn = (pointee->struc.member_names && pointee->struc.member_names[m])
+                    ? pointee->struc.member_names[m] : NULL;
+                if (!mn) { snprintf(mn_buf, sizeof(mn_buf), "member%u", m); mn = mn_buf; }
                 emit_decl(c, pointee->struc.members[m], mn, &c->sb);
                 gb_append(&c->sb, ";\n");
             }
@@ -1033,17 +1377,26 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
     }
 
     case SSIR_ADDR_STORAGE: {
-        gb_append(&c->sb, "layout(std430");
+        const char *layout_str = "std430";
+        if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
+            if (pointee->struc.layout_rule == SSIR_LAYOUT_STD140) layout_str = "std140";
+            else if (pointee->struc.layout_rule == SSIR_LAYOUT_SCALAR) layout_str = "scalar";
+        }
+        gb_appendf(&c->sb, "layout(%s", layout_str);
         if (g->has_group && !c->opts.target_opengl) gb_appendf(&c->sb, ", set = %u", g->group);
         if (g->has_binding) gb_appendf(&c->sb, ", binding = %u", g->binding);
-        gb_append(&c->sb, ") buffer ");
+        gb_append(&c->sb, ") ");
+        if (g->non_writable) gb_append(&c->sb, "readonly ");
+        gb_append(&c->sb, "buffer ");
 
         if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
             gb_appendf(&c->sb, "_SB_%s {\n", vname);
             for (uint32_t m = 0; m < pointee->struc.member_count; m++) {
                 gb_append(&c->sb, "    ");
-                char mn[32];
-                snprintf(mn, sizeof(mn), "member%u", m);
+                char mn_buf[32];
+                const char *mn = (pointee->struc.member_names && pointee->struc.member_names[m])
+                    ? pointee->struc.member_names[m] : NULL;
+                if (!mn) { snprintf(mn_buf, sizeof(mn_buf), "member%u", m); mn = mn_buf; }
                 emit_decl(c, pointee->struc.members[m], mn, &c->sb);
                 gb_append(&c->sb, ";\n");
             }
@@ -1124,6 +1477,30 @@ static void emit_function(GlslCtx *c, SsirFunction *fn) {
 
     c->sb.indent++;
     c->current_func = fn;
+
+    /* Compute use counts for inlining decisions */
+    STG_FREE(c->use_counts);
+    c->use_counts = (uint32_t *)STG_MALLOC(c->mod->next_id * sizeof(uint32_t));
+    if (c->use_counts) {
+        memset(c->use_counts, 0, c->mod->next_id * sizeof(uint32_t));
+        ssir_count_uses((SsirFunction *)fn, c->use_counts, c->mod->next_id);
+    }
+
+    /* Build instruction lookup map */
+    STG_FREE(c->inst_map);
+    c->inst_map_cap = c->mod->next_id;
+    c->inst_map = (SsirInst **)STG_MALLOC(c->inst_map_cap * sizeof(SsirInst *));
+    if (c->inst_map) {
+        memset(c->inst_map, 0, c->inst_map_cap * sizeof(SsirInst *));
+        for (uint32_t bi = 0; bi < fn->block_count; bi++) {
+            SsirBlock *blk = &fn->blocks[bi];
+            for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+                uint32_t rid = blk->insts[ii].result;
+                if (rid && rid < c->inst_map_cap)
+                    c->inst_map[rid] = &blk->insts[ii];
+            }
+        }
+    }
 
     /* Local variables */
     for (uint32_t i = 0; i < fn->local_count; i++) {
@@ -1278,10 +1655,16 @@ SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
     /* Phase 2: Emit GLSL header */
     gb_append(&ctx.sb, "#version 450\n\n");
 
-    /* Phase 3: Emit compute local size if needed */
+    /* Phase 3: Emit execution mode layouts */
     if (ep && ep->stage == SSIR_STAGE_COMPUTE) {
         gb_appendf(&ctx.sb, "layout(local_size_x = %u, local_size_y = %u, local_size_z = %u) in;\n\n",
                    ep->workgroup_size[0], ep->workgroup_size[1], ep->workgroup_size[2]);
+    }
+    if (ep && ep->early_fragment_tests) {
+        gb_append(&ctx.sb, "layout(early_fragment_tests) in;\n");
+    }
+    if (ep && ep->depth_replacing) {
+        gb_append(&ctx.sb, "layout(depth_any) out float gl_FragDepth;\n");
     }
 
     /* Phase 4: Emit struct definitions (non-interface-block types) */
@@ -1289,6 +1672,17 @@ SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
         if (mod->types[i].kind == SSIR_TYPE_STRUCT) {
             emit_struct_def(&ctx, &mod->types[i]);
         }
+    }
+
+    /* Phase 4b: Emit specialization constants */
+    for (uint32_t i = 0; i < mod->constant_count; i++) {
+        SsirConstant *k = &mod->constants[i];
+        if (!k->is_specialization) continue;
+        gb_appendf(&ctx.sb, "layout(constant_id = %u) const ", k->spec_id);
+        emit_decl(&ctx, k->type, k->name ? k->name : "spec_const", &ctx.sb);
+        gb_append(&ctx.sb, " = ");
+        emit_constant(&ctx, k, &ctx.sb);
+        gb_append(&ctx.sb, ";\n");
     }
 
     /* Phase 5: Emit global variables */

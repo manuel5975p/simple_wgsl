@@ -406,7 +406,7 @@ TEST(SsirToMsl, VectorMathIntrinsics) {
             let c = cross(v1, v2);
             let n = normalize(v1);
             let l = length(v1);
-            return vec4f(d, l, 0.0, 1.0);
+            return vec4f(d + c.x + n.x, l, 0.0, 1.0);
         }
     )";
     auto res = WgslToMsl(source);
