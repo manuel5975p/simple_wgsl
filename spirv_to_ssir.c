@@ -180,6 +180,7 @@ typedef struct {
     int pending_exec_mode_cap;
 
     uint32_t glsl_ext_id;
+    int type_depth;
 
     SsirModule *mod;
     const SpirvToSsirOptions *opts;
@@ -345,10 +346,10 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                 uint32_t member = operands[1];
                 int str_words;
                 char *name = vts_read_string(&operands[2], operand_count - 2, &str_words);
-                if (struct_id < c->id_bound && name) {
+                if (struct_id < c->id_bound && member < 4096 && name) {
                     VtsSpvIdInfo *info = &c->ids[struct_id];
                     if (member >= (uint32_t)info->member_name_count) {
-                        int new_count = member + 1;
+                        int new_count = (int)member + 1;
                         info->member_names = (char**)SPIRV_TO_SSIR_REALLOC(info->member_names, new_count * sizeof(char*));
                         for (int i = info->member_name_count; i < new_count; i++) {
                             info->member_names[i] = NULL;
@@ -491,6 +492,7 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     c->ids[id].type_info.kind = VTS_SPV_TYPE_STRUCT;
                     int mc = operand_count - 1;
                     c->ids[id].type_info.struct_type.member_count = mc;
+                    c->ids[id].type_info.struct_type.member_types = NULL;
                     if (mc > 0) {
                         c->ids[id].type_info.struct_type.member_types = (uint32_t*)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint32_t));
                         memcpy(c->ids[id].type_info.struct_type.member_types, &operands[1], mc * sizeof(uint32_t));
@@ -520,6 +522,7 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     c->ids[id].type_info.function.return_type = operands[1];
                     int pc = operand_count - 2;
                     c->ids[id].type_info.function.param_count = pc;
+                    c->ids[id].type_info.function.param_types = NULL;
                     if (pc > 0) {
                         c->ids[id].type_info.function.param_types = (uint32_t*)SPIRV_TO_SSIR_MALLOC(pc * sizeof(uint32_t));
                         memcpy(c->ids[id].type_info.function.param_types, &operands[2], pc * sizeof(uint32_t));
@@ -579,6 +582,7 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     c->ids[id].kind = VTS_SPV_ID_CONSTANT;
                     c->ids[id].constant.type_id = type_id;
                     c->ids[id].constant.is_composite = 0;
+                    c->ids[id].constant.values = NULL;
                     c->ids[id].constant.is_spec = ((SpvOp)opcode == SpvOpSpecConstant ||
                         (SpvOp)opcode == SpvOpSpecConstantTrue ||
                         (SpvOp)opcode == SpvOpSpecConstantFalse);
@@ -609,6 +613,7 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     c->ids[id].kind = VTS_SPV_ID_CONSTANT;
                     c->ids[id].constant.type_id = type_id;
                     c->ids[id].constant.is_composite = 1;
+                    c->ids[id].constant.values = NULL;
                     int vc = operand_count - 2;
                     c->ids[id].constant.value_count = vc;
                     if (vc > 0) {
@@ -818,6 +823,7 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                         c->ids[result_id].instruction.type_id = type_id;
                         c->ids[result_id].instruction.opcode = op;
                         int remaining = operand_count - 2;
+                        c->ids[result_id].instruction.operands = NULL;
                         if (remaining > 0) {
                             c->ids[result_id].instruction.operands = (uint32_t*)SPIRV_TO_SSIR_MALLOC(remaining * sizeof(uint32_t));
                             memcpy(c->ids[result_id].instruction.operands, &operands[2], remaining * sizeof(uint32_t));
@@ -945,6 +951,8 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
     VtsSpvIdInfo *info = &c->ids[spv_type_id];
     if (info->kind != VTS_SPV_ID_TYPE) return 0;
     if (info->ssir_id) return info->ssir_id;
+    if (c->type_depth > 64) return 0;
+    c->type_depth++;
 
     uint32_t result = 0;
 
@@ -964,8 +972,11 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
 
     case VTS_SPV_TYPE_MATRIX: {
         uint32_t col = convert_type(c, info->type_info.matrix.column_type);
-        VtsSpvIdInfo *col_info = &c->ids[info->type_info.matrix.column_type];
-        uint8_t rows = (uint8_t)col_info->type_info.vector.count;
+        uint8_t rows = 0;
+        if (info->type_info.matrix.column_type < c->id_bound) {
+            VtsSpvIdInfo *col_info = &c->ids[info->type_info.matrix.column_type];
+            rows = (uint8_t)col_info->type_info.vector.count;
+        }
         result = ssir_type_mat(c->mod, col, (uint8_t)info->type_info.matrix.columns, rows);
         break;
     }
@@ -1084,13 +1095,16 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
     }
 
     case VTS_SPV_TYPE_FUNCTION:
+        c->type_depth--;
         return 0;
 
     default:
+        c->type_depth--;
         return 0;
     }
 
     info->ssir_id = result;
+    c->type_depth--;
     return result;
 }
 
@@ -1099,6 +1113,8 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
     VtsSpvIdInfo *info = &c->ids[spv_const_id];
     if (info->kind != VTS_SPV_ID_CONSTANT) return 0;
     if (info->ssir_id) return info->ssir_id;
+    if (c->type_depth > 64) return 0;
+    c->type_depth++;
 
     uint32_t type_id = convert_type(c, info->constant.type_id);
     SsirType *type = ssir_get_type(c->mod, type_id);
@@ -1138,6 +1154,7 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
             break;
         }
         default:
+            c->type_depth--;
             return 0;
         }
     } else {
@@ -1202,6 +1219,7 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
             break;
         }
         default:
+            c->type_depth--;
             return 0;
         }
     }
@@ -1213,6 +1231,7 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
     }
 
     info->ssir_id = result;
+    c->type_depth--;
     return result;
 }
 
@@ -1299,6 +1318,10 @@ static void convert_global_vars(VtsConverter *c) {
             }
         }
     }
+}
+
+static void set_ssir_id(VtsConverter *c, uint32_t spv_id, uint32_t ssir_id) {
+    if (spv_id < c->id_bound) c->ids[spv_id].ssir_id = ssir_id;
 }
 
 static uint32_t get_ssir_id(VtsConverter *c, uint32_t spv_id) {
@@ -1394,6 +1417,7 @@ static SsirBuiltinId glsl_ext_to_ssir_builtin(enum GLSLstd450 glsl_op) {
 }
 
 static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
+    if (fn->id >= c->id_bound) return;
     uint32_t ret_type = convert_type(c, fn->return_type);
     const char *name = fn->name ? fn->name : "fn";
     uint32_t func_id = ssir_function_create(c->mod, name, ret_type);
@@ -1433,6 +1457,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
 
     for (int bi = 0; bi < fn->block_count; bi++) {
         VtsSpvBasicBlock *blk = &fn->blocks[bi];
+        if (blk->label_id >= c->id_bound) continue;
         uint32_t block_id = c->ids[blk->label_id].ssir_id;
 
         if (blk->is_loop_header) {
@@ -1475,7 +1500,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t ptr = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_load(c->mod, func_id, block_id, type_id, ptr);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1494,7 +1519,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         }
                     }
                     uint32_t r = ssir_build_access(c->mod, func_id, block_id, type_id, base, indices, idx_count);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                     SPIRV_TO_SSIR_FREE(indices);
                 }
                 break;
@@ -1506,7 +1531,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_add(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1517,7 +1542,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_sub(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1528,7 +1553,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_mul(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1539,7 +1564,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_div(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1550,7 +1575,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_mod(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1561,7 +1586,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_rem(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1571,7 +1596,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_neg(c->mod, func_id, block_id, type_id, a);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1582,7 +1607,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_mat_mul(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1596,7 +1621,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_mul(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1606,7 +1631,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t m = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_mat_transpose(c->mod, func_id, block_id, type_id, m);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1617,7 +1642,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t args[] = {a};
                     uint32_t r = ssir_build_builtin(c->mod, func_id, block_id, type_id, SSIR_BUILTIN_ISINF, args, 1);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1628,7 +1653,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t args[] = {a};
                     uint32_t r = ssir_build_builtin(c->mod, func_id, block_id, type_id, SSIR_BUILTIN_ISNAN, args, 1);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1639,7 +1664,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_bit_and(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1650,7 +1675,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_bit_or(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1661,7 +1686,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_bit_xor(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1671,7 +1696,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_bit_not(c->mod, func_id, block_id, type_id, a);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1682,7 +1707,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_shl(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1693,7 +1718,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_shr_logical(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1704,7 +1729,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_shr(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1715,7 +1740,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_eq(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1726,7 +1751,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_ne(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1737,7 +1762,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_lt(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1748,7 +1773,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_le(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1759,7 +1784,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_gt(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1770,7 +1795,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_ge(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1781,7 +1806,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_and(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1792,7 +1817,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_or(c->mod, func_id, block_id, type_id, a, b);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1802,7 +1827,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t a = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_not(c->mod, func_id, block_id, type_id, a);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1819,7 +1844,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         }
                     }
                     uint32_t r = ssir_build_construct(c->mod, func_id, block_id, type_id, comps, comp_count);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                     SPIRV_TO_SSIR_FREE(comps);
                 }
                 break;
@@ -1831,7 +1856,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t composite = get_ssir_id(c, operands[2]);
                     uint32_t index = operands[3];
                     uint32_t r = ssir_build_extract(c->mod, func_id, block_id, type_id, composite, index);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1843,7 +1868,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t composite = get_ssir_id(c, operands[3]);
                     uint32_t index = operands[4];
                     uint32_t r = ssir_build_insert(c->mod, func_id, block_id, type_id, composite, value, index);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1860,7 +1885,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         memcpy(indices, &operands[4], idx_count * sizeof(uint32_t));
                     }
                     uint32_t r = ssir_build_shuffle(c->mod, func_id, block_id, type_id, v1, v2, indices, idx_count);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                     SPIRV_TO_SSIR_FREE(indices);
                 }
                 break;
@@ -1872,7 +1897,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t vec = get_ssir_id(c, operands[2]);
                     uint32_t idx = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_extract_dyn(c->mod, func_id, block_id, type_id, vec, idx);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1884,7 +1909,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t val = get_ssir_id(c, operands[3]);
                     uint32_t idx = get_ssir_id(c, operands[4]);
                     uint32_t r = ssir_build_insert_dyn(c->mod, func_id, block_id, type_id, vec, val, idx);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1897,7 +1922,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t f = get_ssir_id(c, operands[4]);
                     uint32_t args[3] = { cond, t, f };
                     uint32_t r = ssir_build_builtin(c->mod, func_id, block_id, type_id, SSIR_BUILTIN_SELECT, args, 3);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1909,7 +1934,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t b = get_ssir_id(c, operands[3]);
                     uint32_t args[2] = { a, b };
                     uint32_t r = ssir_build_builtin(c->mod, func_id, block_id, type_id, SSIR_BUILTIN_DOT, args, 2);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1920,7 +1945,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t val = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_convert(c->mod, func_id, block_id, type_id, val);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1930,7 +1955,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t val = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_bitcast(c->mod, func_id, block_id, type_id, val);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -1938,7 +1963,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                 if (operand_count >= 3) {
                     uint32_t result_id = operands[1];
                     uint32_t src = get_ssir_id(c, operands[2]);
-                    c->ids[result_id].ssir_id = src;
+                    set_ssir_id(c, result_id, src);
                 }
                 break;
 
@@ -1952,18 +1977,18 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         incoming = (uint32_t*)SPIRV_TO_SSIR_MALLOC(pair_count * 2 * sizeof(uint32_t));
                         for (int j = 0; j < pair_count; j++) {
                             incoming[j * 2] = get_ssir_id(c, operands[2 + j * 2]);
-                            incoming[j * 2 + 1] = c->ids[operands[3 + j * 2]].ssir_id;
+                            incoming[j * 2 + 1] = get_ssir_id(c, operands[3 + j * 2]);
                         }
                     }
                     uint32_t r = ssir_build_phi(c->mod, func_id, block_id, type_id, incoming, pair_count * 2);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                     SPIRV_TO_SSIR_FREE(incoming);
                 }
                 break;
 
             case SpvOpBranch:
                 if (operand_count >= 1) {
-                    uint32_t target = c->ids[operands[0]].ssir_id;
+                    uint32_t target = get_ssir_id(c, operands[0]);
                     ssir_build_branch(c->mod, func_id, block_id, target);
                 }
                 break;
@@ -1971,10 +1996,10 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
             case SpvOpBranchConditional:
                 if (operand_count >= 3) {
                     uint32_t cond = get_ssir_id(c, operands[0]);
-                    uint32_t true_block = c->ids[operands[1]].ssir_id;
-                    uint32_t false_block = c->ids[operands[2]].ssir_id;
+                    uint32_t true_block = get_ssir_id(c, operands[1]);
+                    uint32_t false_block = get_ssir_id(c, operands[2]);
                     if (blk->is_selection_header && blk->merge_block) {
-                        uint32_t merge = c->ids[blk->merge_block].ssir_id;
+                        uint32_t merge = get_ssir_id(c, blk->merge_block);
                         ssir_build_branch_cond_merge(c->mod, func_id, block_id, cond, true_block, false_block, merge);
                     } else {
                         ssir_build_branch_cond(c->mod, func_id, block_id, cond, true_block, false_block);
@@ -2005,7 +2030,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                 if (operand_count >= 3) {
                     uint32_t type_id = convert_type(c, operands[0]);
                     uint32_t result_id = operands[1];
-                    uint32_t callee = c->ids[operands[2]].ssir_id;
+                    uint32_t callee = get_ssir_id(c, operands[2]);
                     int arg_count = operand_count - 3;
                     uint32_t *args = NULL;
                     if (arg_count > 0) {
@@ -2015,7 +2040,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         }
                     }
                     uint32_t r = ssir_build_call(c->mod, func_id, block_id, type_id, callee, args, arg_count);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                     SPIRV_TO_SSIR_FREE(args);
                 }
                 break;
@@ -2038,7 +2063,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                                 }
                             }
                             uint32_t r = ssir_build_builtin(c->mod, func_id, block_id, type_id, bid, args, arg_count);
-                            c->ids[result_id].ssir_id = r;
+                            set_ssir_id(c, result_id, r);
                             SPIRV_TO_SSIR_FREE(args);
                         }
                     }
@@ -2050,7 +2075,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t ptr = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_array_len(c->mod, func_id, block_id, ptr);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -2152,7 +2177,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         uint32_t ref = get_ssir_id(c, operands[4]);
                         r = ssir_build_tex_gather_cmp(c->mod, func_id, block_id, type_id, tex, samp, coord, ref);
                     }
-                    if (r) c->ids[result_id].ssir_id = r;
+                    if (r) set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -2163,7 +2188,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t tex = get_ssir_id(c, operands[2]);
                     uint32_t coord = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_tex_load(c->mod, func_id, block_id, type_id, tex, coord, 0);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -2183,7 +2208,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t tex = get_ssir_id(c, operands[2]);
                     uint32_t lod = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_tex_size(c->mod, func_id, block_id, type_id, tex, lod);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -2193,7 +2218,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t tex = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_tex_size(c->mod, func_id, block_id, type_id, tex, 0);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -2215,7 +2240,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t samp = get_ssir_id(c, sampler_spv);
                     uint32_t coord = get_ssir_id(c, operands[3]);
                     uint32_t r = ssir_build_tex_query_lod(c->mod, func_id, block_id, type_id, tex, samp, coord);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -2225,7 +2250,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t tex = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_tex_query_levels(c->mod, func_id, block_id, type_id, tex);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -2235,7 +2260,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t result_id = operands[1];
                     uint32_t tex = get_ssir_id(c, operands[2]);
                     uint32_t r = ssir_build_tex_query_samples(c->mod, func_id, block_id, type_id, tex);
-                    c->ids[result_id].ssir_id = r;
+                    set_ssir_id(c, result_id, r);
                 }
                 break;
 
@@ -2263,6 +2288,7 @@ static void convert_entry_points(VtsConverter *c) {
         VtsSpvFunction *fn = &c->functions[i];
         if (!fn->is_entry_point) continue;
 
+        if (fn->id >= c->id_bound) continue;
         uint32_t func_ssir_id = c->ids[fn->id].ssir_id;
         SsirStage stage = exec_model_to_stage(fn->exec_model);
         const char *name = fn->name ? fn->name : "main";
@@ -2381,6 +2407,14 @@ SpirvToSsirResult spirv_to_ssir(
     c.generator = spirv[2];
     c.id_bound = spirv[3];
     c.opts = opts;
+
+    /* Sanity-check id_bound: must not exceed the number of words in the module
+       (each ID definition requires at least one word), and cap to avoid
+       allocating gigabytes from a crafted header. */
+    if (c.id_bound == 0 || c.id_bound > word_count) {
+        if (out_error) *out_error = strdup("Invalid SPIR-V: id_bound out of range");
+        return SPIRV_TO_SSIR_INVALID_SPIRV;
+    }
 
     c.ids = (VtsSpvIdInfo*)SPIRV_TO_SSIR_MALLOC(c.id_bound * sizeof(VtsSpvIdInfo));
     if (!c.ids) {

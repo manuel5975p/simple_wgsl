@@ -2605,8 +2605,10 @@ SsirToSpirvResult ssir_to_spirv(const SsirModule *mod,
 
     /* Copy sections */
     #define COPY_SEC(sec) do { \
-        memcpy(words + pos, c.sections.sec.data, c.sections.sec.len * sizeof(uint32_t)); \
-        pos += c.sections.sec.len; \
+        if (c.sections.sec.len > 0) { \
+            memcpy(words + pos, c.sections.sec.data, c.sections.sec.len * sizeof(uint32_t)); \
+            pos += c.sections.sec.len; \
+        } \
     } while(0)
 
     COPY_SEC(capabilities);

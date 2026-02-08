@@ -544,6 +544,7 @@ static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
 
     int first = 1;
     while (!check(P, TOK_GT) && !check(P, TOK_EOF)) {
+        const char *before = P->cur.start;
         if (!first) expect(P, TOK_COMMA, "expected ','");
         first = 0;
 
@@ -556,6 +557,9 @@ static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
                Use parse_shift to avoid consuming '>' as comparison operator. */
             WgslAstNode *ex = parse_shift(P);
             if (ex) vec_push_node(&eargs, &ecount, &ecap, ex);
+        }
+        if (P->cur.start == before) {
+            advance(P);
         }
     }
     expect(P, TOK_GT, "expected '>'");
@@ -753,9 +757,16 @@ static WgslAstNode *parse_block(Parser *P) {
     int cap = 0, count = 0;
     WgslAstNode **stmts = NULL;
     while (!check(P, TOK_RBRACE) && !check(P, TOK_EOF)) {
+        const char *before = P->cur.start;
         WgslAstNode *s = parse_statement(P);
         if (s)
             vec_push_node(&stmts, &count, &cap, s);
+        /* If the parser made no progress, skip the current token to avoid
+           spinning forever on malformed input. */
+        if (P->cur.start == before) {
+            parse_error(P, "unexpected token, skipping");
+            advance(P);
+        }
     }
     expect(P, TOK_RBRACE, "expected '}'");
     B->block.stmt_count = count;
@@ -1447,11 +1458,17 @@ static WgslAstNode *parse_program(Parser *P) {
     int cap = 0, count = 0;
     WgslAstNode **decls = NULL;
     while (!check(P, TOK_EOF)) {
+        const char *before = P->cur.start;
         WgslAstNode *d = parse_decl_or_stmt(P);
         if (d)
             vec_push_node(&decls, &count, &cap, d);
         else
             break;
+        /* If the parser made no progress, skip to avoid infinite loop. */
+        if (P->cur.start == before) {
+            parse_error(P, "unexpected token, skipping");
+            advance(P);
+        }
     }
     root->program.decl_count = count;
     root->program.decls = decls;

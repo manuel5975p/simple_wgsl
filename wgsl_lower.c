@@ -1273,7 +1273,8 @@ static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
             uint32_t elem = lower_type(l, tn->type_args[0]);
             if (tn->expr_arg_count > 0 && tn->expr_args[0]->type == WGSL_NODE_LITERAL) {
                 // Fixed-size array
-                int len = atoi(tn->expr_args[0]->literal.lexeme);
+                const char *lex = tn->expr_args[0]->literal.lexeme;
+                int len = lex ? atoi(lex) : 0;
                 uint32_t len_id = emit_const_u32(l, len);
                 return emit_type_array(l, elem, len_id);
             } else {
@@ -1445,6 +1446,7 @@ static int lower_structs(WgslLower *l) {
             int field_size = 4, field_align = 4;
             if (field->type && field->type->type == WGSL_NODE_TYPE) {
                 const char *type_name = field->type->type_node.name;
+                if (!type_name) type_name = "";
 
                 // Check for runtime array
                 if (strcmp(type_name, "array") == 0) {
@@ -1469,13 +1471,15 @@ static int lower_structs(WgslLower *l) {
         }
 
         // Convert offsets to uint32_t array for the function
-        uint32_t uint_offsets[32];
-        for (int f = 0; f < sd->field_count && f < 32; ++f) {
+        uint32_t *uint_offsets = (uint32_t*)WGSL_MALLOC(sd->field_count * sizeof(uint32_t));
+        if (!uint_offsets) { WGSL_FREE(offsets); WGSL_FREE(member_types); return 0; }
+        for (int f = 0; f < sd->field_count; ++f) {
             uint_offsets[f] = (uint32_t)offsets[f];
         }
 
         // Emit the struct type with offsets stored in cache
         uint32_t struct_id = emit_type_struct_with_offsets(l, sd->name, member_types, sd->field_count, uint_offsets);
+        WGSL_FREE(uint_offsets);
 
         // Add Block decoration for storage buffer compatibility
         emit_decorate(l, struct_id, SpvDecorationBlock, NULL, 0);
@@ -2381,6 +2385,7 @@ static ExprResult lower_literal(WgslLower *l, const WgslAstNode *node) {
         // Parse integer literal
         int64_t val = 0;
         const char *s = lit->lexeme;
+        if (!s) s = "0";
         int is_unsigned = 0;
 
         // Check for suffix
@@ -2404,7 +2409,7 @@ static ExprResult lower_literal(WgslLower *l, const WgslAstNode *node) {
             r.type_id = l->id_i32;
         }
     } else if (lit->kind == WGSL_LIT_FLOAT) {
-        float val = (float)strtod(lit->lexeme, NULL);
+        float val = (float)strtod(lit->lexeme ? lit->lexeme : "0", NULL);
         r.id = emit_const_f32(l, val);
         r.type_id = l->id_f32;
     }
@@ -3417,12 +3422,14 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
 
             // Handle swizzle operations on vectors
             const char *swizzle = mem->member;
+            if (!swizzle) return r;
             int swizzle_len = (int)strlen(swizzle);
+            if (swizzle_len > 4) swizzle_len = 4;
 
             // Map swizzle characters to indices
             int indices[4] = {-1, -1, -1, -1};
             int valid = 1;
-            for (int i = 0; i < swizzle_len && i < 4; ++i) {
+            for (int i = 0; i < swizzle_len; ++i) {
                 char c = swizzle[i];
                 if (c == 'x' || c == 'r' || c == 's') indices[i] = 0;
                 else if (c == 'y' || c == 'g' || c == 't') indices[i] = 1;
@@ -3549,6 +3556,7 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
             const Literal *lit = &expr->literal;
             if (lit->kind == WGSL_LIT_INT) {
                 const char *s = lit->lexeme;
+                if (!s) return l->id_i32;
                 size_t len = strlen(s);
                 if (len > 0 && (s[len-1] == 'u' || s[len-1] == 'U')) {
                     return l->id_u32;
@@ -3559,6 +3567,7 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
         }
         case WGSL_NODE_BINARY: {
             const Binary *bin = &expr->binary;
+            if (!bin->op) return l->id_f32;
             // Comparison operators return bool
             if (strcmp(bin->op, "==") == 0 || strcmp(bin->op, "!=") == 0 ||
                 strcmp(bin->op, "<") == 0 || strcmp(bin->op, "<=") == 0 ||
@@ -3571,7 +3580,7 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
         }
         case WGSL_NODE_UNARY: {
             const Unary *un = &expr->unary;
-            if (strcmp(un->op, "!") == 0) {
+            if (un->op && strcmp(un->op, "!") == 0) {
                 return l->id_bool;
             }
             return infer_expr_type(l, un->expr);
@@ -3625,6 +3634,7 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
         case WGSL_NODE_IDENT: {
             // Look up in locals
             const char *name = expr->ident.name;
+            if (!name) return l->id_f32;
             uint32_t ptr_id, type_id;
             if (fn_ctx_find_local(l, name, &ptr_id, &type_id)) {
                 return type_id;
@@ -3635,7 +3645,7 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
             const Member *mem = &expr->member;
 
             // Check for vertex input compound name (e.g., "in.position")
-            if (mem->object && mem->object->type == WGSL_NODE_IDENT) {
+            if (mem->object && mem->object->type == WGSL_NODE_IDENT && mem->object->ident.name && mem->member) {
                 char compound_name[256];
                 snprintf(compound_name, sizeof(compound_name), "%s.%s", mem->object->ident.name, mem->member);
 
@@ -3654,7 +3664,7 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
                 // Determine element type from object type
                 uint32_t elem_type = get_scalar_type(obj_type, l);
 
-                size_t swizzle_len = strlen(mem->member);
+                size_t swizzle_len = mem->member ? strlen(mem->member) : 0;
                 if (swizzle_len == 1) {
                     return elem_type;
                 } else if (swizzle_len <= 4) {
@@ -3998,8 +4008,8 @@ static int lower_while_stmt(WgslLower *l, const WgslAstNode *node) {
     if (l->fn_ctx.loop_depth < 16) {
         l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].merge_block = merge_label;
         l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].continue_block = continue_label;
-        l->fn_ctx.loop_depth++;
     }
+    l->fn_ctx.loop_depth++;
 
     // Branch to header
     emit_branch(l, header_label);
@@ -4137,8 +4147,8 @@ static int lower_for_stmt(WgslLower *l, const WgslAstNode *node) {
     if (l->fn_ctx.loop_depth < 16) {
         l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].merge_block = merge_label;
         l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].continue_block = continue_label;
-        l->fn_ctx.loop_depth++;
     }
+    l->fn_ctx.loop_depth++;
 
     // Branch to header
     emit_branch(l, header_label);
@@ -4263,8 +4273,8 @@ static int lower_do_while_stmt(WgslLower *l, const WgslAstNode *node) {
     if (l->fn_ctx.loop_depth < 16) {
         l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].merge_block = merge_label;
         l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].continue_block = continue_label;
-        l->fn_ctx.loop_depth++;
     }
+    l->fn_ctx.loop_depth++;
 
     emit_branch(l, header_label);
 
@@ -4348,8 +4358,8 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
     if (l->fn_ctx.loop_depth < 16) {
         l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].merge_block = merge_label;
         l->fn_ctx.loop_stack[l->fn_ctx.loop_depth].continue_block = 0;
-        l->fn_ctx.loop_depth++;
     }
+    l->fn_ctx.loop_depth++;
 
     /* Selection merge */
     emit_selection_merge(l, merge_label);
@@ -4368,7 +4378,7 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
         const WgslAstNode *c = sw->cases[i];
         if (!c || !c->case_clause.expr) continue;
         int val = 0;
-        if (c->case_clause.expr->type == WGSL_NODE_LITERAL)
+        if (c->case_clause.expr->type == WGSL_NODE_LITERAL && c->case_clause.expr->literal.lexeme)
             val = atoi(c->case_clause.expr->literal.lexeme);
         wb_push_u32(wb, (uint32_t)val);
         wb_push_u32(wb, case_labels[i]);
@@ -4682,7 +4692,7 @@ static int lower_io_globals(WgslLower *l) {
             if (strcmp(attr->attribute.name, "location") == 0) {
                 int loc = 0;
                 if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL)
-                    loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                    loc = attr->attribute.args[0]->literal.lexeme ? atoi(attr->attribute.args[0]->literal.lexeme) : 0;
                 uint32_t loc_val = (uint32_t)loc;
                 emit_decorate(l, var_id, SpvDecorationLocation, &loc_val, 1);
                 if (l->ssir) ssir_global_set_location(l->ssir, ssir_var, (uint32_t)loc);
@@ -4755,7 +4765,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
             if (attr->type == WGSL_NODE_ATTRIBUTE && strcmp(attr->attribute.name, "location") == 0) {
                 int loc = 0;
                 if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL) {
-                    loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                    loc = attr->attribute.args[0]->literal.lexeme ? atoi(attr->attribute.args[0]->literal.lexeme) : 0;
                 }
 
                 uint32_t out_type = lower_type(l, fn->return_type);
@@ -4918,7 +4928,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                         } else if (strcmp(attr->attribute.name, "location") == 0) {
                             int loc = 0;
                             if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL) {
-                                loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                                loc = attr->attribute.args[0]->literal.lexeme ? atoi(attr->attribute.args[0]->literal.lexeme) : 0;
                             }
 
                             uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassOutput, field_type);
@@ -4978,7 +4988,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
                 int loc = 0;
                 if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL) {
-                    loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                    loc = attr->attribute.args[0]->literal.lexeme ? atoi(attr->attribute.args[0]->literal.lexeme) : 0;
                 }
 
                 uint32_t param_type = lower_type(l, param->type);
@@ -5061,7 +5071,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                         // Get location value
                         int loc = 0;
                         if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL) {
-                            loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                            loc = attr->attribute.args[0]->literal.lexeme ? atoi(attr->attribute.args[0]->literal.lexeme) : 0;
                         }
 
                         // Lower the field type
@@ -5159,7 +5169,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                             // Handle @location field
                             int loc = 0;
                             if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL) {
-                                loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                                loc = attr->attribute.args[0]->literal.lexeme ? atoi(attr->attribute.args[0]->literal.lexeme) : 0;
                             }
 
                             uint32_t field_type = lower_type(l, field->type);
@@ -5265,7 +5275,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
                 int loc = 0;
                 if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL) {
-                    loc = atoi(attr->attribute.args[0]->literal.lexeme);
+                    loc = attr->attribute.args[0]->literal.lexeme ? atoi(attr->attribute.args[0]->literal.lexeme) : 0;
                 }
 
                 uint32_t param_type = lower_type(l, param->type);

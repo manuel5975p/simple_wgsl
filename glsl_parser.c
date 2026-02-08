@@ -1217,8 +1217,13 @@ static WgslAstNode *gp_parse_block(GpParser *P) {
     int cap = 0, count = 0;
     WgslAstNode **stmts = NULL;
     while (!gp_check(P, GP_TOK_RBRACE) && !gp_check(P, GP_TOK_EOF)) {
+        const char *before = P->cur.start;
         WgslAstNode *s = gp_parse_statement(P);
         if (s) gp_vec_push_node(&stmts, &count, &cap, s);
+        if (P->cur.start == before) {
+            gp_parse_error(P, "unexpected token, skipping");
+            gp_advance(P);
+        }
     }
     gp_expect(P, GP_TOK_RBRACE, "expected '}'");
     B->block.stmt_count = count;
@@ -1380,9 +1385,14 @@ static WgslAstNode *parse_switch_stmt(GpParser *P) {
         WgslAstNode **stmts = NULL;
         while (!gp_check(P, GP_TOK_CASE) && !gp_check(P, GP_TOK_DEFAULT) &&
                !gp_check(P, GP_TOK_RBRACE) && !gp_check(P, GP_TOK_EOF)) {
+            const char *before = P->cur.start;
             WgslAstNode *s = gp_parse_statement(P);
             if (s) gp_vec_push_node(&stmts, &scount, &scap, s);
             else break;
+            if (P->cur.start == before) {
+                gp_parse_error(P, "unexpected token, skipping");
+                gp_advance(P);
+            }
         }
         C->case_clause.stmt_count = scount;
         C->case_clause.stmts = stmts;
@@ -1898,6 +1908,7 @@ static WgslAstNode *gp_parse_program(GpParser *P) {
     WgslAstNode **decls = NULL;
 
     while (!gp_check(P, GP_TOK_EOF)) {
+        const char *before = P->cur.start;
         int ecap = 0, ecount = 0;
         WgslAstNode **extra = NULL;
 
@@ -1912,6 +1923,11 @@ static WgslAstNode *gp_parse_program(GpParser *P) {
             gp_vec_push_node(&decls, &count, &cap, d);
         else if (P->had_error)
             break;
+
+        if (P->cur.start == before) {
+            gp_parse_error(P, "unexpected token, skipping");
+            gp_advance(P);
+        }
     }
 
     root->program.decl_count = count;

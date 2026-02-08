@@ -11,6 +11,7 @@ option(WGSL_BUILD_EXPRESSION_TESTS "Build expression golden-file tests (requires
 option(WGSL_USE_ASAN "Enable Address Sanitizer" OFF)
 option(WGSL_BUILD_EGL_TESTS "Build EGL/OpenGL compute shader validation tests" OFF)
 option(WGSL_BUILD_METAL_EXAMPLES "Build Metal/MSL example programs (macOS only)" OFF)
+option(WGSL_BUILD_FUZZ "Build libFuzzer fuzz targets" OFF)
 
 if(WGSL_USE_ASAN)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
@@ -73,4 +74,8 @@ endif()
 if(WGSL_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(WGSL_BUILD_FUZZ)
+    add_subdirectory(fuzz)
 endif()

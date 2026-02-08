@@ -171,6 +171,9 @@ struct WgslRaiser {
     uint32_t glsl_ext_id;
 
     int var_counter;
+    int emit_depth;
+    int emit_calls;
+    int type_depth;
 
     char *output;
     char last_error[256];
@@ -259,6 +262,13 @@ WgslRaiser *wgsl_raise_create(const uint32_t *spirv, size_t word_count) {
     r->version = spirv[1];
     r->generator = spirv[2];
     r->id_bound = spirv[3];
+
+    /* Sanity-check id_bound against actual module size to prevent
+       huge allocations from crafted headers. */
+    if (r->id_bound == 0 || r->id_bound > word_count) {
+        WGSL_FREE(r);
+        return NULL;
+    }
 
     r->ids = (SpvIdInfo*)WGSL_MALLOC(r->id_bound * sizeof(SpvIdInfo));
     if (!r->ids) {
@@ -466,10 +476,10 @@ WgslRaiseResult wgsl_raise_parse(WgslRaiser *r) {
                 uint32_t member = operands[1];
                 int str_words;
                 const char *name = read_string(&operands[2], operand_count - 2, &str_words);
-                if (struct_id < r->id_bound) {
+                if (struct_id < r->id_bound && member < 4096) {
                     SpvIdInfo *info = &r->ids[struct_id];
                     if (member >= (uint32_t)info->member_name_count) {
-                        int new_count = member + 1;
+                        int new_count = (int)member + 1;
                         info->member_names = (char**)WGSL_REALLOC(info->member_names, new_count * sizeof(char*));
                         for (int i = info->member_name_count; i < new_count; i++) {
                             info->member_names[i] = NULL;
@@ -966,21 +976,26 @@ static const char *type_to_wgsl(WgslRaiser *r, uint32_t type_id) {
     if (type_id >= r->id_bound) return "unknown";
     SpvIdInfo *info = &r->ids[type_id];
     if (info->kind != SPV_ID_TYPE) return "unknown";
+    if (r->type_depth > 64) return "unknown";
+    r->type_depth++;
 
     static char buf[256];
+    const char *result = "unknown";
 
     switch (info->type_info.kind) {
-    case SPV_TYPE_VOID: return "void";
-    case SPV_TYPE_BOOL: return "bool";
+    case SPV_TYPE_VOID: result = "void"; break;
+    case SPV_TYPE_BOOL: result = "bool"; break;
     case SPV_TYPE_INT:
-        if (info->type_info.int_type.width == 32) {
-            return info->type_info.int_type.signedness ? "i32" : "u32";
-        }
-        return "i32";
+        if (info->type_info.int_type.width == 32)
+            result = info->type_info.int_type.signedness ? "i32" : "u32";
+        else
+            result = "i32";
+        break;
     case SPV_TYPE_FLOAT:
-        if (info->type_info.float_type.width == 16) return "f16";
-        if (info->type_info.float_type.width == 32) return "f32";
-        return "f32";
+        if (info->type_info.float_type.width == 16) result = "f16";
+        else if (info->type_info.float_type.width == 32) result = "f32";
+        else result = "f32";
+        break;
     case SPV_TYPE_VECTOR: {
         uint32_t comp = info->type_info.vector.component_type;
         uint32_t cnt = info->type_info.vector.count;
@@ -996,7 +1011,8 @@ static const char *type_to_wgsl(WgslRaiser *r, uint32_t type_id) {
         } else {
             snprintf(buf, sizeof(buf), "vec%u<%s>", cnt, ct);
         }
-        return buf;
+        result = buf;
+        break;
     }
     case SPV_TYPE_MATRIX: {
         uint32_t col_type = info->type_info.matrix.column_type;
@@ -1011,9 +1027,11 @@ static const char *type_to_wgsl(WgslRaiser *r, uint32_t type_id) {
             } else {
                 snprintf(buf, sizeof(buf), "mat%ux%u<%s>", cols, rows, et);
             }
-            return buf;
+            result = buf;
+        } else {
+            result = "mat4x4<f32>";
         }
-        return "mat4x4<f32>";
+        break;
     }
     case SPV_TYPE_ARRAY: {
         uint32_t elem = info->type_info.array.element_type;
@@ -1025,40 +1043,43 @@ static const char *type_to_wgsl(WgslRaiser *r, uint32_t type_id) {
         } else {
             snprintf(buf, sizeof(buf), "array<%s>", et);
         }
-        return buf;
+        result = buf;
+        break;
     }
     case SPV_TYPE_RUNTIME_ARRAY: {
         uint32_t elem = info->type_info.runtime_array.element_type;
         const char *et = type_to_wgsl(r, elem);
         snprintf(buf, sizeof(buf), "array<%s>", et);
-        return buf;
+        result = buf;
+        break;
     }
-    case SPV_TYPE_STRUCT: {
-        if (info->name) return info->name;
-        return "UnnamedStruct";
-    }
-    case SPV_TYPE_POINTER: {
-        return type_to_wgsl(r, info->type_info.pointer.pointee_type);
-    }
+    case SPV_TYPE_STRUCT:
+        result = info->name ? info->name : "UnnamedStruct";
+        break;
+    case SPV_TYPE_POINTER:
+        result = type_to_wgsl(r, info->type_info.pointer.pointee_type);
+        break;
     case SPV_TYPE_IMAGE: {
         SpvDim dim = info->type_info.image.dim;
-        if (dim == SpvDim2D) {
-            if (info->type_info.image.sampled == 1) {
-                return "texture_2d<f32>";
-            } else {
-                return "texture_storage_2d<rgba8unorm, write>";
-            }
-        }
-        return "texture_2d<f32>";
+        if (dim == SpvDim2D && info->type_info.image.sampled == 1)
+            result = "texture_2d<f32>";
+        else if (dim == SpvDim2D)
+            result = "texture_storage_2d<rgba8unorm, write>";
+        else
+            result = "texture_2d<f32>";
+        break;
     }
-    case SPV_TYPE_SAMPLED_IMAGE: {
-        return type_to_wgsl(r, info->type_info.sampled_image.image_type);
-    }
+    case SPV_TYPE_SAMPLED_IMAGE:
+        result = type_to_wgsl(r, info->type_info.sampled_image.image_type);
+        break;
     case SPV_TYPE_SAMPLER:
-        return "sampler";
+        result = "sampler";
+        break;
     default:
-        return "unknown";
+        break;
     }
+    r->type_depth--;
+    return result;
 }
 
 static const char *get_builtin_name(SpvBuiltIn builtin) {
@@ -1215,7 +1236,7 @@ static void emit_constant(WgslRaiser *r, uint32_t id, StringBuffer *out) {
         } else if (tk == SPV_TYPE_FLOAT) {
             union { uint32_t u; float f; } conv;
             conv.u = info->constant.value[0];
-            if (conv.f == (float)(int)conv.f) {
+            if (conv.f >= -2147483648.0f && conv.f <= 2147483520.0f && conv.f == (float)(int)conv.f) {
                 wr_sb_appendf(out, "%.1f", conv.f);
             } else {
                 wr_sb_appendf(out, "%g", conv.f);
@@ -1289,6 +1310,11 @@ static const char *glsl_extinst_name(uint32_t inst) {
 
 static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
     if (id >= r->id_bound) { wr_sb_appendf(out, "_id%u", id); return; }
+    if (r->emit_depth > 256 || r->emit_calls > 100000 || out->len > 4*1024*1024) {
+        wr_sb_append(out, "/*deep*/0"); return;
+    }
+    r->emit_depth++;
+    r->emit_calls++;
     SpvIdInfo *info = &r->ids[id];
 
     switch (info->kind) {
@@ -1683,6 +1709,7 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
         wr_sb_append(out, get_id_name(r, id));
         break;
     }
+    r->emit_depth--;
 }
 
 static SpvBasicBlock *find_block(SpvFunction *fn, uint32_t label_id) {
@@ -1693,7 +1720,7 @@ static SpvBasicBlock *find_block(SpvFunction *fn, uint32_t label_id) {
 }
 
 static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
-    if (blk->emitted) return;
+    if (blk->emitted || r->sb.len > 4*1024*1024) return;
     blk->emitted = 1;
 
     // Handle loop header - emit as while loop

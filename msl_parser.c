@@ -1102,9 +1102,9 @@ static MslVal mp_parse_postfix(MslParser *p) {
                 continue;
             }
 
-            /* Multi-component swizzle: .xy, .xyz, etc. */
+            /* Multi-component swizzle: .xy, .xyz, etc. (max 4 components) */
             if (vt && vt->kind == SSIR_TYPE_VEC && strlen(member) > 1 &&
-                mp_swizzle_index(member[0]) >= 0) {
+                strlen(member) <= 4 && mp_swizzle_index(member[0]) >= 0) {
                 v = mp_ensure_val(p, v);
                 int sz = (int)strlen(member);
                 uint32_t indices[4];

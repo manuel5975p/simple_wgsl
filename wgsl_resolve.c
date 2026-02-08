@@ -179,6 +179,7 @@ static int parse_int_lexeme(const char* s) {
     }
     int v = 0;
     while (isdigit((unsigned char)*s)) {
+        if (v > 214748364) return sign > 0 ? 2147483647 : -1;
         v = v * 10 + (*s - '0');
         s++;
     }
@@ -367,8 +368,12 @@ static int type_info(const WgslResolver* r, const WgslAstNode* t, int* component
 /* Returns 1 if size computed and writes to *out_bytes; returns 0 otherwise. */
 static int type_min_size_bytes(const WgslResolver* r, const WgslAstNode* t, int* out_bytes);
 
+static int type_depth_guard = 0;
+
 static int struct_min_size_bytes(const WgslResolver* r, const WgslAstNode* sd, int* out_bytes) {
     if (!sd || sd->type != WGSL_NODE_STRUCT)
+        return 0;
+    if (type_depth_guard > 32)
         return 0;
     int total = 0;
     for (int i = 0; i < sd->struct_decl.field_count; i++) {
@@ -425,8 +430,12 @@ static int type_min_size_bytes(const WgslResolver* r, const WgslAstNode* t, int*
 
     /* struct reference */
     const WgslAstNode* sd = get_struct(r, name);
-    if (sd)
-        return struct_min_size_bytes(r, sd, out_bytes);
+    if (sd) {
+        type_depth_guard++;
+        int ok = struct_min_size_bytes(r, sd, out_bytes);
+        type_depth_guard--;
+        return ok;
+    }
 
     /* matrices, textures, samplers, unknown generics: not handled */
     return 0;
