@@ -47,6 +47,26 @@ extern "C" {
 #endif
 
 /* ============================================================================
+ * Compiler Assert Macro (libc-independent portable trap)
+ * ============================================================================ */
+
+#ifndef WGSL_COMPILER_TRAP
+#if defined(__GNUC__) || defined(__clang__)
+#define WGSL_COMPILER_TRAP() __builtin_trap()
+#elif defined(_MSC_VER)
+#define WGSL_COMPILER_TRAP() __debugbreak()
+#else
+#define WGSL_COMPILER_TRAP() (*(volatile int*)0 = 0)
+#endif
+#endif
+
+#ifndef wgsl_compiler_assert
+#define wgsl_compiler_assert(cond, fmt, ...) do { \
+    if (!(cond)) { WGSL_COMPILER_TRAP(); } \
+} while(0)
+#endif
+
+/* ============================================================================
  * WGSL PARSER
  * ============================================================================ */
 
