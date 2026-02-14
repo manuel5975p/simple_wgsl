@@ -158,6 +158,7 @@ typedef enum {
     WGSL_DECL_VAR = 0,
     WGSL_DECL_LET,
     WGSL_DECL_CONST,
+    WGSL_DECL_OVERRIDE,
 } WgslDeclKind;
 
 typedef struct VarDecl {
@@ -165,6 +166,8 @@ typedef struct VarDecl {
     WgslAstNode *type;
     WgslAstNode *init;
     WgslDeclKind kind;
+    int attr_count;
+    WgslAstNode **attrs;
 } VarDecl;
 
 typedef struct ReturnNode {

@@ -1513,7 +1513,7 @@ static WgslAstNode *parse_const_decl(Parser *P) {
 }
 
 //P nonnull
-static WgslAstNode *parse_override_decl(Parser *P) {
+static WgslAstNode *parse_override_decl(Parser *P, WgslAstNode **attrs, int acount) {
     wgsl_compiler_assert(P != NULL, "parse_override_decl: P is NULL");
     expect(P, TOK_OVERRIDE, "expected 'override'");
     if (!check(P, TOK_IDENT)) {
@@ -1533,6 +1533,9 @@ static WgslAstNode *parse_override_decl(Parser *P) {
     V->var_decl.name = wgsl_strndup(name.start, (size_t)name.length);
     V->var_decl.type = type;
     V->var_decl.init = init;
+    V->var_decl.kind = WGSL_DECL_OVERRIDE;
+    V->var_decl.attr_count = acount;
+    V->var_decl.attrs = attrs;
     return V;
 }
 
@@ -1577,9 +1580,7 @@ static WgslAstNode *parse_decl_or_stmt(Parser *P) {
         return parse_const_decl(P);
     }
     if (check(P, TOK_OVERRIDE)) {
-        if (acount)
-            discard_attrs(attrs, acount);
-        return parse_override_decl(P);
+        return parse_override_decl(P, attrs, acount);
     }
     parse_error(
         P,

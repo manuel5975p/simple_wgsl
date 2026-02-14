@@ -167,6 +167,15 @@ typedef struct {
     /* Pre-computed function type IDs (indexed by function index) */
     uint32_t *func_type_cache;
     uint32_t func_type_cache_count;
+
+    /* Deduplication cache for OpTypeFunction signatures */
+    struct {
+        uint32_t return_type;
+        uint32_t param_count;
+        uint32_t param_hash;   /* simple hash of param types for quick reject */
+        uint32_t spv_id;
+    } func_type_dedup[64];
+    uint32_t func_type_dedup_count;
 } Ctx;
 
 //c nonnull
@@ -596,6 +605,21 @@ static uint32_t sts_emit_type_pointer(Ctx *c, SpvStorageClass sc, uint32_t point
 //c nonnull
 static uint32_t sts_emit_type_function(Ctx *c, uint32_t return_type, uint32_t *param_types, uint32_t param_count) {
     wgsl_compiler_assert(c != NULL, "sts_emit_type_function: c is NULL");
+
+    /* Compute a simple hash of param types for quick comparison */
+    uint32_t param_hash = 0;
+    for (uint32_t i = 0; i < param_count; ++i)
+        param_hash = param_hash * 31 + param_types[i];
+
+    /* Check dedup cache for matching signature */
+    for (uint32_t d = 0; d < c->func_type_dedup_count; ++d) {
+        if (c->func_type_dedup[d].return_type == return_type &&
+            c->func_type_dedup[d].param_count == param_count &&
+            c->func_type_dedup[d].param_hash == param_hash) {
+            return c->func_type_dedup[d].spv_id;
+        }
+    }
+
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeFunction, 3 + param_count)) return 0;
@@ -604,6 +628,16 @@ static uint32_t sts_emit_type_function(Ctx *c, uint32_t return_type, uint32_t *p
     for (uint32_t i = 0; i < param_count; ++i) {
         if (!wb_push(wb, param_types[i])) return 0;
     }
+
+    /* Store in dedup cache */
+    if (c->func_type_dedup_count < 64) {
+        c->func_type_dedup[c->func_type_dedup_count].return_type = return_type;
+        c->func_type_dedup[c->func_type_dedup_count].param_count = param_count;
+        c->func_type_dedup[c->func_type_dedup_count].param_hash = param_hash;
+        c->func_type_dedup[c->func_type_dedup_count].spv_id = id;
+        c->func_type_dedup_count++;
+    }
+
     return id;
 }
 

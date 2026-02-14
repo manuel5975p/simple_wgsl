@@ -247,6 +247,7 @@ struct WgslLower {
 
     SpvSections            sections;
     uint32_t               next_id;
+    uint32_t               next_spec_id;
 
     // SSIR module (new IR-based approach)
     SsirModule            *ssir;
@@ -331,6 +332,17 @@ struct WgslLower {
     } *global_map;
     int global_map_count;
     int global_map_cap;
+
+    // Override (specialization constant) cache - processed once, reused per function
+    struct {
+        const char *name;
+        uint32_t spv_id;
+        uint32_t type_id;
+    } override_cache[32];
+    int override_cache_count;
+
+    // global_map count after lower_io_globals (shared globals boundary)
+    int shared_globals_end;
 
     // Struct type cache - maps struct names to SPIR-V type IDs
     struct {
@@ -1250,6 +1262,114 @@ static uint32_t emit_const_f32(WgslLower *l, float value) {
         l->const_cache_count++;
     }
 
+    return id;
+}
+
+// ---------- Specialization Constant Emission ----------
+
+//l nonnull
+static uint32_t emit_spec_const_f32(WgslLower *l, float value, uint32_t spec_id, const char *name) {
+    wgsl_compiler_assert(l != NULL, "emit_spec_const_f32: l is NULL");
+    WordBuf *wb = &l->sections.types_constants;
+    uint32_t id = fresh_id(l);
+    uint32_t type = emit_type_float(l, 32);
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(float));
+    if (!emit_op(wb, SpvOpSpecConstant, 4)) return 0;
+    if (!wb_push_u32(wb, type)) return 0;
+    if (!wb_push_u32(wb, id)) return 0;
+    if (!wb_push_u32(wb, bits)) return 0;
+    emit_decorate(l, id, SpvDecorationSpecId, &spec_id, 1);
+    // Always emit name for spec constants (needed for reflection)
+    if (name && *name) {
+        WordBuf *dbg = &l->sections.debug_names;
+        uint32_t *strw = NULL; size_t wn = 0;
+        make_string_lit(name, &strw, &wn);
+        if (emit_op(dbg, SpvOpName, 2 + wn)) {
+            wb_push_u32(dbg, id);
+            wb_push_many(dbg, strw, wn);
+        }
+        WGSL_FREE(strw);
+    }
+    uint32_t ssir_const = ssir_const_spec_f32(l->ssir, value, spec_id);
+    ssir_id_map_set(l, id, ssir_const);
+    return id;
+}
+
+//l nonnull
+static uint32_t emit_spec_const_i32(WgslLower *l, int32_t value, uint32_t spec_id, const char *name) {
+    wgsl_compiler_assert(l != NULL, "emit_spec_const_i32: l is NULL");
+    WordBuf *wb = &l->sections.types_constants;
+    uint32_t id = fresh_id(l);
+    uint32_t type = emit_type_int(l, 32, 1);
+    if (!emit_op(wb, SpvOpSpecConstant, 4)) return 0;
+    if (!wb_push_u32(wb, type)) return 0;
+    if (!wb_push_u32(wb, id)) return 0;
+    if (!wb_push_u32(wb, (uint32_t)value)) return 0;
+    emit_decorate(l, id, SpvDecorationSpecId, &spec_id, 1);
+    if (name && *name) {
+        WordBuf *dbg = &l->sections.debug_names;
+        uint32_t *strw = NULL; size_t wn = 0;
+        make_string_lit(name, &strw, &wn);
+        if (emit_op(dbg, SpvOpName, 2 + wn)) {
+            wb_push_u32(dbg, id);
+            wb_push_many(dbg, strw, wn);
+        }
+        WGSL_FREE(strw);
+    }
+    uint32_t ssir_const = ssir_const_spec_i32(l->ssir, value, spec_id);
+    ssir_id_map_set(l, id, ssir_const);
+    return id;
+}
+
+//l nonnull
+static uint32_t emit_spec_const_u32(WgslLower *l, uint32_t value, uint32_t spec_id, const char *name) {
+    wgsl_compiler_assert(l != NULL, "emit_spec_const_u32: l is NULL");
+    WordBuf *wb = &l->sections.types_constants;
+    uint32_t id = fresh_id(l);
+    uint32_t type = emit_type_int(l, 32, 0);
+    if (!emit_op(wb, SpvOpSpecConstant, 4)) return 0;
+    if (!wb_push_u32(wb, type)) return 0;
+    if (!wb_push_u32(wb, id)) return 0;
+    if (!wb_push_u32(wb, value)) return 0;
+    emit_decorate(l, id, SpvDecorationSpecId, &spec_id, 1);
+    if (name && *name) {
+        WordBuf *dbg = &l->sections.debug_names;
+        uint32_t *strw = NULL; size_t wn = 0;
+        make_string_lit(name, &strw, &wn);
+        if (emit_op(dbg, SpvOpName, 2 + wn)) {
+            wb_push_u32(dbg, id);
+            wb_push_many(dbg, strw, wn);
+        }
+        WGSL_FREE(strw);
+    }
+    uint32_t ssir_const = ssir_const_spec_u32(l->ssir, value, spec_id);
+    ssir_id_map_set(l, id, ssir_const);
+    return id;
+}
+
+//l nonnull
+static uint32_t emit_spec_const_bool(WgslLower *l, int value, uint32_t spec_id, const char *name) {
+    wgsl_compiler_assert(l != NULL, "emit_spec_const_bool: l is NULL");
+    WordBuf *wb = &l->sections.types_constants;
+    uint32_t id = fresh_id(l);
+    uint32_t bool_type = emit_type_bool(l);
+    if (!emit_op(wb, value ? SpvOpSpecConstantTrue : SpvOpSpecConstantFalse, 3)) return 0;
+    if (!wb_push_u32(wb, bool_type)) return 0;
+    if (!wb_push_u32(wb, id)) return 0;
+    emit_decorate(l, id, SpvDecorationSpecId, &spec_id, 1);
+    if (name && *name) {
+        WordBuf *dbg = &l->sections.debug_names;
+        uint32_t *strw = NULL; size_t wn = 0;
+        make_string_lit(name, &strw, &wn);
+        if (emit_op(dbg, SpvOpName, 2 + wn)) {
+            wb_push_u32(dbg, id);
+            wb_push_many(dbg, strw, wn);
+        }
+        WGSL_FREE(strw);
+    }
+    uint32_t ssir_const = ssir_const_spec_bool(l->ssir, value ? true : false, spec_id);
+    ssir_id_map_set(l, id, ssir_const);
     return id;
 }
 
@@ -2697,7 +2817,9 @@ static uint32_t get_runtime_array_element_type(WgslLower *l, uint32_t type_id) {
 static int find_global_by_name(WgslLower *l, const char *name, uint32_t *out_var_id, uint32_t *out_type_id, SpvStorageClass *out_sc) {
     wgsl_compiler_assert(l != NULL, "find_global_by_name: l is NULL");
     wgsl_compiler_assert(name != NULL, "find_global_by_name: name is NULL");
-    for (int i = 0; i < l->global_map_count; ++i) {
+    // Search backwards so that per-EP entries (added later) shadow earlier ones
+    // with the same name (e.g., "in.uv" from vertex vs fragment)
+    for (int i = l->global_map_count - 1; i >= 0; --i) {
         if (l->global_map[i].name && strcmp(l->global_map[i].name, name) == 0) {
             if (out_var_id) *out_var_id = l->global_map[i].spv_id;
             if (out_type_id) *out_type_id = l->global_map[i].type_id;
@@ -3389,6 +3511,59 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         return r;
     }
 
+    // textureSample(texture, sampler, coord)
+    if (strcmp(callee_name, "textureSample") == 0 && call->arg_count >= 3) {
+        // Get texture and sampler variable IDs (UniformConstant pointers)
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        ExprResult samp = lower_expr_full(l, call->args[1]);
+        ExprResult coord = lower_expr_full(l, call->args[2]);
+        if (!tex.id || !samp.id || !coord.id) return r;
+
+        // Load texture and sampler from UniformConstant pointers
+        uint32_t loaded_tex, loaded_samp;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+        if (!emit_load(l, samp.type_id, &loaded_samp, samp.id)) return r;
+
+        // Result is always vec4f for textureSample
+        uint32_t result_type = l->id_vec4f;
+
+        // SpvSections path: OpSampledImage + OpImageSampleImplicitLod
+        WordBuf *wb = &l->sections.functions;
+        uint32_t si_type = emit_type_sampled_image(l, tex.type_id);
+        uint32_t si_id = fresh_id(l);
+        emit_op(wb, SpvOpSampledImage, 5);
+        wb_push_u32(wb, si_type);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, loaded_tex);
+        wb_push_u32(wb, loaded_samp);
+
+        uint32_t result_id = fresh_id(l);
+        emit_op(wb, SpvOpImageSampleImplicitLod, 5);
+        wb_push_u32(wb, result_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, coord.id);
+
+        // SSIR path: ssir_build_tex_sample
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_samp = ssir_id_map_get(l, loaded_samp);
+            uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+            uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+            if (ssir_tex && ssir_samp && ssir_coord && ssir_result_type) {
+                uint32_t ssir_result = ssir_build_tex_sample(l->ssir, l->fn_ctx.ssir_func_id,
+                                                              l->fn_ctx.ssir_block_id,
+                                                              ssir_result_type, ssir_tex, ssir_samp,
+                                                              ssir_coord);
+                ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
     return r;
 }
 
@@ -4001,8 +4176,8 @@ static void collect_variables_from_stmt(WgslLower *l, const WgslAstNode *stmt) {
         case WGSL_NODE_VAR_DECL: {
             const VarDecl *vd = &stmt->var_decl;
 
-            // let/const are handled later as SSA values, not variables
-            if (vd->kind == WGSL_DECL_LET || vd->kind == WGSL_DECL_CONST) {
+            // let/const/override are handled elsewhere, not as local variables
+            if (vd->kind == WGSL_DECL_LET || vd->kind == WGSL_DECL_CONST || vd->kind == WGSL_DECL_OVERRIDE) {
                 break;
             }
 
@@ -5104,6 +5279,9 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
     // Clear function context
     memset(&l->fn_ctx, 0, sizeof(l->fn_ctx));
 
+    // Record global_map baseline (entries before this are shared or from other EPs)
+    int global_map_baseline = l->global_map_count;
+
     // Lower return type
     uint32_t return_type = emit_type_void(l);
     if (fn->return_type) {
@@ -5759,12 +5937,19 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
         }
     }
 
-    // Add all storage buffer and in/out variables to the interface
+    // Add global variables to the interface.
+    // Include: shared resources (StorageBuffer, Uniform) from anywhere,
+    //          shared I/O from lower_io_globals (indices < shared_globals_end),
+    //          per-EP I/O created during THIS entry point (indices >= global_map_baseline).
+    // Exclude: I/O from OTHER entry points (between shared_globals_end and global_map_baseline).
     for (int g = 0; g < l->global_map_count; ++g) {
         SpvStorageClass gsc = l->global_map[g].sc;
-        if (gsc == SpvStorageClassStorageBuffer || gsc == SpvStorageClassUniform ||
-            gsc == SpvStorageClassInput || gsc == SpvStorageClassOutput) {
+        if (gsc == SpvStorageClassStorageBuffer || gsc == SpvStorageClassUniform) {
             ADD_INTERFACE(l->global_map[g].spv_id);
+        } else if (gsc == SpvStorageClassInput || gsc == SpvStorageClassOutput) {
+            if (g < l->shared_globals_end || g >= global_map_baseline) {
+                ADD_INTERFACE(l->global_map[g].spv_id);
+            }
         }
     }
 
@@ -5833,17 +6018,27 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
         }
     }
 
-    // Register module-scope const declarations as value bindings
+    // Register module-scope const and override declarations as value bindings
     if (l->program && l->program->type == WGSL_NODE_PROGRAM) {
         const Program *mprog = &l->program->program;
         for (int d = 0; d < mprog->decl_count; d++) {
             const WgslAstNode *decl = mprog->decls[d];
             if (!decl || decl->type != WGSL_NODE_VAR_DECL) continue;
             const VarDecl *vd = &decl->var_decl;
-            if (vd->kind != WGSL_DECL_CONST || !vd->init) continue;
-            ExprResult cval = lower_expr_full(l, vd->init);
-            if (cval.id) {
-                fn_ctx_add_local_ex(l, vd->name, cval.id, cval.type_id, 1);
+            if (vd->kind == WGSL_DECL_CONST && vd->init) {
+                ExprResult cval = lower_expr_full(l, vd->init);
+                if (cval.id) {
+                    fn_ctx_add_local_ex(l, vd->name, cval.id, cval.type_id, 1);
+                }
+            } else if (vd->kind == WGSL_DECL_OVERRIDE) {
+                // Look up from override_cache (processed once globally)
+                for (int oc = 0; oc < l->override_cache_count; oc++) {
+                    if (strcmp(l->override_cache[oc].name, vd->name) == 0) {
+                        fn_ctx_add_local_ex(l, vd->name, l->override_cache[oc].spv_id,
+                                            l->override_cache[oc].type_id, 1);
+                        break;
+                    }
+                }
             }
         }
     }
@@ -5961,6 +6156,69 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
 
     // Lower in/out globals (GLSL-style I/O)
     if (!lower_io_globals(l)) goto fail;
+    l->shared_globals_end = l->global_map_count;
+
+    // Process override declarations once (specialization constants)
+    if (l->program && l->program->type == WGSL_NODE_PROGRAM) {
+        const Program *mprog = &l->program->program;
+        for (int d = 0; d < mprog->decl_count; d++) {
+            const WgslAstNode *decl = mprog->decls[d];
+            if (!decl || decl->type != WGSL_NODE_VAR_DECL) continue;
+            const VarDecl *vd = &decl->var_decl;
+            if (vd->kind != WGSL_DECL_OVERRIDE) continue;
+            if (l->override_cache_count >= 32) break;
+
+            // Extract @id(N) from attributes if present
+            uint32_t spec_id = l->next_spec_id++;
+            for (int a = 0; a < vd->attr_count; a++) {
+                if (vd->attrs[a] && vd->attrs[a]->type == WGSL_NODE_ATTRIBUTE &&
+                    vd->attrs[a]->attribute.name &&
+                    strcmp(vd->attrs[a]->attribute.name, "id") == 0 &&
+                    vd->attrs[a]->attribute.arg_count > 0 &&
+                    vd->attrs[a]->attribute.args[0]) {
+                    const WgslAstNode *arg = vd->attrs[a]->attribute.args[0];
+                    if (arg->type == WGSL_NODE_LITERAL && arg->literal.lexeme) {
+                        spec_id = (uint32_t)atoi(arg->literal.lexeme);
+                        if (spec_id >= l->next_spec_id)
+                            l->next_spec_id = spec_id + 1;
+                    }
+                    break;
+                }
+            }
+
+            // Emit spec constant (creates both SPIR-V and SSIR entries)
+            uint32_t sc_id = 0;
+            uint32_t sc_type = 0;
+            if (vd->init && vd->init->type == WGSL_NODE_LITERAL) {
+                const Literal *lit = &vd->init->literal;
+                if (lit->kind == WGSL_LIT_FLOAT) {
+                    float val = (float)strtod(lit->lexeme ? lit->lexeme : "0", NULL);
+                    sc_id = emit_spec_const_f32(l, val, spec_id, vd->name);
+                    sc_type = l->id_f32;
+                } else if (lit->kind == WGSL_LIT_INT) {
+                    const char *s = lit->lexeme ? lit->lexeme : "0";
+                    size_t slen = strlen(s);
+                    if (slen > 0 && (s[slen-1] == 'u' || s[slen-1] == 'U')) {
+                        sc_id = emit_spec_const_u32(l, (uint32_t)strtoul(s, NULL, 0), spec_id, vd->name);
+                        sc_type = l->id_u32;
+                    } else {
+                        sc_id = emit_spec_const_i32(l, (int32_t)strtol(s, NULL, 0), spec_id, vd->name);
+                        sc_type = l->id_i32;
+                    }
+                }
+            } else {
+                // No init or non-literal: default to f32 with 0.0
+                sc_id = emit_spec_const_f32(l, 0.0f, spec_id, vd->name);
+                sc_type = l->id_f32;
+            }
+            if (sc_id) {
+                l->override_cache[l->override_cache_count].name = vd->name;
+                l->override_cache[l->override_cache_count].spv_id = sc_id;
+                l->override_cache[l->override_cache_count].type_id = sc_type;
+                l->override_cache_count++;
+            }
+        }
+    }
 
     // Get entrypoints
     eps = wgsl_resolver_entrypoints(resolver, &ep_count);
@@ -6037,14 +6295,17 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
                 uint32_t ssir_ep = ssir_entry_point_create(l->ssir, ssir_stage,
                                                            l->fn_ctx.ssir_func_id, eps[i].name);
 
-                // Add interface variables (storage buffers, uniforms, input/output)
-                for (int g = 0; g < l->global_map_count; ++g) {
-                    if (l->global_map[g].ssir_id != 0 &&
-                        (l->global_map[g].sc == SpvStorageClassStorageBuffer ||
-                         l->global_map[g].sc == SpvStorageClassUniform ||
-                         l->global_map[g].sc == SpvStorageClassInput ||
-                         l->global_map[g].sc == SpvStorageClassOutput)) {
-                        ssir_entry_point_add_interface(l->ssir, ssir_ep, l->global_map[g].ssir_id);
+                // Add interface variables matching the per-entry-point SpvSections list
+                // (deduplicated, since interface_ids may have duplicates)
+                for (int g = 0; g < interface_count; ++g) {
+                    uint32_t ssir_id = ssir_id_map_get(l, interface_ids[g]);
+                    if (!ssir_id) continue;
+                    int dup = 0;
+                    for (int k = 0; k < g; ++k) {
+                        if (ssir_id_map_get(l, interface_ids[k]) == ssir_id) { dup = 1; break; }
+                    }
+                    if (!dup) {
+                        ssir_entry_point_add_interface(l->ssir, ssir_ep, ssir_id);
                     }
                 }
 
