@@ -33,19 +33,25 @@ typedef struct {
     size_t cap;
 } StsWordBuf;
 
+//wb nonnull
 static void sts_wb_init(StsWordBuf *wb) {
+    wgsl_compiler_assert(wb != NULL, "sts_wb_init: wb is NULL");
     wb->data = NULL;
     wb->len = 0;
     wb->cap = 0;
 }
 
+//wb nonnull
 static void sts_wb_free(StsWordBuf *wb) {
+    wgsl_compiler_assert(wb != NULL, "sts_wb_free: wb is NULL");
     STS_FREE(wb->data);
     wb->data = NULL;
     wb->len = wb->cap = 0;
 }
 
+//wb nonnull
 static int sts_wb_reserve(StsWordBuf *wb, size_t need) {
+    wgsl_compiler_assert(wb != NULL, "sts_wb_reserve: wb is NULL");
     if (wb->len + need <= wb->cap) return 1;
     size_t ncap = wb->cap ? wb->cap : 64;
     while (ncap < wb->len + need) ncap *= 2;
@@ -56,13 +62,18 @@ static int sts_wb_reserve(StsWordBuf *wb, size_t need) {
     return 1;
 }
 
+//wb nonnull
 static int wb_push(StsWordBuf *wb, uint32_t w) {
+    wgsl_compiler_assert(wb != NULL, "wb_push: wb is NULL");
     if (!sts_wb_reserve(wb, 1)) return 0;
     wb->data[wb->len++] = w;
     return 1;
 }
 
+//wb nonnull, src nonnull
 static int sts_wb_push_many(StsWordBuf *wb, const uint32_t *src, size_t n) {
+    wgsl_compiler_assert(wb != NULL, "sts_wb_push_many: wb is NULL");
+    wgsl_compiler_assert(src != NULL, "sts_wb_push_many: src is NULL");
     if (!sts_wb_reserve(wb, n)) return 0;
     memcpy(wb->data + wb->len, src, n * sizeof(uint32_t));
     wb->len += n;
@@ -87,7 +98,9 @@ typedef struct {
     StsWordBuf functions;
 } StsSpvSections;
 
+//s nonnull
 static void sections_init(StsSpvSections *s) {
+    wgsl_compiler_assert(s != NULL, "sections_init: s is NULL");
     sts_wb_init(&s->capabilities);
     sts_wb_init(&s->extensions);
     sts_wb_init(&s->ext_inst_imports);
@@ -101,7 +114,9 @@ static void sections_init(StsSpvSections *s) {
     sts_wb_init(&s->functions);
 }
 
+//s nonnull
 static void sections_free(StsSpvSections *s) {
+    wgsl_compiler_assert(s != NULL, "sections_free: s is NULL");
     sts_wb_free(&s->capabilities);
     sts_wb_free(&s->extensions);
     sts_wb_free(&s->ext_inst_imports);
@@ -154,11 +169,15 @@ typedef struct {
     uint32_t func_type_cache_count;
 } Ctx;
 
+//c nonnull
 static uint32_t sts_fresh_id(Ctx *c) {
+    wgsl_compiler_assert(c != NULL, "sts_fresh_id: c is NULL");
     return c->next_spv_id++;
 }
 
+//c nonnull
 static uint32_t get_spv_id(Ctx *c, uint32_t ssir_id) {
+    wgsl_compiler_assert(c != NULL, "get_spv_id: c is NULL");
     if (ssir_id < c->id_map_size && c->id_map[ssir_id] != 0) {
         return c->id_map[ssir_id];
     }
@@ -170,19 +189,25 @@ static uint32_t get_spv_id(Ctx *c, uint32_t ssir_id) {
     return spv_id;
 }
 
+//c nonnull
 static void set_spv_id(Ctx *c, uint32_t ssir_id, uint32_t spv_id) {
+    wgsl_compiler_assert(c != NULL, "set_spv_id: c is NULL");
     if (ssir_id < c->id_map_size) {
         c->id_map[ssir_id] = spv_id;
     }
 }
 
+//c nonnull
 static void set_ssir_type(Ctx *c, uint32_t ssir_id, uint32_t ssir_type) {
+    wgsl_compiler_assert(c != NULL, "set_ssir_type: c is NULL");
     if (ssir_id < c->type_map_size) {
         c->type_map[ssir_id] = ssir_type;
     }
 }
 
+//c nonnull
 static uint32_t get_ssir_type(Ctx *c, uint32_t ssir_id) {
+    wgsl_compiler_assert(c != NULL, "get_ssir_type: c is NULL");
     if (ssir_id < c->type_map_size) {
         return c->type_map[ssir_id];
     }
@@ -193,7 +218,10 @@ static uint32_t get_ssir_type(Ctx *c, uint32_t ssir_id) {
  * String Literal Encoding
  * ============================================================================ */
 
+//out_words nonnull, out_count nonnull
 static uint32_t encode_string(const char *s, uint32_t **out_words, size_t *out_count) {
+    wgsl_compiler_assert(out_words != NULL, "encode_string: out_words is NULL");
+    wgsl_compiler_assert(out_count != NULL, "encode_string: out_count is NULL");
     if (!s) s = "";
     size_t n = strlen(s) + 1;
     size_t words = (n + 3) / 4;
@@ -214,17 +242,24 @@ static uint32_t encode_string(const char *s, uint32_t **out_words, size_t *out_c
  * Instruction Emission Helpers
  * ============================================================================ */
 
+//wb nonnull
 static int sts_emit_op(StsWordBuf *wb, SpvOp op, size_t word_count) {
+    wgsl_compiler_assert(wb != NULL, "sts_emit_op: wb is NULL");
     return wb_push(wb, ((uint32_t)word_count << 16) | (uint32_t)op);
 }
 
+//c nonnull
 static int sts_emit_capability(Ctx *c, SpvCapability cap) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_capability: c is NULL");
     StsWordBuf *wb = &c->sections.capabilities;
     if (!sts_emit_op(wb, SpvOpCapability, 2)) return 0;
     return wb_push(wb, cap);
 }
 
+//c nonnull, name nonnull
 static int sts_emit_extension(Ctx *c, const char *name) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_extension: c is NULL");
+    wgsl_compiler_assert(name != NULL, "sts_emit_extension: name is NULL");
     StsWordBuf *wb = &c->sections.extensions;
     uint32_t *str; size_t wn;
     encode_string(name, &str, &wn);
@@ -234,7 +269,11 @@ static int sts_emit_extension(Ctx *c, const char *name) {
     return ok;
 }
 
+//c nonnull, name nonnull, out_id nonnull
 static int sts_emit_ext_inst_import(Ctx *c, const char *name, uint32_t *out_id) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_ext_inst_import: c is NULL");
+    wgsl_compiler_assert(name != NULL, "sts_emit_ext_inst_import: name is NULL");
+    wgsl_compiler_assert(out_id != NULL, "sts_emit_ext_inst_import: out_id is NULL");
     StsWordBuf *wb = &c->sections.ext_inst_imports;
     uint32_t *str; size_t wn;
     encode_string(name, &str, &wn);
@@ -247,7 +286,9 @@ static int sts_emit_ext_inst_import(Ctx *c, const char *name, uint32_t *out_id) 
     return ok;
 }
 
+//c nonnull
 static void sts_ensure_glsl_import(Ctx *c) {
+    wgsl_compiler_assert(c != NULL, "sts_ensure_glsl_import: c is NULL");
     if (c->glsl_ext_emitted) return;
     c->glsl_ext_emitted = 1;
     if (!c->glsl_ext_id) c->glsl_ext_id = sts_fresh_id(c);
@@ -260,14 +301,18 @@ static void sts_ensure_glsl_import(Ctx *c) {
     STS_FREE(str);
 }
 
+//c nonnull
 static int sts_emit_memory_model(Ctx *c) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_memory_model: c is NULL");
     StsWordBuf *wb = &c->sections.memory_model;
     if (!sts_emit_op(wb, SpvOpMemoryModel, 3)) return 0;
     if (!wb_push(wb, SpvAddressingModelLogical)) return 0;
     return wb_push(wb, SpvMemoryModelGLSL450);
 }
 
+//c nonnull
 static int sts_emit_name(Ctx *c, uint32_t target, const char *name) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_name: c is NULL");
     if (!name || !*name) return 1;
     StsWordBuf *wb = &c->sections.debug_names;
     uint32_t *str; size_t wn;
@@ -279,7 +324,9 @@ static int sts_emit_name(Ctx *c, uint32_t target, const char *name) {
     return ok;
 }
 
+//c nonnull
 static int sts_emit_member_name(Ctx *c, uint32_t struct_id, uint32_t member, const char *name) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_member_name: c is NULL");
     if (!name || !*name) return 1;
     StsWordBuf *wb = &c->sections.debug_names;
     uint32_t *str; size_t wn;
@@ -292,7 +339,9 @@ static int sts_emit_member_name(Ctx *c, uint32_t struct_id, uint32_t member, con
     return ok;
 }
 
+//c nonnull
 static int sts_emit_decorate(Ctx *c, uint32_t target, SpvDecoration decor, const uint32_t *literals, int lit_count) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_decorate: c is NULL");
     StsWordBuf *wb = &c->sections.annotations;
     if (!sts_emit_op(wb, SpvOpDecorate, 3 + lit_count)) return 0;
     if (!wb_push(wb, target)) return 0;
@@ -303,7 +352,9 @@ static int sts_emit_decorate(Ctx *c, uint32_t target, SpvDecoration decor, const
     return 1;
 }
 
+//c nonnull
 static int sts_emit_member_decorate(Ctx *c, uint32_t struct_id, uint32_t member, SpvDecoration decor, const uint32_t *literals, int lit_count) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_member_decorate: c is NULL");
     StsWordBuf *wb = &c->sections.annotations;
     if (!sts_emit_op(wb, SpvOpMemberDecorate, 4 + lit_count)) return 0;
     if (!wb_push(wb, struct_id)) return 0;
@@ -323,7 +374,9 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id);
 
 /* Compute the size and alignment of a type (for std430 layout).
  * Returns the size in bytes, and stores alignment in *out_align. */
+//c nonnull
 static uint32_t compute_type_size(Ctx *c, uint32_t ssir_type_id, uint32_t *out_align) {
+    wgsl_compiler_assert(c != NULL, "compute_type_size: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, ssir_type_id);
     if (!t) {
         if (out_align) *out_align = 4;
@@ -393,14 +446,18 @@ static uint32_t compute_type_size(Ctx *c, uint32_t ssir_type_id, uint32_t *out_a
 }
 
 /* Compute the array stride for a given element type */
+//c nonnull
 static uint32_t compute_array_stride(Ctx *c, uint32_t elem_type_id) {
+    wgsl_compiler_assert(c != NULL, "compute_array_stride: c is NULL");
     uint32_t elem_align;
     uint32_t elem_size = compute_type_size(c, elem_type_id, &elem_align);
     /* Stride is element size rounded up to element alignment */
     return (elem_size + elem_align - 1) & ~(elem_align - 1);
 }
 
+//c nonnull
 static uint32_t sts_emit_type_void(Ctx *c) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_void: c is NULL");
     if (c->spv_void) return c->spv_void;
     StsWordBuf *wb = &c->sections.types_constants;
     c->spv_void = sts_fresh_id(c);
@@ -409,7 +466,9 @@ static uint32_t sts_emit_type_void(Ctx *c) {
     return c->spv_void;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_bool(Ctx *c) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_bool: c is NULL");
     if (c->spv_bool) return c->spv_bool;
     StsWordBuf *wb = &c->sections.types_constants;
     c->spv_bool = sts_fresh_id(c);
@@ -418,7 +477,9 @@ static uint32_t sts_emit_type_bool(Ctx *c) {
     return c->spv_bool;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_int(Ctx *c, uint32_t width, uint32_t signedness) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_int: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeInt, 4)) return 0;
@@ -430,7 +491,9 @@ static uint32_t sts_emit_type_int(Ctx *c, uint32_t width, uint32_t signedness) {
     return id;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_float(Ctx *c, uint32_t width) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_float: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeFloat, 3)) return 0;
@@ -441,7 +504,9 @@ static uint32_t sts_emit_type_float(Ctx *c, uint32_t width) {
     return id;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_vector(Ctx *c, uint32_t elem_type, uint32_t count) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_vector: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeVector, 4)) return 0;
@@ -451,7 +516,9 @@ static uint32_t sts_emit_type_vector(Ctx *c, uint32_t elem_type, uint32_t count)
     return id;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_matrix(Ctx *c, uint32_t col_type, uint32_t col_count) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_matrix: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeMatrix, 4)) return 0;
@@ -461,7 +528,9 @@ static uint32_t sts_emit_type_matrix(Ctx *c, uint32_t col_type, uint32_t col_cou
     return id;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_array(Ctx *c, uint32_t elem_type, uint32_t length_id) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_array: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeArray, 4)) return 0;
@@ -471,7 +540,9 @@ static uint32_t sts_emit_type_array(Ctx *c, uint32_t elem_type, uint32_t length_
     return id;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_runtime_array(Ctx *c, uint32_t elem_type) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_runtime_array: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeRuntimeArray, 3)) return 0;
@@ -480,7 +551,10 @@ static uint32_t sts_emit_type_runtime_array(Ctx *c, uint32_t elem_type) {
     return id;
 }
 
+//c nonnull, member_types nonnull
 static uint32_t sts_emit_type_struct(Ctx *c, uint32_t *member_types, uint32_t member_count) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_struct: c is NULL");
+    wgsl_compiler_assert(member_types != NULL, "sts_emit_type_struct: member_types is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeStruct, 2 + member_count)) return 0;
@@ -507,7 +581,9 @@ static SpvStorageClass addr_space_to_storage_class(SsirAddressSpace space) {
     }
 }
 
+//c nonnull
 static uint32_t sts_emit_type_pointer(Ctx *c, SpvStorageClass sc, uint32_t pointee) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_pointer: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypePointer, 4)) return 0;
@@ -517,7 +593,9 @@ static uint32_t sts_emit_type_pointer(Ctx *c, SpvStorageClass sc, uint32_t point
     return id;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_function(Ctx *c, uint32_t return_type, uint32_t *param_types, uint32_t param_count) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_function: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeFunction, 3 + param_count)) return 0;
@@ -529,7 +607,9 @@ static uint32_t sts_emit_type_function(Ctx *c, uint32_t return_type, uint32_t *p
     return id;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_sampler(Ctx *c) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_sampler: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeSampler, 2)) return 0;
@@ -553,8 +633,10 @@ static SpvDim texture_dim_to_spv(SsirTextureDim dim) {
     }
 }
 
+//c nonnull
 static uint32_t sts_emit_type_image(Ctx *c, SsirTextureDim dim, uint32_t sampled_type,
                                 uint32_t depth, uint32_t arrayed, uint32_t ms, uint32_t sampled, SpvImageFormat format) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_image: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeImage, 9)) return 0;
@@ -569,7 +651,9 @@ static uint32_t sts_emit_type_image(Ctx *c, SsirTextureDim dim, uint32_t sampled
     return id;
 }
 
+//c nonnull
 static uint32_t sts_emit_type_sampled_image(Ctx *c, uint32_t image_type) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type_sampled_image: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeSampledImage, 3)) return 0;
@@ -579,7 +663,9 @@ static uint32_t sts_emit_type_sampled_image(Ctx *c, uint32_t image_type) {
 }
 
 /* Emit SSIR type, returns SPIR-V type ID */
+//c nonnull
 static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, ssir_type_id);
     if (!t) return 0;
 
@@ -772,7 +858,9 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
  * Constant Emission
  * ============================================================================ */
 
+//c nonnull
 static uint32_t sts_emit_const_u32(Ctx *c, uint32_t value) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_const_u32: c is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t u32_type = c->spv_u32 ? c->spv_u32 : sts_emit_type_int(c, 32, 0);
     uint32_t id = sts_fresh_id(c);
@@ -783,7 +871,10 @@ static uint32_t sts_emit_const_u32(Ctx *c, uint32_t value) {
     return id;
 }
 
+//c nonnull, cnst nonnull
 static uint32_t sts_emit_constant(Ctx *c, const SsirConstant *cnst) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_constant: c is NULL");
+    wgsl_compiler_assert(cnst != NULL, "sts_emit_constant: cnst is NULL");
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t type_spv = sts_emit_type(c, cnst->type);
     uint32_t id = get_spv_id(c, cnst->id);
@@ -922,7 +1013,10 @@ static SpvBuiltIn builtin_var_to_spv(SsirBuiltinVar b) {
     }
 }
 
+//c nonnull, g nonnull
 static uint32_t sts_emit_global_var(Ctx *c, const SsirGlobalVar *g) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_global_var: c is NULL");
+    wgsl_compiler_assert(g != NULL, "sts_emit_global_var: g is NULL");
     uint32_t type_spv = sts_emit_type(c, g->type);
     uint32_t id = get_spv_id(c, g->id);
 
@@ -999,7 +1093,9 @@ static uint32_t sts_emit_global_var(Ctx *c, const SsirGlobalVar *g) {
  * ============================================================================ */
 
 /* Type helper to check if SSIR type is float-based */
+//c nonnull
 static int is_float_ssir_type(Ctx *c, uint32_t type_id) {
+    wgsl_compiler_assert(c != NULL, "is_float_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     if (!t) return 0;
     if (t->kind == SSIR_TYPE_F32 || t->kind == SSIR_TYPE_F16) return 1;
@@ -1015,7 +1111,9 @@ static int is_float_ssir_type(Ctx *c, uint32_t type_id) {
     return 0;
 }
 
+//c nonnull
 static int is_signed_ssir_type(Ctx *c, uint32_t type_id) {
+    wgsl_compiler_assert(c != NULL, "is_signed_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     if (!t) return 0;
     if (t->kind == SSIR_TYPE_I32) return 1;
@@ -1025,7 +1123,9 @@ static int is_signed_ssir_type(Ctx *c, uint32_t type_id) {
     return 0;
 }
 
+//c nonnull
 static int is_unsigned_ssir_type(Ctx *c, uint32_t type_id) {
+    wgsl_compiler_assert(c != NULL, "is_unsigned_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     if (!t) return 0;
     if (t->kind == SSIR_TYPE_U32) return 1;
@@ -1035,7 +1135,9 @@ static int is_unsigned_ssir_type(Ctx *c, uint32_t type_id) {
     return 0;
 }
 
+//c nonnull
 static int is_bool_ssir_type(Ctx *c, uint32_t type_id) {
+    wgsl_compiler_assert(c != NULL, "is_bool_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     if (!t) return 0;
     if (t->kind == SSIR_TYPE_BOOL) return 1;
@@ -1045,17 +1147,23 @@ static int is_bool_ssir_type(Ctx *c, uint32_t type_id) {
     return 0;
 }
 
+//c nonnull
 static int is_matrix_ssir_type(Ctx *c, uint32_t type_id) {
+    wgsl_compiler_assert(c != NULL, "is_matrix_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     return t && t->kind == SSIR_TYPE_MAT;
 }
 
+//c nonnull
 static int is_vector_ssir_type(Ctx *c, uint32_t type_id) {
+    wgsl_compiler_assert(c != NULL, "is_vector_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     return t && t->kind == SSIR_TYPE_VEC;
 }
 
+//c nonnull
 static int is_scalar_ssir_type(Ctx *c, uint32_t type_id) {
+    wgsl_compiler_assert(c != NULL, "is_scalar_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     if (!t) return 0;
     return t->kind == SSIR_TYPE_F32 || t->kind == SSIR_TYPE_F16 ||
@@ -1123,7 +1231,9 @@ static int builtin_to_glsl_op(SsirBuiltinId id) {
     }
 }
 
+//c nonnull
 static uint32_t get_unsigned_ssir_type(Ctx *c, uint32_t ssir_type) {
+    wgsl_compiler_assert(c != NULL, "get_unsigned_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, ssir_type);
     if (!t) return 0;
     if (t->kind == SSIR_TYPE_I32) return ssir_type_u32((SsirModule *)c->mod);
@@ -1134,9 +1244,11 @@ static uint32_t get_unsigned_ssir_type(Ctx *c, uint32_t ssir_type) {
     return 0;
 }
 
+//c nonnull
 static void emit_signed_int_binop(Ctx *c, SpvOp spv_op,
                                    uint32_t ssir_result, uint32_t type_spv,
                                    uint32_t ssir_type, uint32_t op0, uint32_t op1) {
+    wgsl_compiler_assert(c != NULL, "emit_signed_int_binop: c is NULL");
     StsWordBuf *wb = &c->sections.functions;
     uint32_t unsigned_ssir = get_unsigned_ssir_type(c, ssir_type);
     uint32_t unsigned_spv = sts_emit_type(c, unsigned_ssir);
@@ -1155,7 +1267,10 @@ static void emit_signed_int_binop(Ctx *c, SpvOp spv_op,
     wb_push(wb, type_spv); wb_push(wb, result_spv); wb_push(wb, op_result);
 }
 
+//c nonnull, inst nonnull
 static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hint) {
+    wgsl_compiler_assert(c != NULL, "emit_instruction: c is NULL");
+    wgsl_compiler_assert(inst != NULL, "emit_instruction: inst is NULL");
     StsWordBuf *wb = &c->sections.functions;
     uint32_t type_spv = inst->type ? sts_emit_type(c, inst->type) : 0;
 
@@ -1617,6 +1732,8 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
 
         /* Memory */
         case SSIR_OP_LOAD:
+            /* PRE: operand_count >= 1 */
+            wgsl_compiler_assert(inst->operand_count >= 1, "SSIR_OP_LOAD: operand_count < 1");
             sts_emit_op(wb, SpvOpLoad, 4);
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);
@@ -1624,6 +1741,8 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             break;
 
         case SSIR_OP_STORE:
+            /* PRE: operand_count >= 2 */
+            wgsl_compiler_assert(inst->operand_count >= 2, "SSIR_OP_STORE: operand_count < 2");
             sts_emit_op(wb, SpvOpStore, 3);
             wb_push(wb, get_spv_id(c, inst->operands[0]));
             wb_push(wb, get_spv_id(c, inst->operands[1]));
@@ -2287,7 +2406,10 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
  * Function Emission
  * ============================================================================ */
 
+//c nonnull, func nonnull
 static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_type) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_function: c is NULL");
+    wgsl_compiler_assert(func != NULL, "sts_emit_function: func is NULL");
     StsWordBuf *wb = &c->sections.functions;
 
     uint32_t return_spv = sts_emit_type(c, func->return_type);
@@ -2365,7 +2487,10 @@ static SpvExecutionModel stage_to_execution_model(SsirStage stage) {
     }
 }
 
+//c nonnull, ep nonnull
 static int sts_emit_entry_point(Ctx *c, const SsirEntryPoint *ep) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_entry_point: c is NULL");
+    wgsl_compiler_assert(ep != NULL, "sts_emit_entry_point: ep is NULL");
     /* Emit OpEntryPoint */
     StsWordBuf *wb = &c->sections.entry_points;
     uint32_t *name_words; size_t name_count;
@@ -2378,6 +2503,8 @@ static int sts_emit_entry_point(Ctx *c, const SsirEntryPoint *ep) {
     uint32_t *iface_ids = NULL;
     if (ep->interface_count > 0) {
         iface_ids = (uint32_t *)STS_MALLOC(ep->interface_count * sizeof(uint32_t));
+        /* PRE: iface_ids != NULL */
+        wgsl_compiler_assert(iface_ids != NULL, "sts_emit_entry_point: iface_ids alloc failed");
         for (uint32_t i = 0; i < ep->interface_count; ++i) {
             SsirGlobalVar *g = ssir_get_global((SsirModule *)c->mod, ep->interface[i]);
             if (g) {
@@ -2498,6 +2625,8 @@ SsirToSpirvResult ssir_to_spirv(const SsirModule *mod,
      * Order: return type, function ID, param types, function type, block IDs */
     if (mod->function_count > 0) {
         c.func_type_cache = (uint32_t *)STS_MALLOC(mod->function_count * sizeof(uint32_t));
+        /* PRE: func_type_cache != NULL */
+        wgsl_compiler_assert(c.func_type_cache != NULL, "ssir_to_spirv: func_type_cache alloc failed");
         c.func_type_cache_count = mod->function_count;
         for (uint32_t i = 0; i < mod->function_count; ++i) {
             const SsirFunction *func = &mod->functions[i];
@@ -2506,8 +2635,13 @@ SsirToSpirvResult ssir_to_spirv(const SsirModule *mod,
             uint32_t *param_types = NULL;
             if (func->param_count > 0) {
                 param_types = (uint32_t *)STS_MALLOC(func->param_count * sizeof(uint32_t));
-                for (uint32_t j = 0; j < func->param_count; ++j)
+                /* PRE: param_types != NULL */
+                wgsl_compiler_assert(param_types != NULL, "ssir_to_spirv: param_types alloc failed");
+                for (uint32_t j = 0; j < func->param_count; ++j) {
+                    /* PRE: func->params[j] valid (guarded by param_count loop) */
+                    wgsl_compiler_assert(j < func->param_count, "ssir_to_spirv: params[%u] OOB", j);
                     param_types[j] = sts_emit_type(&c, func->params[j].type);
+                }
             }
             c.func_type_cache[i] = sts_emit_type_function(&c, return_spv, param_types, func->param_count);
             STS_FREE(param_types);

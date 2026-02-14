@@ -7,7 +7,9 @@
 #include <stdbool.h>
 
 
+//s nonnull
 static char *wgsl_strndup(const char *s, size_t n) {
+    wgsl_compiler_assert(s != NULL, "wgsl_strndup: s is NULL");
     char *r = (char *)NODE_MALLOC(n + 1);
     if (!r)
         return NULL;
@@ -15,10 +17,14 @@ static char *wgsl_strndup(const char *s, size_t n) {
     r[n] = '\0';
     return r;
 }
+//s allowed to be NULL
 static char *wgsl_strdup(const char *s) {
     return wgsl_strndup(s, s ? strlen(s) : 0);
 }
+//p allowed to be NULL
+//cap nonnull
 static void *grow_ptr_array(void *p, int needed, int *cap, size_t elem) {
+    wgsl_compiler_assert(cap != NULL, "grow_ptr_array: cap is NULL");
     if (needed <= *cap)
         return p;
     int nc = (*cap == 0) ? 4 : (*cap * 2);
@@ -30,8 +36,15 @@ static void *grow_ptr_array(void *p, int needed, int *cap, size_t elem) {
     *cap = nc;
     return np;
 }
+//arr nonnull
+//count nonnull
+//cap nonnull
+//v allowed to be NULL
 static void vec_push_node(WgslAstNode ***arr, int *count, int *cap,
                           WgslAstNode *v) {
+    wgsl_compiler_assert(arr != NULL, "vec_push_node: arr is NULL");
+    wgsl_compiler_assert(count != NULL, "vec_push_node: count is NULL");
+    wgsl_compiler_assert(cap != NULL, "vec_push_node: cap is NULL");
     *arr = (WgslAstNode **)grow_ptr_array(*arr, *count + 1, cap,
                                           sizeof(WgslAstNode *));
     (*arr)[(*count)++] = v;
@@ -106,10 +119,18 @@ typedef struct Lexer {
     int col;
 } Lexer;
 
+//L nonnull
 static bool lx_peek2(const Lexer *L, char a, char b) {
+    /* PRE: src[pos] valid; pos+1 only accessed if src[pos] matches */
+    wgsl_compiler_assert(L != NULL, "lx_peek2: L is NULL");
+    wgsl_compiler_assert(L->src != NULL, "lx_peek2: src is NULL");
     return (L->src[L->pos] == a && L->src[L->pos + 1] == b);
 }
+//L nonnull
 static void lx_advance(Lexer *L) {
+    /* PRE: src[pos] is valid (may be NUL terminator) */
+    wgsl_compiler_assert(L != NULL, "lx_advance: L is NULL");
+    wgsl_compiler_assert(L->src != NULL, "lx_advance: src is NULL");
     char c = L->src[L->pos];
     if (!c)
         return;
@@ -121,22 +142,29 @@ static void lx_advance(Lexer *L) {
         L->col++;
     }
 }
+//L nonnull
 static void lx_skip_ws_comments(Lexer *L) {
+    /* PRE: src is null-terminated string */
+    wgsl_compiler_assert(L != NULL, "lx_skip_ws_comments: L is NULL");
+    wgsl_compiler_assert(L->src != NULL, "lx_skip_ws_comments: src is NULL");
     for (;;) {
         char c = L->src[L->pos];
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
             lx_advance(L);
             continue;
         }
+        /* PRE: pos+1 valid when c == '/' (c != '\0' implies pos+1 readable) */
         if (c == '/' && L->src[L->pos + 1] == '/') {
             while (L->src[L->pos] && L->src[L->pos] != '\n')
                 lx_advance(L);
             continue;
         }
+        /* PRE: pos+1 valid when c == '/' */
         if (c == '/' && L->src[L->pos + 1] == '*') {
             lx_advance(L);
             lx_advance(L);
             while (L->src[L->pos]) {
+                /* PRE: pos+1 valid when src[pos] != '\0' */
                 if (L->src[L->pos] == '*' && L->src[L->pos + 1] == '/') {
                     lx_advance(L);
                     lx_advance(L);
@@ -155,7 +183,10 @@ static bool is_ident_start(char c) {
 static bool is_ident_part(char c) {
     return isalnum((unsigned char)c) || c == '_';
 }
+//L nonnull
+//s allowed to be NULL
 static Token make_token(Lexer *L, TokenType t, const char *s, int len, bool f) {
+    wgsl_compiler_assert(L != NULL, "make_token: L is NULL");
     Token tok;
     tok.type = t;
     tok.start = s;
@@ -169,7 +200,9 @@ static Token make_token(Lexer *L, TokenType t, const char *s, int len, bool f) {
 static int is_dec_digit_or_us(char c) { return isdigit((unsigned char)c) || c == '_'; }
 static int is_hex_digit_or_us(char c) { return isxdigit((unsigned char)c) || c == '_'; }
 
+//L nonnull
 static Token lx_next(Lexer *L) {
+    wgsl_compiler_assert(L != NULL, "lx_next: L is NULL");
     lx_skip_ws_comments(L);
     const char *s = &L->src[L->pos];
     char c = *s;
@@ -345,6 +378,7 @@ static Token lx_next(Lexer *L) {
         bool is_float = false;
 
         /* hex: 0x... or 0X... with optional 'u' suffix */
+        /* PRE: pos+1 valid since c == '0' implies src[pos] != '\0' */
         if (c == '0' && (L->src[L->pos + 1] == 'x' || L->src[L->pos + 1] == 'X')) {
             lx_advance(L); /* '0' */
             lx_advance(L); /* 'x' or 'X' */
@@ -408,25 +442,39 @@ typedef struct Parser {
     bool had_error;
 } Parser;
 
-static void advance(Parser *P) { P->cur = lx_next(&P->L); }
-static bool check(Parser *P, TokenType t) { return P->cur.type == t; }
+//P nonnull
+static void advance(Parser *P) { wgsl_compiler_assert(P != NULL, "advance: P is NULL"); P->cur = lx_next(&P->L); }
+//P nonnull
+static bool check(Parser *P, TokenType t) { wgsl_compiler_assert(P != NULL, "check: P is NULL"); return P->cur.type == t; }
+//P nonnull
 static bool match(Parser *P, TokenType t) {
+    wgsl_compiler_assert(P != NULL, "match: P is NULL");
     if (check(P, t)) {
         advance(P);
         return true;
     }
     return false;
 }
+//P nonnull
+//msg nonnull
 static void parse_error(Parser *P, const char *msg) {
+    wgsl_compiler_assert(P != NULL, "parse_error: P is NULL");
+    wgsl_compiler_assert(msg != NULL, "parse_error: msg is NULL");
     fprintf(stderr, "[wgsl-parser] error at %d:%d: %s\n", P->cur.line,
             P->cur.col, msg);
     P->had_error = true;
 }
+//P nonnull
+//msg nonnull
 static void expect(Parser *P, TokenType t, const char *msg) {
+    wgsl_compiler_assert(P != NULL, "expect: P is NULL");
+    wgsl_compiler_assert(msg != NULL, "expect: msg is NULL");
     if (!match(P, t))
         parse_error(P, msg);
 }
+//P nonnull
 static WgslAstNode *new_node(Parser *P, WgslNodeType k) {
+    wgsl_compiler_assert(P != NULL, "new_node: P is NULL");
     WgslAstNode *n = NODE_ALLOC(WgslAstNode);
     if (!n)
         return NULL;
@@ -436,18 +484,30 @@ static WgslAstNode *new_node(Parser *P, WgslNodeType k) {
     n->col = P->cur.col;
     return n;
 }
+//P nonnull
+//t nonnull
 static WgslAstNode *new_ident(Parser *P, const Token *t) {
+    wgsl_compiler_assert(P != NULL, "new_ident: P is NULL");
+    wgsl_compiler_assert(t != NULL, "new_ident: t is NULL");
     WgslAstNode *n = new_node(P, WGSL_NODE_IDENT);
     n->ident.name = wgsl_strndup(t->start, (size_t)t->length);
     return n;
 }
+//P nonnull
+//t nonnull
 static WgslAstNode *new_literal(Parser *P, const Token *t) {
+    wgsl_compiler_assert(P != NULL, "new_literal: P is NULL");
+    wgsl_compiler_assert(t != NULL, "new_literal: t is NULL");
     WgslAstNode *n = new_node(P, WGSL_NODE_LITERAL);
     n->literal.lexeme = wgsl_strndup(t->start, (size_t)t->length);
     n->literal.kind = t->is_float ? WGSL_LIT_FLOAT : WGSL_LIT_INT;
     return n;
 }
+//P nonnull
+//name nonnull
 static WgslAstNode *new_type(Parser *P, const char *name) {
+    wgsl_compiler_assert(P != NULL, "new_type: P is NULL");
+    wgsl_compiler_assert(name != NULL, "new_type: name is NULL");
     WgslAstNode *n = new_node(P, WGSL_NODE_TYPE);
     n->type_node.name = wgsl_strdup(name);
     return n;
@@ -489,7 +549,11 @@ static WgslAstNode *parse_while_stmt(Parser *P);
 static WgslAstNode *parse_for_stmt(Parser *P);
 
 
+//P nonnull
+//out nonnull
 static int parse_attribute_list(Parser *P, WgslAstNode ***out) {
+    wgsl_compiler_assert(P != NULL, "parse_attribute_list: P is NULL");
+    wgsl_compiler_assert(out != NULL, "parse_attribute_list: out is NULL");
     int cap = 0, count = 0;
     WgslAstNode **list = NULL;
     while (match(P, TOK_AT)) {
@@ -502,7 +566,9 @@ static int parse_attribute_list(Parser *P, WgslAstNode ***out) {
     return count;
 }
 
+//P nonnull
 static WgslAstNode *parse_attribute(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_attribute: P is NULL");
     if (!check(P, TOK_IDENT)) {
         parse_error(P, "expected attribute name after '@'");
         return NULL;
@@ -531,7 +597,11 @@ static WgslAstNode *parse_attribute(Parser *P) {
     return A;
 }
 
+//P nonnull
+//name_tok nonnull
 static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
+    wgsl_compiler_assert(P != NULL, "parse_type_after_name: P is NULL");
+    wgsl_compiler_assert(name_tok != NULL, "parse_type_after_name: name_tok is NULL");
     char *tname = wgsl_strndup(name_tok->start, (size_t)name_tok->length);
     WgslAstNode *T = new_type(P, tname);
     NODE_FREE(tname);
@@ -571,7 +641,9 @@ static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
     return T;
 }
 
+//P nonnull
 static WgslAstNode *parse_type_node(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_type_node: P is NULL");
     if (!check(P, TOK_IDENT)) {
         parse_error(P, "expected type name");
         return NULL;
@@ -582,8 +654,11 @@ static WgslAstNode *parse_type_node(Parser *P) {
 }
 
 
+//P nonnull
+//opt_attrs allowed to be NULL
 static WgslAstNode *parse_struct(Parser *P, WgslAstNode **opt_attrs,
                                  int attr_count) {
+    wgsl_compiler_assert(P != NULL, "parse_struct: P is NULL");
     expect(P, TOK_STRUCT, "expected 'struct'");
     if (!check(P, TOK_IDENT)) {
         parse_error(P, "expected struct name");
@@ -624,8 +699,11 @@ static WgslAstNode *parse_struct(Parser *P, WgslAstNode **opt_attrs,
     return S;
 }
 
+//P nonnull
+//attrs allowed to be NULL
 static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
                                      int attr_count) {
+    wgsl_compiler_assert(P != NULL, "parse_global_var: P is NULL");
     expect(P, TOK_VAR, "expected 'var'");
     char *addr_space = NULL;
     if (match(P, TOK_LT)) {
@@ -688,7 +766,9 @@ static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
     return G;
 }
 
+//P nonnull
 static WgslAstNode *parse_param(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_param: P is NULL");
     WgslAstNode **attrs = NULL;
     int acount = parse_attribute_list(P, &attrs);
     if (!check(P, TOK_IDENT)) {
@@ -707,8 +787,11 @@ static WgslAstNode *parse_param(Parser *P) {
     return Par;
 }
 
+//P nonnull
+//attrs allowed to be NULL
 static WgslAstNode *parse_function(Parser *P, WgslAstNode **attrs,
                                    int attr_count) {
+    wgsl_compiler_assert(P != NULL, "parse_function: P is NULL");
     expect(P, TOK_FN, "expected 'fn'");
     if (!check(P, TOK_IDENT)) {
         parse_error(P, "expected function name");
@@ -751,7 +834,9 @@ static WgslAstNode *parse_function(Parser *P, WgslAstNode **attrs,
     return F;
 }
 
+//P nonnull
 static WgslAstNode *parse_block(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_block: P is NULL");
     expect(P, TOK_LBRACE, "expected '{'");
     WgslAstNode *B = new_node(P, WGSL_NODE_BLOCK);
     int cap = 0, count = 0;
@@ -774,7 +859,9 @@ static WgslAstNode *parse_block(Parser *P) {
     return B;
 }
 
+//P nonnull
 static WgslAstNode *parse_if_stmt(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_if_stmt: P is NULL");
     expect(P, TOK_IF, "expected 'if'");
     expect(P, TOK_LPAREN, "expected '('");
     WgslAstNode *cond = parse_expr(P);
@@ -794,7 +881,9 @@ static WgslAstNode *parse_if_stmt(Parser *P) {
     return I;
 }
 
+//P nonnull
 static WgslAstNode *parse_while_stmt(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_while_stmt: P is NULL");
     expect(P, TOK_WHILE, "expected 'while'");
     expect(P, TOK_LPAREN, "expected '('");
     WgslAstNode *cond = parse_expr(P);
@@ -806,7 +895,9 @@ static WgslAstNode *parse_while_stmt(Parser *P) {
     return W;
 }
 
+//P nonnull
 static WgslAstNode *parse_for_stmt(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_for_stmt: P is NULL");
     expect(P, TOK_FOR, "expected 'for'");
     expect(P, TOK_LPAREN, "expected '('");
     WgslAstNode *init = NULL;
@@ -838,7 +929,9 @@ static WgslAstNode *parse_for_stmt(Parser *P) {
     return F;
 }
 
+//P nonnull
 static WgslAstNode *parse_statement(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_statement: P is NULL");
     if (check(P, TOK_IF))
         return parse_if_stmt(P);
     if (check(P, TOK_WHILE))
@@ -928,9 +1021,12 @@ static WgslAstNode *parse_statement(Parser *P) {
     return ES;
 }
 
-static WgslAstNode *parse_expr(Parser *P) { return parse_assignment(P); }
+//P nonnull
+static WgslAstNode *parse_expr(Parser *P) { wgsl_compiler_assert(P != NULL, "parse_expr: P is NULL"); return parse_assignment(P); }
 
+//P nonnull
 static WgslAstNode *parse_assignment(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_assignment: P is NULL");
     WgslAstNode *left = parse_conditional(P);
     if (match(P, TOK_EQ)) {
         WgslAstNode *right = parse_assignment(P);
@@ -942,7 +1038,9 @@ static WgslAstNode *parse_assignment(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_conditional(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_conditional: P is NULL");
     WgslAstNode *c = parse_logical_or(P);
     if (match(P, TOK_QMARK)) {
         WgslAstNode *t = parse_assignment(P);
@@ -957,7 +1055,9 @@ static WgslAstNode *parse_conditional(Parser *P) {
     return c;
 }
 
+//P nonnull
 static WgslAstNode *parse_logical_or(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_logical_or: P is NULL");
     WgslAstNode *left = parse_logical_and(P);
     while (match(P, TOK_OROR)) {
         WgslAstNode *right = parse_logical_and(P);
@@ -970,7 +1070,9 @@ static WgslAstNode *parse_logical_or(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_logical_and(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_logical_and: P is NULL");
     WgslAstNode *left = parse_or_expr(P);
     while (match(P, TOK_ANDAND)) {
         WgslAstNode *right = parse_equality(P);
@@ -983,7 +1085,9 @@ static WgslAstNode *parse_logical_and(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_or_expr(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_or_expr: P is NULL");
     WgslAstNode *left = parse_xor_expr(P);
     while (match(P, TOK_OR)) {
         WgslAstNode *right = parse_xor_expr(P);
@@ -996,7 +1100,9 @@ static WgslAstNode *parse_or_expr(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_xor_expr(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_xor_expr: P is NULL");
     WgslAstNode *left = parse_and_expr(P);
     while (match(P, TOK_XOR)) {
         WgslAstNode *right = parse_and_expr(P);
@@ -1009,7 +1115,9 @@ static WgslAstNode *parse_xor_expr(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_and_expr(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_and_expr: P is NULL");
     WgslAstNode *left = parse_equality(P);
     while (match(P, TOK_AND)) {
         WgslAstNode *right = parse_equality(P);
@@ -1022,7 +1130,9 @@ static WgslAstNode *parse_and_expr(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_equality(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_equality: P is NULL");
     WgslAstNode *left = parse_relational(P);
     for (;;) {
         if (match(P, TOK_EQEQ)) {
@@ -1048,7 +1158,9 @@ static WgslAstNode *parse_equality(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_relational(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_relational: P is NULL");
     WgslAstNode *left = parse_shift(P);
     for (;;) {
         if (match(P, TOK_LT)) {
@@ -1092,7 +1204,9 @@ static WgslAstNode *parse_relational(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_shift(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_shift: P is NULL");
     WgslAstNode *left = parse_additive(P);
     for (;;) {
         if (match(P, TOK_SHL)) {
@@ -1118,7 +1232,9 @@ static WgslAstNode *parse_shift(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_additive(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_additive: P is NULL");
     WgslAstNode *left = parse_multiplicative(P);
     for (;;) {
         if (match(P, TOK_PLUS)) {
@@ -1144,7 +1260,9 @@ static WgslAstNode *parse_additive(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_multiplicative(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_multiplicative: P is NULL");
     WgslAstNode *left = parse_unary(P);
     for (;;) {
         if (match(P, TOK_STAR)) {
@@ -1179,7 +1297,9 @@ static WgslAstNode *parse_multiplicative(Parser *P) {
     return left;
 }
 
+//P nonnull
 static WgslAstNode *parse_unary(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_unary: P is NULL");
     if (match(P, TOK_PLUSPLUS)) {
         WgslAstNode *e = parse_unary(P);
         WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
@@ -1231,7 +1351,9 @@ static WgslAstNode *parse_unary(Parser *P) {
     return parse_postfix(P);
 }
 
+//P nonnull
 static WgslAstNode *parse_postfix(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_postfix: P is NULL");
     WgslAstNode *expr = parse_primary(P);
     for (;;) {
         if (match(P, TOK_LPAREN)) {
@@ -1298,7 +1420,9 @@ static WgslAstNode *parse_postfix(Parser *P) {
     return expr;
 }
 
+//P nonnull
 static WgslAstNode *parse_primary(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_primary: P is NULL");
     if (check(P, TOK_IDENT)) {
         Token name = P->cur;
 
@@ -1350,8 +1474,10 @@ static WgslAstNode *parse_primary(Parser *P) {
 }
 
 
-static void skip_optional_comma(Parser *P) { match(P, TOK_COMMA); }
+//P nonnull
+static void skip_optional_comma(Parser *P) { wgsl_compiler_assert(P != NULL, "skip_optional_comma: P is NULL"); match(P, TOK_COMMA); }
 
+//attrs allowed to be NULL (early return if NULL)
 static void discard_attrs(WgslAstNode **attrs, int count) {
     if (!attrs)
         return;
@@ -1361,7 +1487,9 @@ static void discard_attrs(WgslAstNode **attrs, int count) {
     NODE_FREE(attrs);
 }
 
+//P nonnull
 static WgslAstNode *parse_const_decl(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_const_decl: P is NULL");
     expect(P, TOK_CONST, "expected 'const'");
     if (!check(P, TOK_IDENT)) {
         parse_error(P, "expected constant name");
@@ -1384,7 +1512,9 @@ static WgslAstNode *parse_const_decl(Parser *P) {
     return V;
 }
 
+//P nonnull
 static WgslAstNode *parse_override_decl(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_override_decl: P is NULL");
     expect(P, TOK_OVERRIDE, "expected 'override'");
     if (!check(P, TOK_IDENT)) {
         parse_error(P, "expected override name");
@@ -1406,13 +1536,19 @@ static WgslAstNode *parse_override_decl(Parser *P) {
     return V;
 }
 
+//P nonnull
+//text nonnull
 static bool check_ident_text(Parser *P, const char *text) {
+    wgsl_compiler_assert(P != NULL, "check_ident_text: P is NULL");
+    wgsl_compiler_assert(text != NULL, "check_ident_text: text is NULL");
     if (P->cur.type != TOK_IDENT) return false;
     int n = (int)strlen(text);
     return P->cur.length == n && strncmp(P->cur.start, text, n) == 0;
 }
 
+//P nonnull
 static WgslAstNode *parse_decl_or_stmt(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_decl_or_stmt: P is NULL");
     // Skip 'enable', 'diagnostic', 'requires' directives
     if (check_ident_text(P, "enable") || check_ident_text(P, "diagnostic") ||
         check_ident_text(P, "requires")) {
@@ -1453,7 +1589,9 @@ static WgslAstNode *parse_decl_or_stmt(Parser *P) {
     return NULL;
 }
 
+//P nonnull
 static WgslAstNode *parse_program(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_program: P is NULL");
     WgslAstNode *root = new_node(P, WGSL_NODE_PROGRAM);
     int cap = 0, count = 0;
     WgslAstNode **decls = NULL;
@@ -1475,6 +1613,7 @@ static WgslAstNode *parse_program(Parser *P) {
     return root;
 }
 
+//source allowed to be NULL
 WgslAstNode *wgsl_parse(const char *source) {
     Parser P;
     memset(&P, 0, sizeof(P));
@@ -1489,6 +1628,7 @@ WgslAstNode *wgsl_parse(const char *source) {
 
 static void free_node(WgslAstNode *n);
 
+//list allowed to be NULL (early return if NULL)
 static void free_node_list(WgslAstNode **list, int count) {
     if (!list)
         return;
@@ -1496,47 +1636,74 @@ static void free_node_list(WgslAstNode **list, int count) {
         free_node(list[i]);
     NODE_FREE(list);
 }
+//s allowed to be NULL (early return if NULL)
 static void free_string(char *s) {
     if (s)
         NODE_FREE(s);
 }
+//a nonnull
 static void free_attribute(Attribute *a) {
+    /* PRE: a != NULL */
+    wgsl_compiler_assert(a != NULL, "free_attribute: a is NULL");
     free_string(a->name);
     free_node_list(a->args, a->arg_count);
 }
+//t nonnull
 static void free_type(TypeNode *t) {
+    /* PRE: t != NULL */
+    wgsl_compiler_assert(t != NULL, "free_type: t is NULL");
     free_string(t->name);
     free_node_list(t->type_args, t->type_arg_count);
     free_node_list(t->expr_args, t->expr_arg_count);
 }
+//f nonnull
 static void free_struct_field(StructField *f) {
+    /* PRE: f != NULL */
+    wgsl_compiler_assert(f != NULL, "free_struct_field: f is NULL");
     free_node_list(f->attrs, f->attr_count);
     free_string(f->name);
     free_node(f->type);
 }
+//s nonnull
 static void free_struct_decl(StructDecl *s) {
+    wgsl_compiler_assert(s != NULL, "free_struct_decl: s is NULL");
     free_node_list(s->attrs, s->attr_count);
     free_string(s->name);
     free_node_list(s->fields, s->field_count);
 }
+//g nonnull
 static void free_global_var(GlobalVar *g) {
+    /* PRE: g != NULL */
+    wgsl_compiler_assert(g != NULL, "free_global_var: g is NULL");
     free_node_list(g->attrs, g->attr_count);
     free_string(g->address_space);
     free_string(g->name);
     free_node(g->type);
 }
+//p nonnull
 static void free_param(Param *p) {
+    wgsl_compiler_assert(p != NULL, "free_param: p is NULL");
     free_node_list(p->attrs, p->attr_count);
     free_string(p->name);
     free_node(p->type);
 }
-static void free_block(Block *b) { free_node_list(b->stmts, b->stmt_count); }
+//b nonnull
+static void free_block(Block *b) {
+    /* PRE: b != NULL */
+    wgsl_compiler_assert(b != NULL, "free_block: b is NULL");
+    free_node_list(b->stmts, b->stmt_count);
+}
+//v nonnull
 static void free_var_decl(VarDecl *v) {
+    wgsl_compiler_assert(v != NULL, "free_var_decl: v is NULL");
     free_string(v->name);
     free_node(v->type);
     free_node(v->init);
 }
+//f nonnull
 static void free_function(Function *f) {
+    /* PRE: f != NULL */
+    wgsl_compiler_assert(f != NULL, "free_function: f is NULL");
     free_node_list(f->attrs, f->attr_count);
     free_string(f->name);
     free_node_list(f->params, f->param_count);
@@ -1544,33 +1711,50 @@ static void free_function(Function *f) {
     free_node(f->return_type);
     free_node(f->body);
 }
+//b nonnull
 static void free_binary(Binary *b) {
+    /* PRE: b != NULL */
+    wgsl_compiler_assert(b != NULL, "free_binary: b is NULL");
     free_string(b->op);
     free_node(b->left);
     free_node(b->right);
 }
+//c nonnull
 static void free_call(Call *c) {
+    /* PRE: c != NULL */
+    wgsl_compiler_assert(c != NULL, "free_call: c is NULL");
     free_node(c->callee);
     free_node_list(c->args, c->arg_count);
 }
+//m nonnull
 static void free_member(Member *m) {
+    /* PRE: m != NULL */
+    wgsl_compiler_assert(m != NULL, "free_member: m is NULL");
     free_node(m->object);
     free_string(m->member);
 }
+//i nonnull
 static void free_index(Index *i) {
+    wgsl_compiler_assert(i != NULL, "free_index: i is NULL");
     free_node(i->object);
     free_node(i->index);
 }
+//u nonnull
 static void free_unary(Unary *u) {
+    /* PRE: u != NULL */
+    wgsl_compiler_assert(u != NULL, "free_unary: u is NULL");
     free_string(u->op);
     free_node(u->expr);
 }
+//t nonnull
 static void free_ternary(Ternary *t) {
+    wgsl_compiler_assert(t != NULL, "free_ternary: t is NULL");
     free_node(t->cond);
     free_node(t->then_expr);
     free_node(t->else_expr);
 }
 
+//n allowed to be NULL (early return if NULL)
 static void free_node(WgslAstNode *n) {
     if (!n)
         return;
@@ -1660,6 +1844,7 @@ static void free_node(WgslAstNode *n) {
     NODE_FREE(n);
 }
 
+//node allowed to be NULL (passed to free_node which handles NULL)
 void wgsl_free_ast(WgslAstNode *node) { free_node(node); }
 
 const char *wgsl_node_type_name(WgslNodeType t) {
@@ -1717,18 +1902,24 @@ const char *wgsl_node_type_name(WgslNodeType t) {
     }
 }
 
+//no pointer params
 static void print_indent(int n) {
     for (int i = 0; i < n; i++)
         fputs("  ", stdout);
 }
 static void dbg_print_node(const WgslAstNode *n, int ind);
+//label nonnull
+//list nonnull
 static void dbg_print_list(const char *label, WgslAstNode *const *list,
                            int count, int ind) {
+    wgsl_compiler_assert(label != NULL, "dbg_print_list: label is NULL");
+    wgsl_compiler_assert(list != NULL, "dbg_print_list: list is NULL");
     print_indent(ind);
     printf("%s (%d):\n", label, count);
     for (int i = 0; i < count; i++)
         dbg_print_node(list[i], ind + 1);
 }
+//n allowed to be NULL (prints "(null)" if NULL)
 static void dbg_print_node(const WgslAstNode *n, int ind) {
     if (!n) {
         print_indent(ind);
@@ -1951,6 +2142,7 @@ static void dbg_print_node(const WgslAstNode *n, int ind) {
         break;
     }
 }
+//node allowed to be NULL (passed to dbg_print_node which handles NULL)
 void wgsl_debug_print(const WgslAstNode *node, int indent) {
     dbg_print_node(node, indent);
 }

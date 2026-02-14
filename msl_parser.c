@@ -33,7 +33,9 @@
  * String Utilities
  * ============================================================================ */
 
+//s nonnull
 static char *msl_strndup(const char *s, size_t n) {
+    wgsl_compiler_assert(s != NULL, "msl_strndup: s is NULL");
     char *r = (char *)MSL_MALLOC(n + 1);
     if (!r) return NULL;
     memcpy(r, s, n);
@@ -41,6 +43,7 @@ static char *msl_strndup(const char *s, size_t n) {
     return r;
 }
 
+//s nullable
 static char *msl_strdup(const char *s) {
     return s ? msl_strndup(s, strlen(s)) : NULL;
 }
@@ -91,24 +94,34 @@ typedef struct {
     int line, col;
 } MslLexer;
 
+//L nonnull
+//src nonnull
 static void mlx_init(MslLexer *L, const char *src) {
+    wgsl_compiler_assert(L != NULL, "mlx_init: L is NULL");
+    wgsl_compiler_assert(src != NULL, "mlx_init: src is NULL");
     L->src = src;
     L->pos = 0;
     L->line = 1;
     L->col = 1;
 }
 
-static char mlx_peek(const MslLexer *L) { return L->src[L->pos]; }
-static char mlx_peek2(const MslLexer *L) { return L->src[L->pos + 1]; }
+//L nonnull
+static char mlx_peek(const MslLexer *L) { wgsl_compiler_assert(L != NULL, "mlx_peek: L is NULL"); return L->src[L->pos]; }
+//L nonnull
+static char mlx_peek2(const MslLexer *L) { wgsl_compiler_assert(L != NULL, "mlx_peek2: L is NULL"); return L->src[L->pos + 1]; }
 
+//L nonnull
 static void mlx_advance(MslLexer *L) {
+    wgsl_compiler_assert(L != NULL, "mlx_advance: L is NULL");
     if (!L->src[L->pos]) return;
     if (L->src[L->pos] == '\n') { L->line++; L->col = 1; }
     else { L->col++; }
     L->pos++;
 }
 
+//L nonnull
 static void mlx_skip_ws(MslLexer *L) {
+    wgsl_compiler_assert(L != NULL, "mlx_skip_ws: L is NULL");
     for (;;) {
         char c = mlx_peek(L);
         if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
@@ -138,7 +151,11 @@ static void mlx_skip_ws(MslLexer *L) {
     }
 }
 
+//L nonnull
+//s nonnull
 static MslToken mlx_make(MslLexer *L, MslTokType t, const char *s, int len) {
+    wgsl_compiler_assert(L != NULL, "mlx_make: L is NULL");
+    wgsl_compiler_assert(s != NULL, "mlx_make: s is NULL");
     MslToken tok;
     tok.type = t;
     tok.start = s;
@@ -149,7 +166,9 @@ static MslToken mlx_make(MslLexer *L, MslTokType t, const char *s, int len) {
     return tok;
 }
 
+//L nonnull
 static MslToken mlx_next(MslLexer *L) {
+    wgsl_compiler_assert(L != NULL, "mlx_next: L is NULL");
     mlx_skip_ws(L);
     const char *s = L->src + L->pos;
     int sl = L->line, sc = L->col;
@@ -356,7 +375,11 @@ typedef struct {
  * Parser Helpers
  * ============================================================================ */
 
+//p nonnull
+//fmt nonnull
 static void mp_error(MslParser *p, const char *fmt, ...) {
+    wgsl_compiler_assert(p != NULL, "mp_error: p is NULL");
+    wgsl_compiler_assert(fmt != NULL, "mp_error: fmt is NULL");
     if (p->had_error) return;
     p->had_error = 1;
     va_list a;
@@ -365,37 +388,53 @@ static void mp_error(MslParser *p, const char *fmt, ...) {
     va_end(a);
 }
 
+//p nonnull
 static void mp_next(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_next: p is NULL");
     p->cur = mlx_next(&p->lex);
 }
 
+//p nonnull
 static bool mp_check(MslParser *p, MslTokType t) {
+    wgsl_compiler_assert(p != NULL, "mp_check: p is NULL");
     return p->cur.type == t;
 }
 
+//p nonnull
+//kw nonnull
 static bool mp_match_ident(MslParser *p, const char *kw) {
+    wgsl_compiler_assert(p != NULL, "mp_match_ident: p is NULL");
+    wgsl_compiler_assert(kw != NULL, "mp_match_ident: kw is NULL");
     return p->cur.type == MTK_IDENT &&
            p->cur.length == (int)strlen(kw) &&
            strncmp(p->cur.start, kw, p->cur.length) == 0;
 }
 
+//p nonnull
 static char *mp_tok_str(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_tok_str: p is NULL");
     return msl_strndup(p->cur.start, p->cur.length);
 }
 
+//p nonnull
 static bool mp_eat(MslParser *p, MslTokType t) {
+    wgsl_compiler_assert(p != NULL, "mp_eat: p is NULL");
     if (p->cur.type != t) return false;
     mp_next(p);
     return true;
 }
 
+//p nonnull
 static void mp_expect(MslParser *p, MslTokType t) {
+    wgsl_compiler_assert(p != NULL, "mp_expect: p is NULL");
     if (!mp_eat(p, t))
         mp_error(p, "line %d: expected token type %d, got %d", p->cur.line, t, p->cur.type);
 }
 
 /* Add an interface global to current entry point */
+//p nonnull
 static void mp_add_iface(MslParser *p, uint32_t gid) {
+    wgsl_compiler_assert(p != NULL, "mp_add_iface: p is NULL");
     if (p->iface_count >= p->iface_cap) {
         p->iface_cap = p->iface_cap ? p->iface_cap * 2 : 16;
         p->iface = (uint32_t *)MSL_REALLOC(p->iface, p->iface_cap * sizeof(uint32_t));
@@ -404,9 +443,13 @@ static void mp_add_iface(MslParser *p, uint32_t gid) {
 }
 
 /* Add a symbol to the current function scope */
+//p nonnull
+//name nonnull
 static void mp_add_sym(MslParser *p, const char *name, uint32_t id,
                         uint32_t type_id, uint32_t val_type,
                         bool is_out, bool is_in) {
+    wgsl_compiler_assert(p != NULL, "mp_add_sym: p is NULL");
+    wgsl_compiler_assert(name != NULL, "mp_add_sym: name is NULL");
     if (p->sym_count >= p->sym_cap) {
         p->sym_cap = p->sym_cap ? p->sym_cap * 2 : 32;
         p->syms = (MslSym *)MSL_REALLOC(p->syms, p->sym_cap * sizeof(MslSym));
@@ -420,7 +463,11 @@ static void mp_add_sym(MslParser *p, const char *name, uint32_t id,
     s->is_in_var = is_in;
 }
 
+//p nonnull
+//name nonnull
 static MslSym *mp_find_sym(MslParser *p, const char *name) {
+    wgsl_compiler_assert(p != NULL, "mp_find_sym: p is NULL");
+    wgsl_compiler_assert(name != NULL, "mp_find_sym: name is NULL");
     for (int i = p->sym_count - 1; i >= 0; i--) {
         if (strcmp(p->syms[i].name, name) == 0) return &p->syms[i];
     }
@@ -428,7 +475,9 @@ static MslSym *mp_find_sym(MslParser *p, const char *name) {
 }
 
 /* Clear per-function state */
+//p nonnull
 static void mp_clear_func(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_clear_func: p is NULL");
     for (int i = 0; i < p->sym_count; i++) MSL_FREE(p->syms[i].name);
     p->sym_count = 0;
     p->func_id = 0;
@@ -445,14 +494,22 @@ static void mp_clear_func(MslParser *p) {
  * Struct Registry
  * ============================================================================ */
 
+//p nonnull
+//name nonnull
 static MslStructDef *mp_find_struct(MslParser *p, const char *name) {
+    wgsl_compiler_assert(p != NULL, "mp_find_struct: p is NULL");
+    wgsl_compiler_assert(name != NULL, "mp_find_struct: name is NULL");
     for (int i = 0; i < p->struct_count; i++) {
         if (strcmp(p->structs[i].name, name) == 0) return &p->structs[i];
     }
     return NULL;
 }
 
+//p nonnull
+//name nonnull
 static MslStructDef *mp_add_struct(MslParser *p, const char *name) {
+    wgsl_compiler_assert(p != NULL, "mp_add_struct: p is NULL");
+    wgsl_compiler_assert(name != NULL, "mp_add_struct: name is NULL");
     if (p->struct_count >= p->struct_cap) {
         p->struct_cap = p->struct_cap ? p->struct_cap * 2 : 8;
         p->structs = (MslStructDef *)MSL_REALLOC(p->structs, p->struct_cap * sizeof(MslStructDef));
@@ -463,8 +520,12 @@ static MslStructDef *mp_add_struct(MslParser *p, const char *name) {
     return sd;
 }
 
+//sd nonnull
+//name nonnull
 static void mp_struct_add_member(MslStructDef *sd, const char *name, uint32_t type,
                                   SsirBuiltinVar builtin, bool has_loc, uint32_t loc, bool flat) {
+    wgsl_compiler_assert(sd != NULL, "mp_struct_add_member: sd is NULL");
+    wgsl_compiler_assert(name != NULL, "mp_struct_add_member: name is NULL");
     int idx = sd->member_count++;
     sd->members = (MslStructMember *)MSL_REALLOC(sd->members, sd->member_count * sizeof(MslStructMember));
     MslStructMember *m = &sd->members[idx];
@@ -484,7 +545,9 @@ static void mp_struct_add_member(MslStructDef *sd, const char *name, uint32_t ty
 static uint32_t mp_parse_type(MslParser *p);
 
 /* Check if current identifier is a type name */
+//p nonnull
 static bool mp_is_type_name(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_is_type_name: p is NULL");
     if (p->cur.type != MTK_IDENT) return false;
     const char *s = p->cur.start;
     int n = p->cur.length;
@@ -530,7 +593,9 @@ static bool mp_is_type_name(MslParser *p) {
 }
 
 /* Parse a base scalar/vector/matrix/struct type, returns SSIR type ID */
+//p nonnull
 static uint32_t mp_parse_type(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_type: p is NULL");
     if (p->cur.type != MTK_IDENT) {
         mp_error(p, "line %d: expected type name", p->cur.line);
         return 0;
@@ -697,7 +762,9 @@ typedef struct {
     uint32_t color;
 } MslAttr;
 
+//attr nonnull
 static SsirBuiltinVar msl_attr_to_builtin(const char *attr) {
+    wgsl_compiler_assert(attr != NULL, "msl_attr_to_builtin: attr is NULL");
     if (strcmp(attr, "position") == 0) return SSIR_BUILTIN_POSITION;
     if (strcmp(attr, "vertex_id") == 0) return SSIR_BUILTIN_VERTEX_INDEX;
     if (strcmp(attr, "instance_id") == 0) return SSIR_BUILTIN_INSTANCE_INDEX;
@@ -712,7 +779,9 @@ static SsirBuiltinVar msl_attr_to_builtin(const char *attr) {
     return SSIR_BUILTIN_NONE;
 }
 
+//p nonnull
 static MslAttr mp_parse_attrs(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_attrs: p is NULL");
     MslAttr a;
     memset(&a, 0, sizeof(a));
 
@@ -788,7 +857,9 @@ static MslAttr mp_parse_attrs(MslParser *p) {
  * Struct Definition Parsing
  * ============================================================================ */
 
+//p nonnull
 static void mp_parse_struct(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_struct: p is NULL");
     mp_next(p); /* skip 'struct' */
     char *name = mp_tok_str(p);
     mp_next(p);
@@ -821,21 +892,27 @@ static void mp_parse_struct(MslParser *p) {
  * ============================================================================ */
 
 /* Get the pointee type from a pointer SSIR type */
+//p nonnull
 static uint32_t mp_pointee_type(MslParser *p, uint32_t ptr_type_id) {
+    wgsl_compiler_assert(p != NULL, "mp_pointee_type: p is NULL");
     SsirType *t = ssir_get_type(p->mod, ptr_type_id);
     if (t && t->kind == SSIR_TYPE_PTR) return t->ptr.pointee;
     return ptr_type_id;
 }
 
 /* Get the address space from a pointer SSIR type */
+//p nonnull
 static SsirAddressSpace mp_ptr_space(MslParser *p, uint32_t ptr_type_id) {
+    wgsl_compiler_assert(p != NULL, "mp_ptr_space: p is NULL");
     SsirType *t = ssir_get_type(p->mod, ptr_type_id);
     if (t && t->kind == SSIR_TYPE_PTR) return t->ptr.space;
     return SSIR_ADDR_FUNCTION;
 }
 
 /* Ensure a value (load from pointer if needed) */
+//p nonnull
 static MslVal mp_ensure_val(MslParser *p, MslVal v) {
+    wgsl_compiler_assert(p != NULL, "mp_ensure_val: p is NULL");
     if (v.is_ptr && p->func_id && p->block_id) {
         uint32_t loaded = ssir_build_load(p->mod, p->func_id, p->block_id, v.val_type, v.id);
         v.id = loaded;
@@ -845,7 +922,9 @@ static MslVal mp_ensure_val(MslParser *p, MslVal v) {
 }
 
 /* Get the element type when indexing into a container type */
+//p nonnull
 static uint32_t mp_element_type(MslParser *p, uint32_t container_type) {
+    wgsl_compiler_assert(p != NULL, "mp_element_type: p is NULL");
     SsirType *t = ssir_get_type(p->mod, container_type);
     if (!t) return container_type;
     switch (t->kind) {
@@ -864,7 +943,9 @@ static MslVal mp_parse_expr(MslParser *p);
 static MslVal mp_parse_assign_expr(MslParser *p);
 
 /* Parse primary expression */
+//p nonnull
 static MslVal mp_parse_primary(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_primary: p is NULL");
     MslVal v = {0, 0, false};
 
     /* Parenthesized expression */
@@ -1007,7 +1088,11 @@ static MslVal mp_parse_primary(MslParser *p) {
 }
 
 /* MSL builtin function name → SSIR builtin ID */
+//name nonnull
+//out nonnull
 static int mp_msl_builtin_func(const char *name, SsirBuiltinId *out) {
+    wgsl_compiler_assert(name != NULL, "mp_msl_builtin_func: name is NULL");
+    wgsl_compiler_assert(out != NULL, "mp_msl_builtin_func: out is NULL");
     static const struct { const char *name; SsirBuiltinId id; } map[] = {
         {"sin", SSIR_BUILTIN_SIN}, {"cos", SSIR_BUILTIN_COS}, {"tan", SSIR_BUILTIN_TAN},
         {"asin", SSIR_BUILTIN_ASIN}, {"acos", SSIR_BUILTIN_ACOS}, {"atan", SSIR_BUILTIN_ATAN},
@@ -1050,7 +1135,9 @@ static int mp_swizzle_index(char c) {
 }
 
 /* Parse postfix: .member, [index], (args) */
+//p nonnull
 static MslVal mp_parse_postfix(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_postfix: p is NULL");
     MslVal v = mp_parse_primary(p);
     if (p->had_error) return v;
 
@@ -1063,7 +1150,11 @@ static MslVal mp_parse_postfix(MslParser *p) {
 
             /* Check if v is _out/_in → map to output/input global via sentinel IDs */
             if (v.id == MSL_SENTINEL_OUT && p->out_struct) {
+                /* PRE: out_globals allocated when out_struct set */
+                wgsl_compiler_assert(p->out_globals != NULL, "out_globals NULL with out_struct set");
                 for (int i = 0; i < p->out_struct->member_count; i++) {
+                    /* PRE: member name not NULL */
+                    wgsl_compiler_assert(p->out_struct->members[i].name != NULL, "out_struct member[%d].name NULL", i);
                     if (strcmp(p->out_struct->members[i].name, member) == 0) {
                         v.id = p->out_globals[i];
                         v.val_type = p->out_struct->members[i].ssir_type;
@@ -1076,7 +1167,11 @@ static MslVal mp_parse_postfix(MslParser *p) {
             }
 
             if (v.id == MSL_SENTINEL_IN && p->in_struct) {
+                /* PRE: in_globals allocated when in_struct set */
+                wgsl_compiler_assert(p->in_globals != NULL, "in_globals NULL with in_struct set");
                 for (int i = 0; i < p->in_struct->member_count; i++) {
+                    /* PRE: member name not NULL */
+                    wgsl_compiler_assert(p->in_struct->members[i].name != NULL, "in_struct member[%d].name NULL", i);
                     if (strcmp(p->in_struct->members[i].name, member) == 0) {
                         v.id = p->in_globals[i];
                         v.val_type = p->in_struct->members[i].ssir_type;
@@ -1138,6 +1233,8 @@ static MslVal mp_parse_postfix(MslParser *p) {
                     }
                 }
                 if (member_idx >= 0 && (uint32_t)member_idx < vt->struc.member_count) {
+                    /* PRE: member_idx in bounds */
+                    wgsl_compiler_assert((uint32_t)member_idx < vt->struc.member_count, "member_idx %d out of bounds (count=%u)", member_idx, vt->struc.member_count);
                     uint32_t member_type = vt->struc.members[member_idx];
                     if (v.is_ptr) {
                         /* Access chain through pointer */
@@ -1311,7 +1408,9 @@ static MslVal mp_parse_postfix(MslParser *p) {
 }
 
 /* Parse unary expression */
+//p nonnull
 static MslVal mp_parse_unary(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_unary: p is NULL");
     if (mp_check(p, MTK_MINUS)) {
         mp_next(p);
         MslVal operand = mp_parse_unary(p);
@@ -1363,7 +1462,9 @@ static int mp_precedence(MslTokType t) {
 }
 
 /* Build binary instruction from operator token */
+//p nonnull
 static uint32_t mp_build_binop(MslParser *p, MslTokType op, uint32_t type, uint32_t a, uint32_t b) {
+    wgsl_compiler_assert(p != NULL, "mp_build_binop: p is NULL");
     switch (op) {
     case MTK_PLUS: return ssir_build_add(p->mod, p->func_id, p->block_id, type, a, b);
     case MTK_MINUS: return ssir_build_sub(p->mod, p->func_id, p->block_id, type, a, b);
@@ -1388,7 +1489,9 @@ static uint32_t mp_build_binop(MslParser *p, MslTokType op, uint32_t type, uint3
 }
 
 /* Parse binary expression with precedence climbing */
+//p nonnull
 static MslVal mp_parse_binary(MslParser *p, int min_prec) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_binary: p is NULL");
     MslVal left = mp_parse_unary(p);
     if (p->had_error) return left;
 
@@ -1417,12 +1520,16 @@ static MslVal mp_parse_binary(MslParser *p, int min_prec) {
 }
 
 /* Parse full expression (binary with min precedence 1) */
+//p nonnull
 static MslVal mp_parse_expr(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_expr: p is NULL");
     return mp_parse_binary(p, 1);
 }
 
 /* Parse assignment expression (used in function args - same as expr for now) */
+//p nonnull
 static MslVal mp_parse_assign_expr(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_assign_expr: p is NULL");
     return mp_parse_expr(p);
 }
 
@@ -1434,7 +1541,9 @@ static void mp_parse_block(MslParser *p);
 static void mp_parse_stmt(MslParser *p);
 
 /* Is current position the start of a type? (for var declarations) */
+//p nonnull
 static bool mp_at_var_decl(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_at_var_decl: p is NULL");
     if (mp_is_type_name(p)) return true;
     /* address space qualifiers before type */
     if (mp_match_ident(p, "device") || mp_match_ident(p, "constant") ||
@@ -1443,7 +1552,9 @@ static bool mp_at_var_decl(MslParser *p) {
     return false;
 }
 
+//p nonnull
 static void mp_parse_stmt(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_stmt: p is NULL");
     if (p->had_error) return;
 
     /* Empty statement */
@@ -1817,7 +1928,9 @@ static void mp_parse_stmt(MslParser *p) {
     }
 }
 
+//p nonnull
 static void mp_parse_block(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_block: p is NULL");
     mp_expect(p, MTK_LBRACE);
     while (!mp_check(p, MTK_RBRACE) && !mp_check(p, MTK_EOF) && !p->had_error)
         mp_parse_stmt(p);
@@ -1829,12 +1942,16 @@ static void mp_parse_block(MslParser *p) {
  * ============================================================================ */
 
 /* Demangle MSL entry point name: "main0" -> "main" */
+//name nonnull
 static const char *mp_demangle_name(const char *name) {
+    wgsl_compiler_assert(name != NULL, "mp_demangle_name: name is NULL");
     if (strcmp(name, "main0") == 0) return "main";
     return name;
 }
 
+//p nonnull
 static void mp_parse_function(MslParser *p, SsirStage stage) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_function: p is NULL");
     mp_clear_func(p);
 
     /* Save return type name for interface struct lookup before mp_parse_type consumes it */
@@ -1866,6 +1983,8 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
     if (ret_struct && p->is_entry) {
         p->out_struct = ret_struct;
         p->out_globals = (uint32_t *)MSL_MALLOC(ret_struct->member_count * sizeof(uint32_t));
+        /* PRE: allocation succeeded */
+        wgsl_compiler_assert(p->out_globals != NULL, "out_globals allocation failed");
         for (int i = 0; i < ret_struct->member_count; i++) {
             uint32_t pt = ssir_type_ptr(p->mod, ret_struct->members[i].ssir_type, SSIR_ADDR_OUTPUT);
             uint32_t gid = ssir_global_var(p->mod, ret_struct->members[i].name, pt);
@@ -1920,6 +2039,8 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
                 if (in_struct) {
                     p->in_struct = in_struct;
                     p->in_globals = (uint32_t *)MSL_MALLOC(in_struct->member_count * sizeof(uint32_t));
+                    /* PRE: allocation succeeded */
+                    wgsl_compiler_assert(p->in_globals != NULL, "in_globals allocation failed");
                     for (int i = 0; i < in_struct->member_count; i++) {
                         uint32_t pt = ssir_type_ptr(p->mod, in_struct->members[i].ssir_type, SSIR_ADDR_INPUT);
                         uint32_t gid = ssir_global_var(p->mod, in_struct->members[i].name, pt);
@@ -2033,7 +2154,9 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
  * Top-Level Parsing
  * ============================================================================ */
 
+//p nonnull
 static void mp_parse_toplevel(MslParser *p) {
+    wgsl_compiler_assert(p != NULL, "mp_parse_toplevel: p is NULL");
     while (!mp_check(p, MTK_EOF) && !p->had_error) {
         /* 'using namespace metal;' */
         if (mp_match_ident(p, "using")) {
@@ -2082,6 +2205,10 @@ static void mp_parse_toplevel(MslParser *p) {
  * Public API
  * ============================================================================ */
 
+//msl_source nonnull
+//opts nullable
+//out_module nonnull
+//out_error nullable
 MslToSsirResult msl_to_ssir(const char *msl_source, const MslToSsirOptions *opts,
                               SsirModule **out_module, char **out_error) {
     if (!msl_source || !out_module) {
@@ -2144,6 +2271,7 @@ MslToSsirResult msl_to_ssir(const char *msl_source, const MslToSsirOptions *opts
     return MSL_TO_SSIR_OK;
 }
 
+//str nullable
 void msl_to_ssir_free(char *str) {
     MSL_FREE(str);
 }

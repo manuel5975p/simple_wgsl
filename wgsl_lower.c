@@ -30,17 +30,23 @@ typedef struct {
     size_t    cap;
 } WordBuf;
 
+//wb nonnull
 static void wb_init(WordBuf *wb) {
+    wgsl_compiler_assert(wb != NULL, "wb_init: wb is NULL");
     wb->data = NULL;
     wb->len = 0;
     wb->cap = 0;
 }
+//wb nonnull
 static void wb_free(WordBuf *wb) {
+    wgsl_compiler_assert(wb != NULL, "wb_free: wb is NULL");
     WGSL_FREE(wb->data);
     wb->data = NULL;
     wb->len = wb->cap = 0;
 }
+//wb nonnull
 static int wb_reserve(WordBuf *wb, size_t need) {
+    wgsl_compiler_assert(wb != NULL, "wb_reserve: wb is NULL");
     if (wb->len + need <= wb->cap) return 1;
     size_t ncap = wb->cap ? wb->cap : 64;
     while (ncap < wb->len + need) ncap *= 2;
@@ -50,19 +56,31 @@ static int wb_reserve(WordBuf *wb, size_t need) {
     wb->cap = ncap;
     return 1;
 }
+//wb nonnull
 static int wb_push_u32(WordBuf *wb, uint32_t w) {
+    wgsl_compiler_assert(wb != NULL, "wb_push_u32: wb is NULL");
     if (!wb_reserve(wb, 1)) return 0;
     wb->data[wb->len++] = w;
     return 1;
 }
+//wb nonnull
+//src nonnull
 static int wb_push_many(WordBuf *wb, const uint32_t *src, size_t n) {
+    wgsl_compiler_assert(wb != NULL, "wb_push_many: wb is NULL");
+    wgsl_compiler_assert(src != NULL, "wb_push_many: src is NULL");
     if (!wb_reserve(wb, n)) return 0;
     memcpy(wb->data + wb->len, src, n * sizeof(uint32_t));
     wb->len += n;
     return 1;
 }
 
+//s nonnull
+//out_words nonnull
+//out_count nonnull
 static uint32_t make_string_lit(const char *s, uint32_t **out_words, size_t *out_count) {
+    wgsl_compiler_assert(s != NULL, "make_string_lit: s is NULL");
+    wgsl_compiler_assert(out_words != NULL, "make_string_lit: out_words is NULL");
+    wgsl_compiler_assert(out_count != NULL, "make_string_lit: out_count is NULL");
     size_t n = strlen(s) + 1; // include null
     size_t words = (n + 3) / 4;
     uint32_t *buf = (uint32_t*)WGSL_MALLOC(words * sizeof(uint32_t));
@@ -91,7 +109,9 @@ typedef struct {
     WordBuf functions;
 } SpvSections;
 
+//s nonnull
 static void spv_sections_init(SpvSections *s) {
+    wgsl_compiler_assert(s != NULL, "spv_sections_init: s is NULL");
     wb_init(&s->capabilities);
     wb_init(&s->extensions);
     wb_init(&s->ext_inst_imports);
@@ -106,7 +126,9 @@ static void spv_sections_init(SpvSections *s) {
     wb_init(&s->functions);
 }
 
+//s nonnull
 static void spv_sections_free(SpvSections *s) {
+    wgsl_compiler_assert(s != NULL, "spv_sections_free: s is NULL");
     wb_free(&s->capabilities);
     wb_free(&s->extensions);
     wb_free(&s->ext_inst_imports);
@@ -175,11 +197,15 @@ typedef struct {
     TypeCacheEntry *buckets[TYPE_CACHE_SIZE];
 } TypeCache;
 
+//tc nonnull
 static void type_cache_init(TypeCache *tc) {
+    wgsl_compiler_assert(tc != NULL, "type_cache_init: tc is NULL");
     memset(tc->buckets, 0, sizeof(tc->buckets));
 }
 
+//tc nonnull
 static void type_cache_free(TypeCache *tc) {
+    wgsl_compiler_assert(tc != NULL, "type_cache_free: tc is NULL");
     for (int i = 0; i < TYPE_CACHE_SIZE; ++i) {
         TypeCacheEntry *e = tc->buckets[i];
         while (e) {
@@ -201,7 +227,9 @@ static void type_cache_free(TypeCache *tc) {
     }
 }
 
+//key nonnull
 static uint32_t type_hash(TypeCacheKind kind, const void *key, size_t key_size) {
+    wgsl_compiler_assert(key != NULL, "type_hash: key is NULL");
     uint32_t h = (uint32_t)kind * 31;
     const uint8_t *p = (const uint8_t*)key;
     for (size_t i = 0; i < key_size; ++i) {
@@ -376,12 +404,15 @@ static void set_error(WgslLower *l, const char *msg) {
     l->last_error[n] = 0;
 }
 
-static uint32_t fresh_id(WgslLower *l) { return l->next_id++; }
+//l nonnull
+static uint32_t fresh_id(WgslLower *l) { wgsl_compiler_assert(l != NULL, "fresh_id: l is NULL"); return l->next_id++; }
 
 // ---------- SSIR ID Mapping ----------
 // Maps SPIR-V IDs to SSIR IDs for values (constants, variables, expression results)
 
+//l nonnull
 static void ssir_id_map_set(WgslLower *l, uint32_t spv_id, uint32_t ssir_id) {
+    wgsl_compiler_assert(l != NULL, "ssir_id_map_set: l is NULL");
     if (spv_id == 0) return;
     // Grow map if needed
     if (spv_id >= l->ssir_id_map_cap) {
@@ -397,7 +428,9 @@ static void ssir_id_map_set(WgslLower *l, uint32_t spv_id, uint32_t ssir_id) {
     l->ssir_id_map[spv_id] = ssir_id;
 }
 
+//l nonnull
 static uint32_t ssir_id_map_get(WgslLower *l, uint32_t spv_id) {
+    wgsl_compiler_assert(l != NULL, "ssir_id_map_get: l is NULL");
     if (spv_id == 0 || spv_id >= l->ssir_id_map_cap) return 0;
     return l->ssir_id_map[spv_id];
 }
@@ -419,7 +452,9 @@ static SsirAddressSpace spv_sc_to_ssir_addr(SpvStorageClass sc) {
     }
 }
 
+//l nonnull
 static uint32_t spv_type_to_ssir(WgslLower *l, uint32_t spv_type) {
+    wgsl_compiler_assert(l != NULL, "spv_type_to_ssir: l is NULL");
     // Check well-known types first
     if (spv_type == l->id_void) return l->ssir_void;
     if (spv_type == l->id_bool) return l->ssir_bool;
@@ -547,11 +582,15 @@ static uint32_t spv_type_to_ssir(WgslLower *l, uint32_t spv_type) {
 
 // ---------- SPIR-V Instruction Emission Helpers ----------
 
+//wb nonnull
 static int emit_op(WordBuf *wb, SpvOp op, size_t word_count) {
+    wgsl_compiler_assert(wb != NULL, "emit_op: wb is NULL");
     return wb_push_u32(wb, ((uint32_t)word_count << 16) | (uint32_t)op);
 }
 
+//l nonnull
 static int emit_capability(WgslLower *l, SpvCapability cap) {
+    wgsl_compiler_assert(l != NULL, "emit_capability: l is NULL");
     WordBuf *wb = &l->sections.capabilities;
     if (!emit_op(wb, SpvOpCapability, 2)) return 0;
     if (!wb_push_u32(wb, cap)) return 0;
@@ -562,7 +601,11 @@ static int emit_capability(WgslLower *l, SpvCapability cap) {
     return 1;
 }
 
+//l nonnull
+//name nonnull
 static int emit_extension(WgslLower *l, const char *name) {
+    wgsl_compiler_assert(l != NULL, "emit_extension: l is NULL");
+    wgsl_compiler_assert(name != NULL, "emit_extension: name is NULL");
     WordBuf *wb = &l->sections.extensions;
     uint32_t *strw = NULL; size_t wn = 0;
     make_string_lit(name, &strw, &wn);
@@ -572,7 +615,13 @@ static int emit_extension(WgslLower *l, const char *name) {
     return ok;
 }
 
+//l nonnull
+//name nonnull
+//out_id nonnull
 static int emit_ext_inst_import(WgslLower *l, const char *name, uint32_t *out_id) {
+    wgsl_compiler_assert(l != NULL, "emit_ext_inst_import: l is NULL");
+    wgsl_compiler_assert(name != NULL, "emit_ext_inst_import: name is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_ext_inst_import: out_id is NULL");
     WordBuf *wb = &l->sections.ext_inst_imports;
     uint32_t *strw = NULL; size_t wn = 0;
     make_string_lit(name, &strw, &wn);
@@ -585,7 +634,9 @@ static int emit_ext_inst_import(WgslLower *l, const char *name, uint32_t *out_id
     return ok;
 }
 
+//l nonnull
 static int emit_memory_model(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "emit_memory_model: l is NULL");
     WordBuf *wb = &l->sections.memory_model;
     if (!emit_op(wb, SpvOpMemoryModel, 3)) return 0;
     if (!wb_push_u32(wb, SpvAddressingModelLogical)) return 0;
@@ -593,7 +644,9 @@ static int emit_memory_model(WgslLower *l) {
     return 1;
 }
 
+//l nonnull
 static int emit_name(WgslLower *l, uint32_t target, const char *name) {
+    wgsl_compiler_assert(l != NULL, "emit_name: l is NULL");
     if (!l->opts.enable_debug_names || !name || !*name) return 1;
     WordBuf *wb = &l->sections.debug_names;
     uint32_t *strw = NULL; size_t wn = 0;
@@ -605,7 +658,9 @@ static int emit_name(WgslLower *l, uint32_t target, const char *name) {
     return ok;
 }
 
+//l nonnull
 static int emit_member_name(WgslLower *l, uint32_t struct_id, uint32_t member, const char *name) {
+    wgsl_compiler_assert(l != NULL, "emit_member_name: l is NULL");
     if (!l->opts.enable_debug_names || !name || !*name) return 1;
     WordBuf *wb = &l->sections.debug_names;
     uint32_t *strw = NULL; size_t wn = 0;
@@ -618,7 +673,9 @@ static int emit_member_name(WgslLower *l, uint32_t struct_id, uint32_t member, c
     return ok;
 }
 
+//l nonnull
 static int emit_decorate(WgslLower *l, uint32_t target, SpvDecoration decor, const uint32_t *literals, int lit_count) {
+    wgsl_compiler_assert(l != NULL, "emit_decorate: l is NULL");
     WordBuf *wb = &l->sections.annotations;
     if (!emit_op(wb, SpvOpDecorate, 3 + lit_count)) return 0;
     if (!wb_push_u32(wb, target)) return 0;
@@ -629,7 +686,9 @@ static int emit_decorate(WgslLower *l, uint32_t target, SpvDecoration decor, con
     return 1;
 }
 
+//l nonnull
 static int emit_member_decorate(WgslLower *l, uint32_t struct_id, uint32_t member, SpvDecoration decor, const uint32_t *literals, int lit_count) {
+    wgsl_compiler_assert(l != NULL, "emit_member_decorate: l is NULL");
     WordBuf *wb = &l->sections.annotations;
     if (!emit_op(wb, SpvOpMemberDecorate, 4 + lit_count)) return 0;
     if (!wb_push_u32(wb, struct_id)) return 0;
@@ -643,7 +702,9 @@ static int emit_member_decorate(WgslLower *l, uint32_t struct_id, uint32_t membe
 
 // ---------- Type Emission ----------
 
+//l nonnull
 static uint32_t emit_type_void(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "emit_type_void: l is NULL");
     if (l->id_void) return l->id_void;
     WordBuf *wb = &l->sections.types_constants;
     l->id_void = fresh_id(l);
@@ -652,7 +713,9 @@ static uint32_t emit_type_void(WgslLower *l) {
     return l->id_void;
 }
 
+//l nonnull
 static uint32_t emit_type_bool(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "emit_type_bool: l is NULL");
     if (l->id_bool) return l->id_bool;
     WordBuf *wb = &l->sections.types_constants;
     l->id_bool = fresh_id(l);
@@ -661,7 +724,9 @@ static uint32_t emit_type_bool(WgslLower *l) {
     return l->id_bool;
 }
 
+//l nonnull
 static uint32_t emit_type_int(WgslLower *l, uint32_t width, uint32_t signedness) {
+    wgsl_compiler_assert(l != NULL, "emit_type_int: l is NULL");
     // Check cache
     uint32_t key[2] = { width, signedness };
     uint32_t bucket = type_hash(TC_INT, key, sizeof(key));
@@ -695,7 +760,9 @@ static uint32_t emit_type_int(WgslLower *l, uint32_t width, uint32_t signedness)
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_float(WgslLower *l, uint32_t width) {
+    wgsl_compiler_assert(l != NULL, "emit_type_float: l is NULL");
     // Check cache
     uint32_t bucket = type_hash(TC_FLOAT, &width, sizeof(width));
     for (TypeCacheEntry *e = l->type_cache.buckets[bucket]; e; e = e->next) {
@@ -726,7 +793,9 @@ static uint32_t emit_type_float(WgslLower *l, uint32_t width) {
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_vector(WgslLower *l, uint32_t component_type, uint32_t count) {
+    wgsl_compiler_assert(l != NULL, "emit_type_vector: l is NULL");
     // Check cache
     uint32_t key[2] = { component_type, count };
     uint32_t bucket = type_hash(TC_VECTOR, key, sizeof(key));
@@ -774,7 +843,9 @@ static uint32_t emit_type_vector(WgslLower *l, uint32_t component_type, uint32_t
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_matrix(WgslLower *l, uint32_t column_type, uint32_t column_count) {
+    wgsl_compiler_assert(l != NULL, "emit_type_matrix: l is NULL");
     // Check cache
     uint32_t key[2] = { column_type, column_count };
     uint32_t bucket = type_hash(TC_MATRIX, key, sizeof(key));
@@ -805,7 +876,9 @@ static uint32_t emit_type_matrix(WgslLower *l, uint32_t column_type, uint32_t co
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_array(WgslLower *l, uint32_t element_type, uint32_t length_id) {
+    wgsl_compiler_assert(l != NULL, "emit_type_array: l is NULL");
     // Check cache
     uint32_t key[2] = { element_type, length_id };
     uint32_t bucket = type_hash(TC_ARRAY, key, sizeof(key));
@@ -836,7 +909,9 @@ static uint32_t emit_type_array(WgslLower *l, uint32_t element_type, uint32_t le
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_runtime_array(WgslLower *l, uint32_t element_type) {
+    wgsl_compiler_assert(l != NULL, "emit_type_runtime_array: l is NULL");
     // Check cache
     uint32_t bucket = type_hash(TC_RUNTIME_ARRAY, &element_type, sizeof(element_type));
     for (TypeCacheEntry *e = l->type_cache.buckets[bucket]; e; e = e->next) {
@@ -864,7 +939,11 @@ static uint32_t emit_type_runtime_array(WgslLower *l, uint32_t element_type) {
     return id;
 }
 
+//l nonnull
+//member_types nonnull
 static uint32_t emit_type_struct_with_offsets(WgslLower *l, const char *name, uint32_t *member_types, int member_count, uint32_t *offsets) {
+    wgsl_compiler_assert(l != NULL, "emit_type_struct_with_offsets: l is NULL");
+    wgsl_compiler_assert(member_types != NULL, "emit_type_struct_with_offsets: member_types is NULL");
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpTypeStruct, 2 + member_count)) return 0;
@@ -900,11 +979,17 @@ static uint32_t emit_type_struct_with_offsets(WgslLower *l, const char *name, ui
     return id;
 }
 
+//l nonnull
+//member_types nonnull
 static uint32_t emit_type_struct(WgslLower *l, const char *name, uint32_t *member_types, int member_count) {
+    wgsl_compiler_assert(l != NULL, "emit_type_struct: l is NULL");
+    wgsl_compiler_assert(member_types != NULL, "emit_type_struct: member_types is NULL");
     return emit_type_struct_with_offsets(l, name, member_types, member_count, NULL);
 }
 
+//l nonnull
 static uint32_t emit_type_pointer(WgslLower *l, SpvStorageClass storage_class, uint32_t pointee_type) {
+    wgsl_compiler_assert(l != NULL, "emit_type_pointer: l is NULL");
     // Check cache
     uint32_t key[2] = { storage_class, pointee_type };
     uint32_t bucket = type_hash(TC_POINTER, key, sizeof(key));
@@ -935,7 +1020,9 @@ static uint32_t emit_type_pointer(WgslLower *l, SpvStorageClass storage_class, u
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_function(WgslLower *l, uint32_t return_type, uint32_t *param_types, int param_count) {
+    wgsl_compiler_assert(l != NULL, "emit_type_function: l is NULL");
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpTypeFunction, 3 + param_count)) return 0;
@@ -947,7 +1034,9 @@ static uint32_t emit_type_function(WgslLower *l, uint32_t return_type, uint32_t 
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_sampler_with_comparison(WgslLower *l, int comparison) {
+    wgsl_compiler_assert(l != NULL, "emit_type_sampler_with_comparison: l is NULL");
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpTypeSampler, 2)) return 0;
@@ -967,11 +1056,15 @@ static uint32_t emit_type_sampler_with_comparison(WgslLower *l, int comparison) 
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_sampler(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "emit_type_sampler: l is NULL");
     return emit_type_sampler_with_comparison(l, 0);
 }
 
+//l nonnull
 static uint32_t emit_type_image(WgslLower *l, uint32_t sampled_type, SpvDim dim, uint32_t depth, uint32_t arrayed, uint32_t ms, uint32_t sampled, SpvImageFormat format) {
+    wgsl_compiler_assert(l != NULL, "emit_type_image: l is NULL");
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpTypeImage, 9)) return 0;
@@ -1005,7 +1098,9 @@ static uint32_t emit_type_image(WgslLower *l, uint32_t sampled_type, SpvDim dim,
     return id;
 }
 
+//l nonnull
 static uint32_t emit_type_sampled_image(WgslLower *l, uint32_t image_type) {
+    wgsl_compiler_assert(l != NULL, "emit_type_sampled_image: l is NULL");
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpTypeSampledImage, 3)) return 0;
@@ -1016,7 +1111,9 @@ static uint32_t emit_type_sampled_image(WgslLower *l, uint32_t image_type) {
 
 // ---------- Constant Emission ----------
 
+//l nonnull
 static uint32_t emit_const_bool(WgslLower *l, int value) {
+    wgsl_compiler_assert(l != NULL, "emit_const_bool: l is NULL");
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     uint32_t bool_type = emit_type_bool(l);
@@ -1029,7 +1126,9 @@ static uint32_t emit_const_bool(WgslLower *l, int value) {
     return id;
 }
 
+//l nonnull
 static uint32_t emit_const_i32(WgslLower *l, int32_t value) {
+    wgsl_compiler_assert(l != NULL, "emit_const_i32: l is NULL");
     // Check cache
     for (int i = 0; i < l->const_cache_count; ++i) {
         if (l->const_cache[i].type_id == l->id_i32 && l->const_cache[i].i32_val == value) {
@@ -1068,7 +1167,9 @@ static uint32_t emit_const_i32(WgslLower *l, int32_t value) {
     return id;
 }
 
+//l nonnull
 static uint32_t emit_const_u32(WgslLower *l, uint32_t value) {
+    wgsl_compiler_assert(l != NULL, "emit_const_u32: l is NULL");
     // Check cache
     for (int i = 0; i < l->const_cache_count; ++i) {
         if (l->const_cache[i].type_id == l->id_u32 && l->const_cache[i].u32_val == value) {
@@ -1107,7 +1208,9 @@ static uint32_t emit_const_u32(WgslLower *l, uint32_t value) {
     return id;
 }
 
+//l nonnull
 static uint32_t emit_const_f32(WgslLower *l, float value) {
+    wgsl_compiler_assert(l != NULL, "emit_const_f32: l is NULL");
     // Check cache
     uint32_t bits_check;
     memcpy(&bits_check, &value, sizeof(bits_check));
@@ -1150,7 +1253,11 @@ static uint32_t emit_const_f32(WgslLower *l, float value) {
     return id;
 }
 
+//l nonnull
+//constituents nonnull
 static uint32_t emit_const_composite(WgslLower *l, uint32_t type, uint32_t *constituents, int count) {
+    wgsl_compiler_assert(l != NULL, "emit_const_composite: l is NULL");
+    wgsl_compiler_assert(constituents != NULL, "emit_const_composite: constituents is NULL");
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpConstantComposite, 3 + count)) return 0;
@@ -1162,7 +1269,9 @@ static uint32_t emit_const_composite(WgslLower *l, uint32_t type, uint32_t *cons
     return id;
 }
 
+//l nonnull
 static uint32_t emit_const_null(WgslLower *l, uint32_t type) {
+    wgsl_compiler_assert(l != NULL, "emit_const_null: l is NULL");
     WordBuf *wb = &l->sections.types_constants;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpConstantNull, 3)) return 0;
@@ -1187,7 +1296,11 @@ static SpvStorageClass wgsl_address_space_to_storage_class(const char *space) {
 
 static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node);
 
+//l nonnull
+//name nonnull
 static uint32_t lower_scalar_type(WgslLower *l, const char *name) {
+    wgsl_compiler_assert(l != NULL, "lower_scalar_type: l is NULL");
+    wgsl_compiler_assert(name != NULL, "lower_scalar_type: name is NULL");
     if (strcmp(name, "void") == 0) return emit_type_void(l);
     if (strcmp(name, "bool") == 0) return emit_type_bool(l);
     if (strcmp(name, "i32") == 0) return emit_type_int(l, 32, 1);
@@ -1197,7 +1310,9 @@ static uint32_t lower_scalar_type(WgslLower *l, const char *name) {
     return 0;
 }
 
+//l nonnull
 static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
+    wgsl_compiler_assert(l != NULL, "lower_type: l is NULL");
     if (!type_node) return emit_type_void(l);
     if (type_node->type != WGSL_NODE_TYPE) return 0;
 
@@ -1342,7 +1457,13 @@ static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
 // ---------- Struct Type Lowering ----------
 
 // Compute alignment and size for a type name (std430 layout rules)
+//type_name nonnull
+//out_size nonnull
+//out_align nonnull
 static void get_type_layout(const char *type_name, int *out_size, int *out_align) {
+    wgsl_compiler_assert(type_name != NULL, "get_type_layout: type_name is NULL");
+    wgsl_compiler_assert(out_size != NULL, "get_type_layout: out_size is NULL");
+    wgsl_compiler_assert(out_align != NULL, "get_type_layout: out_align is NULL");
     // Default to 4-byte alignment
     int size = 4, align_val = 4;
 
@@ -1387,7 +1508,9 @@ static void get_type_layout(const char *type_name, int *out_size, int *out_align
 }
 
 // Helper to add struct to cache
+//l nonnull
 static int add_struct_to_cache(WgslLower *l, const char *name, uint32_t spv_id, uint32_t inner_type_id) {
+    wgsl_compiler_assert(l != NULL, "add_struct_to_cache: l is NULL");
     if (l->struct_cache_count >= l->struct_cache_cap) {
         int new_cap = l->struct_cache_cap ? l->struct_cache_cap * 2 : 16;
         void *p = WGSL_REALLOC(l->struct_cache, new_cap * sizeof(l->struct_cache[0]));
@@ -1408,7 +1531,9 @@ static int is_matrix_type(uint32_t type_id, WgslLower *l);
 static int get_matrix_info(uint32_t type_id, WgslLower *l, uint32_t *out_col_type, int *out_col_count);
 
 // Lower all struct declarations in the program
+//l nonnull
 static int lower_structs(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "lower_structs: l is NULL");
     if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return 1;
 
     const Program *prog = &l->program->program;
@@ -1558,7 +1683,9 @@ static SpvExecutionModel stage_to_model(WgslStage s) {
     }
 }
 
+//l nonnull
 static int emit_entry_point(WgslLower *l, uint32_t func_id, SpvExecutionModel model, const char *name, uint32_t *interface_ids, int interface_count) {
+    wgsl_compiler_assert(l != NULL, "emit_entry_point: l is NULL");
     WordBuf *wb = &l->sections.entry_points;
     uint32_t *strw = NULL; size_t wn = 0;
     make_string_lit(name ? name : "main", &strw, &wn);
@@ -1574,7 +1701,9 @@ static int emit_entry_point(WgslLower *l, uint32_t func_id, SpvExecutionModel mo
     return 1;
 }
 
+//l nonnull
 static int emit_execution_mode(WgslLower *l, uint32_t func_id, SpvExecutionMode mode, const uint32_t *literals, int lit_count) {
+    wgsl_compiler_assert(l != NULL, "emit_execution_mode: l is NULL");
     WordBuf *wb = &l->sections.execution_modes;
     if (!emit_op(wb, SpvOpExecutionMode, 3 + lit_count)) return 0;
     if (!wb_push_u32(wb, func_id)) return 0;
@@ -1587,7 +1716,9 @@ static int emit_execution_mode(WgslLower *l, uint32_t func_id, SpvExecutionMode 
 
 // ---------- Global Variable Emission ----------
 
+//l nonnull
 static uint32_t emit_global_variable(WgslLower *l, uint32_t ptr_type, SpvStorageClass storage_class, const char *name, uint32_t initializer) {
+    wgsl_compiler_assert(l != NULL, "emit_global_variable: l is NULL");
     WordBuf *wb = &l->sections.globals;
     uint32_t id = fresh_id(l);
     int has_init = (initializer != 0);
@@ -1604,7 +1735,9 @@ static uint32_t emit_global_variable(WgslLower *l, uint32_t ptr_type, SpvStorage
 
 // ---------- Function Emission ----------
 
+//l nonnull
 static int emit_function_begin(WgslLower *l, uint32_t func_id, uint32_t result_type, uint32_t func_type) {
+    wgsl_compiler_assert(l != NULL, "emit_function_begin: l is NULL");
     WordBuf *wb = &l->sections.functions;
     if (!emit_op(wb, SpvOpFunction, 5)) return 0;
     if (!wb_push_u32(wb, result_type)) return 0;
@@ -1614,7 +1747,11 @@ static int emit_function_begin(WgslLower *l, uint32_t func_id, uint32_t result_t
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
 static int emit_function_parameter(WgslLower *l, uint32_t result_type, uint32_t *out_id) {
+    wgsl_compiler_assert(l != NULL, "emit_function_parameter: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_function_parameter: out_id is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpFunctionParameter, 3)) return 0;
@@ -1624,7 +1761,11 @@ static int emit_function_parameter(WgslLower *l, uint32_t result_type, uint32_t 
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
 static int emit_label(WgslLower *l, uint32_t *out_id) {
+    wgsl_compiler_assert(l != NULL, "emit_label: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_label: out_id is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpLabel, 2)) return 0;
@@ -1633,7 +1774,9 @@ static int emit_label(WgslLower *l, uint32_t *out_id) {
     return 1;
 }
 
+//l nonnull
 static int emit_return(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "emit_return: l is NULL");
     WordBuf *wb = &l->sections.functions;
     int ok = emit_op(wb, SpvOpReturn, 1);
 
@@ -1645,7 +1788,9 @@ static int emit_return(WgslLower *l) {
     return ok;
 }
 
+//l nonnull
 static int emit_return_value(WgslLower *l, uint32_t value) {
+    wgsl_compiler_assert(l != NULL, "emit_return_value: l is NULL");
     WordBuf *wb = &l->sections.functions;
     if (!emit_op(wb, SpvOpReturnValue, 2)) return 0;
     if (!wb_push_u32(wb, value)) return 0;
@@ -1661,7 +1806,9 @@ static int emit_return_value(WgslLower *l, uint32_t value) {
     return 1;
 }
 
+//l nonnull
 static int emit_function_end(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "emit_function_end: l is NULL");
     WordBuf *wb = &l->sections.functions;
     return emit_op(wb, SpvOpFunctionEnd, 1);
 }
@@ -1687,20 +1834,28 @@ typedef struct {
     int cap;
 } LocalVarContext;
 
+//ctx nonnull
 static void local_ctx_init(LocalVarContext *ctx) {
+    wgsl_compiler_assert(ctx != NULL, "local_ctx_init: ctx is NULL");
     ctx->vars = NULL;
     ctx->count = 0;
     ctx->cap = 0;
 }
 
+//ctx nonnull
 static void local_ctx_free(LocalVarContext *ctx) {
+    wgsl_compiler_assert(ctx != NULL, "local_ctx_free: ctx is NULL");
     WGSL_FREE(ctx->vars);
     ctx->vars = NULL;
     ctx->count = 0;
     ctx->cap = 0;
 }
 
+//ctx nonnull
+//name nonnull
 static void local_ctx_add(LocalVarContext *ctx, const char *name, uint32_t ptr_id, uint32_t type_id) {
+    wgsl_compiler_assert(ctx != NULL, "local_ctx_add: ctx is NULL");
+    wgsl_compiler_assert(name != NULL, "local_ctx_add: name is NULL");
     if (ctx->count >= ctx->cap) {
         int new_cap = ctx->cap ? ctx->cap * 2 : 16;
         void *p = WGSL_REALLOC(ctx->vars, new_cap * sizeof(LocalVar));
@@ -1714,7 +1869,11 @@ static void local_ctx_add(LocalVarContext *ctx, const char *name, uint32_t ptr_i
     ctx->count++;
 }
 
+//ctx nonnull
+//name nonnull
 static LocalVar* local_ctx_find(LocalVarContext *ctx, const char *name) {
+    wgsl_compiler_assert(ctx != NULL, "local_ctx_find: ctx is NULL");
+    wgsl_compiler_assert(name != NULL, "local_ctx_find: name is NULL");
     for (int i = ctx->count - 1; i >= 0; --i) {
         if (strcmp(ctx->vars[i].name, name) == 0) {
             return &ctx->vars[i];
@@ -1725,7 +1884,11 @@ static LocalVar* local_ctx_find(LocalVarContext *ctx, const char *name) {
 
 // ---------- Instruction Emission ----------
 
+//l nonnull
+//out_id nonnull
 static int emit_load(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint32_t pointer) {
+    wgsl_compiler_assert(l != NULL, "emit_load: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_load: out_id is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpLoad, 4)) return 0;
@@ -1748,7 +1911,9 @@ static int emit_load(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint3
     return 1;
 }
 
+//l nonnull
 static int emit_store(WgslLower *l, uint32_t pointer, uint32_t object) {
+    wgsl_compiler_assert(l != NULL, "emit_store: l is NULL");
     WordBuf *wb = &l->sections.functions;
     if (!emit_op(wb, SpvOpStore, 3)) return 0;
     if (!wb_push_u32(wb, pointer)) return 0;
@@ -1767,7 +1932,13 @@ static int emit_store(WgslLower *l, uint32_t pointer, uint32_t object) {
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
+//indices nonnull
 static int emit_access_chain(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint32_t base, uint32_t *indices, int index_count) {
+    wgsl_compiler_assert(l != NULL, "emit_access_chain: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_access_chain: out_id is NULL");
+    wgsl_compiler_assert(indices != NULL, "emit_access_chain: indices is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpAccessChain, 4 + index_count)) return 0;
@@ -1800,7 +1971,11 @@ static int emit_access_chain(WgslLower *l, uint32_t result_type, uint32_t *out_i
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
 static int emit_local_variable(WgslLower *l, uint32_t ptr_type, uint32_t elem_type, uint32_t *out_id, uint32_t initializer) {
+    wgsl_compiler_assert(l != NULL, "emit_local_variable: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_local_variable: out_id is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     int has_init = (initializer != 0);
@@ -1825,7 +2000,11 @@ static int emit_local_variable(WgslLower *l, uint32_t ptr_type, uint32_t elem_ty
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
 static int emit_binary_op(WgslLower *l, SpvOp op, uint32_t result_type, uint32_t *out_id, uint32_t operand1, uint32_t operand2) {
+    wgsl_compiler_assert(l != NULL, "emit_binary_op: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_binary_op: out_id is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, op, 5)) return 0;
@@ -1949,7 +2128,11 @@ static int emit_binary_op(WgslLower *l, SpvOp op, uint32_t result_type, uint32_t
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
 static int emit_unary_op(WgslLower *l, SpvOp op, uint32_t result_type, uint32_t *out_id, uint32_t operand) {
+    wgsl_compiler_assert(l != NULL, "emit_unary_op: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_unary_op: out_id is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, op, 4)) return 0;
@@ -1999,7 +2182,13 @@ static int emit_unary_op(WgslLower *l, SpvOp op, uint32_t result_type, uint32_t 
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
+//constituents nonnull
 static int emit_composite_construct(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint32_t *constituents, int count) {
+    wgsl_compiler_assert(l != NULL, "emit_composite_construct: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_composite_construct: out_id is NULL");
+    wgsl_compiler_assert(constituents != NULL, "emit_composite_construct: constituents is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpCompositeConstruct, 3 + count)) return 0;
@@ -2030,7 +2219,13 @@ static int emit_composite_construct(WgslLower *l, uint32_t result_type, uint32_t
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
+//indices nonnull
 static int emit_composite_extract(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint32_t composite, uint32_t *indices, int index_count) {
+    wgsl_compiler_assert(l != NULL, "emit_composite_extract: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_composite_extract: out_id is NULL");
+    wgsl_compiler_assert(indices != NULL, "emit_composite_extract: indices is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpCompositeExtract, 4 + index_count)) return 0;
@@ -2057,7 +2252,11 @@ static int emit_composite_extract(WgslLower *l, uint32_t result_type, uint32_t *
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
 static int emit_select(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint32_t cond, uint32_t true_val, uint32_t false_val) {
+    wgsl_compiler_assert(l != NULL, "emit_select: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_select: out_id is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpSelect, 6)) return 0;
@@ -2086,7 +2285,9 @@ static int emit_select(WgslLower *l, uint32_t result_type, uint32_t *out_id, uin
     return 1;
 }
 
+//l nonnull
 static int emit_branch(WgslLower *l, uint32_t target) {
+    wgsl_compiler_assert(l != NULL, "emit_branch: l is NULL");
     WordBuf *wb = &l->sections.functions;
     if (!emit_op(wb, SpvOpBranch, 2)) return 0;
     if (!wb_push_u32(wb, target)) return 0;
@@ -2103,7 +2304,9 @@ static int emit_branch(WgslLower *l, uint32_t target) {
     return 1;
 }
 
+//l nonnull
 static int emit_branch_conditional(WgslLower *l, uint32_t cond, uint32_t true_label, uint32_t false_label) {
+    wgsl_compiler_assert(l != NULL, "emit_branch_conditional: l is NULL");
     WordBuf *wb = &l->sections.functions;
     if (!emit_op(wb, SpvOpBranchConditional, 4)) return 0;
     if (!wb_push_u32(wb, cond)) return 0;
@@ -2114,7 +2317,9 @@ static int emit_branch_conditional(WgslLower *l, uint32_t cond, uint32_t true_la
     return 1;
 }
 
+//l nonnull
 static int emit_selection_merge(WgslLower *l, uint32_t merge_block) {
+    wgsl_compiler_assert(l != NULL, "emit_selection_merge: l is NULL");
     WordBuf *wb = &l->sections.functions;
     if (!emit_op(wb, SpvOpSelectionMerge, 3)) return 0;
     if (!wb_push_u32(wb, merge_block)) return 0;
@@ -2122,7 +2327,9 @@ static int emit_selection_merge(WgslLower *l, uint32_t merge_block) {
     return 1;
 }
 
+//l nonnull
 static int emit_loop_merge(WgslLower *l, uint32_t merge_block, uint32_t continue_block) {
+    wgsl_compiler_assert(l != NULL, "emit_loop_merge: l is NULL");
     WordBuf *wb = &l->sections.functions;
     if (!emit_op(wb, SpvOpLoopMerge, 4)) return 0;
     if (!wb_push_u32(wb, merge_block)) return 0;
@@ -2180,7 +2387,13 @@ static SsirBuiltinId glsl_to_ssir_builtin(uint32_t glsl_op) {
     }
 }
 
+//l nonnull
+//out_id nonnull
+//operands nonnull
 static int emit_ext_inst(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint32_t set, uint32_t instruction, uint32_t *operands, int count) {
+    wgsl_compiler_assert(l != NULL, "emit_ext_inst: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_ext_inst: out_id is NULL");
+    wgsl_compiler_assert(operands != NULL, "emit_ext_inst: operands is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpExtInst, 5 + count)) return 0;
@@ -2216,7 +2429,11 @@ static int emit_ext_inst(WgslLower *l, uint32_t result_type, uint32_t *out_id, u
     return 1;
 }
 
+//l nonnull
+//out_id nonnull
 static int emit_function_call(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint32_t function, uint32_t *args, int arg_count) {
+    wgsl_compiler_assert(l != NULL, "emit_function_call: l is NULL");
+    wgsl_compiler_assert(out_id != NULL, "emit_function_call: out_id is NULL");
     WordBuf *wb = &l->sections.functions;
     uint32_t id = fresh_id(l);
     if (!emit_op(wb, SpvOpFunctionCall, 4 + arg_count)) return 0;
@@ -2230,7 +2447,13 @@ static int emit_function_call(WgslLower *l, uint32_t result_type, uint32_t *out_
     return 1;
 }
 
+//l nonnull
+//out_words nonnull
+//out_count nonnull
 static int finalize_spirv(WgslLower *l, uint32_t **out_words, size_t *out_count) {
+    wgsl_compiler_assert(l != NULL, "finalize_spirv: l is NULL");
+    wgsl_compiler_assert(out_words != NULL, "finalize_spirv: out_words is NULL");
+    wgsl_compiler_assert(out_count != NULL, "finalize_spirv: out_count is NULL");
     SsirToSpirvOptions opts = {0};
     opts.spirv_version = l->opts.spirv_version ? l->opts.spirv_version : 0x00010300;
     opts.enable_debug_names = l->opts.enable_debug_names;
@@ -2240,7 +2463,9 @@ static int finalize_spirv(WgslLower *l, uint32_t **out_words, size_t *out_count)
 // ---------- Expression Type Inference ----------
 
 // Determine if a type is float-based (includes matrices which are float-based in WGSL)
+//l nonnull
 static int is_float_type(uint32_t type_id, WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "is_float_type: l is NULL");
     if (type_id == l->id_f32 || type_id == l->id_f16 ||
         type_id == l->id_vec2f || type_id == l->id_vec3f || type_id == l->id_vec4f) {
         return 1;
@@ -2257,24 +2482,32 @@ static int is_float_type(uint32_t type_id, WgslLower *l) {
 }
 
 // Determine if a type is signed integer
+//l nonnull
 static int is_signed_int_type(uint32_t type_id, WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "is_signed_int_type: l is NULL");
     return type_id == l->id_i32 ||
            type_id == l->id_vec2i || type_id == l->id_vec3i || type_id == l->id_vec4i;
 }
 
 // Determine if a type is unsigned integer
+//l nonnull
 static int is_unsigned_int_type(uint32_t type_id, WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "is_unsigned_int_type: l is NULL");
     return type_id == l->id_u32 ||
            type_id == l->id_vec2u || type_id == l->id_vec3u || type_id == l->id_vec4u;
 }
 
 // Determine if a type is boolean
+//l nonnull
 static int is_bool_type(uint32_t type_id, WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "is_bool_type: l is NULL");
     return type_id == l->id_bool;
 }
 
 // Get vector component count (returns 0 for non-vector types)
+//l nonnull
 static int get_vector_component_count(uint32_t type_id, WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "get_vector_component_count: l is NULL");
     if (type_id == l->id_vec2f || type_id == l->id_vec2i || type_id == l->id_vec2u) return 2;
     if (type_id == l->id_vec3f || type_id == l->id_vec3i || type_id == l->id_vec3u) return 3;
     if (type_id == l->id_vec4f || type_id == l->id_vec4i || type_id == l->id_vec4u) return 4;
@@ -2282,7 +2515,9 @@ static int get_vector_component_count(uint32_t type_id, WgslLower *l) {
 }
 
 // Check if a type is a matrix type
+//l nonnull
 static int is_matrix_type(uint32_t type_id, WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "is_matrix_type: l is NULL");
     for (int bucket = 0; bucket < TYPE_CACHE_SIZE; ++bucket) {
         for (TypeCacheEntry *e = l->type_cache.buckets[bucket]; e; e = e->next) {
             if (e->spv_id == type_id && e->kind == TC_MATRIX) {
@@ -2294,7 +2529,9 @@ static int is_matrix_type(uint32_t type_id, WgslLower *l) {
 }
 
 // Get matrix info (column type and count) - returns 1 if found
+//l nonnull
 static int get_matrix_info(uint32_t type_id, WgslLower *l, uint32_t *out_col_type, int *out_col_count) {
+    wgsl_compiler_assert(l != NULL, "get_matrix_info: l is NULL");
     for (int bucket = 0; bucket < TYPE_CACHE_SIZE; ++bucket) {
         for (TypeCacheEntry *e = l->type_cache.buckets[bucket]; e; e = e->next) {
             if (e->spv_id == type_id && e->kind == TC_MATRIX) {
@@ -2308,13 +2545,17 @@ static int get_matrix_info(uint32_t type_id, WgslLower *l, uint32_t *out_col_typ
 }
 
 // Check if a type is a scalar (not a vector)
+//l nonnull
 static int is_scalar_type(uint32_t type_id, WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "is_scalar_type: l is NULL");
     return type_id == l->id_f32 || type_id == l->id_f16 ||
            type_id == l->id_i32 || type_id == l->id_u32 || type_id == l->id_bool;
 }
 
 // Get the scalar component type of a vector (or the type itself if scalar)
+//l nonnull
 static uint32_t get_scalar_type(uint32_t type_id, WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "get_scalar_type: l is NULL");
     if (type_id == l->id_vec2f || type_id == l->id_vec3f || type_id == l->id_vec4f) return l->id_f32;
     if (type_id == l->id_vec2i || type_id == l->id_vec3i || type_id == l->id_vec4i) return l->id_i32;
     if (type_id == l->id_vec2u || type_id == l->id_vec3u || type_id == l->id_vec4u) return l->id_u32;
@@ -2332,7 +2573,11 @@ typedef struct {
 
 // ---------- Local Variable Helpers ----------
 
+//l nonnull
+//name nonnull
 static void fn_ctx_add_local_ex(WgslLower *l, const char *name, uint32_t ptr_id, uint32_t type_id, int is_value) {
+    wgsl_compiler_assert(l != NULL, "fn_ctx_add_local_ex: l is NULL");
+    wgsl_compiler_assert(name != NULL, "fn_ctx_add_local_ex: name is NULL");
     if (l->fn_ctx.locals.count >= l->fn_ctx.locals.cap) {
         int new_cap = l->fn_ctx.locals.cap ? l->fn_ctx.locals.cap * 2 : 16;
         void *p = WGSL_REALLOC(l->fn_ctx.locals.vars, new_cap * sizeof(l->fn_ctx.locals.vars[0]));
@@ -2347,11 +2592,19 @@ static void fn_ctx_add_local_ex(WgslLower *l, const char *name, uint32_t ptr_id,
     l->fn_ctx.locals.count++;
 }
 
+//l nonnull
+//name nonnull
 static void fn_ctx_add_local(WgslLower *l, const char *name, uint32_t ptr_id, uint32_t type_id) {
+    wgsl_compiler_assert(l != NULL, "fn_ctx_add_local: l is NULL");
+    wgsl_compiler_assert(name != NULL, "fn_ctx_add_local: name is NULL");
     fn_ctx_add_local_ex(l, name, ptr_id, type_id, 0);
 }
 
+//l nonnull
+//name nonnull
 static int fn_ctx_find_local(WgslLower *l, const char *name, uint32_t *out_ptr_id, uint32_t *out_type_id) {
+    wgsl_compiler_assert(l != NULL, "fn_ctx_find_local: l is NULL");
+    wgsl_compiler_assert(name != NULL, "fn_ctx_find_local: name is NULL");
     for (int i = l->fn_ctx.locals.count - 1; i >= 0; --i) {
         if (strcmp(l->fn_ctx.locals.vars[i].name, name) == 0) {
             if (out_ptr_id) *out_ptr_id = l->fn_ctx.locals.vars[i].ptr_id;
@@ -2362,7 +2615,9 @@ static int fn_ctx_find_local(WgslLower *l, const char *name, uint32_t *out_ptr_i
     return 0;
 }
 
+//l nonnull
 static void fn_ctx_clear_locals(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "fn_ctx_clear_locals: l is NULL");
     WGSL_FREE(l->fn_ctx.locals.vars);
     l->fn_ctx.locals.vars = NULL;
     l->fn_ctx.locals.count = 0;
@@ -2377,7 +2632,11 @@ static void fn_ctx_clear_locals(WgslLower *l) {
 // ---------- Expression Lowering ----------
 
 // Lower a literal expression
+//l nonnull
+//node nonnull
 static ExprResult lower_literal(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_literal: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_literal: node is NULL");
     ExprResult r = {0, 0};
     const Literal *lit = &node->literal;
 
@@ -2418,7 +2677,9 @@ static ExprResult lower_literal(WgslLower *l, const WgslAstNode *node) {
 }
 
 // Helper to get element type from a runtime array type ID
+//l nonnull
 static uint32_t get_runtime_array_element_type(WgslLower *l, uint32_t type_id) {
+    wgsl_compiler_assert(l != NULL, "get_runtime_array_element_type: l is NULL");
     // Search all buckets for runtime array types
     for (int b = 0; b < TYPE_CACHE_SIZE; ++b) {
         for (TypeCacheEntry *e = l->type_cache.buckets[b]; e; e = e->next) {
@@ -2431,7 +2692,11 @@ static uint32_t get_runtime_array_element_type(WgslLower *l, uint32_t type_id) {
 }
 
 // Helper to find global variable by name
+//l nonnull
+//name nonnull
 static int find_global_by_name(WgslLower *l, const char *name, uint32_t *out_var_id, uint32_t *out_type_id, SpvStorageClass *out_sc) {
+    wgsl_compiler_assert(l != NULL, "find_global_by_name: l is NULL");
+    wgsl_compiler_assert(name != NULL, "find_global_by_name: name is NULL");
     for (int i = 0; i < l->global_map_count; ++i) {
         if (l->global_map[i].name && strcmp(l->global_map[i].name, name) == 0) {
             if (out_var_id) *out_var_id = l->global_map[i].spv_id;
@@ -2444,7 +2709,13 @@ static int find_global_by_name(WgslLower *l, const char *name, uint32_t *out_var
 }
 
 // Helper to find struct member index by name
+//l nonnull
+//struct_type_name nonnull
+//member_name nonnull
 static int find_struct_member_index(WgslLower *l, const char *struct_type_name, const char *member_name) {
+    wgsl_compiler_assert(l != NULL, "find_struct_member_index: l is NULL");
+    wgsl_compiler_assert(struct_type_name != NULL, "find_struct_member_index: struct_type_name is NULL");
+    wgsl_compiler_assert(member_name != NULL, "find_struct_member_index: member_name is NULL");
     if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return -1;
 
     const Program *prog = &l->program->program;
@@ -2470,7 +2741,11 @@ static int find_struct_member_index(WgslLower *l, const char *struct_type_name, 
 }
 
 // Helper to get struct member type
+//l nonnull
+//struct_type_name nonnull
 static uint32_t get_struct_member_type(WgslLower *l, const char *struct_type_name, int member_index) {
+    wgsl_compiler_assert(l != NULL, "get_struct_member_type: l is NULL");
+    wgsl_compiler_assert(struct_type_name != NULL, "get_struct_member_type: struct_type_name is NULL");
     if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return 0;
 
     const Program *prog = &l->program->program;
@@ -2492,7 +2767,9 @@ static uint32_t get_struct_member_type(WgslLower *l, const char *struct_type_nam
 }
 
 // Helper to find struct type name from SPIR-V type ID
+//l nonnull
 static const char *find_struct_name_by_type_id(WgslLower *l, uint32_t type_id) {
+    wgsl_compiler_assert(l != NULL, "find_struct_name_by_type_id: l is NULL");
     for (int i = 0; i < l->struct_cache_count; ++i) {
         if (l->struct_cache[i].spv_id == type_id) {
             return l->struct_cache[i].name;
@@ -2506,7 +2783,11 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node);
 static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStorageClass *out_sc);
 
 // Lower an identifier expression (returns loaded value)
+//l nonnull
+//node nonnull
 static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_ident: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_ident: node is NULL");
     ExprResult r = {0, 0};
     const char *name = node->ident.name;
 
@@ -2554,7 +2835,11 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
 
 // Lower an expression to get a pointer (for lvalues and access chains)
 // Returns the pointer ID in r.id and the element type in r.type_id
+//l nonnull
+//node nonnull
 static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStorageClass *out_sc) {
+    wgsl_compiler_assert(l != NULL, "lower_ptr_expr: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_ptr_expr: node is NULL");
     ExprResult r = {0, 0};
     if (out_sc) *out_sc = SpvStorageClassFunction;
 
@@ -2663,13 +2948,21 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
 }
 
 // Get the lvalue (pointer) for an expression
+//l nonnull
+//node nonnull
 static ExprResult lower_lvalue(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_lvalue: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_lvalue: node is NULL");
     SpvStorageClass sc;
     return lower_ptr_expr(l, node, &sc);
 }
 
 // Lower a binary expression
+//l nonnull
+//node nonnull
 static ExprResult lower_binary(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_binary: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_binary: node is NULL");
     ExprResult r = {0, 0};
     const Binary *bin = &node->binary;
 
@@ -2684,7 +2977,11 @@ static ExprResult lower_binary(WgslLower *l, const WgslAstNode *node) {
 static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node);
 
 // Lower a call expression
+//l nonnull
+//node nonnull
 static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_call: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_call: node is NULL");
     ExprResult r = {0, 0};
     const Call *call = &node->call;
 
@@ -3096,7 +3393,9 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
 }
 
 // Full expression lowering
+//l nonnull
 static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_expr_full: l is NULL");
     ExprResult r = {0, 0};
     if (!node) return r;
 
@@ -3401,12 +3700,13 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
                 }
             }
 
-            // First, check if this is struct member access (for storage buffers, uniforms, or inputs/outputs)
+            // First, check if this is struct member access (for storage buffers, uniforms, inputs/outputs, or local vars)
             // Try to use pointer-based access chain
             SpvStorageClass sc;
             ExprResult ptr = lower_ptr_expr(l, node, &sc);
             if (ptr.id && (sc == SpvStorageClassStorageBuffer || sc == SpvStorageClassUniform ||
-                           sc == SpvStorageClassInput || sc == SpvStorageClassOutput)) {
+                           sc == SpvStorageClassInput || sc == SpvStorageClassOutput ||
+                           sc == SpvStorageClassFunction)) {
                 // This is struct member access - load from the pointer
                 uint32_t loaded;
                 if (emit_load(l, ptr.type_id, &loaded, ptr.id)) {
@@ -3537,7 +3837,9 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
 }
 
 // Simple wrapper for backward compatibility
+//l nonnull
 static uint32_t lower_expression(WgslLower *l, const WgslAstNode *expr) {
+    wgsl_compiler_assert(l != NULL, "lower_expression: l is NULL");
     ExprResult r = lower_expr_full(l, expr);
     return r.id;
 }
@@ -3548,7 +3850,9 @@ static uint32_t lower_expression(WgslLower *l, const WgslAstNode *expr) {
 static void collect_variables_from_block(WgslLower *l, const WgslAstNode *block);
 
 // Infer type from expression (lightweight version for variable declaration)
+//l nonnull
 static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
+    wgsl_compiler_assert(l != NULL, "infer_expr_type: l is NULL");
     if (!expr) return l->id_f32;
 
     switch (expr->type) {
@@ -3688,7 +3992,9 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
 }
 
 // Collect variable declarations from a block (for pre-emit)
+//l nonnull
 static void collect_variables_from_stmt(WgslLower *l, const WgslAstNode *stmt) {
+    wgsl_compiler_assert(l != NULL, "collect_variables_from_stmt: l is NULL");
     if (!stmt) return;
 
     switch (stmt->type) {
@@ -3771,7 +4077,9 @@ static void collect_variables_from_stmt(WgslLower *l, const WgslAstNode *stmt) {
     }
 }
 
+//l nonnull
 static void collect_variables_from_block(WgslLower *l, const WgslAstNode *block) {
+    wgsl_compiler_assert(l != NULL, "collect_variables_from_block: l is NULL");
     if (!block) return;
 
     if (block->type == WGSL_NODE_BLOCK) {
@@ -3785,7 +4093,9 @@ static void collect_variables_from_block(WgslLower *l, const WgslAstNode *block)
 }
 
 // Emit pending initializers after all OpVariable instructions
+//l nonnull
 static void emit_pending_initializers(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "emit_pending_initializers: l is NULL");
     for (int i = 0; i < l->fn_ctx.pending_init_count; ++i) {
         ExprResult init = lower_expr_full(l, l->fn_ctx.pending_inits[i].init_expr);
         if (init.id) {
@@ -3799,7 +4109,11 @@ static void emit_pending_initializers(WgslLower *l) {
     l->fn_ctx.pending_init_cap = 0;
 }
 
+//l nonnull
+//node nonnull
 static int lower_var_decl(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_var_decl: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_var_decl: node is NULL");
     const VarDecl *vd = &node->var_decl;
 
     // var declarations are handled by collect_variables + pending_inits
@@ -3823,7 +4137,11 @@ static int lower_var_decl(WgslLower *l, const WgslAstNode *node) {
     return 1;
 }
 
+//l nonnull
+//node nonnull
 static int lower_assignment(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_assignment: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_assignment: node is NULL");
     const Assign *asgn = &node->assign;
 
     ExprResult lhs = lower_lvalue(l, asgn->lhs);
@@ -3860,7 +4178,11 @@ static int lower_assignment(WgslLower *l, const WgslAstNode *node) {
     return emit_store(l, lhs.id, rhs.id);
 }
 
+//l nonnull
+//node nonnull
 static int lower_return(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_return: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_return: node is NULL");
     const ReturnNode *ret = &node->return_stmt;
 
     // For struct outputs, the values are already written via member assignments
@@ -3885,7 +4207,11 @@ static int lower_return(WgslLower *l, const WgslAstNode *node) {
     return emit_return(l);
 }
 
+//l nonnull
+//node nonnull
 static int lower_if_stmt(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_if_stmt: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_if_stmt: node is NULL");
     const IfStmt *if_stmt = &node->if_stmt;
 
     // Lower condition
@@ -3972,7 +4298,11 @@ static int lower_if_stmt(WgslLower *l, const WgslAstNode *node) {
     return 1;
 }
 
+//l nonnull
+//node nonnull
 static int lower_while_stmt(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_while_stmt: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_while_stmt: node is NULL");
     const WhileStmt *while_stmt = &node->while_stmt;
 
     // Allocate block IDs
@@ -4102,7 +4432,11 @@ static int lower_while_stmt(WgslLower *l, const WgslAstNode *node) {
     return 1;
 }
 
+//l nonnull
+//node nonnull
 static int lower_for_stmt(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_for_stmt: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_for_stmt: node is NULL");
     const ForStmt *for_stmt = &node->for_stmt;
 
     // Lower initializer (store is emitted here since var was already declared)
@@ -4249,7 +4583,11 @@ static int lower_for_stmt(WgslLower *l, const WgslAstNode *node) {
     return 1;
 }
 
+//l nonnull
+//node nonnull
 static int lower_do_while_stmt(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_do_while_stmt: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_do_while_stmt: node is NULL");
     const DoWhileStmt *dw = &node->do_while_stmt;
     WordBuf *wb = &l->sections.functions;
 
@@ -4331,7 +4669,11 @@ static int lower_do_while_stmt(WgslLower *l, const WgslAstNode *node) {
     return 1;
 }
 
+//l nonnull
+//node nonnull
 static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
+    wgsl_compiler_assert(l != NULL, "lower_switch_stmt: l is NULL");
+    wgsl_compiler_assert(node != NULL, "lower_switch_stmt: node is NULL");
     const SwitchStmt *sw = &node->switch_stmt;
     WordBuf *wb = &l->sections.functions;
 
@@ -4419,7 +4761,9 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
     return 1;
 }
 
+//l nonnull
 static int lower_break_stmt(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "lower_break_stmt: l is NULL");
     if (l->fn_ctx.loop_depth <= 0) return 1;
     uint32_t merge = l->fn_ctx.loop_stack[l->fn_ctx.loop_depth - 1].merge_block;
     if (merge) emit_branch(l, merge);
@@ -4427,7 +4771,9 @@ static int lower_break_stmt(WgslLower *l) {
     return 1;
 }
 
+//l nonnull
 static int lower_continue_stmt(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "lower_continue_stmt: l is NULL");
     if (l->fn_ctx.loop_depth <= 0) return 1;
     uint32_t cont = l->fn_ctx.loop_stack[l->fn_ctx.loop_depth - 1].continue_block;
     if (cont) emit_branch(l, cont);
@@ -4435,14 +4781,18 @@ static int lower_continue_stmt(WgslLower *l) {
     return 1;
 }
 
+//l nonnull
 static int lower_discard_stmt(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "lower_discard_stmt: l is NULL");
     WordBuf *wb = &l->sections.functions;
     emit_op(wb, SpvOpKill, 1);
     l->fn_ctx.has_returned = 1;
     return 1;
 }
 
+//l nonnull
 static int lower_statement(WgslLower *l, const WgslAstNode *stmt) {
+    wgsl_compiler_assert(l != NULL, "lower_statement: l is NULL");
     if (!stmt) return 1;
 
     switch (stmt->type) {
@@ -4499,7 +4849,9 @@ static int lower_statement(WgslLower *l, const WgslAstNode *stmt) {
     }
 }
 
+//l nonnull
 static int lower_block(WgslLower *l, const WgslAstNode *block) {
+    wgsl_compiler_assert(l != NULL, "lower_block: l is NULL");
     if (!block) return 1;
 
     if (block->type == WGSL_NODE_BLOCK) {
@@ -4534,7 +4886,9 @@ static int is_sampler_or_texture_type(const WgslAstNode *type_node) {
     return 0;
 }
 
+//l nonnull
 static int lower_globals(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "lower_globals: l is NULL");
     int bind_count = 0;
     const WgslSymbolInfo *bindings = wgsl_resolver_binding_vars(l->resolver, &bind_count);
     if (!bindings || bind_count == 0) return 1;
@@ -4613,9 +4967,11 @@ static int lower_globals(WgslLower *l) {
     return 1;
 }
 
+//l nonnull
 static void add_global_map_entry(WgslLower *l, int symbol_id, uint32_t spv_id,
                                  uint32_t ssir_id, uint32_t type_id,
                                  SpvStorageClass sc, const char *name) {
+    wgsl_compiler_assert(l != NULL, "add_global_map_entry: l is NULL");
     if (l->global_map_count >= l->global_map_cap) {
         int new_cap = l->global_map_cap ? l->global_map_cap * 2 : 16;
         void *p = WGSL_REALLOC(l->global_map, new_cap * sizeof(l->global_map[0]));
@@ -4632,7 +4988,13 @@ static void add_global_map_entry(WgslLower *l, int symbol_id, uint32_t spv_id,
     l->global_map_count++;
 }
 
+//name nonnull
+//out_spv nonnull
+//out_ssir nonnull
 static int resolve_builtin_name(const char *name, SpvBuiltIn *out_spv, SsirBuiltinVar *out_ssir) {
+    wgsl_compiler_assert(name != NULL, "resolve_builtin_name: name is NULL");
+    wgsl_compiler_assert(out_spv != NULL, "resolve_builtin_name: out_spv is NULL");
+    wgsl_compiler_assert(out_ssir != NULL, "resolve_builtin_name: out_ssir is NULL");
     struct { const char *name; SpvBuiltIn spv; SsirBuiltinVar ssir; } table[] = {
         {"position",              SpvBuiltInPosition,             SSIR_BUILTIN_POSITION},
         {"vertex_index",          SpvBuiltInVertexIndex,          SSIR_BUILTIN_VERTEX_INDEX},
@@ -4657,7 +5019,9 @@ static int resolve_builtin_name(const char *name, SpvBuiltIn *out_spv, SsirBuilt
     return 0;
 }
 
+//l nonnull
 static int lower_io_globals(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "lower_io_globals: l is NULL");
     if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return 1;
     const Program *prog = &l->program->program;
 
@@ -4725,7 +5089,11 @@ static int lower_io_globals(WgslLower *l) {
     return 1;
 }
 
+//l nonnull
+//ep nonnull
 static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32_t *out_func_id, uint32_t **out_interface, int *out_interface_count) {
+    wgsl_compiler_assert(l != NULL, "lower_function: l is NULL");
+    wgsl_compiler_assert(ep != NULL, "lower_function: ep is NULL");
     const WgslAstNode *fn_node = ep->function_node;
     if (!fn_node || fn_node->type != WGSL_NODE_FUNCTION) return 0;
 
@@ -4760,8 +5128,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
     // For fragment shaders, handle outputs
     if (ep->stage == WGSL_STAGE_FRAGMENT && fn->return_type) {
         // Check for @location attribute on return
+        /* PRE: ret_attrs valid if ret_attr_count > 0 */
+        wgsl_compiler_assert(fn->ret_attr_count == 0 || fn->ret_attrs != NULL, "lower_function: ret_attrs NULL with count %d", fn->ret_attr_count);
         for (int i = 0; i < fn->ret_attr_count; ++i) {
             const WgslAstNode *attr = fn->ret_attrs[i];
+            /* PRE: attr non-NULL */
+            wgsl_compiler_assert(attr != NULL, "lower_function: ret_attrs[%d] is NULL", i);
             if (attr->type == WGSL_NODE_ATTRIBUTE && strcmp(attr->attribute.name, "location") == 0) {
                 int loc = 0;
                 if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_LITERAL) {
@@ -4811,8 +5183,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
     // For vertex shaders, handle position output (direct @builtin on return type)
     if (ep->stage == WGSL_STAGE_VERTEX && fn->return_type) {
+        /* PRE: ret_attrs valid if ret_attr_count > 0 */
+        wgsl_compiler_assert(fn->ret_attr_count == 0 || fn->ret_attrs != NULL, "lower_function vertex: ret_attrs NULL");
         for (int i = 0; i < fn->ret_attr_count; ++i) {
             const WgslAstNode *attr = fn->ret_attrs[i];
+            /* PRE: attr non-NULL */
+            wgsl_compiler_assert(attr != NULL, "lower_function vertex: ret_attrs[%d] NULL", i);
             if (attr->type == WGSL_NODE_ATTRIBUTE && strcmp(attr->attribute.name, "builtin") == 0) {
                 if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_IDENT) {
                     const char *builtin_name = attr->attribute.args[0]->ident.name;
@@ -5063,8 +5439,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     const StructField *field = &field_node->struct_field;
 
                     // Look for @location attribute on the field
+                    /* PRE: attrs valid if attr_count > 0 */
+                    wgsl_compiler_assert(field->attr_count == 0 || field->attrs != NULL, "lower_function: field->attrs NULL");
                     for (int a = 0; a < field->attr_count; ++a) {
                         const WgslAstNode *attr = field->attrs[a];
+                        /* PRE: attr non-NULL */
+                        wgsl_compiler_assert(attr != NULL, "lower_function: field->attrs[%d] NULL", a);
                         if (attr->type != WGSL_NODE_ATTRIBUTE || strcmp(attr->attribute.name, "location") != 0)
                             continue;
 
@@ -5161,8 +5541,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
                     const StructField *field = &field_node->struct_field;
 
+                    /* PRE: attrs valid */
+                    wgsl_compiler_assert(field->attr_count == 0 || field->attrs != NULL, "lower_function frag: field->attrs NULL");
                     for (int a = 0; a < field->attr_count; ++a) {
                         const WgslAstNode *attr = field->attrs[a];
+                        /* PRE: attr non-NULL */
+                        wgsl_compiler_assert(attr != NULL, "lower_function frag: attrs[%d] NULL", a);
                         if (attr->type != WGSL_NODE_ATTRIBUTE) continue;
 
                         if (strcmp(attr->attribute.name, "location") == 0) {
@@ -5268,8 +5652,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
             const Param *param = &param_node->param;
 
             // Check for @location attribute
+            /* PRE: attrs valid */
+            wgsl_compiler_assert(param->attr_count == 0 || param->attrs != NULL, "lower_function frag param: attrs NULL");
             for (int a = 0; a < param->attr_count; ++a) {
                 const WgslAstNode *attr = param->attrs[a];
+                /* PRE: attr non-NULL */
+                wgsl_compiler_assert(attr != NULL, "lower_function frag param: attrs[%d] NULL", a);
                 if (attr->type != WGSL_NODE_ATTRIBUTE || strcmp(attr->attribute.name, "location") != 0)
                     continue;
 
@@ -5328,8 +5716,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
             const Param *param = &param_node->param;
 
             // Check for @builtin attribute
+            /* PRE: attrs valid */
+            wgsl_compiler_assert(param->attr_count == 0 || param->attrs != NULL, "lower_function builtin: attrs NULL");
             for (int a = 0; a < param->attr_count; ++a) {
                 const WgslAstNode *attr = param->attrs[a];
+                /* PRE: attr non-NULL */
+                wgsl_compiler_assert(attr != NULL, "lower_function builtin: attrs[%d] NULL", a);
                 if (attr->type != WGSL_NODE_ATTRIBUTE || strcmp(attr->attribute.name, "builtin") != 0)
                     continue;
 
@@ -5484,9 +5876,13 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
 // ---------- Public API ----------
 
+//program nonnull
+//resolver nonnull
 WgslLower *wgsl_lower_create(const WgslAstNode *program,
                              const WgslResolver *resolver,
                              const WgslLowerOptions *opts) {
+    wgsl_compiler_assert(program != NULL, "wgsl_lower_create: program is NULL");
+    wgsl_compiler_assert(resolver != NULL, "wgsl_lower_create: resolver is NULL");
     WgslLower *l = (WgslLower*)WGSL_MALLOC(sizeof(WgslLower));
     if (!l) return NULL;
     memset(l, 0, sizeof(*l));
@@ -5711,11 +6107,17 @@ void wgsl_lower_destroy(WgslLower *lower) {
     WGSL_FREE(lower);
 }
 
+//program nonnull
+//resolver nonnull
+//out_word_count nonnull
 WgslLowerResult wgsl_lower_emit_spirv(const WgslAstNode *program,
                                       const WgslResolver *resolver,
                                       const WgslLowerOptions *opts,
                                       uint32_t **out_words,
                                       size_t *out_word_count) {
+    wgsl_compiler_assert(program != NULL, "wgsl_lower_emit_spirv: program is NULL");
+    wgsl_compiler_assert(resolver != NULL, "wgsl_lower_emit_spirv: resolver is NULL");
+    wgsl_compiler_assert(out_word_count != NULL, "wgsl_lower_emit_spirv: out_word_count is NULL");
     if (!out_word_count) return WGSL_LOWER_ERR_INVALID_INPUT;
     *out_word_count = 0;
     if (out_words) *out_words = NULL;
@@ -5741,9 +6143,13 @@ WgslLowerResult wgsl_lower_emit_spirv(const WgslAstNode *program,
     return WGSL_LOWER_OK;
 }
 
+//lower nonnull
+//out_word_count nonnull
 WgslLowerResult wgsl_lower_serialize(const WgslLower *lower,
                                      uint32_t **out_words,
                                      size_t *out_word_count) {
+    wgsl_compiler_assert(lower != NULL, "wgsl_lower_serialize: lower is NULL");
+    wgsl_compiler_assert(out_word_count != NULL, "wgsl_lower_serialize: out_word_count is NULL");
     if (!lower || !out_word_count) return WGSL_LOWER_ERR_INVALID_INPUT;
 
     uint32_t *words = NULL;
@@ -5761,10 +6167,14 @@ WgslLowerResult wgsl_lower_serialize(const WgslLower *lower,
     return WGSL_LOWER_OK;
 }
 
+//lower nonnull
+//out_written nonnull
 WgslLowerResult wgsl_lower_serialize_into(const WgslLower *lower,
                                           uint32_t *out_words,
                                           size_t max_words,
                                           size_t *out_written) {
+    wgsl_compiler_assert(lower != NULL, "wgsl_lower_serialize_into: lower is NULL");
+    wgsl_compiler_assert(out_written != NULL, "wgsl_lower_serialize_into: out_written is NULL");
     if (!lower || !out_written) return WGSL_LOWER_ERR_INVALID_INPUT;
 
     uint32_t *words = NULL;

@@ -187,14 +187,22 @@ typedef struct {
     char last_error[512];
 } VtsConverter;
 
+//c nonnull
+//msg nonnull
 static void vts_set_error(VtsConverter *c, const char *msg) {
+    wgsl_compiler_assert(c != NULL, "vts_set_error: c is NULL");
+    wgsl_compiler_assert(msg != NULL, "vts_set_error: msg is NULL");
     size_t n = strlen(msg);
     if (n >= sizeof(c->last_error)) n = sizeof(c->last_error) - 1;
     memcpy(c->last_error, msg, n);
     c->last_error[n] = 0;
 }
 
+//words nonnull
+//out_words_read nonnull
 static char *vts_read_string(const uint32_t *words, int word_count, int *out_words_read) {
+    wgsl_compiler_assert(words != NULL, "vts_read_string: words is NULL");
+    wgsl_compiler_assert(out_words_read != NULL, "vts_read_string: out_words_read is NULL");
     if (word_count <= 0) { *out_words_read = 0; return NULL; }
     int max_chars = word_count * 4;
     const char *str = (const char*)words;
@@ -208,11 +216,15 @@ static char *vts_read_string(const uint32_t *words, int word_count, int *out_wor
     return copy;
 }
 
+//c nonnull
 static void vts_add_decoration(VtsConverter *c, uint32_t target, SpvDecoration decor, const uint32_t *literals, int lit_count) {
+    wgsl_compiler_assert(c != NULL, "vts_add_decoration: c is NULL");
     if (target >= c->id_bound) return;
     VtsSpvIdInfo *info = &c->ids[target];
     int idx = info->decoration_count++;
     info->decorations = (VtsSpvDecorationEntry*)SPIRV_TO_SSIR_REALLOC(info->decorations, info->decoration_count * sizeof(VtsSpvDecorationEntry));
+    /* PRE: realloc succeeded */
+    wgsl_compiler_assert(info->decorations != NULL, "vts_add_decoration: realloc failed");
     info->decorations[idx].decoration = decor;
     info->decorations[idx].literal_count = lit_count;
     if (lit_count > 0) {
@@ -223,11 +235,15 @@ static void vts_add_decoration(VtsConverter *c, uint32_t target, SpvDecoration d
     }
 }
 
+//c nonnull
 static void vts_add_member_decoration(VtsConverter *c, uint32_t struct_id, uint32_t member, SpvDecoration decor, const uint32_t *literals, int lit_count) {
+    wgsl_compiler_assert(c != NULL, "vts_add_member_decoration: c is NULL");
     if (struct_id >= c->id_bound) return;
     VtsSpvIdInfo *info = &c->ids[struct_id];
     int idx = info->member_decoration_count++;
     info->member_decorations = (VtsSpvMemberDecoration*)SPIRV_TO_SSIR_REALLOC(info->member_decorations, info->member_decoration_count * sizeof(VtsSpvMemberDecoration));
+    /* PRE: realloc succeeded */
+    wgsl_compiler_assert(info->member_decorations != NULL, "vts_add_member_decoration: realloc failed");
     info->member_decorations[idx].member_index = member;
     info->member_decorations[idx].decoration = decor;
     info->member_decorations[idx].literal_count = lit_count;
@@ -239,11 +255,17 @@ static void vts_add_member_decoration(VtsConverter *c, uint32_t struct_id, uint3
     }
 }
 
+//c nonnull
 static int vts_has_decoration(VtsConverter *c, uint32_t id, SpvDecoration decor, uint32_t *out_value) {
+    wgsl_compiler_assert(c != NULL, "vts_has_decoration: c is NULL");
     if (id >= c->id_bound) return 0;
     VtsSpvIdInfo *info = &c->ids[id];
+    /* PRE: decorations array valid if decoration_count > 0 */
+    wgsl_compiler_assert(info->decoration_count == 0 || info->decorations != NULL, "vts_has_decoration: decorations NULL with count > 0");
     for (int i = 0; i < info->decoration_count; i++) {
         if (info->decorations[i].decoration == decor) {
+            /* PRE: literals array valid if literal_count > 0 */
+            wgsl_compiler_assert(info->decorations[i].literal_count == 0 || info->decorations[i].literals != NULL, "vts_has_decoration: literals NULL with count > 0");
             if (out_value && info->decorations[i].literal_count > 0) {
                 *out_value = info->decorations[i].literals[0];
             }
@@ -253,13 +275,21 @@ static int vts_has_decoration(VtsConverter *c, uint32_t id, SpvDecoration decor,
     return 0;
 }
 
+//c nonnull
+//out_offset nonnull
 static int get_member_offset(VtsConverter *c, uint32_t struct_id, uint32_t member, uint32_t *out_offset) {
+    wgsl_compiler_assert(c != NULL, "get_member_offset: c is NULL");
+    wgsl_compiler_assert(out_offset != NULL, "get_member_offset: out_offset is NULL");
     if (struct_id >= c->id_bound) return 0;
     VtsSpvIdInfo *info = &c->ids[struct_id];
+    /* PRE: member_decorations array valid if count > 0 */
+    wgsl_compiler_assert(info->member_decoration_count == 0 || info->member_decorations != NULL, "get_member_offset: member_decorations NULL with count > 0");
     for (int i = 0; i < info->member_decoration_count; i++) {
         if (info->member_decorations[i].member_index == member &&
             info->member_decorations[i].decoration == SpvDecorationOffset &&
             info->member_decorations[i].literal_count > 0) {
+            /* PRE: literals array valid if literal_count > 0 */
+            wgsl_compiler_assert(info->member_decorations[i].literals != NULL, "get_member_offset: literals NULL with count > 0");
             *out_offset = info->member_decorations[i].literals[0];
             return 1;
         }
@@ -267,10 +297,14 @@ static int get_member_offset(VtsConverter *c, uint32_t struct_id, uint32_t membe
     return 0;
 }
 
+//c nonnull
 static VtsSpvFunction *vts_add_function(VtsConverter *c) {
+    wgsl_compiler_assert(c != NULL, "vts_add_function: c is NULL");
     if (c->function_count >= c->function_cap) {
         int ncap = c->function_cap ? c->function_cap * 2 : 8;
         c->functions = (VtsSpvFunction*)SPIRV_TO_SSIR_REALLOC(c->functions, ncap * sizeof(VtsSpvFunction));
+        /* PRE: realloc succeeded */
+        wgsl_compiler_assert(c->functions != NULL, "vts_add_function: realloc failed");
         c->function_cap = ncap;
     }
     VtsSpvFunction *fn = &c->functions[c->function_count++];
@@ -281,10 +315,14 @@ static VtsSpvFunction *vts_add_function(VtsConverter *c) {
     return fn;
 }
 
+//fn nonnull
 static VtsSpvBasicBlock *vts_add_block(VtsSpvFunction *fn, uint32_t label_id) {
+    wgsl_compiler_assert(fn != NULL, "vts_add_block: fn is NULL");
     if (fn->block_count >= fn->block_cap) {
         int ncap = fn->block_cap ? fn->block_cap * 2 : 8;
         fn->blocks = (VtsSpvBasicBlock*)SPIRV_TO_SSIR_REALLOC(fn->blocks, ncap * sizeof(VtsSpvBasicBlock));
+        /* PRE: realloc succeeded */
+        wgsl_compiler_assert(fn->blocks != NULL, "vts_add_block: realloc failed");
         fn->block_cap = ncap;
     }
     VtsSpvBasicBlock *blk = &fn->blocks[fn->block_count++];
@@ -293,25 +331,35 @@ static VtsSpvBasicBlock *vts_add_block(VtsSpvFunction *fn, uint32_t label_id) {
     return blk;
 }
 
+//blk nonnull
 static void vts_add_block_instr(VtsSpvBasicBlock *blk, uint32_t instr_start) {
+    wgsl_compiler_assert(blk != NULL, "vts_add_block_instr: blk is NULL");
     if (blk->instruction_count >= blk->instruction_cap) {
         int ncap = blk->instruction_cap ? blk->instruction_cap * 2 : 16;
         blk->instructions = (uint32_t*)SPIRV_TO_SSIR_REALLOC(blk->instructions, ncap * sizeof(uint32_t));
+        /* PRE: realloc succeeded */
+        wgsl_compiler_assert(blk->instructions != NULL, "vts_add_block_instr: realloc failed");
         blk->instruction_cap = ncap;
     }
     blk->instructions[blk->instruction_count++] = instr_start;
 }
 
+//fn nonnull
 static void add_function_local_var(VtsSpvFunction *fn, uint32_t var_id) {
+    wgsl_compiler_assert(fn != NULL, "add_function_local_var: fn is NULL");
     if (fn->local_var_count >= fn->local_var_cap) {
         int ncap = fn->local_var_cap ? fn->local_var_cap * 2 : 8;
         fn->local_vars = (uint32_t*)SPIRV_TO_SSIR_REALLOC(fn->local_vars, ncap * sizeof(uint32_t));
+        /* PRE: realloc succeeded */
+        wgsl_compiler_assert(fn->local_vars != NULL, "add_function_local_var: realloc failed");
         fn->local_var_cap = ncap;
     }
     fn->local_vars[fn->local_var_count++] = var_id;
 }
 
+//c nonnull
 static SpirvToSsirResult parse_spirv(VtsConverter *c) {
+    wgsl_compiler_assert(c != NULL, "parse_spirv: c is NULL");
     size_t pos = 5;
     VtsSpvFunction *current_fn = NULL;
     VtsSpvBasicBlock *current_block = NULL;
@@ -351,6 +399,8 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     if (member >= (uint32_t)info->member_name_count) {
                         int new_count = (int)member + 1;
                         info->member_names = (char**)SPIRV_TO_SSIR_REALLOC(info->member_names, new_count * sizeof(char*));
+                        /* PRE: realloc succeeded */
+                        wgsl_compiler_assert(info->member_names != NULL, "SpvOpMemberName: realloc failed");
                         for (int i = info->member_name_count; i < new_count; i++) {
                             info->member_names[i] = NULL;
                         }
@@ -495,6 +545,8 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     c->ids[id].type_info.struct_type.member_types = NULL;
                     if (mc > 0) {
                         c->ids[id].type_info.struct_type.member_types = (uint32_t*)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint32_t));
+                        /* PRE: malloc succeeded */
+                        wgsl_compiler_assert(c->ids[id].type_info.struct_type.member_types != NULL, "SpvOpTypeStruct: malloc failed");
                         memcpy(c->ids[id].type_info.struct_type.member_types, &operands[1], mc * sizeof(uint32_t));
                     }
                 }
@@ -525,6 +577,8 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     c->ids[id].type_info.function.param_types = NULL;
                     if (pc > 0) {
                         c->ids[id].type_info.function.param_types = (uint32_t*)SPIRV_TO_SSIR_MALLOC(pc * sizeof(uint32_t));
+                        /* PRE: malloc succeeded */
+                        wgsl_compiler_assert(c->ids[id].type_info.function.param_types != NULL, "SpvOpTypeFunction: malloc failed");
                         memcpy(c->ids[id].type_info.function.param_types, &operands[2], pc * sizeof(uint32_t));
                     }
                 }
@@ -735,6 +789,8 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                 uint32_t id = operands[1];
                 int idx = current_fn->param_count++;
                 current_fn->params = (uint32_t*)SPIRV_TO_SSIR_REALLOC(current_fn->params, current_fn->param_count * sizeof(uint32_t));
+                /* PRE: realloc succeeded */
+                wgsl_compiler_assert(current_fn->params != NULL, "SpvOpFunctionParameter: realloc failed");
                 current_fn->params[idx] = id;
                 if (id < c->id_bound) {
                     c->ids[id].kind = VTS_SPV_ID_PARAM;
@@ -888,7 +944,9 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
 
 static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id);
 
+//c nonnull
 static uint32_t convert_scalar_type(VtsConverter *c, uint32_t spv_type_id) {
+    wgsl_compiler_assert(c != NULL, "convert_scalar_type: c is NULL");
     if (spv_type_id >= c->id_bound) return 0;
     VtsSpvIdInfo *info = &c->ids[spv_type_id];
     if (info->kind != VTS_SPV_ID_TYPE) return 0;
@@ -946,7 +1004,9 @@ static SsirTextureDim spv_dim_to_ssir(SpvDim dim, uint32_t arrayed, uint32_t ms)
     }
 }
 
+//c nonnull
 static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
+    wgsl_compiler_assert(c != NULL, "convert_type: c is NULL");
     if (spv_type_id >= c->id_bound) return 0;
     VtsSpvIdInfo *info = &c->ids[spv_type_id];
     if (info->kind != VTS_SPV_ID_TYPE) return 0;
@@ -975,6 +1035,8 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
         uint8_t rows = 0;
         if (info->type_info.matrix.column_type < c->id_bound) {
             VtsSpvIdInfo *col_info = &c->ids[info->type_info.matrix.column_type];
+            /* PRE: column_type should be a vector type */
+            wgsl_compiler_assert(col_info->type_info.kind == VTS_SPV_TYPE_VECTOR, "VTS_SPV_TYPE_MATRIX: column_type is not a vector");
             rows = (uint8_t)col_info->type_info.vector.count;
         }
         result = ssir_type_mat(c->mod, col, (uint8_t)info->type_info.matrix.columns, rows);
@@ -987,6 +1049,8 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
         uint32_t len = 0;
         if (len_id < c->id_bound && c->ids[len_id].kind == VTS_SPV_ID_CONSTANT) {
             if (c->ids[len_id].constant.value_count > 0) {
+                /* PRE: values array valid if value_count > 0 */
+                wgsl_compiler_assert(c->ids[len_id].constant.values != NULL, "VTS_SPV_TYPE_ARRAY: values NULL with count > 0");
                 len = c->ids[len_id].constant.values[0];
             }
         }
@@ -1012,7 +1076,13 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
         const char **mnames = NULL;
         if (mc > 0) {
             members = (uint32_t*)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint32_t));
+            /* PRE: malloc succeeded */
+            wgsl_compiler_assert(members != NULL, "VTS_SPV_TYPE_STRUCT: members malloc failed");
             offsets = (uint32_t*)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint32_t));
+            /* PRE: malloc succeeded */
+            wgsl_compiler_assert(offsets != NULL, "VTS_SPV_TYPE_STRUCT: offsets malloc failed");
+            /* PRE: member_types array valid if member_count > 0 */
+            wgsl_compiler_assert(info->type_info.struct_type.member_types != NULL, "VTS_SPV_TYPE_STRUCT: member_types NULL with count > 0");
             for (int i = 0; i < mc; i++) {
                 members[i] = convert_type(c, info->type_info.struct_type.member_types[i]);
                 if (!get_member_offset(c, spv_type_id, i, &offsets[i])) {
@@ -1022,6 +1092,8 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
             /* Collect member names from OpMemberName */
             if (info->member_name_count > 0) {
                 mnames = (const char **)SPIRV_TO_SSIR_MALLOC(mc * sizeof(const char *));
+                /* PRE: malloc succeeded */
+                wgsl_compiler_assert(mnames != NULL, "VTS_SPV_TYPE_STRUCT: mnames malloc failed");
                 for (int i = 0; i < mc; i++) {
                     mnames[i] = (i < info->member_name_count) ? info->member_names[i] : NULL;
                 }
@@ -1035,6 +1107,8 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
             if (st) {
                 uint8_t *majors = NULL;
                 uint32_t *mstrides = NULL;
+                /* PRE: member_decorations array valid if count > 0 */
+                wgsl_compiler_assert(info->member_decoration_count == 0 || info->member_decorations != NULL, "VTS_SPV_TYPE_STRUCT: member_decorations NULL with count > 0");
                 for (int i = 0; i < info->member_decoration_count; i++) {
                     SpvDecoration dec = (SpvDecoration)info->member_decorations[i].decoration;
                     uint32_t mi = info->member_decorations[i].member_index;
@@ -1046,6 +1120,8 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
                         }
                         majors[mi] = (dec == SpvDecorationColMajor) ? 1 : 2;
                     } else if (dec == SpvDecorationMatrixStride && info->member_decorations[i].literal_count > 0) {
+                        /* PRE: literals array valid if literal_count > 0 */
+                        wgsl_compiler_assert(info->member_decorations[i].literals != NULL, "VTS_SPV_TYPE_STRUCT: literals NULL with count > 0");
                         if (!mstrides) {
                             mstrides = (uint32_t *)SPIRV_TO_SSIR_MALLOC(mc * sizeof(uint32_t));
                             memset(mstrides, 0, mc * sizeof(uint32_t));
@@ -1108,7 +1184,9 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
     return result;
 }
 
+//c nonnull
 static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
+    wgsl_compiler_assert(c != NULL, "convert_constant: c is NULL");
     if (spv_const_id >= c->id_bound) return 0;
     VtsSpvIdInfo *info = &c->ids[spv_const_id];
     if (info->kind != VTS_SPV_ID_CONSTANT) return 0;
@@ -1126,6 +1204,8 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
         int count = info->constant.value_count;
         uint32_t *components = NULL;
         if (count > 0) {
+            /* PRE: values array valid if value_count > 0 */
+            wgsl_compiler_assert(info->constant.values != NULL, "convert_constant: values NULL with count > 0");
             components = (uint32_t*)SPIRV_TO_SSIR_MALLOC(count * sizeof(uint32_t));
             for (int i = 0; i < count; i++) {
                 components[i] = convert_constant(c, info->constant.values[i]);
@@ -1137,6 +1217,8 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
         /* Specialization constant */
         uint32_t sid = 0;
         vts_has_decoration(c, spv_const_id, SpvDecorationSpecId, &sid);
+        /* PRE: values array valid if value_count > 0 */
+        wgsl_compiler_assert(info->constant.value_count == 0 || info->constant.values != NULL, "convert_constant spec: values NULL with count > 0");
         switch (type->kind) {
         case SSIR_TYPE_BOOL:
             result = ssir_const_spec_bool(c->mod, info->constant.value_count > 0 && info->constant.values[0] != 0, sid);
@@ -1158,6 +1240,8 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
             return 0;
         }
     } else {
+        /* PRE: values array valid if value_count > 0 */
+        wgsl_compiler_assert(info->constant.value_count == 0 || info->constant.values != NULL, "convert_constant: values NULL with count > 0");
         switch (type->kind) {
         case SSIR_TYPE_BOOL:
             result = ssir_const_bool(c->mod, info->constant.value_count > 0 && info->constant.values[0] != 0);
@@ -1267,7 +1351,9 @@ static SsirBuiltinVar spv_builtin_to_ssir(SpvBuiltIn builtin) {
     }
 }
 
+//c nonnull
 static void convert_global_vars(VtsConverter *c) {
+    wgsl_compiler_assert(c != NULL, "convert_global_vars: c is NULL");
     for (uint32_t i = 1; i < c->id_bound; i++) {
         VtsSpvIdInfo *info = &c->ids[i];
         if (info->kind != VTS_SPV_ID_VARIABLE) continue;
@@ -1320,11 +1406,15 @@ static void convert_global_vars(VtsConverter *c) {
     }
 }
 
+//c nonnull
 static void set_ssir_id(VtsConverter *c, uint32_t spv_id, uint32_t ssir_id) {
+    wgsl_compiler_assert(c != NULL, "set_ssir_id: c is NULL");
     if (spv_id < c->id_bound) c->ids[spv_id].ssir_id = ssir_id;
 }
 
+//c nonnull
 static uint32_t get_ssir_id(VtsConverter *c, uint32_t spv_id) {
+    wgsl_compiler_assert(c != NULL, "get_ssir_id: c is NULL");
     if (spv_id >= c->id_bound) return 0;
     VtsSpvIdInfo *info = &c->ids[spv_id];
     if (info->ssir_id) return info->ssir_id;
@@ -1416,7 +1506,11 @@ static SsirBuiltinId glsl_ext_to_ssir_builtin(enum GLSLstd450 glsl_op) {
     }
 }
 
+//c nonnull
+//fn nonnull
 static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
+    wgsl_compiler_assert(c != NULL, "convert_function: c is NULL");
+    wgsl_compiler_assert(fn != NULL, "convert_function: fn is NULL");
     if (fn->id >= c->id_bound) return;
     uint32_t ret_type = convert_type(c, fn->return_type);
     const char *name = fn->name ? fn->name : "fn";
@@ -1477,6 +1571,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
 
         for (int ii = 0; ii < blk->instruction_count; ii++) {
             uint32_t inst_pos = blk->instructions[ii];
+            /* PRE: inst_pos within spirv bounds */
+            wgsl_compiler_assert(inst_pos < c->word_count, "convert_function: inst_pos %u >= word_count %zu", inst_pos, c->word_count);
             uint32_t word0 = c->spirv[inst_pos];
             uint16_t opcode = word0 & 0xFFFF;
             uint16_t wc = word0 >> 16;
@@ -1514,6 +1610,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t *indices = NULL;
                     if (idx_count > 0) {
                         indices = (uint32_t*)SPIRV_TO_SSIR_MALLOC(idx_count * sizeof(uint32_t));
+                        /* PRE: malloc succeeded */
+                        wgsl_compiler_assert(indices != NULL, "SpvOpAccessChain: indices malloc failed");
                         for (int j = 0; j < idx_count; j++) {
                             indices[j] = get_ssir_id(c, operands[3 + j]);
                         }
@@ -1839,6 +1937,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t *comps = NULL;
                     if (comp_count > 0) {
                         comps = (uint32_t*)SPIRV_TO_SSIR_MALLOC(comp_count * sizeof(uint32_t));
+                        /* PRE: malloc succeeded */
+                        wgsl_compiler_assert(comps != NULL, "SpvOpCompositeConstruct: comps malloc failed");
                         for (int j = 0; j < comp_count; j++) {
                             comps[j] = get_ssir_id(c, operands[2 + j]);
                         }
@@ -1882,6 +1982,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t *indices = NULL;
                     if (idx_count > 0) {
                         indices = (uint32_t*)SPIRV_TO_SSIR_MALLOC(idx_count * sizeof(uint32_t));
+                        /* PRE: malloc succeeded */
+                        wgsl_compiler_assert(indices != NULL, "SpvOpVectorShuffle: indices malloc failed");
                         memcpy(indices, &operands[4], idx_count * sizeof(uint32_t));
                     }
                     uint32_t r = ssir_build_shuffle(c->mod, func_id, block_id, type_id, v1, v2, indices, idx_count);
@@ -1975,6 +2077,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t *incoming = NULL;
                     if (pair_count > 0) {
                         incoming = (uint32_t*)SPIRV_TO_SSIR_MALLOC(pair_count * 2 * sizeof(uint32_t));
+                        /* PRE: malloc succeeded */
+                        wgsl_compiler_assert(incoming != NULL, "SpvOpPhi: incoming malloc failed");
                         for (int j = 0; j < pair_count; j++) {
                             incoming[j * 2] = get_ssir_id(c, operands[2 + j * 2]);
                             incoming[j * 2 + 1] = get_ssir_id(c, operands[3 + j * 2]);
@@ -2035,6 +2139,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                     uint32_t *args = NULL;
                     if (arg_count > 0) {
                         args = (uint32_t*)SPIRV_TO_SSIR_MALLOC(arg_count * sizeof(uint32_t));
+                        /* PRE: malloc succeeded */
+                        wgsl_compiler_assert(args != NULL, "SpvOpFunctionCall: args malloc failed");
                         for (int j = 0; j < arg_count; j++) {
                             args[j] = get_ssir_id(c, operands[3 + j]);
                         }
@@ -2058,6 +2164,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                             uint32_t *args = NULL;
                             if (arg_count > 0) {
                                 args = (uint32_t*)SPIRV_TO_SSIR_MALLOC(arg_count * sizeof(uint32_t));
+                                /* PRE: malloc succeeded */
+                                wgsl_compiler_assert(args != NULL, "SpvOpExtInst: args malloc failed");
                                 for (int j = 0; j < arg_count; j++) {
                                     args[j] = get_ssir_id(c, operands[4 + j]);
                                 }
@@ -2101,6 +2209,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         c->ids[si_id].kind == VTS_SPV_ID_INSTRUCTION &&
                         c->ids[si_id].instruction.opcode == SpvOpSampledImage &&
                         c->ids[si_id].instruction.operand_count >= 2) {
+                        /* PRE: operands array valid if operand_count > 0 */
+                        wgsl_compiler_assert(c->ids[si_id].instruction.operands != NULL, "SpvOpImage*: SampledImage operands NULL");
                         image_spv = c->ids[si_id].instruction.operands[0];
                         sampler_spv = c->ids[si_id].instruction.operands[1];
                     }
@@ -2233,6 +2343,8 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         c->ids[si_id].kind == VTS_SPV_ID_INSTRUCTION &&
                         c->ids[si_id].instruction.opcode == SpvOpSampledImage &&
                         c->ids[si_id].instruction.operand_count >= 2) {
+                        /* PRE: operands array valid if operand_count > 0 */
+                        wgsl_compiler_assert(c->ids[si_id].instruction.operands != NULL, "SpvOpImageQueryLod: SampledImage operands NULL");
                         image_spv = c->ids[si_id].instruction.operands[0];
                         sampler_spv = c->ids[si_id].instruction.operands[1];
                     }
@@ -2283,7 +2395,9 @@ static SsirStage exec_model_to_stage(SpvExecutionModel model) {
     }
 }
 
+//c nonnull
 static void convert_entry_points(VtsConverter *c) {
+    wgsl_compiler_assert(c != NULL, "convert_entry_points: c is NULL");
     for (int i = 0; i < c->function_count; i++) {
         VtsSpvFunction *fn = &c->functions[i];
         if (!fn->is_entry_point) continue;

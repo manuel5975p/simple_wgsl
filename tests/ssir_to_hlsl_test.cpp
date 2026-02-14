@@ -122,7 +122,7 @@ TEST(SsirToHlsl, ComputeShaderWorkgroup) {
     EXPECT_TRUE(hlsl.find("[numthreads(1, 1, 1)]") != std::string::npos);
 }
 
-TEST(SsirToHlsl, DISABLED_StructOps) {
+TEST(SsirToHlsl, StructOps) {
     const char* source = R"(
         struct Data { val: f32 };
         @fragment fn fs() -> @location(0) vec4f {
