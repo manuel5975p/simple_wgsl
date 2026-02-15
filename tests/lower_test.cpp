@@ -869,3 +869,1244 @@ TEST(LowerTest, FragmentShaderStructParam_VertexFragmentPipeline) {
     )");
     EXPECT_TRUE(fs.success) << fs.error;
 }
+
+// =============================================================================
+// Swizzle Tests - Single Component Extraction
+// =============================================================================
+
+TEST(SwizzleTest, Vec4_SingleComponent_xyzw) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return vec4<f32>(v.x, v.y, v.z, v.w);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_SingleComponent_rgba) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return vec4<f32>(v.r, v.g, v.b, v.a);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec3_SingleComponent) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(1.0, 2.0, 3.0);
+    return vec4<f32>(v.x, v.y, v.z, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec2_SingleComponent) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(1.0, 2.0);
+    return vec4<f32>(v.x, v.y, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle Tests - Two Component Extraction
+// =============================================================================
+
+TEST(SwizzleTest, Vec4_TwoComponent_xy) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let xy = v.xy;
+    return vec4<f32>(xy, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_TwoComponent_zw) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let zw = v.zw;
+    return vec4<f32>(zw, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_TwoComponent_yw) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let yw = v.yw;
+    return vec4<f32>(yw, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec3_TwoComponent_yz) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(1.0, 2.0, 3.0);
+    let yz = v.yz;
+    return vec4<f32>(yz, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle Tests - Three Component Extraction
+// =============================================================================
+
+TEST(SwizzleTest, Vec4_ThreeComponent_xyz) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let xyz = v.xyz;
+    return vec4<f32>(xyz, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_ThreeComponent_rgb) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let c = v.rgb;
+    return vec4<f32>(c, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_ThreeComponent_yzw) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let yzw = v.yzw;
+    return vec4<f32>(yzw, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle Tests - Four Component (identity and reorder)
+// =============================================================================
+
+TEST(SwizzleTest, Vec4_FourComponent_xyzw) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return v.xyzw;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_FourComponent_wzyx) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return v.wzyx;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_FourComponent_abgr) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return v.abgr;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle Tests - Duplicate Components
+// =============================================================================
+
+TEST(SwizzleTest, Vec4_Duplicate_xx) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let xx = v.xx;
+    return vec4<f32>(xx, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_Duplicate_xxx) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let xxx = v.xxx;
+    return vec4<f32>(xxx, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_Duplicate_xxxx) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return v.xxxx;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_Duplicate_xxyy) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return v.xxyy;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_Duplicate_aaaa) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return v.aaaa;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4_Duplicate_rrgg) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    return v.rrgg;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle Tests - Integer Vectors
+// =============================================================================
+
+TEST(SwizzleTest, Vec4i_ThreeComponent_xyz) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<i32>(1, 2, 3, 4);
+    let xyz = v.xyz;
+    return vec4<f32>(f32(xyz.x), f32(xyz.y), f32(xyz.z), 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec4u_TwoComponent_xy) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<u32>(1u, 2u, 3u, 4u);
+    let xy = v.xy;
+    return vec4<f32>(f32(xy.x), f32(xy.y), 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, Vec3i_SingleComponent) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<i32>(10, 20, 30);
+    return vec4<f32>(f32(v.x), f32(v.y), f32(v.z), 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle Tests - On Expressions (not just variables)
+// =============================================================================
+
+TEST(SwizzleTest, SwizzleOnArithmeticResult) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let b = vec4<f32>(0.1, 0.2, 0.3, 0.4);
+    let rgb = (a + b).xyz;
+    return vec4<f32>(rgb, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, SwizzleOnMultiplyResult) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let scaled = (v * 0.5).rgb;
+    return vec4<f32>(scaled, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, SwizzleOnConstructor) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let xy = vec4<f32>(1.0, 2.0, 3.0, 4.0).xy;
+    return vec4<f32>(xy, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle Tests - Chained Swizzles
+// =============================================================================
+
+TEST(SwizzleTest, ChainedSwizzle_xyz_xy) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let xy = v.xyz.xy;
+    return vec4<f32>(xy, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, ChainedSwizzle_xyzw_zw) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let zw = v.xyzw.zw;
+    return vec4<f32>(zw, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle Tests - In Arithmetic Expressions
+// =============================================================================
+
+TEST(SwizzleTest, SwizzleInMultiply) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 0.5, 0.25, 1.0);
+    let scaled = v.rgb * 2.0;
+    return vec4<f32>(scaled, v.a);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, SwizzleBothOperands) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let b = vec4<f32>(5.0, 6.0, 7.0, 8.0);
+    let sum = a.xy + b.zw;
+    return vec4<f32>(sum, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, SwizzleAsFunctionArg) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(3.0, 4.0, 0.0, 0.0);
+    let len = length(v.xyz);
+    return vec4<f32>(len, 0.0, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, SwizzleNormalize) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 0.0);
+    let n = normalize(v.xyz);
+    return vec4<f32>(n, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, SwizzleDotProduct) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    let b = vec4<f32>(0.0, 1.0, 0.0, 0.0);
+    let d = dot(a.xyz, b.xyz);
+    return vec4<f32>(d, 0.0, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleTest, SwizzleCross) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    let b = vec4<f32>(0.0, 1.0, 0.0, 0.0);
+    let c = cross(a.xyz, b.xyz);
+    return vec4<f32>(c, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Vector Construction Tests - From Mixed Components
+// =============================================================================
+
+TEST(VectorConstructionTest, Vec4_FromVec3AndScalar) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let rgb = vec3<f32>(1.0, 0.5, 0.25);
+    return vec4<f32>(rgb, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec4_FromScalarAndVec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let yzw = vec3<f32>(0.5, 0.25, 1.0);
+    return vec4<f32>(1.0, yzw);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec4_FromTwoVec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let xy = vec2<f32>(1.0, 2.0);
+    let zw = vec2<f32>(3.0, 4.0);
+    return vec4<f32>(xy, zw);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec4_FromVec2AndTwoScalars) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let xy = vec2<f32>(1.0, 2.0);
+    return vec4<f32>(xy, 3.0, 4.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec4_FromTwoScalarsAndVec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let zw = vec2<f32>(3.0, 4.0);
+    return vec4<f32>(1.0, 2.0, zw);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec4_FromScalarVec2Scalar) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let yz = vec2<f32>(2.0, 3.0);
+    return vec4<f32>(1.0, yz, 4.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec3_FromVec2AndScalar) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let xy = vec2<f32>(1.0, 2.0);
+    let v = vec3<f32>(xy, 3.0);
+    return vec4<f32>(v, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec3_FromScalarAndVec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let yz = vec2<f32>(2.0, 3.0);
+    let v = vec3<f32>(1.0, yz);
+    return vec4<f32>(v, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec4_FromSwizzleAndScalar) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let color = vec4<f32>(1.0, 0.5, 0.25, 0.8);
+    return vec4<f32>(color.rgb, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec4_FromSwizzleAndSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let b = vec4<f32>(5.0, 6.0, 7.0, 8.0);
+    return vec4<f32>(a.xy, b.xy);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Vector Construction Tests - Scalar Splat
+// =============================================================================
+
+TEST(VectorConstructionTest, Vec2_ScalarSplat) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(5.0);
+    return vec4<f32>(v, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec3_ScalarSplat) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(0.5);
+    return vec4<f32>(v, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec4_ScalarSplat) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.5);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Vector Construction Tests - Integer Vectors
+// =============================================================================
+
+TEST(VectorConstructionTest, Vec4i_FromVec3iAndScalar) {
+    auto r = wgsl_test::CompileWgsl(R"(
+fn helper() -> vec4<i32> {
+    let xyz = vec3<i32>(1, 2, 3);
+    return vec4<i32>(xyz, 4);
+}
+@fragment fn main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorConstructionTest, Vec3u_FromVec2uAndScalar) {
+    auto r = wgsl_test::CompileWgsl(R"(
+fn helper() -> vec3<u32> {
+    let xy = vec2<u32>(1u, 2u);
+    return vec3<u32>(xy, 3u);
+}
+@fragment fn main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Component-wise Math Builtins - Unary (on vectors)
+// =============================================================================
+
+TEST(ComponentMathTest, Abs_Vec3f) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(-1.0, -0.5, 0.25);
+    let a = abs(v);
+    return vec4<f32>(a, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Abs_Vec4i) {
+    auto r = wgsl_test::CompileWgsl(R"(
+fn helper() -> vec4<i32> {
+    let v = vec4<i32>(-1, -2, 3, -4);
+    return abs(v);
+}
+@fragment fn main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Floor_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(1.5, 2.7, -0.3);
+    let f = floor(v);
+    return vec4<f32>(f, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Ceil_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.1, 2.9, -0.1, 0.5);
+    return ceil(v);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Round_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(1.4, 1.6);
+    let rounded = round(v);
+    return vec4<f32>(rounded, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Trunc_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(1.9, -2.3, 0.7);
+    let t = trunc(v);
+    return vec4<f32>(t, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Fract_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(1.75, 2.25, 3.5);
+    let f = fract(v);
+    return vec4<f32>(f, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Sqrt_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 4.0, 9.0, 16.0);
+    return sqrt(v);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, InverseSqrt_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(4.0, 16.0);
+    let inv = inverseSqrt(v);
+    return vec4<f32>(inv, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Sign_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(-5.0, 0.0, 3.0);
+    let s = sign(v);
+    return vec4<f32>(s, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Exp_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(0.0, 1.0, 2.0);
+    let e = exp(v);
+    return vec4<f32>(e, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Exp2_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(1.0, 3.0);
+    let e = exp2(v);
+    return vec4<f32>(e, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Log_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(1.0, 2.718, 7.389);
+    let l = log(v);
+    return vec4<f32>(l, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Log2_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(2.0, 8.0);
+    let l = log2(v);
+    return vec4<f32>(l, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Component-wise Math Builtins - Trig (on vectors)
+// =============================================================================
+
+TEST(ComponentMathTest, Sin_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(0.0, 1.57, 3.14);
+    let s = sin(v);
+    return vec4<f32>(s, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Cos_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(0.0, 1.57, 3.14, 6.28);
+    return cos(v);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Tan_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(0.0, 0.78);
+    let t = tan(v);
+    return vec4<f32>(t, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Asin_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(0.0, 0.5);
+    let a = asin(v);
+    return vec4<f32>(a, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Acos_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(0.0, 1.0);
+    let a = acos(v);
+    return vec4<f32>(a, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Atan_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(0.0, 1.0, -1.0);
+    let a = atan(v);
+    return vec4<f32>(a, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Component-wise Math Builtins - Binary (on vectors)
+// =============================================================================
+
+TEST(ComponentMathTest, Pow_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let base = vec3<f32>(2.0, 3.0, 4.0);
+    let exp = vec3<f32>(2.0, 2.0, 0.5);
+    let result = pow(base, exp);
+    return vec4<f32>(result, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Pow_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let base = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let exp = vec4<f32>(0.5, 0.5, 0.5, 0.5);
+    return pow(base, exp);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Pow_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let base = vec2<f32>(4.0, 9.0);
+    let exp = vec2<f32>(0.5, 0.5);
+    let result = pow(base, exp);
+    return vec4<f32>(result, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Atan2_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let y = vec3<f32>(1.0, 0.0, -1.0);
+    let x = vec3<f32>(0.0, 1.0, 0.0);
+    let result = atan2(y, x);
+    return vec4<f32>(result, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Distance_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec3<f32>(1.0, 0.0, 0.0);
+    let b = vec3<f32>(0.0, 1.0, 0.0);
+    let d = distance(a, b);
+    return vec4<f32>(d, 0.0, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Reflect_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let incident = vec3<f32>(1.0, -1.0, 0.0);
+    let normal = vec3<f32>(0.0, 1.0, 0.0);
+    let refl = reflect(incident, normal);
+    return vec4<f32>(refl, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Step_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let edge = vec3<f32>(0.5, 0.5, 0.5);
+    let x = vec3<f32>(0.3, 0.5, 0.7);
+    let result = step(edge, x);
+    return vec4<f32>(result, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Component-wise Math Builtins - Min/Max/Clamp (on vectors)
+// =============================================================================
+
+TEST(ComponentMathTest, Min_Vec3f) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec3<f32>(1.0, 5.0, 3.0);
+    let b = vec3<f32>(4.0, 2.0, 6.0);
+    let m = min(a, b);
+    return vec4<f32>(m, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Max_Vec4f) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 5.0, 3.0, 7.0);
+    let b = vec4<f32>(4.0, 2.0, 6.0, 1.0);
+    return max(a, b);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Clamp_Vec3f) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(-0.5, 0.5, 1.5);
+    let lo = vec3<f32>(0.0, 0.0, 0.0);
+    let hi = vec3<f32>(1.0, 1.0, 1.0);
+    let c = clamp(v, lo, hi);
+    return vec4<f32>(c, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Min_Vec2i) {
+    auto r = wgsl_test::CompileWgsl(R"(
+fn helper() -> vec2<i32> {
+    let a = vec2<i32>(3, -5);
+    let b = vec2<i32>(-1, 7);
+    return min(a, b);
+}
+@fragment fn main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Max_Vec3u) {
+    auto r = wgsl_test::CompileWgsl(R"(
+fn helper() -> vec3<u32> {
+    let a = vec3<u32>(1u, 5u, 3u);
+    let b = vec3<u32>(4u, 2u, 6u);
+    return max(a, b);
+}
+@fragment fn main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Component-wise Math Builtins - Mix/Smoothstep
+// =============================================================================
+
+TEST(ComponentMathTest, Mix_Vec3_ScalarT) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec3<f32>(0.0, 0.0, 0.0);
+    let b = vec3<f32>(1.0, 1.0, 1.0);
+    let m = mix(a, b, 0.5);
+    return vec4<f32>(m, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Mix_Vec3_VecT) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec3<f32>(0.0, 0.0, 0.0);
+    let b = vec3<f32>(1.0, 1.0, 1.0);
+    let t = vec3<f32>(0.25, 0.5, 0.75);
+    let m = mix(a, b, t);
+    return vec4<f32>(m, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Smoothstep_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let lo = vec3<f32>(0.0, 0.0, 0.0);
+    let hi = vec3<f32>(1.0, 1.0, 1.0);
+    let x = vec3<f32>(0.25, 0.5, 0.75);
+    let s = smoothstep(lo, hi, x);
+    return vec4<f32>(s, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// Scalar-to-vector splatting for builtins
+TEST(ComponentMathTest, Clamp_Vec3_ScalarBounds) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec3<f32>(1.5, -0.2, 0.8);
+    let c = clamp(v, 0.0, 1.0);
+    return vec4<f32>(c, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Smoothstep_Vec3_ScalarEdges) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let x = vec3<f32>(0.25, 0.5, 0.75);
+    let s = smoothstep(0.0, 1.0, x);
+    return vec4<f32>(s, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Step_Vec3_ScalarEdge) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let x = vec3<f32>(0.25, 0.75, 1.5);
+    let s = step(0.5, x);
+    return vec4<f32>(s, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ComponentMathTest, Mix_Vec4_ScalarT) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    let b = vec4<f32>(0.0, 0.0, 1.0, 1.0);
+    return mix(a, b, 0.5);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Vector Builtins (non-component-wise)
+// =============================================================================
+
+TEST(VectorBuiltinTest, Dot_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec2<f32>(1.0, 0.0);
+    let b = vec2<f32>(0.0, 1.0);
+    let d = dot(a, b);
+    return vec4<f32>(d, 0.0, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorBuiltinTest, Dot_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let b = vec4<f32>(4.0, 3.0, 2.0, 1.0);
+    let d = dot(a, b);
+    return vec4<f32>(d, 0.0, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorBuiltinTest, Cross_Vec3) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec3<f32>(1.0, 0.0, 0.0);
+    let b = vec3<f32>(0.0, 1.0, 0.0);
+    let c = cross(a, b);
+    return vec4<f32>(c, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorBuiltinTest, Length_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(3.0, 4.0);
+    let l = length(v);
+    return vec4<f32>(l, 0.0, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorBuiltinTest, Length_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 4.0);
+    let l = length(v);
+    return vec4<f32>(l, 0.0, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorBuiltinTest, Normalize_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec2<f32>(3.0, 4.0);
+    let n = normalize(v);
+    return vec4<f32>(n, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorBuiltinTest, Normalize_Vec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    return normalize(v);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(VectorBuiltinTest, Distance_Vec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec2<f32>(0.0, 0.0);
+    let b = vec2<f32>(3.0, 4.0);
+    let d = distance(a, b);
+    return vec4<f32>(d, 0.0, 0.0, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Swizzle + Math Integration Tests
+// =============================================================================
+
+TEST(SwizzleMathTest, PowOnSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let color = vec4<f32>(0.5, 0.25, 0.125, 1.0);
+    let gamma = vec3<f32>(2.2);
+    let corrected = pow(color.rgb, gamma);
+    return vec4<f32>(corrected, color.a);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleMathTest, NormalizeSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(1.0, 2.0, 3.0, 0.0);
+    let n = normalize(v.xyz);
+    return vec4<f32>(n, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleMathTest, DotOnSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let normal = vec4<f32>(0.0, 1.0, 0.0, 0.0);
+    let light = vec4<f32>(0.577, 0.577, 0.577, 0.0);
+    let ndotl = dot(normal.xyz, light.xyz);
+    return vec4<f32>(ndotl, ndotl, ndotl, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleMathTest, CrossOnSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    let b = vec4<f32>(0.0, 1.0, 0.0, 0.0);
+    let c = cross(a.xyz, b.xyz);
+    return vec4<f32>(c, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleMathTest, MixOnSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    let b = vec4<f32>(0.0, 0.0, 1.0, 1.0);
+    let mixed = mix(a.rgb, b.rgb, 0.5);
+    return vec4<f32>(mixed, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleMathTest, ClampOnSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let hdr = vec4<f32>(1.5, -0.2, 0.8, 1.0);
+    let clamped = clamp(hdr.rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(clamped, hdr.a);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleMathTest, SqrtOnSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(4.0, 9.0, 16.0, 25.0);
+    let s = sqrt(v.xyz);
+    return vec4<f32>(s, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(SwizzleMathTest, AbsOnSwizzle) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let v = vec4<f32>(-1.0, 2.0, -3.0, 4.0);
+    let a = abs(v.xyz);
+    return vec4<f32>(a, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// =============================================================================
+// Integration Tests - Real Shader Patterns
+// =============================================================================
+
+TEST(IntegrationTest, GammaCorrection) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Uniforms { gamma: f32, };
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var s: sampler;
+@group(1) @binding(0) var t: texture_2d<f32>;
+
+@fragment fn main(@location(0) color: vec4<f32>, @location(1) uv: vec2<f32>) -> @location(0) vec4<f32> {
+    let texColor = textureSample(t, s, uv);
+    let combined = color * texColor;
+    let corrected = pow(combined.rgb, vec3<f32>(u.gamma));
+    return vec4<f32>(corrected, combined.a);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(IntegrationTest, SimpleLighting) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main(@location(0) normal: vec3<f32>) -> @location(0) vec4<f32> {
+    let lightDir = normalize(vec3<f32>(1.0, 1.0, 1.0));
+    let n = normalize(normal);
+    let ndotl = max(dot(n, lightDir), 0.0);
+    let diffuse = vec3<f32>(0.8, 0.6, 0.4) * ndotl;
+    let ambient = vec3<f32>(0.1, 0.1, 0.1);
+    return vec4<f32>(diffuse + ambient, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(IntegrationTest, ColorBlending) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main(@location(0) color: vec4<f32>) -> @location(0) vec4<f32> {
+    let tint = vec4<f32>(1.0, 0.8, 0.6, 1.0);
+    let blended = mix(color.rgb, tint.rgb, 0.3);
+    let saturated = clamp(blended, vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(saturated, color.a * tint.a);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(IntegrationTest, DistanceAttenuation) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main(@location(0) worldPos: vec3<f32>) -> @location(0) vec4<f32> {
+    let lightPos = vec3<f32>(0.0, 5.0, 0.0);
+    let dist = distance(worldPos, lightPos);
+    let atten = 1.0 / (1.0 + dist * dist);
+    let color = vec3<f32>(1.0, 1.0, 1.0) * atten;
+    return vec4<f32>(color, 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(IntegrationTest, ImGuiVertexShader) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
+    @location(2) color: vec4<f32>,
+};
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
+};
+struct Uniforms { mvp: mat4x4<f32>, gamma: f32, };
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+@vertex fn main(in: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = uniforms.mvp * vec4<f32>(in.position, 0.0, 1.0);
+    out.color = in.color;
+    out.uv = in.uv;
+    return out;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(IntegrationTest, ImGuiFragmentShader) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
+};
+struct Uniforms { mvp: mat4x4<f32>, gamma: f32, };
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var s: sampler;
+@group(1) @binding(0) var t: texture_2d<f32>;
+
+@fragment fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+    let color = in.color * textureSample(t, s, in.uv);
+    let corrected_color = pow(color.rgb, vec3<f32>(uniforms.gamma));
+    return vec4<f32>(corrected_color, color.a);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(IntegrationTest, ReflectionVector) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main(@location(0) normal: vec3<f32>, @location(1) viewDir: vec3<f32>) -> @location(0) vec4<f32> {
+    let n = normalize(normal);
+    let v = normalize(viewDir);
+    let r = reflect(-v, n);
+    let spec = pow(max(dot(r, v), 0.0), 32.0);
+    return vec4<f32>(vec3<f32>(spec), 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}

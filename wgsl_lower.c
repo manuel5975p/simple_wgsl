@@ -2682,6 +2682,26 @@ static uint32_t get_scalar_type(uint32_t type_id, WgslLower *l) {
     return type_id; // Already a scalar
 }
 
+// Splat a scalar ExprResult to match a vector type.
+// If scalar_expr is already a vector or target is scalar, returns 0 (no-op).
+// On success, updates scalar_expr->id and scalar_expr->type_id in place and returns 1.
+static int maybe_splat_scalar(WgslLower *l, uint32_t vec_type_id,
+                              uint32_t *inout_id, uint32_t *inout_type_id) {
+    if (!is_scalar_type(*inout_type_id, l)) return 0;
+    int vec_count = get_vector_component_count(vec_type_id, l);
+    if (vec_count <= 0) return 0;
+    uint32_t components[4];
+    for (int i = 0; i < vec_count && i < 4; ++i)
+        components[i] = *inout_id;
+    uint32_t broadcasted;
+    if (emit_composite_construct(l, vec_type_id, &broadcasted, components, vec_count)) {
+        *inout_id = broadcasted;
+        *inout_type_id = vec_type_id;
+        return 1;
+    }
+    return 0;
+}
+
 // ---------- Expression Result Tracking ----------
 
 typedef struct {
@@ -3378,6 +3398,8 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         ExprResult lo = lower_expr_full(l, call->args[1]);
         ExprResult hi = lower_expr_full(l, call->args[2]);
         if (x.id && lo.id && hi.id) {
+            maybe_splat_scalar(l, x.type_id, &lo.id, &lo.type_id);
+            maybe_splat_scalar(l, x.type_id, &hi.id, &hi.type_id);
             uint32_t result;
             int glsl_op = is_float_type(x.type_id, l) ? GLSLstd450FClamp :
                          (is_signed_int_type(x.type_id, l) ? GLSLstd450SClamp : GLSLstd450UClamp);
@@ -3436,6 +3458,9 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             ExprResult a = lower_expr_full(l, call->args[0]);
             ExprResult b = lower_expr_full(l, call->args[1]);
             if (a.id && b.id) {
+                // step(scalar_edge, vecN_x): splat edge to match x
+                if (strcmp(callee_name, "step") == 0)
+                    maybe_splat_scalar(l, b.type_id, &a.id, &a.type_id);
                 uint32_t result;
                 uint32_t result_type = a.type_id;
                 if (strcmp(callee_name, "distance") == 0) {
@@ -3457,6 +3482,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         ExprResult b = lower_expr_full(l, call->args[1]);
         ExprResult t = lower_expr_full(l, call->args[2]);
         if (a.id && b.id && t.id) {
+            maybe_splat_scalar(l, a.type_id, &t.id, &t.type_id);
             uint32_t result;
             uint32_t operands[3] = {a.id, b.id, t.id};
             if (emit_ext_inst(l, a.type_id, &result, l->id_extinst_glsl, GLSLstd450FMix, operands, 3)) {
@@ -3472,6 +3498,8 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         ExprResult e1 = lower_expr_full(l, call->args[1]);
         ExprResult x = lower_expr_full(l, call->args[2]);
         if (e0.id && e1.id && x.id) {
+            maybe_splat_scalar(l, x.type_id, &e0.id, &e0.type_id);
+            maybe_splat_scalar(l, x.type_id, &e1.id, &e1.type_id);
             uint32_t result;
             uint32_t operands[3] = {e0.id, e1.id, x.id};
             if (emit_ext_inst(l, x.type_id, &result, l->id_extinst_glsl, GLSLstd450SmoothStep, operands, 3)) {
@@ -3946,6 +3974,23 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
                 }
                 r.id = result_id;
                 r.type_id = result_type;
+
+                // Build SSIR shuffle instruction
+                if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                    uint32_t ssir_obj = ssir_id_map_get(l, obj.id);
+                    uint32_t ssir_type = spv_type_to_ssir(l, result_type);
+                    if (ssir_obj && ssir_type) {
+                        uint32_t ssir_indices[4];
+                        for (int i = 0; i < swizzle_len; ++i) {
+                            ssir_indices[i] = (uint32_t)indices[i];
+                        }
+                        uint32_t ssir_result = ssir_build_shuffle(l->ssir, l->fn_ctx.ssir_func_id,
+                                                                   l->fn_ctx.ssir_block_id, ssir_type,
+                                                                   ssir_obj, ssir_obj,
+                                                                   ssir_indices, (uint32_t)swizzle_len);
+                        ssir_id_map_set(l, result_id, ssir_result);
+                    }
+                }
             }
             return r;
         }
