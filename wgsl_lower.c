@@ -1646,8 +1646,9 @@ static void get_type_layout(const char *type_name, int *out_size, int *out_align
     // Matrix types (column-major, each column is a vec)
     else if (strncmp(type_name, "mat", 3) == 0) {
         int cols = 0, rows = 0;
-        if (sscanf(type_name, "mat%dx%d", &cols, &rows) == 2 ||
-            sscanf(type_name, "mat%dx%df", &cols, &rows) == 2) {
+        if ((sscanf(type_name, "mat%dx%d", &cols, &rows) == 2 ||
+             sscanf(type_name, "mat%dx%df", &cols, &rows) == 2) &&
+            cols >= 2 && cols <= 4 && rows >= 2 && rows <= 4) {
             // Column alignment depends on rows (vec2=8, vec3/vec4=16)
             int col_align = (rows == 2) ? 8 : 16;
             int col_size = (rows == 2) ? 8 : (rows == 3 ? 16 : 16);  // vec3 padded to 16
@@ -4245,6 +4246,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
 
     // Atomic builtins - all route through SSIR
     if (strncmp(callee_name, "atomic", 6) == 0) {
+        if (call->arg_count < 1 || !call->args[0]) return r;
         // First arg is always the pointer (from &buf.counter)
         SpvStorageClass sc = SpvStorageClassStorageBuffer;
         ExprResult ptr = {0, 0};

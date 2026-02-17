@@ -179,8 +179,8 @@ static const WgslAstNode* get_attr_node(const WgslAstNode* any, const char* attr
 static const char* attr_first_arg_string(const WgslAstNode* a) {
     if (!a || a->type != WGSL_NODE_ATTRIBUTE || a->attribute.arg_count <= 0)
         return NULL;
-    /* PRE: args != NULL when arg_count > 0 */
-    wgsl_compiler_assert(a->attribute.args != NULL, "attr_first_arg_string: args NULL with arg_count %d", a->attribute.arg_count);
+    if (!a->attribute.args)
+        return NULL;
     const WgslAstNode* x = a->attribute.args[0];
     if (!x)
         return NULL;
@@ -340,8 +340,8 @@ static void parse_vec_like_name(const char* name, int* vecn, WgslNumericType* el
         return;
     if (strncmp(name, "vec", 3) != 0)
         return;
-    /* PRE: strlen(name) >= 4 for name[3] access */
-    wgsl_compiler_assert(strlen(name) >= 4, "parse_vec_like_name: strlen < 4 for '%s'", name);
+    if (strlen(name) < 4)
+        return;
     int n = name[3] - '0';
     if (n < 2 || n > 4)
         return;
@@ -365,6 +365,8 @@ static int type_info(const WgslResolver* r, const WgslAstNode* t, int* component
     if (!t || t->type != WGSL_NODE_TYPE)
         return 0;
     const char* n = t->type_node.name;
+    if (!n)
+        return 0;
     int c = 0;
     WgslNumericType dt = WGSL_NUM_UNKNOWN;
     int sz = 0;
@@ -384,15 +386,11 @@ static int type_info(const WgslResolver* r, const WgslAstNode* t, int* component
             int lane = 0;
             if (n[3] >= '2' && n[3] <= '4')
                 lane = n[3] - '0';
-            /* PRE: expr_args != NULL when expr_arg_count > 0 */
-            wgsl_compiler_assert(t->type_node.expr_arg_count == 0 || t->type_node.expr_args != NULL, "type_info: expr_args NULL with count %d", t->type_node.expr_arg_count);
-            if (lane == 0 && t->type_node.expr_arg_count > 0 && t->type_node.expr_args[0] && t->type_node.expr_args[0]->type == WGSL_NODE_LITERAL)
+            if (lane == 0 && t->type_node.expr_arg_count > 0 && t->type_node.expr_args && t->type_node.expr_args[0] && t->type_node.expr_args[0]->type == WGSL_NODE_LITERAL)
                 lane = parse_int_lexeme(t->type_node.expr_args[0]->literal.lexeme);
             if (lane < 2 || lane > 4)
                 return 0;
-            /* PRE: type_args != NULL when type_arg_count > 0 */
-            wgsl_compiler_assert(t->type_node.type_arg_count == 0 || t->type_node.type_args != NULL, "type_info: type_args NULL with count %d", t->type_node.type_arg_count);
-            if (t->type_node.type_arg_count > 0 && t->type_node.type_args[0] && t->type_node.type_args[0]->type == WGSL_NODE_TYPE)
+            if (t->type_node.type_arg_count > 0 && t->type_node.type_args && t->type_node.type_args[0] && t->type_node.type_args[0]->type == WGSL_NODE_TYPE)
                 dt = elem_from_name(t->type_node.type_args[0]->type_node.name);
             else
                 dt = WGSL_NUM_F32;
@@ -433,8 +431,9 @@ static int struct_min_size_bytes(const WgslResolver* r, const WgslAstNode* sd, i
         const WgslAstNode* f = sd->struct_decl.fields[i];
         if (!f || f->type != WGSL_NODE_STRUCT_FIELD)
             continue;
-        /* PRE: struct_field.type != NULL for valid field */
-        wgsl_compiler_assert(f->struct_field.type != NULL, "struct_min_size_bytes: field %d type is NULL", i);
+        /* Error-recovered ASTs may have NULL field types. */
+        if (!f->struct_field.type)
+            return 0;
         int fb = 0;
         if (!type_min_size_bytes(r, f->struct_field.type, &fb))
             return 0;
@@ -459,17 +458,14 @@ static int type_min_size_bytes(const WgslResolver* r, const WgslAstNode* t, int*
         return 1;
     }
 
-    /* PRE: type_node.name != NULL for valid type */
-    wgsl_compiler_assert(t->type_node.name != NULL, "type_min_size_bytes: type_node.name NULL");
+    /* Error-recovered ASTs may have NULL type names. */
     const char* name = t->type_node.name;
     if (!name)
         return 0;
 
     /* array<T, N> */
     if (str_eq(name, "array")) {
-        /* PRE: type_args != NULL when type_arg_count > 0 */
-        wgsl_compiler_assert(t->type_node.type_arg_count == 0 || t->type_node.type_args != NULL, "type_min_size_bytes: type_args NULL with count > 0");
-        if (t->type_node.type_arg_count <= 0 || !t->type_node.type_args[0])
+        if (t->type_node.type_arg_count <= 0 || !t->type_node.type_args || !t->type_node.type_args[0])
             return 0;
         const WgslAstNode* elem_t = t->type_node.type_args[0];
         int elem_b = 0;
@@ -478,13 +474,9 @@ static int type_min_size_bytes(const WgslResolver* r, const WgslAstNode* t, int*
 
         /* Try count from expr args if present and literal. */
         int count = -1;
-        /* PRE: expr_args != NULL when expr_arg_count > 0 */
-        wgsl_compiler_assert(t->type_node.expr_arg_count == 0 || t->type_node.expr_args != NULL, "type_min_size_bytes: expr_args NULL with count > 0");
-        if (t->type_node.expr_arg_count > 0 && t->type_node.expr_args[0]) {
+        if (t->type_node.expr_arg_count > 0 && t->type_node.expr_args && t->type_node.expr_args[0]) {
             const WgslAstNode* n = t->type_node.expr_args[0];
-            /* PRE: literal.lexeme != NULL for valid literal */
-            wgsl_compiler_assert(n->type != WGSL_NODE_LITERAL || n->literal.lexeme != NULL, "type_min_size_bytes: literal.lexeme NULL");
-            if (n->type == WGSL_NODE_LITERAL)
+            if (n->type == WGSL_NODE_LITERAL && n->literal.lexeme)
                 count = parse_int_lexeme(n->literal.lexeme);
         }
         if (count <= 0)
@@ -537,9 +529,8 @@ static void walk_expr(WgslResolver* r, FnInfo* fi, const WgslAstNode* e) {
     } break;
     case WGSL_NODE_CALL: {
         if (e->call.callee && e->call.callee->type == WGSL_NODE_IDENT) {
-            /* PRE: ident.name != NULL for valid ident node */
-            wgsl_compiler_assert(e->call.callee->ident.name != NULL, "walk_expr: call.callee->ident.name NULL");
-            record_fn_call(fi, e->call.callee->ident.name);
+            if (e->call.callee->ident.name)
+                record_fn_call(fi, e->call.callee->ident.name);
         } else
             walk_expr(r, fi, e->call.callee);
         for (int i = 0; i < e->call.arg_count; i++)
@@ -904,8 +895,6 @@ int wgsl_resolver_fragment_outputs(const WgslResolver* r, const char* fragment_e
             count = 1;
         }
     } else if (fn->function.return_type && fn->function.return_type->type == WGSL_NODE_TYPE) {
-        /* PRE: type_node.name != NULL for valid return type */
-        wgsl_compiler_assert(fn->function.return_type->type_node.name != NULL, "wgsl_resolver_fragment_outputs: return_type->type_node.name NULL");
         const char* tn = fn->function.return_type->type_node.name;
         const WgslAstNode* sd = get_struct(r, tn);
         if (sd) {
@@ -960,8 +949,8 @@ int wgsl_resolver_vertex_inputs(const WgslResolver* r, const char* vertex_entry_
             int loc = attr_first_arg_int(a_loc);
             int comps = 0, bytes = 0;
             WgslNumericType nt = WGSL_NUM_UNKNOWN;
-            /* PRE: param.type != NULL for valid param with location */
-            wgsl_compiler_assert(p->param.type != NULL, "wgsl_resolver_vertex_inputs: param %d type is NULL", i);
+            if (!p->param.type)
+                continue;
             type_info(r, p->param.type, &comps, &nt, &bytes);
             if (count >= cap) {
                 cap = cap ? cap * 2 : 8;
@@ -975,8 +964,6 @@ int wgsl_resolver_vertex_inputs(const WgslResolver* r, const char* vertex_entry_
             continue;
         }
         if (p->param.type && p->param.type->type == WGSL_NODE_TYPE) {
-            /* PRE: type_node.name != NULL for valid type */
-            wgsl_compiler_assert(p->param.type->type_node.name != NULL, "wgsl_resolver_vertex_inputs: param.type->type_node.name NULL");
             const char* tn = p->param.type->type_node.name;
             const WgslAstNode* sd = get_struct(r, tn);
             if (sd) {
