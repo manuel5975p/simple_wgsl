@@ -640,7 +640,8 @@ static void walk_stmt(WgslResolver* r, const WgslAstNode* fn, FnInfo* fi, const 
             walk_stmt(r, fn, fi, s->switch_stmt.cases[i]);
         break;
     case WGSL_NODE_CASE:
-        if (s->case_clause.expr) walk_expr(r, fi, s->case_clause.expr);
+        for (int i = 0; i < s->case_clause.expr_count; i++)
+            walk_expr(r, fi, s->case_clause.exprs[i]);
         for (int i = 0; i < s->case_clause.stmt_count; i++)
             walk_stmt(r, fn, fi, s->case_clause.stmts[i]);
         break;

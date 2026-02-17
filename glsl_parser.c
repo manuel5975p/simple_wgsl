@@ -1482,10 +1482,13 @@ static WgslAstNode *parse_switch_stmt(GpParser *P) {
     while (!gp_check(P, GP_TOK_RBRACE) && !gp_check(P, GP_TOK_EOF)) {
         WgslAstNode *C = gp_new_node(P, WGSL_NODE_CASE);
         if (gp_match(P, GP_TOK_CASE)) {
-            C->case_clause.expr = gp_parse_expr(P);
+            C->case_clause.exprs = (WgslAstNode **)NODE_REALLOC(NULL, sizeof(WgslAstNode *));
+            C->case_clause.exprs[0] = gp_parse_expr(P);
+            C->case_clause.expr_count = 1;
             gp_expect(P, GP_TOK_COLON, "expected ':'");
         } else if (gp_match(P, GP_TOK_DEFAULT)) {
-            C->case_clause.expr = NULL;
+            C->case_clause.exprs = NULL;
+            C->case_clause.expr_count = 0;
             gp_expect(P, GP_TOK_COLON, "expected ':'");
         } else {
             gp_parse_error(P, "expected 'case' or 'default'");
@@ -2164,7 +2167,8 @@ static int ast_uses_ident(const WgslAstNode *n, const char *name) {
             if (ast_uses_ident(n->switch_stmt.cases[i], name)) return 1;
         return 0;
     case WGSL_NODE_CASE:
-        if (ast_uses_ident(n->case_clause.expr, name)) return 1;
+        for (int i = 0; i < n->case_clause.expr_count; i++)
+            if (ast_uses_ident(n->case_clause.exprs[i], name)) return 1;
         for (int i = 0; i < n->case_clause.stmt_count; i++)
             if (ast_uses_ident(n->case_clause.stmts[i], name)) return 1;
         return 0;

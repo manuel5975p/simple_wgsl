@@ -22,6 +22,20 @@ set(TEST_SOURCES
     ssir_to_hlsl_test.cpp
     ssir_to_msl_test.cpp
     msl_parser_test.cpp
+    spec_compliance_test.cpp
+    select_test.cpp
+    all_any_test.cpp
+    fma_test.cpp
+    saturate_test.cpp
+    faceforward_refract_test.cpp
+    transpose_determinant_test.cpp
+    bitmanip_test.cpp
+    texture_sampling_test.cpp
+    texture_query_test.cpp
+    derivative_test.cpp
+    atomic_test.cpp
+    pack_unpack_test.cpp
+    barrier_test.cpp
 )
 
 if(WGSL_BUILD_EXPRESSION_TESTS)

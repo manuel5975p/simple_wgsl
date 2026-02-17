@@ -140,6 +140,7 @@ typedef struct GlobalVar {
     char *address_space;
     char *name;
     WgslAstNode *type;
+    int is_alias;
 } GlobalVar;
 
 typedef struct Param {
@@ -271,14 +272,22 @@ typedef struct SwitchStmt {
 } SwitchStmt;
 
 typedef struct CaseClause {
-    WgslAstNode *expr; /* NULL for default */
+    int expr_count;       /* 0 for default case */
+    WgslAstNode **exprs;  /* case value expressions (NULL when expr_count==0) */
     int stmt_count;
     WgslAstNode **stmts;
 } CaseClause;
 
+typedef struct WgslTypeAlias {
+    char *name;
+    WgslAstNode *type; /* TYPE node */
+} WgslTypeAlias;
+
 typedef struct Program {
     int decl_count;
     WgslAstNode **decls;
+    int alias_count;
+    WgslTypeAlias *aliases;
 } Program;
 
 struct WgslAstNode {

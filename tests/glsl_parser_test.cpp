@@ -552,9 +552,9 @@ TEST_F(GlslParserTest, SwitchStatement) {
     ASSERT_NE(sw->switch_stmt.expr, nullptr);
     ASSERT_EQ(sw->switch_stmt.case_count, 3);
     /* First case: value 0 */
-    EXPECT_NE(sw->switch_stmt.cases[0]->case_clause.expr, nullptr);
+    EXPECT_GT(sw->switch_stmt.cases[0]->case_clause.expr_count, 0);
     /* Default case: no value */
-    EXPECT_EQ(sw->switch_stmt.cases[2]->case_clause.expr, nullptr);
+    EXPECT_EQ(sw->switch_stmt.cases[2]->case_clause.expr_count, 0);
 }
 
 TEST_F(GlslParserTest, BreakStatement) {

@@ -162,6 +162,7 @@ typedef struct {
     /* Capability tracking */
     int has_shader_cap;
     int has_float16_cap;
+    int has_image_query_cap;
     int glsl_ext_emitted;
 
     /* Pre-computed function type IDs (indexed by function index) */
@@ -176,6 +177,13 @@ typedef struct {
         uint32_t spv_id;
     } func_type_dedup[64];
     uint32_t func_type_dedup_count;
+
+    /* Deduplication cache for OpTypeSampledImage */
+    struct {
+        uint32_t image_type;
+        uint32_t spv_id;
+    } sampled_image_cache[16];
+    uint32_t sampled_image_cache_count;
 } Ctx;
 
 //c nonnull
@@ -489,6 +497,8 @@ static uint32_t sts_emit_type_bool(Ctx *c) {
 //c nonnull
 static uint32_t sts_emit_type_int(Ctx *c, uint32_t width, uint32_t signedness) {
     wgsl_compiler_assert(c != NULL, "sts_emit_type_int: c is NULL");
+    if (width == 32 && signedness == 1 && c->spv_i32) return c->spv_i32;
+    if (width == 32 && signedness == 0 && c->spv_u32) return c->spv_u32;
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeInt, 4)) return 0;
@@ -503,6 +513,8 @@ static uint32_t sts_emit_type_int(Ctx *c, uint32_t width, uint32_t signedness) {
 //c nonnull
 static uint32_t sts_emit_type_float(Ctx *c, uint32_t width) {
     wgsl_compiler_assert(c != NULL, "sts_emit_type_float: c is NULL");
+    if (width == 32 && c->spv_f32) return c->spv_f32;
+    if (width == 16 && c->spv_f16) return c->spv_f16;
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeFloat, 3)) return 0;
@@ -688,11 +700,21 @@ static uint32_t sts_emit_type_image(Ctx *c, SsirTextureDim dim, uint32_t sampled
 //c nonnull
 static uint32_t sts_emit_type_sampled_image(Ctx *c, uint32_t image_type) {
     wgsl_compiler_assert(c != NULL, "sts_emit_type_sampled_image: c is NULL");
+    /* Deduplicate: check if we already emitted a sampled image type for this image type */
+    for (uint32_t i = 0; i < c->sampled_image_cache_count; i++) {
+        if (c->sampled_image_cache[i].image_type == image_type)
+            return c->sampled_image_cache[i].spv_id;
+    }
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeSampledImage, 3)) return 0;
     if (!wb_push(wb, id)) return 0;
     if (!wb_push(wb, image_type)) return 0;
+    if (c->sampled_image_cache_count < 16) {
+        c->sampled_image_cache[c->sampled_image_cache_count].image_type = image_type;
+        c->sampled_image_cache[c->sampled_image_cache_count].spv_id = id;
+        c->sampled_image_cache_count++;
+    }
     return id;
 }
 
@@ -784,9 +806,12 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             wb_push(wb, len_id);
             wb_push(wb, t->array.length);
             spv_id = sts_emit_type_array(c, elem_spv, len_id);
-            /* Decorate array stride */
-            uint32_t stride = t->array.stride ? t->array.stride : compute_array_stride(c, t->array.elem);
-            sts_emit_decorate(c, spv_id, SpvDecorationArrayStride, &stride, 1);
+            /* Decorate array stride only when explicitly set (buffer arrays).
+               Workgroup/private arrays must NOT have ArrayStride. */
+            if (t->array.stride) {
+                uint32_t stride = t->array.stride;
+                sts_emit_decorate(c, spv_id, SpvDecorationArrayStride, &stride, 1);
+            }
             break;
         }
         case SSIR_TYPE_RUNTIME_ARRAY: {
@@ -2248,13 +2273,35 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             break;
         }
 
-        case SSIR_OP_TEX_LOAD:
-            sts_emit_op(wb, SpvOpImageRead, 5);
-            wb_push(wb, type_spv);
-            wb_push(wb, result_spv);
-            wb_push(wb, get_spv_id(c, inst->operands[0]));
-            wb_push(wb, get_spv_id(c, inst->operands[1]));
+        case SSIR_OP_TEX_LOAD: {
+            /* Use OpImageFetch for sampled textures, OpImageRead for storage */
+            uint32_t tex_ssir_type = get_ssir_type(c, inst->operands[0]);
+            SsirType *tex_type = ssir_get_type((SsirModule *)c->mod, tex_ssir_type);
+            int is_sampled = (tex_type && (tex_type->kind == SSIR_TYPE_TEXTURE || tex_type->kind == SSIR_TYPE_TEXTURE_DEPTH));
+            uint32_t lod_operand = (inst->operand_count >= 3 && inst->operands[2]) ? get_spv_id(c, inst->operands[2]) : 0;
+            if (is_sampled && lod_operand) {
+                sts_emit_op(wb, SpvOpImageFetch, 7);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+                wb_push(wb, get_spv_id(c, inst->operands[1]));
+                wb_push(wb, 0x2); /* ImageOperands: Lod */
+                wb_push(wb, lod_operand);
+            } else if (is_sampled) {
+                sts_emit_op(wb, SpvOpImageFetch, 5);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+                wb_push(wb, get_spv_id(c, inst->operands[1]));
+            } else {
+                sts_emit_op(wb, SpvOpImageRead, 5);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+                wb_push(wb, get_spv_id(c, inst->operands[1]));
+            }
             break;
+        }
 
         case SSIR_OP_TEX_STORE:
             sts_emit_op(wb, SpvOpImageWrite, 4);
@@ -2263,13 +2310,28 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             wb_push(wb, get_spv_id(c, inst->operands[2]));
             break;
 
-        case SSIR_OP_TEX_SIZE:
-            sts_emit_op(wb, SpvOpImageQuerySizeLod, 5);
-            wb_push(wb, type_spv);
-            wb_push(wb, result_spv);
-            wb_push(wb, get_spv_id(c, inst->operands[0]));
-            wb_push(wb, get_spv_id(c, inst->operands[1]));
+        case SSIR_OP_TEX_SIZE: {
+            if (!c->has_image_query_cap) { sts_emit_capability(c, SpvCapabilityImageQuery); c->has_image_query_cap = 1; }
+            /* Check if texture is multisampled — use OpImageQuerySize (no lod) */
+            uint32_t tex_ssir_type_ts = get_ssir_type(c, inst->operands[0]);
+            SsirType *tex_type_ts = ssir_get_type((SsirModule *)c->mod, tex_ssir_type_ts);
+            int is_multisampled = (tex_type_ts && tex_type_ts->kind == SSIR_TYPE_TEXTURE &&
+                (tex_type_ts->texture.dim == SSIR_TEX_MULTISAMPLED_2D));
+            int has_level = (inst->operand_count >= 2 && inst->operands[1] != 0);
+            if (is_multisampled || !has_level) {
+                sts_emit_op(wb, SpvOpImageQuerySize, 4);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+            } else {
+                sts_emit_op(wb, SpvOpImageQuerySizeLod, 5);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+                wb_push(wb, get_spv_id(c, inst->operands[1]));
+            }
             break;
+        }
 
         case SSIR_OP_TEX_QUERY_LOD: {
             uint32_t tex_ssir_type = get_ssir_type(c, inst->operands[0]);
@@ -2290,6 +2352,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
         }
 
         case SSIR_OP_TEX_QUERY_LEVELS:
+            if (!c->has_image_query_cap) { sts_emit_capability(c, SpvCapabilityImageQuery); c->has_image_query_cap = 1; }
             sts_emit_op(wb, SpvOpImageQueryLevels, 4);
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);
@@ -2297,6 +2360,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             break;
 
         case SSIR_OP_TEX_QUERY_SAMPLES:
+            if (!c->has_image_query_cap) { sts_emit_capability(c, SpvCapabilityImageQuery); c->has_image_query_cap = 1; }
             sts_emit_op(wb, SpvOpImageQuerySamples, 4);
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);
@@ -2371,7 +2435,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             uint32_t sem_unequal_id = sts_emit_const_u32(c, (uint32_t)SpvMemorySemanticsMaskNone); /* Unequal gets relaxed */
             switch (aop) {
             case SSIR_ATOMIC_LOAD:
-                sts_emit_op(wb, SpvOpAtomicLoad, 5);
+                sts_emit_op(wb, SpvOpAtomicLoad, 6);
                 wb_push(wb, type_spv); wb_push(wb, result_spv);
                 wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id);
                 break;
@@ -2390,12 +2454,12 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
                 wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
                 break;
             case SSIR_ATOMIC_MAX:
-                sts_emit_op(wb, SpvOpAtomicUMax, 7);
+                sts_emit_op(wb, is_signed_ssir_type(c, inst->type) ? SpvOpAtomicSMax : SpvOpAtomicUMax, 7);
                 wb_push(wb, type_spv); wb_push(wb, result_spv);
                 wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
                 break;
             case SSIR_ATOMIC_MIN:
-                sts_emit_op(wb, SpvOpAtomicUMin, 7);
+                sts_emit_op(wb, is_signed_ssir_type(c, inst->type) ? SpvOpAtomicSMin : SpvOpAtomicUMin, 7);
                 wb_push(wb, type_spv); wb_push(wb, result_spv);
                 wb_push(wb, a_ptr); wb_push(wb, scope_id); wb_push(wb, sem_id); wb_push(wb, a_val);
                 break;

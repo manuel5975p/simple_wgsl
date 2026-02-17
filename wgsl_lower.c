@@ -353,6 +353,13 @@ struct WgslLower {
     int struct_cache_count;
     int struct_cache_cap;
 
+    // Type alias table (alias name -> type node)
+    struct {
+        const char *name;
+        const WgslAstNode *type_node;
+    } alias_table[64];
+    int alias_count;
+
     // SSIR ID mapping (SPV ID -> SSIR ID)
     uint32_t *ssir_id_map;
     uint32_t ssir_id_map_cap;
@@ -521,9 +528,16 @@ static uint32_t spv_type_to_ssir(WgslLower *l, uint32_t spv_type) {
                 }
                 case TC_ARRAY: {
                     uint32_t elem = spv_type_to_ssir(l, e->array_type.element_type_id);
-                    // Note: length_id is a constant ID, not a literal - we'd need to look it up
-                    // For now, use a placeholder length (this may need improvement)
-                    return ssir_type_array(l->ssir, elem, 0);
+                    // Look up array length from the constant cache
+                    uint32_t length = 0;
+                    uint32_t len_id = e->array_type.length_id;
+                    for (int ci = 0; ci < l->const_cache_count; ci++) {
+                        if (l->const_cache[ci].id == len_id) {
+                            length = l->const_cache[ci].u32_val;
+                            break;
+                        }
+                    }
+                    return ssir_type_array(l->ssir, elem, length);
                 }
                 case TC_RUNTIME_ARRAY: {
                     uint32_t elem = spv_type_to_ssir(l, e->runtime_array_type.element_type_id);
@@ -1502,6 +1516,14 @@ static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
         }
     }
 
+    // Atomic types - SPIR-V has no distinct atomic type; use the inner type
+    if (strcmp(name, "atomic") == 0) {
+        if (tn->type_arg_count > 0) {
+            return lower_type(l, tn->type_args[0]);
+        }
+        return l->id_u32 ? l->id_u32 : emit_type_int(l, 32, 0);
+    }
+
     // Array types
     if (strcmp(name, "array") == 0) {
         if (tn->type_arg_count > 0) {
@@ -1562,11 +1584,27 @@ static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
         // Storage textures use format from first type arg
         return emit_type_image(l, sampled_type, SpvDim2D, 0, 0, 0, 2, SpvImageFormatRgba8);
     }
+    if (strcmp(name, "texture_multisampled_2d") == 0) {
+        uint32_t sampled_type = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
+        if (tn->type_arg_count > 0) sampled_type = lower_type(l, tn->type_args[0]);
+        return emit_type_image(l, sampled_type, SpvDim2D, 0, 0, 1, 1, SpvImageFormatUnknown);
+    }
+    if (strcmp(name, "texture_depth_multisampled_2d") == 0) {
+        uint32_t sampled_type = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
+        return emit_type_image(l, sampled_type, SpvDim2D, 1, 0, 1, 1, SpvImageFormatUnknown);
+    }
 
     // Check if this is a struct type
     for (int i = 0; i < l->struct_cache_count; ++i) {
         if (strcmp(l->struct_cache[i].name, name) == 0) {
             return l->struct_cache[i].spv_id;
+        }
+    }
+
+    // Check if this is a type alias
+    for (int i = 0; i < l->alias_count; ++i) {
+        if (strcmp(l->alias_table[i].name, name) == 0) {
+            return lower_type(l, l->alias_table[i].type_node);
         }
     }
 
@@ -1616,6 +1654,10 @@ static void get_type_layout(const char *type_name, int *out_size, int *out_align
             size = col_size * cols;
             align_val = col_align;
         }
+    }
+    // Atomic types - same layout as inner scalar
+    else if (strcmp(type_name, "atomic") == 0) {
+        size = 4; align_val = 4;
     }
     // Array type - runtime array has indeterminate size
     else if (strcmp(type_name, "array") == 0) {
@@ -2820,11 +2862,14 @@ static ExprResult lower_literal(WgslLower *l, const WgslAstNode *node) {
 //l nonnull
 static uint32_t get_runtime_array_element_type(WgslLower *l, uint32_t type_id) {
     wgsl_compiler_assert(l != NULL, "get_runtime_array_element_type: l is NULL");
-    // Search all buckets for runtime array types
+    // Search all buckets for runtime array and fixed-size array types
     for (int b = 0; b < TYPE_CACHE_SIZE; ++b) {
         for (TypeCacheEntry *e = l->type_cache.buckets[b]; e; e = e->next) {
-            if (e->kind == TC_RUNTIME_ARRAY && e->spv_id == type_id) {
-                return e->runtime_array_type.element_type_id;
+            if (e->spv_id == type_id) {
+                if (e->kind == TC_RUNTIME_ARRAY)
+                    return e->runtime_array_type.element_type_id;
+                if (e->kind == TC_ARRAY)
+                    return e->array_type.element_type_id;
             }
         }
     }
@@ -3592,6 +3637,791 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         return r;
     }
 
+    // textureSampleCompare(texture, sampler, coord, depthRef)
+    if (strcmp(callee_name, "textureSampleCompare") == 0 && call->arg_count >= 4) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        ExprResult samp = lower_expr_full(l, call->args[1]);
+        ExprResult coord = lower_expr_full(l, call->args[2]);
+        ExprResult depth_ref = lower_expr_full(l, call->args[3]);
+        if (!tex.id || !samp.id || !coord.id || !depth_ref.id) return r;
+
+        uint32_t loaded_tex, loaded_samp;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+        if (!emit_load(l, samp.type_id, &loaded_samp, samp.id)) return r;
+
+        uint32_t result_type = l->id_f32;
+        uint32_t result_id = fresh_id(l);
+
+        // SpvSections path
+        WordBuf *wb = &l->sections.functions;
+        uint32_t si_type = emit_type_sampled_image(l, tex.type_id);
+        uint32_t si_id = fresh_id(l);
+        emit_op(wb, SpvOpSampledImage, 5);
+        wb_push_u32(wb, si_type);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, loaded_tex);
+        wb_push_u32(wb, loaded_samp);
+
+        emit_op(wb, SpvOpImageSampleDrefImplicitLod, 6);
+        wb_push_u32(wb, result_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, coord.id);
+        wb_push_u32(wb, depth_ref.id);
+
+        // SSIR path
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_samp = ssir_id_map_get(l, loaded_samp);
+            uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+            uint32_t ssir_ref = ssir_id_map_get(l, depth_ref.id);
+            uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+            if (ssir_tex && ssir_samp && ssir_coord && ssir_ref && ssir_result_type) {
+                uint32_t ssir_result = ssir_build_tex_sample_cmp(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                    ssir_coord, ssir_ref);
+                ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // textureSampleCompareLevel(texture, sampler, coord, depthRef)
+    if (strcmp(callee_name, "textureSampleCompareLevel") == 0 && call->arg_count >= 4) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        ExprResult samp = lower_expr_full(l, call->args[1]);
+        ExprResult coord = lower_expr_full(l, call->args[2]);
+        ExprResult depth_ref = lower_expr_full(l, call->args[3]);
+        if (!tex.id || !samp.id || !coord.id || !depth_ref.id) return r;
+
+        uint32_t loaded_tex, loaded_samp;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+        if (!emit_load(l, samp.type_id, &loaded_samp, samp.id)) return r;
+
+        uint32_t result_type = l->id_f32;
+        uint32_t result_id = fresh_id(l);
+
+        // SpvSections path
+        WordBuf *wb = &l->sections.functions;
+        uint32_t si_type = emit_type_sampled_image(l, tex.type_id);
+        uint32_t si_id = fresh_id(l);
+        emit_op(wb, SpvOpSampledImage, 5);
+        wb_push_u32(wb, si_type);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, loaded_tex);
+        wb_push_u32(wb, loaded_samp);
+
+        uint32_t lod_zero = emit_const_f32(l, 0.0f);
+        emit_op(wb, SpvOpImageSampleDrefExplicitLod, 8);
+        wb_push_u32(wb, result_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, coord.id);
+        wb_push_u32(wb, depth_ref.id);
+        wb_push_u32(wb, 0x2); // ImageOperands: Lod
+        wb_push_u32(wb, lod_zero);
+
+        // SSIR path
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_samp = ssir_id_map_get(l, loaded_samp);
+            uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+            uint32_t ssir_ref = ssir_id_map_get(l, depth_ref.id);
+            uint32_t ssir_lod = ssir_id_map_get(l, lod_zero);
+            uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+            if (ssir_tex && ssir_samp && ssir_coord && ssir_ref && ssir_result_type) {
+                uint32_t ssir_result = ssir_build_tex_sample_cmp_level(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                    ssir_coord, ssir_ref, ssir_lod ? ssir_lod : 0);
+                ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // textureLoad(texture, coord, level)
+    if (strcmp(callee_name, "textureLoad") == 0 && call->arg_count >= 2) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        ExprResult coord = lower_expr_full(l, call->args[1]);
+        if (!tex.id || !coord.id) return r;
+
+        uint32_t loaded_tex;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+
+        uint32_t result_type = l->id_vec4f;
+        uint32_t result_id = fresh_id(l);
+
+        // SpvSections path
+        WordBuf *wb = &l->sections.functions;
+        if (call->arg_count >= 3) {
+            ExprResult level = lower_expr_full(l, call->args[2]);
+            if (!level.id) return r;
+            emit_op(wb, SpvOpImageFetch, 7);
+            wb_push_u32(wb, result_type);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, loaded_tex);
+            wb_push_u32(wb, coord.id);
+            wb_push_u32(wb, 0x2); // ImageOperands: Lod
+            wb_push_u32(wb, level.id);
+
+            // SSIR path
+            if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+                uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+                uint32_t ssir_level = ssir_id_map_get(l, level.id);
+                uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+                if (ssir_tex && ssir_coord && ssir_result_type) {
+                    uint32_t ssir_result = ssir_build_tex_load(l->ssir, l->fn_ctx.ssir_func_id,
+                        l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_coord,
+                        ssir_level ? ssir_level : 0);
+                    ssir_id_map_set(l, result_id, ssir_result);
+                }
+            }
+        } else {
+            emit_op(wb, SpvOpImageFetch, 5);
+            wb_push_u32(wb, result_type);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, loaded_tex);
+            wb_push_u32(wb, coord.id);
+
+            if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+                uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+                uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+                if (ssir_tex && ssir_coord && ssir_result_type) {
+                    uint32_t ssir_result = ssir_build_tex_load(l->ssir, l->fn_ctx.ssir_func_id,
+                        l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_coord, 0);
+                    ssir_id_map_set(l, result_id, ssir_result);
+                }
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // textureSampleLevel(texture, sampler, coord, level)
+    if (strcmp(callee_name, "textureSampleLevel") == 0 && call->arg_count >= 4) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        ExprResult samp = lower_expr_full(l, call->args[1]);
+        ExprResult coord = lower_expr_full(l, call->args[2]);
+        ExprResult level = lower_expr_full(l, call->args[3]);
+        if (!tex.id || !samp.id || !coord.id || !level.id) return r;
+
+        uint32_t loaded_tex, loaded_samp;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+        if (!emit_load(l, samp.type_id, &loaded_samp, samp.id)) return r;
+
+        uint32_t result_type = l->id_vec4f;
+        uint32_t result_id = fresh_id(l);
+
+        WordBuf *wb = &l->sections.functions;
+        uint32_t si_type = emit_type_sampled_image(l, tex.type_id);
+        uint32_t si_id = fresh_id(l);
+        emit_op(wb, SpvOpSampledImage, 5);
+        wb_push_u32(wb, si_type);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, loaded_tex);
+        wb_push_u32(wb, loaded_samp);
+
+        emit_op(wb, SpvOpImageSampleExplicitLod, 7);
+        wb_push_u32(wb, result_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, coord.id);
+        wb_push_u32(wb, 0x2); // ImageOperands: Lod
+        wb_push_u32(wb, level.id);
+
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_samp = ssir_id_map_get(l, loaded_samp);
+            uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+            uint32_t ssir_level = ssir_id_map_get(l, level.id);
+            uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+            if (ssir_tex && ssir_samp && ssir_coord && ssir_level && ssir_result_type) {
+                uint32_t ssir_result = ssir_build_tex_sample_level(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                    ssir_coord, ssir_level);
+                ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // textureSampleBias(texture, sampler, coord, bias)
+    if (strcmp(callee_name, "textureSampleBias") == 0 && call->arg_count >= 4) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        ExprResult samp = lower_expr_full(l, call->args[1]);
+        ExprResult coord = lower_expr_full(l, call->args[2]);
+        ExprResult bias = lower_expr_full(l, call->args[3]);
+        if (!tex.id || !samp.id || !coord.id || !bias.id) return r;
+
+        uint32_t loaded_tex, loaded_samp;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+        if (!emit_load(l, samp.type_id, &loaded_samp, samp.id)) return r;
+
+        uint32_t result_type = l->id_vec4f;
+        uint32_t result_id = fresh_id(l);
+
+        WordBuf *wb = &l->sections.functions;
+        uint32_t si_type = emit_type_sampled_image(l, tex.type_id);
+        uint32_t si_id = fresh_id(l);
+        emit_op(wb, SpvOpSampledImage, 5);
+        wb_push_u32(wb, si_type);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, loaded_tex);
+        wb_push_u32(wb, loaded_samp);
+
+        emit_op(wb, SpvOpImageSampleImplicitLod, 7);
+        wb_push_u32(wb, result_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, coord.id);
+        wb_push_u32(wb, 0x1); // ImageOperands: Bias
+        wb_push_u32(wb, bias.id);
+
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_samp = ssir_id_map_get(l, loaded_samp);
+            uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+            uint32_t ssir_bias = ssir_id_map_get(l, bias.id);
+            uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+            if (ssir_tex && ssir_samp && ssir_coord && ssir_bias && ssir_result_type) {
+                uint32_t ssir_result = ssir_build_tex_sample_bias(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                    ssir_coord, ssir_bias);
+                ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // textureSampleGrad(texture, sampler, coord, ddx, ddy)
+    if (strcmp(callee_name, "textureSampleGrad") == 0 && call->arg_count >= 5) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        ExprResult samp = lower_expr_full(l, call->args[1]);
+        ExprResult coord = lower_expr_full(l, call->args[2]);
+        ExprResult ddx = lower_expr_full(l, call->args[3]);
+        ExprResult ddy = lower_expr_full(l, call->args[4]);
+        if (!tex.id || !samp.id || !coord.id || !ddx.id || !ddy.id) return r;
+
+        uint32_t loaded_tex, loaded_samp;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+        if (!emit_load(l, samp.type_id, &loaded_samp, samp.id)) return r;
+
+        uint32_t result_type = l->id_vec4f;
+        uint32_t result_id = fresh_id(l);
+
+        WordBuf *wb = &l->sections.functions;
+        uint32_t si_type = emit_type_sampled_image(l, tex.type_id);
+        uint32_t si_id = fresh_id(l);
+        emit_op(wb, SpvOpSampledImage, 5);
+        wb_push_u32(wb, si_type);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, loaded_tex);
+        wb_push_u32(wb, loaded_samp);
+
+        emit_op(wb, SpvOpImageSampleExplicitLod, 8);
+        wb_push_u32(wb, result_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, si_id);
+        wb_push_u32(wb, coord.id);
+        wb_push_u32(wb, 0xC); // ImageOperands: Grad (Dx | Dy = 0x4 | 0x8)
+        wb_push_u32(wb, ddx.id);
+        wb_push_u32(wb, ddy.id);
+
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_samp = ssir_id_map_get(l, loaded_samp);
+            uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+            uint32_t ssir_ddx = ssir_id_map_get(l, ddx.id);
+            uint32_t ssir_ddy = ssir_id_map_get(l, ddy.id);
+            uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+            if (ssir_tex && ssir_samp && ssir_coord && ssir_ddx && ssir_ddy && ssir_result_type) {
+                uint32_t ssir_result = ssir_build_tex_sample_grad(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                    ssir_coord, ssir_ddx, ssir_ddy);
+                ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // textureStore(texture, coord, value)
+    if (strcmp(callee_name, "textureStore") == 0 && call->arg_count >= 3) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        ExprResult coord = lower_expr_full(l, call->args[1]);
+        ExprResult value = lower_expr_full(l, call->args[2]);
+        if (!tex.id || !coord.id || !value.id) return r;
+
+        uint32_t loaded_tex;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+
+        // SpvSections path
+        WordBuf *wb = &l->sections.functions;
+        emit_op(wb, SpvOpImageWrite, 4);
+        wb_push_u32(wb, loaded_tex);
+        wb_push_u32(wb, coord.id);
+        wb_push_u32(wb, value.id);
+
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
+            uint32_t ssir_val = ssir_id_map_get(l, value.id);
+            if (ssir_tex && ssir_coord && ssir_val) {
+                ssir_build_tex_store(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_tex, ssir_coord, ssir_val);
+            }
+        }
+
+        // textureStore returns void - r stays {0,0} but we return non-zero to indicate success
+        r.id = 1; // Dummy non-zero to indicate success
+        r.type_id = 0;
+        return r;
+    }
+
+    // textureNumSamples(texture)
+    if (strcmp(callee_name, "textureNumSamples") == 0 && call->arg_count >= 1) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        if (!tex.id) return r;
+
+        uint32_t loaded_tex;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+
+        uint32_t result_type = l->id_u32;
+        uint32_t result_id = fresh_id(l);
+
+        // SpvSections path
+        WordBuf *wb = &l->sections.functions;
+        emit_op(wb, SpvOpImageQuerySamples, 4);
+        wb_push_u32(wb, result_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, loaded_tex);
+
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+            if (ssir_tex && ssir_result_type) {
+                uint32_t ssir_result = ssir_build_tex_query_samples(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex);
+                ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // textureDimensions(texture) or textureDimensions(texture, level)
+    if (strcmp(callee_name, "textureDimensions") == 0 && call->arg_count >= 1) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        if (!tex.id) return r;
+
+        uint32_t loaded_tex;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+
+        // Determine result component count from texture type
+        // 1D -> scalar u32, 2D -> vec2<u32>, 3D -> vec3<u32>, Cube -> vec2<u32>
+        int dim_count = 2; // default: 2D
+        if (call->args[0]->type == WGSL_NODE_IDENT) {
+            // Look up the texture type from the global map
+            uint32_t var_id, elem_type_id;
+            SpvStorageClass gsc;
+            if (find_global_by_name(l, call->args[0]->ident.name, &var_id, &elem_type_id, &gsc)) {
+                // Check the original AST type for the texture dimensionality
+                // Look in the resolver's symbol table
+                // Simplified: check SSIR type
+                uint32_t ssir_type = spv_type_to_ssir(l, elem_type_id);
+                if (ssir_type) {
+                    SsirType *st = ssir_get_type(l->ssir, ssir_type);
+                    if (st && st->kind == SSIR_TYPE_TEXTURE) {
+                        switch (st->texture.dim) {
+                        case SSIR_TEX_1D: dim_count = 1; break;
+                        case SSIR_TEX_2D: case SSIR_TEX_MULTISAMPLED_2D: dim_count = 2; break;
+                        case SSIR_TEX_3D: dim_count = 3; break;
+                        case SSIR_TEX_CUBE: dim_count = 2; break;
+                        default: dim_count = 2; break;
+                        }
+                    } else if (st && st->kind == SSIR_TYPE_TEXTURE_DEPTH) {
+                        dim_count = 2;
+                    } else if (st && st->kind == SSIR_TYPE_TEXTURE_STORAGE) {
+                        switch (st->texture_storage.dim) {
+                        case SSIR_TEX_1D: dim_count = 1; break;
+                        case SSIR_TEX_2D: dim_count = 2; break;
+                        case SSIR_TEX_3D: dim_count = 3; break;
+                        default: dim_count = 2; break;
+                        }
+                    }
+                }
+            }
+        }
+        uint32_t u32_type = l->id_u32 ? l->id_u32 : emit_type_int(l, 32, 0);
+        uint32_t result_type = (dim_count == 1) ? u32_type : emit_type_vector(l, u32_type, dim_count);
+        uint32_t result_id = fresh_id(l);
+
+        WordBuf *wb = &l->sections.functions;
+        if (call->arg_count >= 2) {
+            ExprResult level = lower_expr_full(l, call->args[1]);
+            if (!level.id) return r;
+            emit_op(wb, SpvOpImageQuerySizeLod, 5);
+            wb_push_u32(wb, result_type);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, loaded_tex);
+            wb_push_u32(wb, level.id);
+
+            if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+                uint32_t ssir_level = ssir_id_map_get(l, level.id);
+                uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+                if (ssir_tex && ssir_result_type) {
+                    uint32_t ssir_result = ssir_build_tex_size(l->ssir, l->fn_ctx.ssir_func_id,
+                        l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex,
+                        ssir_level ? ssir_level : 0);
+                    ssir_id_map_set(l, result_id, ssir_result);
+                }
+            }
+        } else {
+            // No level specified - use level 0 for regular textures, no level for multisampled
+            uint32_t level_zero = emit_const_u32(l, 0);
+            emit_op(wb, SpvOpImageQuerySizeLod, 5);
+            wb_push_u32(wb, result_type);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, loaded_tex);
+            wb_push_u32(wb, level_zero);
+
+            if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+                uint32_t ssir_level = ssir_id_map_get(l, level_zero);
+                uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+                if (ssir_tex && ssir_result_type) {
+                    uint32_t ssir_result = ssir_build_tex_size(l->ssir, l->fn_ctx.ssir_func_id,
+                        l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex,
+                        ssir_level ? ssir_level : 0);
+                    ssir_id_map_set(l, result_id, ssir_result);
+                }
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // textureNumLevels(texture)
+    if (strcmp(callee_name, "textureNumLevels") == 0 && call->arg_count >= 1) {
+        ExprResult tex = lower_expr_full(l, call->args[0]);
+        if (!tex.id) return r;
+
+        uint32_t loaded_tex;
+        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+
+        uint32_t result_type = l->id_u32;
+        uint32_t result_id = fresh_id(l);
+
+        WordBuf *wb = &l->sections.functions;
+        emit_op(wb, SpvOpImageQueryLevels, 4);
+        wb_push_u32(wb, result_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, loaded_tex);
+
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
+            uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
+            if (ssir_tex && ssir_result_type) {
+                uint32_t ssir_result = ssir_build_tex_query_levels(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex);
+                ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = result_type;
+        return r;
+    }
+
+    // Barrier builtins
+    if (strcmp(callee_name, "storageBarrier") == 0) {
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
+                               l->fn_ctx.ssir_block_id, SSIR_BARRIER_STORAGE);
+        }
+        r.id = 1; // non-zero to indicate success (void return)
+        return r;
+    }
+    if (strcmp(callee_name, "workgroupBarrier") == 0) {
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
+                               l->fn_ctx.ssir_block_id, SSIR_BARRIER_WORKGROUP);
+        }
+        r.id = 1;
+        return r;
+    }
+    if (strcmp(callee_name, "textureBarrier") == 0) {
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
+                               l->fn_ctx.ssir_block_id, SSIR_BARRIER_IMAGE);
+        }
+        r.id = 1;
+        return r;
+    }
+
+    // workgroupUniformLoad(ptr)
+    if (strcmp(callee_name, "workgroupUniformLoad") == 0 && call->arg_count >= 1) {
+        // Get the pointer to the workgroup variable
+        SpvStorageClass sc = SpvStorageClassWorkgroup;
+        ExprResult ptr = {0, 0};
+
+        // The argument should be &var (address-of) or just var
+        if (call->args[0]->type == WGSL_NODE_UNARY &&
+            call->args[0]->unary.op && strcmp(call->args[0]->unary.op, "&") == 0) {
+            ptr = lower_ptr_expr(l, call->args[0]->unary.expr, &sc);
+        } else {
+            ptr = lower_ptr_expr(l, call->args[0], &sc);
+        }
+        if (!ptr.id) return r;
+
+        uint32_t load_type = ptr.type_id;
+        uint32_t result_id = fresh_id(l);
+
+        // SpvSections path: emit control barriers and load directly
+        WordBuf *wb = &l->sections.functions;
+        uint32_t scope_wg = emit_const_u32(l, 2); // SpvScopeWorkgroup
+        uint32_t sem_wg = emit_const_u32(l, 0x108); // AcquireRelease | WorkgroupMemory
+
+        emit_op(wb, SpvOpControlBarrier, 4);
+        wb_push_u32(wb, scope_wg);
+        wb_push_u32(wb, scope_wg);
+        wb_push_u32(wb, sem_wg);
+
+        // Manually emit OpLoad (don't use emit_load since it would allocate a new ID)
+        uint32_t ptr_type_id = emit_type_pointer(l, sc, load_type);
+        emit_op(wb, SpvOpLoad, 4);
+        wb_push_u32(wb, load_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, ptr.id);
+
+        emit_op(wb, SpvOpControlBarrier, 4);
+        wb_push_u32(wb, scope_wg);
+        wb_push_u32(wb, scope_wg);
+        wb_push_u32(wb, sem_wg);
+
+        // SSIR path: barrier + load + barrier
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_ptr = ssir_id_map_get(l, ptr.id);
+            uint32_t ssir_type = spv_type_to_ssir(l, load_type);
+            if (ssir_ptr && ssir_type) {
+                ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
+                                   l->fn_ctx.ssir_block_id, SSIR_BARRIER_WORKGROUP);
+                uint32_t ssir_loaded = ssir_build_load(l->ssir, l->fn_ctx.ssir_func_id,
+                                                        l->fn_ctx.ssir_block_id,
+                                                        ssir_type, ssir_ptr);
+                ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
+                                   l->fn_ctx.ssir_block_id, SSIR_BARRIER_WORKGROUP);
+                ssir_id_map_set(l, result_id, ssir_loaded);
+            }
+        }
+
+        r.id = result_id;
+        r.type_id = load_type;
+        return r;
+    }
+
+    // Atomic builtins - all route through SSIR
+    if (strncmp(callee_name, "atomic", 6) == 0) {
+        // First arg is always the pointer (from &buf.counter)
+        SpvStorageClass sc = SpvStorageClassStorageBuffer;
+        ExprResult ptr = {0, 0};
+
+        if (call->args[0]->type == WGSL_NODE_UNARY &&
+            call->args[0]->unary.op && strcmp(call->args[0]->unary.op, "&") == 0) {
+            ptr = lower_ptr_expr(l, call->args[0]->unary.expr, &sc);
+        } else {
+            ptr = lower_ptr_expr(l, call->args[0], &sc);
+        }
+        if (!ptr.id) return r;
+
+        // Determine scope from storage class
+        SsirMemoryScope mem_scope = (sc == SpvStorageClassWorkgroup) ? SSIR_SCOPE_WORKGROUP : SSIR_SCOPE_DEVICE;
+
+        // The result type is the inner scalar type (u32 or i32)
+        uint32_t result_type = ptr.type_id;
+
+        // Map callee name to atomic op
+        SsirAtomicOp aop;
+        int has_value = 1;
+        int is_store = 0;
+        int is_cmpxchg = 0;
+
+        if (strcmp(callee_name, "atomicLoad") == 0) {
+            aop = SSIR_ATOMIC_LOAD;
+            has_value = 0;
+        } else if (strcmp(callee_name, "atomicStore") == 0) {
+            aop = SSIR_ATOMIC_STORE;
+            is_store = 1;
+        } else if (strcmp(callee_name, "atomicAdd") == 0) {
+            aop = SSIR_ATOMIC_ADD;
+        } else if (strcmp(callee_name, "atomicSub") == 0) {
+            aop = SSIR_ATOMIC_SUB;
+        } else if (strcmp(callee_name, "atomicMax") == 0) {
+            aop = SSIR_ATOMIC_MAX;
+        } else if (strcmp(callee_name, "atomicMin") == 0) {
+            aop = SSIR_ATOMIC_MIN;
+        } else if (strcmp(callee_name, "atomicAnd") == 0) {
+            aop = SSIR_ATOMIC_AND;
+        } else if (strcmp(callee_name, "atomicOr") == 0) {
+            aop = SSIR_ATOMIC_OR;
+        } else if (strcmp(callee_name, "atomicXor") == 0) {
+            aop = SSIR_ATOMIC_XOR;
+        } else if (strcmp(callee_name, "atomicExchange") == 0) {
+            aop = SSIR_ATOMIC_EXCHANGE;
+        } else if (strcmp(callee_name, "atomicCompareExchangeWeak") == 0) {
+            aop = SSIR_ATOMIC_COMPARE_EXCHANGE;
+            is_cmpxchg = 1;
+        } else {
+            return r; // Unknown atomic
+        }
+
+        // Lower value operand
+        uint32_t val_id = 0, cmp_id = 0;
+        if (has_value && call->arg_count >= 2) {
+            ExprResult val = lower_expr_full(l, call->args[1]);
+            if (!val.id) return r;
+            val_id = val.id;
+        }
+        if (is_cmpxchg && call->arg_count >= 3) {
+            ExprResult cmp = lower_expr_full(l, call->args[1]);
+            ExprResult val = lower_expr_full(l, call->args[2]);
+            if (!cmp.id || !val.id) return r;
+            cmp_id = cmp.id;
+            val_id = val.id;
+        }
+
+        uint32_t result_id = fresh_id(l);
+
+        // SpvSections path
+        WordBuf *wb = &l->sections.functions;
+        SpvScope spv_scope = (sc == SpvStorageClassWorkgroup) ? SpvScopeWorkgroup : SpvScopeDevice;
+        uint32_t scope_const = emit_const_u32(l, (uint32_t)spv_scope);
+        uint32_t sem_const = emit_const_u32(l, 0); // Relaxed
+
+        if (is_store) {
+            emit_op(wb, SpvOpAtomicStore, 5);
+            wb_push_u32(wb, ptr.id);
+            wb_push_u32(wb, scope_const);
+            wb_push_u32(wb, sem_const);
+            wb_push_u32(wb, val_id);
+            r.id = 1; // void return, non-zero for success
+            r.type_id = 0;
+        } else if (!has_value) {
+            // atomicLoad
+            emit_op(wb, SpvOpAtomicLoad, 6);
+            wb_push_u32(wb, result_type);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, ptr.id);
+            wb_push_u32(wb, scope_const);
+            wb_push_u32(wb, sem_const);
+            r.id = result_id;
+            r.type_id = result_type;
+        } else if (is_cmpxchg) {
+            // OpAtomicCompareExchange returns the old value
+            uint32_t sem_relaxed = emit_const_u32(l, 0);
+            emit_op(wb, SpvOpAtomicCompareExchange, 9);
+            wb_push_u32(wb, result_type);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, ptr.id);
+            wb_push_u32(wb, scope_const);
+            wb_push_u32(wb, sem_const);    // equal semantics
+            wb_push_u32(wb, sem_relaxed);  // unequal semantics
+            wb_push_u32(wb, val_id);       // value
+            wb_push_u32(wb, cmp_id);       // comparator
+
+            // Build the result struct { old_value: T, exchanged: bool }
+            uint32_t bool_type = l->id_bool;
+            uint32_t cmp_result = fresh_id(l);
+            emit_op(wb, SpvOpIEqual, 5);
+            wb_push_u32(wb, bool_type);
+            wb_push_u32(wb, cmp_result);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, cmp_id);
+
+            // Create struct type { T, bool }
+            uint32_t member_types[2] = { result_type, bool_type };
+            uint32_t struct_type_id = fresh_id(l);
+            WordBuf *twb = &l->sections.types_constants;
+            emit_op(twb, SpvOpTypeStruct, 4);
+            wb_push_u32(twb, struct_type_id);
+            wb_push_u32(twb, member_types[0]);
+            wb_push_u32(twb, member_types[1]);
+
+            uint32_t composite_id = fresh_id(l);
+            emit_op(wb, SpvOpCompositeConstruct, 5);
+            wb_push_u32(wb, struct_type_id);
+            wb_push_u32(wb, composite_id);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, cmp_result);
+
+            r.id = composite_id;
+            r.type_id = struct_type_id;
+        } else {
+            // Binary atomic ops (add, sub, max, min, and, or, xor, exchange)
+            SpvOp spv_op;
+            if (aop == SSIR_ATOMIC_ADD) spv_op = SpvOpAtomicIAdd;
+            else if (aop == SSIR_ATOMIC_SUB) spv_op = SpvOpAtomicISub;
+            else if (aop == SSIR_ATOMIC_MAX) spv_op = (result_type == l->id_i32) ? SpvOpAtomicSMax : SpvOpAtomicUMax;
+            else if (aop == SSIR_ATOMIC_MIN) spv_op = (result_type == l->id_i32) ? SpvOpAtomicSMin : SpvOpAtomicUMin;
+            else if (aop == SSIR_ATOMIC_AND) spv_op = SpvOpAtomicAnd;
+            else if (aop == SSIR_ATOMIC_OR) spv_op = SpvOpAtomicOr;
+            else if (aop == SSIR_ATOMIC_XOR) spv_op = SpvOpAtomicXor;
+            else spv_op = SpvOpAtomicExchange;
+
+            emit_op(wb, spv_op, 7);
+            wb_push_u32(wb, result_type);
+            wb_push_u32(wb, result_id);
+            wb_push_u32(wb, ptr.id);
+            wb_push_u32(wb, scope_const);
+            wb_push_u32(wb, sem_const);
+            wb_push_u32(wb, val_id);
+
+            r.id = result_id;
+            r.type_id = result_type;
+        }
+
+        // SSIR path
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_ptr = ssir_id_map_get(l, ptr.id);
+            uint32_t ssir_val = val_id ? ssir_id_map_get(l, val_id) : 0;
+            uint32_t ssir_cmp = cmp_id ? ssir_id_map_get(l, cmp_id) : 0;
+            uint32_t ssir_type = spv_type_to_ssir(l, result_type);
+            if (ssir_ptr && ssir_type) {
+                uint32_t ssir_result = ssir_build_atomic_ex(l->ssir, l->fn_ctx.ssir_func_id,
+                    l->fn_ctx.ssir_block_id, ssir_type, aop, ssir_ptr,
+                    ssir_val, ssir_cmp, mem_scope, SSIR_SEMANTICS_RELAXED);
+                if (r.id && r.id != 1) {
+                    ssir_id_map_set(l, r.id, ssir_result);
+                }
+            }
+        }
+
+        return r;
+    }
+
     return r;
 }
 
@@ -3856,6 +4686,27 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
 
         case WGSL_NODE_UNARY: {
             const Unary *un = &node->unary;
+
+            // Address-of: return the pointer, don't load
+            if (strcmp(un->op, "&") == 0) {
+                SpvStorageClass sc;
+                ExprResult ptr = lower_ptr_expr(l, un->expr, &sc);
+                return ptr;
+            }
+
+            // Dereference: load from pointer
+            if (strcmp(un->op, "*") == 0) {
+                SpvStorageClass sc;
+                ExprResult ptr = lower_ptr_expr(l, un->expr, &sc);
+                if (!ptr.id) return r;
+                uint32_t loaded;
+                if (emit_load(l, ptr.type_id, &loaded, ptr.id)) {
+                    r.id = loaded;
+                    r.type_id = ptr.type_id;
+                }
+                return r;
+            }
+
             ExprResult operand = lower_expr_full(l, un->expr);
             if (!operand.id) return r;
 
@@ -4903,18 +5754,38 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
     uint32_t merge_label = fresh_id(l);
     uint32_t default_label = merge_label;
 
-    /* Allocate labels for each case */
+    /* Allocate labels for each case clause */
     uint32_t *case_labels = (uint32_t *)WGSL_MALLOC((size_t)sw->case_count * sizeof(uint32_t));
     for (int i = 0; i < sw->case_count; i++) {
         case_labels[i] = fresh_id(l);
-        if (!sw->cases[i] || sw->cases[i]->case_clause.expr == NULL)
+        if (!sw->cases[i] || sw->cases[i]->case_clause.expr_count == 0)
             default_label = case_labels[i];
+    }
+
+    /* Count total literal entries (sum of expr_count across non-default cases) */
+    int literal_count = 0;
+    for (int i = 0; i < sw->case_count; i++) {
+        const WgslAstNode *c = sw->cases[i];
+        if (c && c->case_clause.expr_count > 0) literal_count += c->case_clause.expr_count;
     }
 
     /* SSIR blocks */
     uint32_t ssir_merge = 0;
-    if (l->fn_ctx.ssir_func_id)
+    uint32_t *ssir_case_ids = NULL;
+    uint32_t ssir_default = 0;
+    if (l->fn_ctx.ssir_func_id) {
         ssir_merge = ssir_module_alloc_id(l->ssir);
+        ssir_id_map_set(l, merge_label, ssir_merge);
+        /* Pre-allocate SSIR block IDs for all case blocks */
+        ssir_case_ids = (uint32_t *)WGSL_MALLOC((size_t)sw->case_count * sizeof(uint32_t));
+        for (int i = 0; i < sw->case_count; i++) {
+            ssir_case_ids[i] = ssir_module_alloc_id(l->ssir);
+            ssir_id_map_set(l, case_labels[i], ssir_case_ids[i]);
+            if (!sw->cases[i] || sw->cases[i]->case_clause.expr_count == 0)
+                ssir_default = ssir_case_ids[i];
+        }
+        if (!ssir_default) ssir_default = ssir_merge;
+    }
 
     /* Push switch context (reuse loop_stack for break target) */
     if (l->fn_ctx.loop_depth < 16) {
@@ -4927,23 +5798,51 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
     emit_selection_merge(l, merge_label);
 
     /* Build OpSwitch: word count = 3 + 2*literal_count */
-    int literal_count = 0;
-    for (int i = 0; i < sw->case_count; i++) {
-        const WgslAstNode *c = sw->cases[i];
-        if (c && c->case_clause.expr) literal_count++;
-    }
-
     emit_op(wb, SpvOpSwitch, 3 + 2 * literal_count);
     wb_push_u32(wb, sel.id);
     wb_push_u32(wb, default_label);
     for (int i = 0; i < sw->case_count; i++) {
         const WgslAstNode *c = sw->cases[i];
-        if (!c || !c->case_clause.expr) continue;
-        int val = 0;
-        if (c->case_clause.expr->type == WGSL_NODE_LITERAL && c->case_clause.expr->literal.lexeme)
-            val = atoi(c->case_clause.expr->literal.lexeme);
-        wb_push_u32(wb, (uint32_t)val);
-        wb_push_u32(wb, case_labels[i]);
+        if (!c || c->case_clause.expr_count == 0) continue;
+        for (int e = 0; e < c->case_clause.expr_count; e++) {
+            int val = 0;
+            const WgslAstNode *ce = c->case_clause.exprs[e];
+            if (ce && ce->type == WGSL_NODE_LITERAL && ce->literal.lexeme)
+                val = atoi(ce->literal.lexeme);
+            wb_push_u32(wb, (uint32_t)val);
+            wb_push_u32(wb, case_labels[i]);
+        }
+    }
+
+    /* Emit SSIR selection merge + switch */
+    if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+        ssir_build_selection_merge(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id, ssir_merge);
+
+        uint32_t ssir_sel = ssir_id_map_get(l, sel.id);
+        if (ssir_sel) {
+            /* Build SSIR cases array: pairs of (literal_value, ssir_block_id) */
+            uint32_t *ssir_cases = NULL;
+            if (literal_count > 0) {
+                ssir_cases = (uint32_t *)WGSL_MALLOC((size_t)literal_count * 2 * sizeof(uint32_t));
+                int ci = 0;
+                for (int i = 0; i < sw->case_count; i++) {
+                    const WgslAstNode *c = sw->cases[i];
+                    if (!c || c->case_clause.expr_count == 0) continue;
+                    for (int e = 0; e < c->case_clause.expr_count; e++) {
+                        int val = 0;
+                        const WgslAstNode *ce = c->case_clause.exprs[e];
+                        if (ce && ce->type == WGSL_NODE_LITERAL && ce->literal.lexeme)
+                            val = atoi(ce->literal.lexeme);
+                        ssir_cases[ci * 2] = (uint32_t)val;
+                        ssir_cases[ci * 2 + 1] = ssir_case_ids[i];
+                        ci++;
+                    }
+                }
+            }
+            ssir_build_switch(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+                              ssir_sel, ssir_default, ssir_cases, (uint32_t)literal_count);
+            WGSL_FREE(ssir_cases);
+        }
     }
 
     /* Lower each case body */
@@ -4955,9 +5854,8 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
         wb_push_u32(wb, case_labels[i]);
 
         if (l->fn_ctx.ssir_func_id) {
-            uint32_t ssir_blk = ssir_block_create(l->ssir, l->fn_ctx.ssir_func_id, "switch.case");
-            ssir_id_map_set(l, case_labels[i], ssir_blk);
-            l->fn_ctx.ssir_block_id = ssir_blk;
+            ssir_block_create_with_id(l->ssir, l->fn_ctx.ssir_func_id, ssir_case_ids[i], "switch.case");
+            l->fn_ctx.ssir_block_id = ssir_case_ids[i];
         }
 
         for (int s = 0; s < c->case_clause.stmt_count; s++)
@@ -4978,6 +5876,7 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
 
     l->fn_ctx.loop_depth--;
     WGSL_FREE(case_labels);
+    WGSL_FREE(ssir_case_ids);
     return 1;
 }
 
@@ -5006,6 +5905,11 @@ static int lower_discard_stmt(WgslLower *l) {
     wgsl_compiler_assert(l != NULL, "lower_discard_stmt: l is NULL");
     WordBuf *wb = &l->sections.functions;
     emit_op(wb, SpvOpKill, 1);
+
+    if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+        ssir_build_discard(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id);
+    }
+
     l->fn_ctx.has_returned = 1;
     return 1;
 }
@@ -5063,6 +5967,53 @@ static int lower_statement(WgslLower *l, const WgslAstNode *stmt) {
 
         case WGSL_NODE_BLOCK:
             return lower_block(l, stmt);
+
+        case WGSL_NODE_UNARY: {
+            // Handle i++ / i-- as statements (load, add/sub 1, store)
+            const Unary *un = &stmt->unary;
+            if (un->op && (strcmp(un->op, "++") == 0 || strcmp(un->op, "--") == 0)) {
+                int is_incr = (strcmp(un->op, "++") == 0);
+                // Get the pointer to the variable
+                const char *var_name = NULL;
+                if (un->expr && un->expr->type == WGSL_NODE_IDENT)
+                    var_name = un->expr->ident.name;
+                if (!var_name) return 1;
+
+                uint32_t ptr_id, type_id;
+                if (!fn_ctx_find_local(l, var_name, &ptr_id, &type_id))
+                    return 1;
+
+                uint32_t loaded;
+                if (!emit_load(l, type_id, &loaded, ptr_id)) return 1;
+
+                uint32_t one_id;
+                if (type_id == l->id_f32) {
+                    one_id = emit_const_f32(l, 1.0f);
+                } else if (type_id == l->id_i32) {
+                    one_id = emit_const_i32(l, 1);
+                } else if (type_id == l->id_u32) {
+                    one_id = emit_const_u32(l, 1);
+                } else {
+                    return 1;
+                }
+
+                SpvOp arith_op;
+                if (is_float_type(type_id, l))
+                    arith_op = is_incr ? SpvOpFAdd : SpvOpFSub;
+                else
+                    arith_op = is_incr ? SpvOpIAdd : SpvOpISub;
+
+                uint32_t result;
+                if (!emit_binary_op(l, arith_op, type_id, &result, loaded, one_id))
+                    return 1;
+
+                emit_store(l, ptr_id, result);
+                return 1;
+            }
+            // For other unary expressions, just evaluate
+            lower_expression(l, stmt);
+            return 1;
+        }
 
         default:
             return 1; // Ignore unknown statements
@@ -5294,6 +6245,54 @@ static int lower_io_globals(WgslLower *l) {
         }
 
         /* Find the resolver symbol id for this global */
+        int sym_id = -1;
+        int sym_count = 0;
+        const WgslSymbolInfo *all_syms = wgsl_resolver_all_symbols(l->resolver, &sym_count);
+        if (all_syms) {
+            for (int s = 0; s < sym_count; s++) {
+                if (all_syms[s].decl_node == decl) { sym_id = all_syms[s].id; break; }
+            }
+            wgsl_resolve_free((void*)all_syms);
+        }
+
+        add_global_map_entry(l, sym_id, var_id, ssir_var, elem_type, sc, gv->name);
+    }
+    return 1;
+}
+
+//l nonnull
+static int lower_module_vars(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "lower_module_vars: l is NULL");
+    if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return 1;
+    const Program *prog = &l->program->program;
+
+    for (int i = 0; i < prog->decl_count; i++) {
+        const WgslAstNode *decl = prog->decls[i];
+        if (!decl || decl->type != WGSL_NODE_GLOBAL_VAR) continue;
+        const GlobalVar *gv = &decl->global_var;
+        if (!gv->address_space) continue;
+        if (!gv->type) continue;
+
+        // Only handle workgroup and private address spaces here;
+        // binding vars are handled by lower_globals, in/out by lower_io_globals
+        if (strcmp(gv->address_space, "workgroup") != 0 &&
+            strcmp(gv->address_space, "private") != 0)
+            continue;
+
+        SpvStorageClass sc = wgsl_address_space_to_storage_class(gv->address_space);
+        uint32_t elem_type = lower_type(l, gv->type);
+        uint32_t ptr_type = emit_type_pointer(l, sc, elem_type);
+        uint32_t var_id = emit_global_variable(l, ptr_type, sc, gv->name, 0);
+
+        uint32_t ssir_var = 0;
+        if (l->ssir) {
+            uint32_t ssir_elem = spv_type_to_ssir(l, elem_type);
+            SsirAddressSpace ssir_addr = spv_sc_to_ssir_addr(sc);
+            uint32_t ssir_ptr = ssir_type_ptr(l->ssir, ssir_elem, ssir_addr);
+            ssir_var = ssir_global_var(l->ssir, gv->name, ssir_ptr);
+            ssir_id_map_set(l, var_id, ssir_var);
+        }
+
         int sym_id = -1;
         int sym_count = 0;
         const WgslSymbolInfo *all_syms = wgsl_resolver_all_symbols(l->resolver, &sym_count);
@@ -5956,6 +6955,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     if (!resolve_builtin_name(builtin_name, &spv_bi, &ssir_bi))
                         continue;
 
+                    // In fragment shaders, @builtin(position) maps to FragCoord
+                    if (ep->stage == WGSL_STAGE_FRAGMENT && spv_bi == SpvBuiltInPosition) {
+                        spv_bi = SpvBuiltInFragCoord;
+                        ssir_bi = SSIR_BUILTIN_FRAG_COORD;
+                    }
+
                     uint32_t param_type = lower_type(l, param->type);
                     uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassInput, param_type);
                     uint32_t var_id = emit_global_variable(l, ptr_type, SpvStorageClassInput, param->name, 0);
@@ -6193,6 +7198,22 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
     l->ssir_vec3u = ssir_type_vec(l->ssir, l->ssir_u32, 3);
     l->ssir_vec4u = ssir_type_vec(l->ssir, l->ssir_u32, 4);
 
+    // Collect type aliases before lowering structs/globals
+    if (l->program && l->program->type == WGSL_NODE_PROGRAM) {
+        const Program *aprog = &l->program->program;
+        for (int d = 0; d < aprog->decl_count; d++) {
+            const WgslAstNode *decl = aprog->decls[d];
+            if (!decl || decl->type != WGSL_NODE_GLOBAL_VAR) continue;
+            const GlobalVar *gv = &decl->global_var;
+            if (!gv->is_alias) continue;
+            if (l->alias_count < 64) {
+                l->alias_table[l->alias_count].name = gv->name;
+                l->alias_table[l->alias_count].type_node = gv->type;
+                l->alias_count++;
+            }
+        }
+    }
+
     // Lower struct types first (so they're available for globals)
     if (!lower_structs(l)) goto fail;
 
@@ -6201,6 +7222,10 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
 
     // Lower in/out globals (GLSL-style I/O)
     if (!lower_io_globals(l)) goto fail;
+
+    // Lower workgroup and private module-scope variables
+    if (!lower_module_vars(l)) goto fail;
+
     l->shared_globals_end = l->global_map_count;
 
     // Process override declarations once (specialization constants)

@@ -90,6 +90,16 @@ typedef enum TokenType {
     TOK_OR,
     TOK_XOR,
     TOK_PERCENT,
+    TOK_PLUSEQ,
+    TOK_MINUSEQ,
+    TOK_STAREQ,
+    TOK_SLASHEQ,
+    TOK_PERCENTEQ,
+    TOK_AMPEQ,
+    TOK_PIPEEQ,
+    TOK_CARETEQ,
+    TOK_SHLEQ,
+    TOK_SHREQ,
     TOK_STRUCT,
     TOK_FN,
     TOK_VAR,
@@ -100,7 +110,13 @@ typedef enum TokenType {
     TOK_IF,
     TOK_ELSE,
     TOK_WHILE,
-    TOK_FOR
+    TOK_FOR,
+    TOK_BREAK,
+    TOK_CONTINUE,
+    TOK_DISCARD,
+    TOK_SWITCH,
+    TOK_CASE,
+    TOK_DEFAULT
 } TokenType;
 
 typedef struct Token {
@@ -125,6 +141,11 @@ static bool lx_peek2(const Lexer *L, char a, char b) {
     wgsl_compiler_assert(L != NULL, "lx_peek2: L is NULL");
     wgsl_compiler_assert(L->src != NULL, "lx_peek2: src is NULL");
     return (L->src[L->pos] == a && L->src[L->pos + 1] == b);
+}
+static bool lx_peek3(const Lexer *L, char a, char b, char c) {
+    wgsl_compiler_assert(L != NULL, "lx_peek3: L is NULL");
+    wgsl_compiler_assert(L->src != NULL, "lx_peek3: src is NULL");
+    return (L->src[L->pos] == a && L->src[L->pos + 1] == b && L->src[L->pos + 2] == c);
 }
 //L nonnull
 static void lx_advance(Lexer *L) {
@@ -213,6 +234,15 @@ static Token lx_next(Lexer *L) {
         lx_advance(L);
         return make_token(L, TOK_ARROW, s, 2, false);
     }
+    /* 3-char compound assignment: <<= >>= (must precede << >> <= >=) */
+    if (lx_peek3(L, '<', '<', '=')) {
+        lx_advance(L); lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_SHLEQ, s, 3, false);
+    }
+    if (lx_peek3(L, '>', '>', '=')) {
+        lx_advance(L); lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_SHREQ, s, 3, false);
+    }
     if (lx_peek2(L, '<', '=')) {
         lx_advance(L);
         lx_advance(L);
@@ -252,6 +282,39 @@ static Token lx_next(Lexer *L) {
         lx_advance(L);
         lx_advance(L);
         return make_token(L, TOK_OROR, s, 2, false);
+    }
+    /* 2-char compound assignment: += -= *= /= %= &= |= ^= (must precede ++ -- + - etc.) */
+    if (lx_peek2(L, '+', '=')) {
+        lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_PLUSEQ, s, 2, false);
+    }
+    if (lx_peek2(L, '-', '=')) {
+        lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_MINUSEQ, s, 2, false);
+    }
+    if (lx_peek2(L, '*', '=')) {
+        lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_STAREQ, s, 2, false);
+    }
+    if (lx_peek2(L, '/', '=')) {
+        lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_SLASHEQ, s, 2, false);
+    }
+    if (lx_peek2(L, '%', '=')) {
+        lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_PERCENTEQ, s, 2, false);
+    }
+    if (lx_peek2(L, '&', '=')) {
+        lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_AMPEQ, s, 2, false);
+    }
+    if (lx_peek2(L, '|', '=')) {
+        lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_PIPEEQ, s, 2, false);
+    }
+    if (lx_peek2(L, '^', '=')) {
+        lx_advance(L); lx_advance(L);
+        return make_token(L, TOK_CARETEQ, s, 2, false);
     }
     if (lx_peek2(L, '+', '+')) {
         lx_advance(L);
@@ -371,6 +434,18 @@ static Token lx_next(Lexer *L) {
             return make_token(L, TOK_WHILE, start, len, false);
         if (len == 3 && strncmp(start, "for", 3) == 0)
             return make_token(L, TOK_FOR, start, len, false);
+        if (len == 5 && strncmp(start, "break", 5) == 0)
+            return make_token(L, TOK_BREAK, start, len, false);
+        if (len == 8 && strncmp(start, "continue", 8) == 0)
+            return make_token(L, TOK_CONTINUE, start, len, false);
+        if (len == 7 && strncmp(start, "discard", 7) == 0)
+            return make_token(L, TOK_DISCARD, start, len, false);
+        if (len == 6 && strncmp(start, "switch", 6) == 0)
+            return make_token(L, TOK_SWITCH, start, len, false);
+        if (len == 4 && strncmp(start, "case", 4) == 0)
+            return make_token(L, TOK_CASE, start, len, false);
+        if (len == 7 && strncmp(start, "default", 7) == 0)
+            return make_token(L, TOK_DEFAULT, start, len, false);
         return make_token(L, TOK_IDENT, start, len, false);
     }
         if (isdigit((unsigned char)c)) {
@@ -1014,6 +1089,80 @@ static WgslAstNode *parse_statement(Parser *P) {
         R->return_stmt.expr = e;
         return R;
     }
+    if (check(P, TOK_BREAK)) {
+        advance(P);
+        expect(P, TOK_SEMI, "expected ';' after break");
+        return new_node(P, WGSL_NODE_BREAK);
+    }
+    if (check(P, TOK_CONTINUE)) {
+        advance(P);
+        expect(P, TOK_SEMI, "expected ';' after continue");
+        return new_node(P, WGSL_NODE_CONTINUE);
+    }
+    if (check(P, TOK_DISCARD)) {
+        advance(P);
+        expect(P, TOK_SEMI, "expected ';' after discard");
+        return new_node(P, WGSL_NODE_DISCARD);
+    }
+    if (check(P, TOK_SWITCH)) {
+        advance(P);
+        /* Parse selector expression */
+        WgslAstNode *sel_expr = parse_expr(P);
+        expect(P, TOK_LBRACE, "expected '{' after switch expression");
+
+        /* Parse case/default clauses */
+        WgslAstNode **cases = NULL;
+        int case_count = 0;
+        int case_cap = 0;
+        while (!check(P, TOK_RBRACE) && !check(P, TOK_EOF)) {
+            int is_default = 0;
+            WgslAstNode **case_exprs = NULL;
+            int case_expr_count = 0;
+            int case_expr_cap = 0;
+            if (check(P, TOK_CASE)) {
+                advance(P);
+                /* Parse comma-separated case values: case 1, 2, 3: { } */
+                do {
+                    WgslAstNode *ce = parse_expr(P);
+                    if (case_expr_count >= case_expr_cap) {
+                        case_expr_cap = case_expr_cap ? case_expr_cap * 2 : 4;
+                        case_exprs = (WgslAstNode **)NODE_REALLOC(case_exprs, (size_t)case_expr_cap * sizeof(WgslAstNode *));
+                    }
+                    case_exprs[case_expr_count++] = ce;
+                } while (match(P, TOK_COMMA));
+                /* optional colon after case value(s) */
+                match(P, TOK_COLON);
+            } else if (check(P, TOK_DEFAULT)) {
+                advance(P);
+                is_default = 1;
+                /* optional colon after default */
+                match(P, TOK_COLON);
+            } else {
+                parse_error(P, "expected 'case' or 'default' in switch");
+                advance(P);
+                continue;
+            }
+            /* Parse case body as a block */
+            WgslAstNode *body = parse_block(P);
+            WgslAstNode *C = new_node(P, WGSL_NODE_CASE);
+            C->case_clause.expr_count = is_default ? 0 : case_expr_count;
+            C->case_clause.exprs = is_default ? NULL : case_exprs;
+            C->case_clause.stmt_count = body ? body->block.stmt_count : 0;
+            C->case_clause.stmts = body ? body->block.stmts : NULL;
+            if (case_count >= case_cap) {
+                case_cap = case_cap ? case_cap * 2 : 4;
+                cases = (WgslAstNode **)NODE_REALLOC(cases, (size_t)case_cap * sizeof(WgslAstNode *));
+            }
+            cases[case_count++] = C;
+        }
+        expect(P, TOK_RBRACE, "expected '}' after switch body");
+
+        WgslAstNode *S = new_node(P, WGSL_NODE_SWITCH);
+        S->switch_stmt.expr = sel_expr;
+        S->switch_stmt.case_count = case_count;
+        S->switch_stmt.cases = cases;
+        return S;
+    }
     WgslAstNode *e = parse_expr(P);
     expect(P, TOK_SEMI, "expected ';'");
     WgslAstNode *ES = new_node(P, WGSL_NODE_EXPR_STMT);
@@ -1031,9 +1180,27 @@ static WgslAstNode *parse_assignment(Parser *P) {
     if (match(P, TOK_EQ)) {
         WgslAstNode *right = parse_assignment(P);
         WgslAstNode *A = new_node(P, WGSL_NODE_ASSIGN);
+        A->assign.op = wgsl_strdup("=");
         A->assign.lhs = left;
         A->assign.rhs = right;
         return A;
+    }
+    struct { TokenType tok; const char *op; } compounds[] = {
+        {TOK_PLUSEQ, "+="}, {TOK_MINUSEQ, "-="}, {TOK_STAREQ, "*="},
+        {TOK_SLASHEQ, "/="}, {TOK_PERCENTEQ, "%="},
+        {TOK_AMPEQ, "&="}, {TOK_PIPEEQ, "|="}, {TOK_CARETEQ, "^="},
+        {TOK_SHLEQ, "<<="}, {TOK_SHREQ, ">>="},
+        {TOK_EOF, NULL}
+    };
+    for (int i = 0; compounds[i].op; i++) {
+        if (match(P, compounds[i].tok)) {
+            WgslAstNode *right = parse_assignment(P);
+            WgslAstNode *A = new_node(P, WGSL_NODE_ASSIGN);
+            A->assign.op = wgsl_strdup(compounds[i].op);
+            A->assign.lhs = left;
+            A->assign.rhs = right;
+            return A;
+        }
     }
     return left;
 }
@@ -1348,6 +1515,22 @@ static WgslAstNode *parse_unary(Parser *P) {
         U->unary.expr = e;
         return U;
     }
+    if (match(P, TOK_AND)) {
+        WgslAstNode *e = parse_unary(P);
+        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
+        U->unary.op = wgsl_strdup("&");
+        U->unary.is_postfix = 0;
+        U->unary.expr = e;
+        return U;
+    }
+    if (match(P, TOK_STAR)) {
+        WgslAstNode *e = parse_unary(P);
+        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
+        U->unary.op = wgsl_strdup("*");
+        U->unary.is_postfix = 0;
+        U->unary.expr = e;
+        return U;
+    }
     return parse_postfix(P);
 }
 
@@ -1561,10 +1744,24 @@ static WgslAstNode *parse_decl_or_stmt(Parser *P) {
         return new_node(P, WGSL_NODE_PROGRAM);
     }
     if (check_ident_text(P, "alias")) {
-        while (!check(P, TOK_SEMI) && !check(P, TOK_EOF))
-            advance(P);
-        match(P, TOK_SEMI);
-        return new_node(P, WGSL_NODE_PROGRAM);
+        advance(P); /* skip 'alias' */
+        if (!check(P, TOK_IDENT)) {
+            parse_error(P, "expected alias name");
+            while (!check(P, TOK_SEMI) && !check(P, TOK_EOF)) advance(P);
+            match(P, TOK_SEMI);
+            return new_node(P, WGSL_NODE_PROGRAM);
+        }
+        Token alias_name = P->cur;
+        advance(P);
+        expect(P, TOK_EQ, "expected '=' in alias");
+        WgslAstNode *alias_type = parse_type_node(P);
+        expect(P, TOK_SEMI, "expected ';'");
+        /* Store alias on the program node (caller will attach it) */
+        WgslAstNode *marker = new_node(P, WGSL_NODE_GLOBAL_VAR);
+        marker->global_var.name = wgsl_strndup(alias_name.start, (size_t)alias_name.length);
+        marker->global_var.type = alias_type;
+        marker->global_var.is_alias = 1;
+        return marker;
     }
     WgslAstNode **attrs = NULL;
     int acount = parse_attribute_list(P, &attrs);
@@ -1839,6 +2036,14 @@ static void free_node(WgslAstNode *n) {
     case WGSL_NODE_TERNARY:
         free_ternary(&n->ternary);
         break;
+    case WGSL_NODE_SWITCH:
+        free_node(n->switch_stmt.expr);
+        free_node_list(n->switch_stmt.cases, n->switch_stmt.case_count);
+        break;
+    case WGSL_NODE_CASE:
+        free_node_list(n->case_clause.exprs, n->case_clause.expr_count);
+        free_node_list(n->case_clause.stmts, n->case_clause.stmt_count);
+        break;
     default:
         break;
     }
@@ -1898,6 +2103,18 @@ const char *wgsl_node_type_name(WgslNodeType t) {
         return "UNARY";
     case WGSL_NODE_TERNARY:
         return "TERNARY";
+    case WGSL_NODE_DO_WHILE:
+        return "DO_WHILE";
+    case WGSL_NODE_SWITCH:
+        return "SWITCH";
+    case WGSL_NODE_CASE:
+        return "CASE";
+    case WGSL_NODE_BREAK:
+        return "BREAK";
+    case WGSL_NODE_CONTINUE:
+        return "CONTINUE";
+    case WGSL_NODE_DISCARD:
+        return "DISCARD";
     default:
         return "UNKNOWN";
     }
