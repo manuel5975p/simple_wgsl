@@ -2979,6 +2979,18 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
     ExprResult r = {0, 0};
     const char *name = node->ident.name;
 
+    // Handle boolean literals (true/false are identifiers in the WGSL AST)
+    if (strcmp(name, "true") == 0) {
+        r.id = emit_const_bool(l, 1);
+        r.type_id = emit_type_bool(l);
+        return r;
+    }
+    if (strcmp(name, "false") == 0) {
+        r.id = emit_const_bool(l, 0);
+        r.type_id = emit_type_bool(l);
+        return r;
+    }
+
     // Check local variables first
     for (int i = l->fn_ctx.locals.count - 1; i >= 0; --i) {
         if (strcmp(l->fn_ctx.locals.vars[i].name, name) == 0) {
@@ -6366,7 +6378,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
                 uint32_t out_type = lower_type(l, fn->return_type);
                 uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassOutput, out_type);
-                uint32_t var_id = emit_global_variable(l, ptr_type, SpvStorageClassOutput, "__frag_output", 0);
+                uint32_t var_id = emit_global_variable(l, ptr_type, SpvStorageClassOutput, "_frag_output", 0);
 
                 uint32_t loc_val = (uint32_t)loc;
                 emit_decorate(l, var_id, SpvDecorationLocation, &loc_val, 1);
@@ -6376,7 +6388,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                 if (l->ssir) {
                     uint32_t ssir_elem_type = spv_type_to_ssir(l, out_type);
                     uint32_t ssir_ptr_type = ssir_type_ptr(l->ssir, ssir_elem_type, SSIR_ADDR_OUTPUT);
-                    ssir_var = ssir_global_var(l->ssir, "__frag_output", ssir_ptr_type);
+                    ssir_var = ssir_global_var(l->ssir, "_frag_output", ssir_ptr_type);
                     ssir_global_set_location(l->ssir, ssir_var, (uint32_t)loc);
                     ssir_id_map_set(l, var_id, ssir_var);
                 }
@@ -6397,7 +6409,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     l->global_map[l->global_map_count].ssir_id = ssir_var;
                     l->global_map[l->global_map_count].type_id = out_type;
                     l->global_map[l->global_map_count].sc = SpvStorageClassOutput;
-                    l->global_map[l->global_map_count].name = "__frag_output";
+                    l->global_map[l->global_map_count].name = "_frag_output";
                     l->global_map_count++;
                 }
                 break;

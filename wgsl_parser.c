@@ -116,7 +116,8 @@ typedef enum TokenType {
     TOK_DISCARD,
     TOK_SWITCH,
     TOK_CASE,
-    TOK_DEFAULT
+    TOK_DEFAULT,
+    TOK_LOOP
 } TokenType;
 
 typedef struct Token {
@@ -446,6 +447,8 @@ static Token lx_next(Lexer *L) {
             return make_token(L, TOK_CASE, start, len, false);
         if (len == 7 && strncmp(start, "default", 7) == 0)
             return make_token(L, TOK_DEFAULT, start, len, false);
+        if (len == 4 && strncmp(start, "loop", 4) == 0)
+            return make_token(L, TOK_LOOP, start, len, false);
         return make_token(L, TOK_IDENT, start, len, false);
     }
         if (isdigit((unsigned char)c)) {
@@ -938,9 +941,9 @@ static WgslAstNode *parse_block(Parser *P) {
 static WgslAstNode *parse_if_stmt(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_if_stmt: P is NULL");
     expect(P, TOK_IF, "expected 'if'");
-    expect(P, TOK_LPAREN, "expected '('");
+    bool has_paren = match(P, TOK_LPAREN);
     WgslAstNode *cond = parse_expr(P);
-    expect(P, TOK_RPAREN, "expected ')'");
+    if (has_paren) expect(P, TOK_RPAREN, "expected ')'");
     WgslAstNode *then_b = parse_block(P);
     WgslAstNode *else_b = NULL;
     if (match(P, TOK_ELSE)) {
@@ -960,9 +963,9 @@ static WgslAstNode *parse_if_stmt(Parser *P) {
 static WgslAstNode *parse_while_stmt(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_while_stmt: P is NULL");
     expect(P, TOK_WHILE, "expected 'while'");
-    expect(P, TOK_LPAREN, "expected '('");
+    bool has_paren = match(P, TOK_LPAREN);
     WgslAstNode *cond = parse_expr(P);
-    expect(P, TOK_RPAREN, "expected ')'");
+    if (has_paren) expect(P, TOK_RPAREN, "expected ')'");
     WgslAstNode *body = parse_block(P);
     WgslAstNode *W = new_node(P, WGSL_NODE_WHILE);
     W->while_stmt.cond = cond;
@@ -1005,6 +1008,20 @@ static WgslAstNode *parse_for_stmt(Parser *P) {
 }
 
 //P nonnull
+static WgslAstNode *parse_loop_stmt(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_loop_stmt: P is NULL");
+    expect(P, TOK_LOOP, "expected 'loop'");
+    WgslAstNode *body = parse_block(P);
+    /* Desugar loop { body } as while(true) { body } */
+    WgslAstNode *cond = new_node(P, WGSL_NODE_IDENT);
+    cond->ident.name = wgsl_strndup("true", 4);
+    WgslAstNode *W = new_node(P, WGSL_NODE_WHILE);
+    W->while_stmt.cond = cond;
+    W->while_stmt.body = body;
+    return W;
+}
+
+//P nonnull
 static WgslAstNode *parse_statement(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_statement: P is NULL");
     if (check(P, TOK_IF))
@@ -1013,6 +1030,8 @@ static WgslAstNode *parse_statement(Parser *P) {
         return parse_while_stmt(P);
     if (check(P, TOK_FOR))
         return parse_for_stmt(P);
+    if (check(P, TOK_LOOP))
+        return parse_loop_stmt(P);
     if (check(P, TOK_VAR)) {
         advance(P);
         if (!check(P, TOK_IDENT)) {

@@ -153,7 +153,7 @@ static int is_glsl_reserved(const char *n) {
 static void set_name(GlslCtx *c, uint32_t id, const char *n) {
     if (id >= c->id_names_cap) return;
     STG_FREE(c->id_names[id]);
-    if (n && is_glsl_reserved(n)) {
+    if (n && (is_glsl_reserved(n) || strstr(n, "__"))) {
         size_t len = strlen(n) + 2;
         char *tmp = (char *)STG_MALLOC(len);
         snprintf(tmp, len, "_%s", n);
