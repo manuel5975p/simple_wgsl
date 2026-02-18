@@ -248,6 +248,8 @@ TEST_F(EGLGraphicsTest, LinkedVertexColor) {
 
 /* ==== render-to-PNG tests ==== */
 
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
 TEST_F(EGLGraphicsTest, RenderSolidRed) {

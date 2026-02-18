@@ -18,7 +18,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y ninja-build spirv-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build spirv-tools libglvnd-dev libegl1-mesa-dev
 
       - name: Set compiler
         run: |
@@ -35,6 +37,10 @@ jobs:
           cmake -S . -B build -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DWGSL_BUILD_TESTS=ON
+          -DWGSL_BUILD_EGL_TESTS=ON
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
 
       - name: Build
         run: cmake --build build
