@@ -1007,11 +1007,7 @@ static void hlsl_emit_expr(HlslCtx *c, uint32_t id, HlslBuf *b) {
             hb_append(b, ")");
             break;
 
-        case SSIR_OP_TEX_QUERY_LEVELS: {
-            hb_append(b, "0");
-            break;
-        }
-
+        case SSIR_OP_TEX_QUERY_LEVELS:
         case SSIR_OP_TEX_QUERY_SAMPLES: {
             hb_append(b, "0");
             break;
@@ -1274,6 +1270,7 @@ SsirToHlslResult ssir_to_hlsl(const SsirModule *mod,
     const SsirToHlslOptions *opts,
     char **out_hlsl,
     char **out_error) {
+    (void)out_error;
     if (!mod || !out_hlsl) return SSIR_TO_HLSL_ERR_INVALID_INPUT;
 
     HlslCtx ctx;

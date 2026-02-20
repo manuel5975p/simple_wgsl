@@ -1813,9 +1813,9 @@ void ssir_build_switch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     if (case_count > 0) {
         /* PRE: case_count <= 32767 to avoid uint16_t overflow */
         wgsl_compiler_assert(case_count <= 32767, "ssir_build_switch: case_count overflow: %u", case_count);
-        inst->extra = (uint32_t *)SSIR_MALLOC(case_count * 2 * sizeof(uint32_t));
+        inst->extra = (uint32_t *)SSIR_MALLOC((size_t)case_count * 2 * sizeof(uint32_t));
         if (!inst->extra) return;
-        memcpy(inst->extra, cases, case_count * 2 * sizeof(uint32_t));
+        memcpy(inst->extra, cases, (size_t)case_count * 2 * sizeof(uint32_t));
         inst->extra_count = (uint16_t)(case_count * 2);
     }
 }
@@ -1836,9 +1836,9 @@ uint32_t ssir_build_phi(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     if (count > 0) {
         /* PRE: count <= 32767 to avoid uint16_t overflow */
         wgsl_compiler_assert(count <= 32767, "ssir_build_phi: count overflow: %u", count);
-        inst->extra = (uint32_t *)SSIR_MALLOC(count * 2 * sizeof(uint32_t));
+        inst->extra = (uint32_t *)SSIR_MALLOC((size_t)count * 2 * sizeof(uint32_t));
         if (!inst->extra) return 0;
-        memcpy(inst->extra, incoming, count * 2 * sizeof(uint32_t));
+        memcpy(inst->extra, incoming, (size_t)count * 2 * sizeof(uint32_t));
         inst->extra_count = (uint16_t)(count * 2);
     }
     return inst->result;
@@ -2491,8 +2491,6 @@ void ssir_count_uses(SsirFunction *f, uint32_t *use_counts, uint32_t max_id) {
                 case SSIR_OP_BARRIER:
                     break;
                 case SSIR_OP_BRANCH_COND:
-                    SSIR_COUNT_USE(inst->operands[0]);
-                    break;
                 case SSIR_OP_SWITCH:
                     SSIR_COUNT_USE(inst->operands[0]);
                     break;
@@ -2524,9 +2522,7 @@ void ssir_count_uses(SsirFunction *f, uint32_t *use_counts, uint32_t max_id) {
                     break;
                 case SSIR_OP_INSERT:
                     /* operands[0]=composite, [1]=value, [2]=index(literal) */
-                    if (inst->operand_count >= 1) SSIR_COUNT_USE(inst->operands[0]);
-                    if (inst->operand_count >= 2) SSIR_COUNT_USE(inst->operands[1]);
-                    break;
+                    /* fallthrough */
                 case SSIR_OP_SHUFFLE:
                     /* operands[0]=a, [1]=b; extra=shuffle mask (literals) */
                     if (inst->operand_count >= 1) SSIR_COUNT_USE(inst->operands[0]);

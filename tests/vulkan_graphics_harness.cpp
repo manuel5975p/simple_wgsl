@@ -730,7 +730,7 @@ void Image::cleanup() {
 }
 
 Image::Image(Image &&other) noexcept
-    : ctx_(other.ctx_), image_(other.image_), memory_(other.memory_), view_(other.view_), format_(other.format_), width_(other.width_), height_(other.height_) {
+    : ctx_(other.ctx_), image_(other.image_), memory_(other.memory_), view_(other.view_), width_(other.width_), height_(other.height_), format_(other.format_) {
     other.ctx_ = nullptr;
     other.image_ = VK_NULL_HANDLE;
     other.memory_ = VK_NULL_HANDLE;

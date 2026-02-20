@@ -449,14 +449,6 @@ struct WgslLower {
     } fn_ctx;
 };
 
-static void set_error(WgslLower *l, const char *msg) {
-    if (!l) return;
-    size_t n = strlen(msg);
-    if (n >= sizeof(l->last_error)) n = sizeof(l->last_error) - 1;
-    memcpy(l->last_error, msg, n);
-    l->last_error[n] = 0;
-}
-
 // l nonnull
 static uint32_t fresh_id(WgslLower *l) {
     wgsl_compiler_assert(l != NULL, "fresh_id: l is NULL");
@@ -664,23 +656,7 @@ static int emit_capability(WgslLower *l, SpvCapability cap) {
     return 1;
 }
 
-// l nonnull
-// name nonnull
-static int emit_extension(WgslLower *l, const char *name) {
-    wgsl_compiler_assert(l != NULL, "emit_extension: l is NULL");
-    wgsl_compiler_assert(name != NULL, "emit_extension: name is NULL");
-    WordBuf *wb = &l->sections.extensions;
-    uint32_t *strw = NULL;
-    size_t wn = 0;
-    make_string_lit(name, &strw, &wn);
-    if (!emit_op(wb, SpvOpExtension, 1 + wn)) {
-        WGSL_FREE(strw);
-        return 0;
-    }
-    int ok = wb_push_many(wb, strw, wn);
-    WGSL_FREE(strw);
-    return ok;
-}
+
 
 // l nonnull
 // name nonnull
@@ -1071,14 +1047,6 @@ static uint32_t emit_type_struct_with_offsets(WgslLower *l, const char *name, ui
 }
 
 // l nonnull
-// member_types nonnull
-static uint32_t emit_type_struct(WgslLower *l, const char *name, uint32_t *member_types, int member_count) {
-    wgsl_compiler_assert(l != NULL, "emit_type_struct: l is NULL");
-    wgsl_compiler_assert(member_types != NULL, "emit_type_struct: member_types is NULL");
-    return emit_type_struct_with_offsets(l, name, member_types, member_count, NULL);
-}
-
-// l nonnull
 static uint32_t emit_type_pointer(WgslLower *l, SpvStorageClass storage_class, uint32_t pointee_type) {
     wgsl_compiler_assert(l != NULL, "emit_type_pointer: l is NULL");
     // Check cache
@@ -1430,59 +1398,6 @@ static uint32_t emit_spec_const_u32(WgslLower *l, uint32_t value, uint32_t spec_
     return id;
 }
 
-// l nonnull
-static uint32_t emit_spec_const_bool(WgslLower *l, int value, uint32_t spec_id, const char *name) {
-    wgsl_compiler_assert(l != NULL, "emit_spec_const_bool: l is NULL");
-    WordBuf *wb = &l->sections.types_constants;
-    uint32_t id = fresh_id(l);
-    uint32_t bool_type = emit_type_bool(l);
-    if (!emit_op(wb, value ? SpvOpSpecConstantTrue : SpvOpSpecConstantFalse, 3)) return 0;
-    if (!wb_push_u32(wb, bool_type)) return 0;
-    if (!wb_push_u32(wb, id)) return 0;
-    emit_decorate(l, id, SpvDecorationSpecId, &spec_id, 1);
-    if (name && *name) {
-        WordBuf *dbg = &l->sections.debug_names;
-        uint32_t *strw = NULL;
-        size_t wn = 0;
-        make_string_lit(name, &strw, &wn);
-        if (emit_op(dbg, SpvOpName, 2 + wn)) {
-            wb_push_u32(dbg, id);
-            wb_push_many(dbg, strw, wn);
-        }
-        WGSL_FREE(strw);
-    }
-    uint32_t ssir_const = ssir_const_spec_bool(l->ssir, value ? true : false, spec_id);
-    ssir_id_map_set(l, id, ssir_const);
-    return id;
-}
-
-// l nonnull
-// constituents nonnull
-static uint32_t emit_const_composite(WgslLower *l, uint32_t type, uint32_t *constituents, int count) {
-    wgsl_compiler_assert(l != NULL, "emit_const_composite: l is NULL");
-    wgsl_compiler_assert(constituents != NULL, "emit_const_composite: constituents is NULL");
-    WordBuf *wb = &l->sections.types_constants;
-    uint32_t id = fresh_id(l);
-    if (!emit_op(wb, SpvOpConstantComposite, 3 + count)) return 0;
-    if (!wb_push_u32(wb, type)) return 0;
-    if (!wb_push_u32(wb, id)) return 0;
-    for (int i = 0; i < count; ++i) {
-        if (!wb_push_u32(wb, constituents[i])) return 0;
-    }
-    return id;
-}
-
-// l nonnull
-static uint32_t emit_const_null(WgslLower *l, uint32_t type) {
-    wgsl_compiler_assert(l != NULL, "emit_const_null: l is NULL");
-    WordBuf *wb = &l->sections.types_constants;
-    uint32_t id = fresh_id(l);
-    if (!emit_op(wb, SpvOpConstantNull, 3)) return 0;
-    if (!wb_push_u32(wb, type)) return 0;
-    if (!wb_push_u32(wb, id)) return 0;
-    return id;
-}
-
 // ---------- Type Lowering from AST ----------
 
 static SpvStorageClass wgsl_address_space_to_storage_class(const char *space) {
@@ -1694,12 +1609,8 @@ static void get_type_layout(const char *type_name, int *out_size, int *out_align
     // Default to 4-byte alignment
     int size = 4, align_val = 4;
 
-    // Scalar types
-    if (strcmp(type_name, "bool") == 0 || strcmp(type_name, "i32") == 0 ||
-        strcmp(type_name, "u32") == 0 || strcmp(type_name, "f32") == 0) {
-        size = 4;
-        align_val = 4;
-    } else if (strcmp(type_name, "f16") == 0) {
+    // Scalar types: bool, i32, u32, f32, atomic all use defaults (size=4, align=4)
+    if (strcmp(type_name, "f16") == 0) {
         size = 2;
         align_val = 2;
     }
@@ -1725,15 +1636,10 @@ static void get_type_layout(const char *type_name, int *out_size, int *out_align
             cols >= 2 && cols <= 4 && rows >= 2 && rows <= 4) {
             // Column alignment depends on rows (vec2=8, vec3/vec4=16)
             int col_align = (rows == 2) ? 8 : 16;
-            int col_size = (rows == 2) ? 8 : (rows == 3 ? 16 : 16); // vec3 padded to 16
+            int col_size = (rows == 2) ? 8 : 16; // vec3 and vec4 both padded to 16
             size = col_size * cols;
             align_val = col_align;
         }
-    }
-    // Atomic types - same layout as inner scalar
-    else if (strcmp(type_name, "atomic") == 0) {
-        size = 4;
-        align_val = 4;
     }
     // Array type - runtime array has indeterminate size
     else if (strcmp(type_name, "array") == 0) {
@@ -2005,20 +1911,6 @@ static int emit_function_begin(WgslLower *l, uint32_t func_id, uint32_t result_t
 
 // l nonnull
 // out_id nonnull
-static int emit_function_parameter(WgslLower *l, uint32_t result_type, uint32_t *out_id) {
-    wgsl_compiler_assert(l != NULL, "emit_function_parameter: l is NULL");
-    wgsl_compiler_assert(out_id != NULL, "emit_function_parameter: out_id is NULL");
-    WordBuf *wb = &l->sections.functions;
-    uint32_t id = fresh_id(l);
-    if (!emit_op(wb, SpvOpFunctionParameter, 3)) return 0;
-    if (!wb_push_u32(wb, result_type)) return 0;
-    if (!wb_push_u32(wb, id)) return 0;
-    *out_id = id;
-    return 1;
-}
-
-// l nonnull
-// out_id nonnull
 static int emit_label(WgslLower *l, uint32_t *out_id) {
     wgsl_compiler_assert(l != NULL, "emit_label: l is NULL");
     wgsl_compiler_assert(out_id != NULL, "emit_label: out_id is NULL");
@@ -2074,69 +1966,6 @@ static int emit_function_end(WgslLower *l) {
 static uint32_t lower_expression(WgslLower *l, const WgslAstNode *expr);
 static int lower_statement(WgslLower *l, const WgslAstNode *stmt);
 static int lower_block(WgslLower *l, const WgslAstNode *block);
-
-// ---------- Local variable context for function lowering ----------
-
-typedef struct {
-    const char *name;
-    uint32_t ptr_id;  // SPIR-V pointer to the variable (or value ID if is_value)
-    uint32_t type_id; // SPIR-V type of the value (not pointer)
-    int is_value;     // if true, ptr_id is a value (let/const), not a pointer
-} LocalVar;
-
-typedef struct {
-    LocalVar *vars;
-    int count;
-    int cap;
-} LocalVarContext;
-
-// ctx nonnull
-static void local_ctx_init(LocalVarContext *ctx) {
-    wgsl_compiler_assert(ctx != NULL, "local_ctx_init: ctx is NULL");
-    ctx->vars = NULL;
-    ctx->count = 0;
-    ctx->cap = 0;
-}
-
-// ctx nonnull
-static void local_ctx_free(LocalVarContext *ctx) {
-    wgsl_compiler_assert(ctx != NULL, "local_ctx_free: ctx is NULL");
-    WGSL_FREE(ctx->vars);
-    ctx->vars = NULL;
-    ctx->count = 0;
-    ctx->cap = 0;
-}
-
-// ctx nonnull
-// name nonnull
-static void local_ctx_add(LocalVarContext *ctx, const char *name, uint32_t ptr_id, uint32_t type_id) {
-    wgsl_compiler_assert(ctx != NULL, "local_ctx_add: ctx is NULL");
-    wgsl_compiler_assert(name != NULL, "local_ctx_add: name is NULL");
-    if (ctx->count >= ctx->cap) {
-        int new_cap = ctx->cap ? ctx->cap * 2 : 16;
-        void *p = WGSL_REALLOC(ctx->vars, new_cap * sizeof(LocalVar));
-        if (!p) return;
-        ctx->vars = (LocalVar *)p;
-        ctx->cap = new_cap;
-    }
-    ctx->vars[ctx->count].name = name;
-    ctx->vars[ctx->count].ptr_id = ptr_id;
-    ctx->vars[ctx->count].type_id = type_id;
-    ctx->count++;
-}
-
-// ctx nonnull
-// name nonnull
-static LocalVar *local_ctx_find(LocalVarContext *ctx, const char *name) {
-    wgsl_compiler_assert(ctx != NULL, "local_ctx_find: ctx is NULL");
-    wgsl_compiler_assert(name != NULL, "local_ctx_find: name is NULL");
-    for (int i = ctx->count - 1; i >= 0; --i) {
-        if (strcmp(ctx->vars[i].name, name) == 0) {
-            return &ctx->vars[i];
-        }
-    }
-    return NULL;
-}
 
 // ---------- Instruction Emission ----------
 
@@ -2668,8 +2497,8 @@ static SsirBuiltinId glsl_to_ssir_builtin(uint32_t glsl_op) {
         case GLSLstd450FaceForward: return SSIR_BUILTIN_FACEFORWARD;
         case GLSLstd450Reflect: return SSIR_BUILTIN_REFLECT;
         case GLSLstd450Refract: return SSIR_BUILTIN_REFRACT;
-        case GLSLstd450Radians: return SSIR_BUILTIN_COUNT; // No direct mapping
-        case GLSLstd450Degrees: return SSIR_BUILTIN_COUNT; // No direct mapping
+        case GLSLstd450Radians: // No direct mapping - fallthrough
+        case GLSLstd450Degrees: // No direct mapping - fallthrough
         default: return SSIR_BUILTIN_COUNT;
     }
 }
@@ -2712,24 +2541,6 @@ static int emit_ext_inst(WgslLower *l, uint32_t result_type, uint32_t *out_id, u
         }
     }
 
-    *out_id = id;
-    return 1;
-}
-
-// l nonnull
-// out_id nonnull
-static int emit_function_call(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint32_t function, uint32_t *args, int arg_count) {
-    wgsl_compiler_assert(l != NULL, "emit_function_call: l is NULL");
-    wgsl_compiler_assert(out_id != NULL, "emit_function_call: out_id is NULL");
-    WordBuf *wb = &l->sections.functions;
-    uint32_t id = fresh_id(l);
-    if (!emit_op(wb, SpvOpFunctionCall, 4 + arg_count)) return 0;
-    if (!wb_push_u32(wb, result_type)) return 0;
-    if (!wb_push_u32(wb, id)) return 0;
-    if (!wb_push_u32(wb, function)) return 0;
-    for (int i = 0; i < arg_count; ++i) {
-        if (!wb_push_u32(wb, args[i])) return 0;
-    }
     *out_id = id;
     return 1;
 }
@@ -2784,13 +2595,6 @@ static int is_unsigned_int_type(uint32_t type_id, WgslLower *l) {
            type_id == l->id_vec2u || type_id == l->id_vec3u || type_id == l->id_vec4u;
 }
 
-// Determine if a type is boolean
-// l nonnull
-static int is_bool_type(uint32_t type_id, WgslLower *l) {
-    wgsl_compiler_assert(l != NULL, "is_bool_type: l is NULL");
-    return type_id == l->id_bool;
-}
-
 // Get vector component count (returns 0 for non-vector types)
 // l nonnull
 static int get_vector_component_count(uint32_t type_id, WgslLower *l) {
@@ -2823,7 +2627,7 @@ static int get_matrix_info(uint32_t type_id, WgslLower *l, uint32_t *out_col_typ
         for (TypeCacheEntry *e = l->type_cache.buckets[bucket]; e; e = e->next) {
             if (e->spv_id == type_id && e->kind == TC_MATRIX) {
                 if (out_col_type) *out_col_type = e->matrix_type.column_type_id;
-                if (out_col_count) *out_col_count = e->matrix_type.column_count;
+                if (out_col_count) *out_col_count = (int)e->matrix_type.column_count;
                 return 1;
             }
         }
@@ -2944,7 +2748,7 @@ static void fn_ctx_clear_locals(WgslLower *l) {
 static ExprResult lower_literal(WgslLower *l, const WgslAstNode *node) {
     wgsl_compiler_assert(l != NULL, "lower_literal: l is NULL");
     wgsl_compiler_assert(node != NULL, "lower_literal: node is NULL");
-    ExprResult r = {0, 0};
+    ExprResult r = {0};
     const Literal *lit = &node->literal;
 
     if (lit->kind == WGSL_LIT_INT) {
@@ -3100,7 +2904,7 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
 static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
     wgsl_compiler_assert(l != NULL, "lower_ident: l is NULL");
     wgsl_compiler_assert(node != NULL, "lower_ident: node is NULL");
-    ExprResult r = {0, 0};
+    ExprResult r = {0};
     const char *name = node->ident.name;
 
     // Handle boolean literals (true/false are identifiers in the WGSL AST)
@@ -3164,7 +2968,7 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
 static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStorageClass *out_sc) {
     wgsl_compiler_assert(l != NULL, "lower_ptr_expr: l is NULL");
     wgsl_compiler_assert(node != NULL, "lower_ptr_expr: node is NULL");
-    ExprResult r = {0, 0};
+    ExprResult r = {0};
     if (out_sc) *out_sc = SpvStorageClassFunction;
 
     switch (node->type) {
@@ -3281,22 +3085,6 @@ static ExprResult lower_lvalue(WgslLower *l, const WgslAstNode *node) {
     return lower_ptr_expr(l, node, &sc);
 }
 
-// Lower a binary expression
-// l nonnull
-// node nonnull
-static ExprResult lower_binary(WgslLower *l, const WgslAstNode *node) {
-    wgsl_compiler_assert(l != NULL, "lower_binary: l is NULL");
-    wgsl_compiler_assert(node != NULL, "lower_binary: node is NULL");
-    ExprResult r = {0, 0};
-    const Binary *bin = &node->binary;
-
-    ExprResult left = lower_expression(l, bin->left) ? (ExprResult){lower_expression(l, bin->left), 0} : (ExprResult){0, 0};
-    // Actually need to get both id and type
-    // Let me restructure this...
-
-    return r;
-}
-
 // Forward declare for mutual recursion
 static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node);
 
@@ -3306,7 +3094,7 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node);
 static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
     wgsl_compiler_assert(l != NULL, "lower_call: l is NULL");
     wgsl_compiler_assert(node != NULL, "lower_call: node is NULL");
-    ExprResult r = {0, 0};
+    ExprResult r = {0};
     const Call *call = &node->call;
 
     // Get callee name
@@ -4205,8 +3993,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                             case SSIR_TEX_2D:
                             case SSIR_TEX_MULTISAMPLED_2D: dim_count = 2; break;
                             case SSIR_TEX_3D: dim_count = 3; break;
-                            case SSIR_TEX_CUBE: dim_count = 2; break;
-                            default: dim_count = 2; break;
+                            default: dim_count = 2; break; // includes SSIR_TEX_CUBE
                         }
                     } else if (st && st->kind == SSIR_TYPE_TEXTURE_DEPTH) {
                         dim_count = 2;
@@ -4335,7 +4122,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
     if (strcmp(callee_name, "workgroupUniformLoad") == 0 && call->arg_count >= 1) {
         // Get the pointer to the workgroup variable
         SpvStorageClass sc = SpvStorageClassWorkgroup;
-        ExprResult ptr = {0, 0};
+        ExprResult ptr = {0};
 
         // The argument should be &var (address-of) or just var
         if (call->args[0]->type == WGSL_NODE_UNARY &&
@@ -4360,7 +4147,6 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         wb_push_u32(wb, sem_wg);
 
         // Manually emit OpLoad (don't use emit_load since it would allocate a new ID)
-        uint32_t ptr_type_id = emit_type_pointer(l, sc, load_type);
         emit_op(wb, SpvOpLoad, 4);
         wb_push_u32(wb, load_type);
         wb_push_u32(wb, result_id);
@@ -4397,7 +4183,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         if (call->arg_count < 1 || !call->args[0]) return r;
         // First arg is always the pointer (from &buf.counter)
         SpvStorageClass sc = SpvStorageClassStorageBuffer;
-        ExprResult ptr = {0, 0};
+        ExprResult ptr = {0};
 
         if (call->args[0]->type == WGSL_NODE_UNARY &&
             call->args[0]->unary.op && strcmp(call->args[0]->unary.op, "&") == 0) {
@@ -4579,7 +4365,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
 // l nonnull
 static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
     wgsl_compiler_assert(l != NULL, "lower_expr_full: l is NULL");
-    ExprResult r = {0, 0};
+    ExprResult r = {0};
     if (!node) return r;
 
     switch (node->type) {
@@ -5483,7 +5269,6 @@ static int lower_if_stmt(WgslLower *l, const WgslAstNode *node) {
     wb_push_u32(wb, then_label);
 
     // Update SSIR current block to then block
-    uint32_t saved_ssir_block = l->fn_ctx.ssir_block_id;
     if (ssir_then_block) l->fn_ctx.ssir_block_id = ssir_then_block;
 
     if (!lower_block(l, if_stmt->then_branch)) return 0;
@@ -5992,8 +5777,8 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
                         const WgslAstNode *ce = c->case_clause.exprs[e];
                         if (ce && ce->type == WGSL_NODE_LITERAL && ce->literal.lexeme)
                             val = atoi(ce->literal.lexeme);
-                        ssir_cases[ci * 2] = (uint32_t)val;
-                        ssir_cases[ci * 2 + 1] = ssir_case_ids[i];
+                        ssir_cases[(size_t)ci * 2] = (uint32_t)val;
+                        ssir_cases[(size_t)ci * 2 + 1] = ssir_case_ids[i];
                         ci++;
                     }
                 }
@@ -6979,7 +6764,6 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                                 if (iattr->type == WGSL_NODE_ATTRIBUTE && strcmp(iattr->attribute.name, "interpolate") == 0) {
                                     if (iattr->attribute.arg_count > 0 && iattr->attribute.args[0]->type == WGSL_NODE_IDENT) {
                                         if (strcmp(iattr->attribute.args[0]->ident.name, "flat") == 0) {
-                                            uint32_t flat_val = SpvDecorationFlat;
                                             emit_decorate(l, var_id, SpvDecorationFlat, NULL, 0);
                                             if (l->ssir) ssir_global_set_interpolation(l->ssir, ssir_var, SSIR_INTERP_FLAT);
                                         }

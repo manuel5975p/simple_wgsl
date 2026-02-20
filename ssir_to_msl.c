@@ -82,8 +82,6 @@ static void mb_indent(MslBuf *b) {
     for (int i = 0; i < b->indent; i++) mb_append(b, "    ");
 }
 
-static void mb_nl(MslBuf *b) { mb_append(b, "\n"); }
-
 /* ============================================================================
  * Interface Field Tracking (for entry point I/O)
  * ============================================================================ */
@@ -210,6 +208,7 @@ static const MslInterfaceField *find_input_field(MslCtx *c, uint32_t global_id) 
  * ============================================================================ */
 
 static const char *builtin_to_msl_attr(SsirBuiltinVar bv, bool is_output) {
+    (void)is_output;
     switch (bv) {
         case SSIR_BUILTIN_VERTEX_INDEX: return "vertex_id";
         case SSIR_BUILTIN_INSTANCE_INDEX: return "instance_id";
@@ -306,22 +305,22 @@ static const char *bfunc_to_msl(SsirBuiltinId id) {
         case SSIR_BUILTIN_FMA: return "fma";
         case SSIR_BUILTIN_ISINF: return "isinf";
         case SSIR_BUILTIN_ISNAN: return "isnan";
-        case SSIR_BUILTIN_DEGREES: return NULL; /* special: x * 57.2957795131f */
+        case SSIR_BUILTIN_DEGREES: /* special: x * 57.2957795131f */
         case SSIR_BUILTIN_RADIANS: return NULL; /* special: x * 0.0174532925199f */
         case SSIR_BUILTIN_MODF: return "modf";
         case SSIR_BUILTIN_FREXP: return "frexp";
         case SSIR_BUILTIN_LDEXP: return "ldexp";
         case SSIR_BUILTIN_DETERMINANT: return "determinant";
         case SSIR_BUILTIN_TRANSPOSE: return "transpose";
-        case SSIR_BUILTIN_PACK4X8SNORM: return NULL; /* special */
-        case SSIR_BUILTIN_PACK4X8UNORM: return NULL;
-        case SSIR_BUILTIN_PACK2X16SNORM: return NULL;
-        case SSIR_BUILTIN_PACK2X16UNORM: return NULL;
-        case SSIR_BUILTIN_PACK2X16FLOAT: return NULL;
-        case SSIR_BUILTIN_UNPACK4X8SNORM: return NULL;
-        case SSIR_BUILTIN_UNPACK4X8UNORM: return NULL;
-        case SSIR_BUILTIN_UNPACK2X16SNORM: return NULL;
-        case SSIR_BUILTIN_UNPACK2X16UNORM: return NULL;
+        case SSIR_BUILTIN_PACK4X8SNORM: /* special */
+        case SSIR_BUILTIN_PACK4X8UNORM:
+        case SSIR_BUILTIN_PACK2X16SNORM:
+        case SSIR_BUILTIN_PACK2X16UNORM:
+        case SSIR_BUILTIN_PACK2X16FLOAT:
+        case SSIR_BUILTIN_UNPACK4X8SNORM:
+        case SSIR_BUILTIN_UNPACK4X8UNORM:
+        case SSIR_BUILTIN_UNPACK2X16SNORM:
+        case SSIR_BUILTIN_UNPACK2X16UNORM:
         case SSIR_BUILTIN_UNPACK2X16FLOAT: return NULL;
         case SSIR_BUILTIN_SUBGROUP_BALLOT: return "simd_ballot";
         case SSIR_BUILTIN_SUBGROUP_BROADCAST: return "simd_broadcast";
@@ -411,9 +410,6 @@ static void msl_emit_type(MslCtx *c, uint32_t tid, MslBuf *b) {
             break;
 
         case SSIR_TYPE_SAMPLER:
-            mb_append(b, "sampler");
-            break;
-
         case SSIR_TYPE_SAMPLER_COMPARISON:
             mb_append(b, "sampler");
             break;
@@ -1291,9 +1287,6 @@ static void msl_emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
             break;
 
         case SSIR_OP_PHI:
-            mb_append(b, msl_get_name(c, id));
-            break;
-
         default:
             mb_append(b, msl_get_name(c, id));
             break;
@@ -1313,6 +1306,7 @@ static void msl_emit_block(MslCtx *c, SsirBlock *blk, SsirFunction *fn, MslBlkSt
 
 static void msl_emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
     SsirFunction *fn, MslBlkState *bs) {
+    (void)blk;
     switch (inst->op) {
         case SSIR_OP_STORE:
             mb_indent(&c->sb);
@@ -1503,18 +1497,6 @@ static void msl_emit_block(MslCtx *c, SsirBlock *blk, SsirFunction *fn, MslBlkSt
  * Struct Emission
  * ============================================================================ */
 
-static bool type_is_buffer_pointee(MslCtx *c, uint32_t type_id) {
-    for (uint32_t i = 0; i < c->mod->global_count; i++) {
-        SsirGlobalVar *g = &c->mod->globals[i];
-        SsirType *pt = ssir_get_type((SsirModule *)c->mod, g->type);
-        if (!pt || pt->kind != SSIR_TYPE_PTR) continue;
-        if (pt->ptr.space != SSIR_ADDR_UNIFORM && pt->ptr.space != SSIR_ADDR_STORAGE)
-            continue;
-        if (pt->ptr.pointee == type_id) return true;
-    }
-    return false;
-}
-
 static void msl_emit_struct_def(MslCtx *c, SsirType *t) {
     if (t->kind != SSIR_TYPE_STRUCT) return;
 
@@ -1619,8 +1601,7 @@ static bool valid_output_for_stage(SsirStage stage, SsirBuiltinVar bv, const Ssi
                 return !is_vertex_output(mod, global_id);
             }
             return false;
-        case SSIR_STAGE_COMPUTE:
-            return false; /* compute has no outputs */
+        case SSIR_STAGE_COMPUTE: /* compute has no outputs */
         case SSIR_STAGE_GEOMETRY:
         case SSIR_STAGE_TESS_CONTROL:
         case SSIR_STAGE_TESS_EVAL:
@@ -1798,8 +1779,8 @@ static void msl_emit_function(MslCtx *c, SsirFunction *fn) {
         switch (ep->stage) {
             case SSIR_STAGE_VERTEX: mb_append(&c->sb, "vertex "); break;
             case SSIR_STAGE_FRAGMENT: mb_append(&c->sb, "fragment "); break;
-            case SSIR_STAGE_COMPUTE: mb_append(&c->sb, "kernel "); break;
-            case SSIR_STAGE_GEOMETRY: mb_append(&c->sb, "kernel "); break;
+            case SSIR_STAGE_COMPUTE:
+            case SSIR_STAGE_GEOMETRY:
             case SSIR_STAGE_TESS_CONTROL: mb_append(&c->sb, "kernel "); break;
             case SSIR_STAGE_TESS_EVAL: mb_append(&c->sb, "vertex "); break;
         }
@@ -1838,13 +1819,8 @@ static void msl_emit_function(MslCtx *c, SsirFunction *fn) {
             switch (space) {
                 case SSIR_ADDR_UNIFORM:
                     mb_append(&c->sb, "constant ");
-                    if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
-                        msl_emit_type(c, pointee_id, &c->sb);
-                        mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));
-                    } else {
-                        msl_emit_type(c, pointee_id, &c->sb);
-                        mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));
-                    }
+                    msl_emit_type(c, pointee_id, &c->sb);
+                    mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));
                     mb_appendf(&c->sb, " [[buffer(%u)]]", g->has_binding ? g->binding : 0);
                     break;
 
@@ -1853,9 +1829,6 @@ static void msl_emit_function(MslCtx *c, SsirFunction *fn) {
                     if (pointee && pointee->kind == SSIR_TYPE_RUNTIME_ARRAY) {
                         msl_emit_type(c, pointee->runtime_array.elem, &c->sb);
                         mb_appendf(&c->sb, "* %s", msl_get_name(c, g->id));
-                    } else if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
-                        msl_emit_type(c, pointee_id, &c->sb);
-                        mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));
                     } else {
                         msl_emit_type(c, pointee_id, &c->sb);
                         mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));

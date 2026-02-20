@@ -273,47 +273,6 @@ static int sts_emit_capability(Ctx *c, SpvCapability cap) {
     return wb_push(wb, cap);
 }
 
-// c nonnull, name nonnull
-static int sts_emit_extension(Ctx *c, const char *name) {
-    wgsl_compiler_assert(c != NULL, "sts_emit_extension: c is NULL");
-    wgsl_compiler_assert(name != NULL, "sts_emit_extension: name is NULL");
-    StsWordBuf *wb = &c->sections.extensions;
-    uint32_t *str;
-    size_t wn;
-    encode_string(name, &str, &wn);
-    if (!sts_emit_op(wb, SpvOpExtension, 1 + wn)) {
-        STS_FREE(str);
-        return 0;
-    }
-    int ok = sts_wb_push_many(wb, str, wn);
-    STS_FREE(str);
-    return ok;
-}
-
-// c nonnull, name nonnull, out_id nonnull
-static int sts_emit_ext_inst_import(Ctx *c, const char *name, uint32_t *out_id) {
-    wgsl_compiler_assert(c != NULL, "sts_emit_ext_inst_import: c is NULL");
-    wgsl_compiler_assert(name != NULL, "sts_emit_ext_inst_import: name is NULL");
-    wgsl_compiler_assert(out_id != NULL, "sts_emit_ext_inst_import: out_id is NULL");
-    StsWordBuf *wb = &c->sections.ext_inst_imports;
-    uint32_t *str;
-    size_t wn;
-    encode_string(name, &str, &wn);
-    uint32_t id = sts_fresh_id(c);
-    if (!sts_emit_op(wb, SpvOpExtInstImport, 2 + wn)) {
-        STS_FREE(str);
-        return 0;
-    }
-    if (!wb_push(wb, id)) {
-        STS_FREE(str);
-        return 0;
-    }
-    int ok = sts_wb_push_many(wb, str, wn);
-    STS_FREE(str);
-    *out_id = id;
-    return ok;
-}
-
 // c nonnull
 static void sts_ensure_glsl_import(Ctx *c) {
     wgsl_compiler_assert(c != NULL, "sts_ensure_glsl_import: c is NULL");
@@ -703,7 +662,7 @@ static SpvDim texture_dim_to_spv(SsirTextureDim dim) {
         case SSIR_TEX_MULTISAMPLED_2D: return SpvDim2D;
         case SSIR_TEX_1D_ARRAY: return SpvDim1D;
         case SSIR_TEX_BUFFER: return SpvDimBuffer;
-        case SSIR_TEX_MULTISAMPLED_2D_ARRAY: return SpvDim2D;
+        case SSIR_TEX_MULTISAMPLED_2D_ARRAY:
         default: return SpvDim2D;
     }
 }
@@ -903,8 +862,6 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             break;
         }
         case SSIR_TYPE_SAMPLER:
-            spv_id = sts_emit_type_sampler(c);
-            break;
         case SSIR_TYPE_SAMPLER_COMPARISON:
             spv_id = sts_emit_type_sampler(c);
             break;
@@ -1368,6 +1325,7 @@ static void emit_signed_int_binop(Ctx *c, SpvOp spv_op,
 
 // c nonnull, inst nonnull
 static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hint) {
+    (void)func_type_hint;
     wgsl_compiler_assert(c != NULL, "emit_instruction: c is NULL");
     wgsl_compiler_assert(inst != NULL, "emit_instruction: inst is NULL");
     StsWordBuf *wb = &c->sections.functions;
@@ -1758,7 +1716,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);
             if (inst->extra_count > 0) {
-                for (uint16_t i = 0; i < inst->extra_count; ++i) {
+                for (uint32_t i = 0; i < inst->extra_count; ++i) {
                     wb_push(wb, get_spv_id(c, inst->extra[i]));
                 }
             } else {
@@ -1792,7 +1750,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             wb_push(wb, result_spv);
             wb_push(wb, get_spv_id(c, inst->operands[0]));
             wb_push(wb, get_spv_id(c, inst->operands[1]));
-            for (uint16_t i = 0; i < inst->extra_count; ++i) {
+            for (uint32_t i = 0; i < inst->extra_count; ++i) {
                 wb_push(wb, inst->extra[i]); /* literal indices */
             }
             break;
@@ -1853,7 +1811,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);
             wb_push(wb, get_spv_id(c, inst->operands[0]));
-            for (uint16_t i = 0; i < idx_count; ++i) {
+            for (uint32_t i = 0; i < idx_count; ++i) {
                 wb_push(wb, get_spv_id(c, inst->extra[i]));
             }
             break;
@@ -1887,11 +1845,10 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             break;
 
         case SSIR_OP_SWITCH: {
-            uint32_t case_count = inst->extra_count / 2;
             sts_emit_op(wb, SpvOpSwitch, 3 + inst->extra_count);
             wb_push(wb, get_spv_id(c, inst->operands[0]));
             wb_push(wb, get_spv_id(c, inst->operands[1])); /* default */
-            for (uint16_t i = 0; i < inst->extra_count; i += 2) {
+            for (uint32_t i = 0; i < inst->extra_count; i += 2) {
                 wb_push(wb, inst->extra[i]);                    /* literal value */
                 wb_push(wb, get_spv_id(c, inst->extra[i + 1])); /* label */
             }
@@ -1899,11 +1856,10 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
         }
 
         case SSIR_OP_PHI: {
-            uint32_t pair_count = inst->extra_count / 2;
             sts_emit_op(wb, SpvOpPhi, 3 + inst->extra_count);
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);
-            for (uint16_t i = 0; i < inst->extra_count; i += 2) {
+            for (uint32_t i = 0; i < inst->extra_count; i += 2) {
                 wb_push(wb, get_spv_id(c, inst->extra[i]));     /* value */
                 wb_push(wb, get_spv_id(c, inst->extra[i + 1])); /* parent block */
             }
@@ -1947,7 +1903,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);
             wb_push(wb, get_spv_id(c, inst->operands[0])); /* callee */
-            for (uint16_t i = 0; i < arg_count; ++i) {
+            for (uint32_t i = 0; i < arg_count; ++i) {
                 wb_push(wb, get_spv_id(c, inst->extra[i]));
             }
             break;
@@ -2117,7 +2073,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
                 wb_push(wb, result_spv);
                 wb_push(wb, c->glsl_ext_id);
                 wb_push(wb, glsl_op);
-                for (uint16_t i = 0; i < inst->extra_count; ++i) {
+                for (uint32_t i = 0; i < inst->extra_count; ++i) {
                     wb_push(wb, get_spv_id(c, inst->extra[i]));
                 }
             }
@@ -2147,16 +2103,12 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
                 conv_op = SpvOpConvertSToF;
             } else if (from_unsigned && to_float) {
                 conv_op = SpvOpConvertUToF;
-            } else if (from_signed && to_unsigned) {
-                conv_op = SpvOpBitcast; /* same-width sign reinterpretation */
-            } else if (from_unsigned && to_signed) {
-                conv_op = SpvOpBitcast;
             } else if ((from_signed && to_signed) || (from_unsigned && to_unsigned)) {
                 conv_op = from_signed ? SpvOpSConvert : SpvOpUConvert;
             } else if (from_float && to_float) {
                 conv_op = SpvOpFConvert;
             } else {
-                conv_op = SpvOpBitcast; /* fallback */
+                conv_op = SpvOpBitcast; /* sign reinterpretation or fallback */
             }
 
             sts_emit_op(wb, conv_op, 4);
@@ -2752,17 +2704,10 @@ static int sts_emit_entry_point(Ctx *c, const SsirEntryPoint *ep) {
     wb = &c->sections.execution_modes;
 
     if (ep->stage == SSIR_STAGE_FRAGMENT) {
-        /* OriginUpperLeft for fragment shaders (default unless explicitly disabled) */
-        if (!ep->origin_upper_left) {
-            /* Still emit OriginUpperLeft as default, since most APIs expect it */
-            sts_emit_op(wb, SpvOpExecutionMode, 3);
-            wb_push(wb, func_spv);
-            wb_push(wb, SpvExecutionModeOriginUpperLeft);
-        } else {
-            sts_emit_op(wb, SpvOpExecutionMode, 3);
-            wb_push(wb, func_spv);
-            wb_push(wb, SpvExecutionModeOriginUpperLeft);
-        }
+        /* Always emit OriginUpperLeft for fragment shaders */
+        sts_emit_op(wb, SpvOpExecutionMode, 3);
+        wb_push(wb, func_spv);
+        wb_push(wb, SpvExecutionModeOriginUpperLeft);
         if (ep->depth_replacing) {
             sts_emit_op(wb, SpvOpExecutionMode, 3);
             wb_push(wb, func_spv);

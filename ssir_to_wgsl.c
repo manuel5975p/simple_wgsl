@@ -244,7 +244,7 @@ static const char *builtin_func_to_wgsl(SsirBuiltinId id) {
         case SSIR_BUILTIN_DPDX_FINE: return "dpdxFine";
         case SSIR_BUILTIN_DPDY_FINE: return "dpdyFine";
         case SSIR_BUILTIN_FMA: return "fma";
-        case SSIR_BUILTIN_ISINF: return NULL; /* special */
+        case SSIR_BUILTIN_ISINF:
         case SSIR_BUILTIN_ISNAN: return NULL; /* special */
         case SSIR_BUILTIN_DEGREES: return "degrees";
         case SSIR_BUILTIN_RADIANS: return "radians";
@@ -284,7 +284,7 @@ static const char *address_space_to_wgsl(SsirAddressSpace space) {
         case SSIR_ADDR_UNIFORM: return "uniform";
         case SSIR_ADDR_UNIFORM_CONSTANT: return NULL; /* implicit for samplers/textures */
         case SSIR_ADDR_STORAGE: return "storage";
-        case SSIR_ADDR_INPUT: return NULL;  /* not a WGSL address space */
+        case SSIR_ADDR_INPUT:
         case SSIR_ADDR_OUTPUT: return NULL; /* not a WGSL address space */
         case SSIR_ADDR_PUSH_CONSTANT: return "push_constant";
         default: return "unknown";
@@ -314,6 +314,7 @@ static const char *texture_dim_to_wgsl(SsirTextureDim dim) {
 static void stw_emit_type(SsirToWgslContext *ctx, uint32_t type_id, StwStringBuffer *out);
 
 static void emit_scalar_type(SsirToWgslContext *ctx, const SsirType *t, StwStringBuffer *out) {
+    (void)ctx;
     switch (t->kind) {
         case SSIR_TYPE_VOID: stw_sb_append(out, "void"); break;
         case SSIR_TYPE_BOOL: stw_sb_append(out, "bool"); break;
@@ -726,7 +727,6 @@ static void stw_emit_expression(SsirToWgslContext *ctx, uint32_t id, StwStringBu
         case SSIR_OP_EXTRACT: {
             stw_emit_expression(ctx, inst->operands[0], out);
             /* Check if extracting from vector - use swizzle */
-            SsirType *base_t = ssir_get_type((SsirModule *)ctx->mod, inst->type);
             uint32_t idx = inst->operands[1];
             if (idx < 4) {
                 const char swizzle[] = "xyzw";
@@ -1132,11 +1132,7 @@ static void stw_emit_expression(SsirToWgslContext *ctx, uint32_t id, StwStringBu
 
         /* Phi - not directly representable, use the name */
         case SSIR_OP_PHI:
-            stw_sb_append(out, stw_get_id_name(ctx, id));
-            break;
-
         default:
-            /* Fallback to ID name */
             stw_sb_append(out, stw_get_id_name(ctx, id));
             break;
     }
@@ -1218,6 +1214,7 @@ typedef struct {
 static void stw_emit_block(SsirToWgslContext *ctx, SsirBlock *blk, SsirFunction *fn, BlockEmitState *state);
 
 static void emit_statement(SsirToWgslContext *ctx, SsirInst *inst, SsirBlock *blk, SsirFunction *fn, BlockEmitState *state) {
+    (void)blk;
     switch (inst->op) {
         case SSIR_OP_STORE:
             stw_sb_indent(&ctx->sb);

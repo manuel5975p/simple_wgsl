@@ -640,7 +640,6 @@ static void walk_stmt(WgslResolver *r, const WgslAstNode *fn, FnInfo *fi, const 
         case WGSL_NODE_BREAK:
         case WGSL_NODE_CONTINUE:
         case WGSL_NODE_DISCARD:
-            break;
         default:
             break;
     }
@@ -1079,9 +1078,9 @@ static const WgslSymbolInfo *entrypoint_syms(const WgslResolver *r, const char *
         return NULL;
 
     char *keep = (char *)NODE_MALLOC((size_t)(r->sym_count + 1));
-    memset(keep, 0, (size_t)(r->sym_count + 1));
-    char *visited = (char *)NODE_MALLOC((size_t)(r->fn_info_count + 1));
-    memset(visited, 0, (size_t)(r->fn_info_count + 1));
+    memset(keep, 0, (size_t)r->sym_count + 1);
+    char *visited = (char *)NODE_MALLOC((size_t)r->fn_info_count + 1);
+    memset(visited, 0, (size_t)r->fn_info_count + 1);
     dfs_collect(r, root, visited, keep);
 
     int *ids = NULL, cap = 0, cnt = 0;
@@ -1095,6 +1094,7 @@ static const WgslSymbolInfo *entrypoint_syms(const WgslResolver *r, const char *
             continue;
         if (cnt >= cap)
             vec_grow((void **)&ids, &cap, sizeof(int));
+        if (!ids) break;
         ids[cnt++] = id;
     }
     NODE_FREE(keep);

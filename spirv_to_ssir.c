@@ -844,9 +844,9 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                         }
                         VtsPendingWorkgroupSize *wg = &c->pending_wgs[c->pending_wg_count++];
                         wg->func_id = fn_id;
-                        wg->workgroup_size[0] = operands[2];
-                        wg->workgroup_size[1] = operands[3];
-                        wg->workgroup_size[2] = operands[4];
+                        wg->workgroup_size[0] = (int)operands[2];
+                        wg->workgroup_size[1] = (int)operands[3];
+                        wg->workgroup_size[2] = (int)operands[4];
                     }
                     /* Store execution modes for later application */
                     if (mode == SpvExecutionModeDepthReplacing ||
@@ -1344,9 +1344,6 @@ static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
         }
 
         case VTS_SPV_TYPE_FUNCTION:
-            c->type_depth--;
-            return 0;
-
         default:
             c->type_depth--;
             return 0;
@@ -1446,13 +1443,13 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
                 break;
             }
             case SSIR_TYPE_I8:
-                result = ssir_const_i8(c->mod, info->constant.value_count > 0 ? (int8_t)info->constant.values[0] : 0);
+                result = ssir_const_i8(c->mod, (int8_t)(info->constant.value_count > 0 ? info->constant.values[0] : 0));
                 break;
             case SSIR_TYPE_U8:
                 result = ssir_const_u8(c->mod, info->constant.value_count > 0 ? (uint8_t)info->constant.values[0] : 0);
                 break;
             case SSIR_TYPE_I16:
-                result = ssir_const_i16(c->mod, info->constant.value_count > 0 ? (int16_t)info->constant.values[0] : 0);
+                result = ssir_const_i16(c->mod, (int16_t)(info->constant.value_count > 0 ? info->constant.values[0] : 0));
                 break;
             case SSIR_TYPE_U16:
                 result = ssir_const_u16(c->mod, info->constant.value_count > 0 ? (uint16_t)info->constant.values[0] : 0);
@@ -2281,12 +2278,12 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                         int pair_count = (operand_count - 2) / 2;
                         uint32_t *incoming = NULL;
                         if (pair_count > 0) {
-                            incoming = (uint32_t *)SPIRV_TO_SSIR_MALLOC(pair_count * 2 * sizeof(uint32_t));
+                            incoming = (uint32_t *)SPIRV_TO_SSIR_MALLOC((size_t)pair_count * 2 * sizeof(uint32_t));
                             /* PRE: malloc succeeded */
                             wgsl_compiler_assert(incoming != NULL, "SpvOpPhi: incoming malloc failed");
                             for (int j = 0; j < pair_count; j++) {
-                                incoming[j * 2] = get_ssir_id(c, operands[2 + j * 2]);
-                                incoming[j * 2 + 1] = get_ssir_id(c, operands[3 + j * 2]);
+                                incoming[(size_t)j * 2] = get_ssir_id(c, operands[2 + j * 2]);
+                                incoming[(size_t)j * 2 + 1] = get_ssir_id(c, operands[3 + j * 2]);
                             }
                         }
                         uint32_t r = ssir_build_phi(c->mod, func_id, block_id, type_id, incoming, pair_count * 2);
@@ -2426,9 +2423,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
 
                         if (op == SpvOpImageSampleImplicitLod) {
                             uint32_t mask = (operand_count > 4) ? operands[4] : 0;
-                            if (mask == 0) {
-                                r = ssir_build_tex_sample(c->mod, func_id, block_id, type_id, tex, samp, coord);
-                            } else if (mask == 0x1 && operand_count > 5) { /* Bias */
+                            if (mask == 0x1 && operand_count > 5) { /* Bias */
                                 uint32_t bias = get_ssir_id(c, operands[5]);
                                 r = ssir_build_tex_sample_bias(c->mod, func_id, block_id, type_id, tex, samp, coord, bias);
                             } else if (mask == 0x10 && operand_count > 5) { /* ConstOffset */
@@ -2438,7 +2433,7 @@ static void convert_function(VtsConverter *c, VtsSpvFunction *fn) {
                                 uint32_t bias = get_ssir_id(c, operands[5]);
                                 uint32_t off = get_ssir_id(c, operands[6]);
                                 r = ssir_build_tex_sample_bias_offset(c->mod, func_id, block_id, type_id, tex, samp, coord, bias, off);
-                            } else {
+                            } else { /* No mask or unrecognized mask */
                                 r = ssir_build_tex_sample(c->mod, func_id, block_id, type_id, tex, samp, coord);
                             }
                         } else if (op == SpvOpImageSampleExplicitLod) {

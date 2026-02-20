@@ -44,7 +44,6 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     add_compile_options(
         -Wall
         -Wextra
-        -Wno-unused-parameter
         -Wno-missing-field-initializers
         -Wno-sign-compare
     )

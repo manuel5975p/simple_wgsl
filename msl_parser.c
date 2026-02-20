@@ -391,6 +391,7 @@ static MslToken mlx_next(MslLexer *L) {
                 return mlx_make(L, MTK_COLONCOLON, s, 2);
             }
             return mlx_make(L, MTK_COLON, s, 1);
+        default: break;
     }
 
     return mlx_make(L, MTK_EOF, s, 1);
@@ -1025,15 +1026,6 @@ static void mp_parse_struct(MslParser *p) {
  * Value helpers
  * ============================================================================ */
 
-/* Get the pointee type from a pointer SSIR type */
-// p nonnull
-static uint32_t mp_pointee_type(MslParser *p, uint32_t ptr_type_id) {
-    wgsl_compiler_assert(p != NULL, "mp_pointee_type: p is NULL");
-    SsirType *t = ssir_get_type(p->mod, ptr_type_id);
-    if (t && t->kind == SSIR_TYPE_PTR) return t->ptr.pointee;
-    return ptr_type_id;
-}
-
 /* Get the address space from a pointer SSIR type */
 // p nonnull
 static SsirAddressSpace mp_ptr_space(MslParser *p, uint32_t ptr_type_id) {
@@ -1219,47 +1211,6 @@ static MslVal mp_parse_primary(MslParser *p) {
 
     mp_error(p, "line %d: unexpected token in expression", p->cur.line);
     return v;
-}
-
-/* MSL builtin function name → SSIR builtin ID */
-// name nonnull
-// out nonnull
-static int mp_msl_builtin_func(const char *name, SsirBuiltinId *out) {
-    wgsl_compiler_assert(name != NULL, "mp_msl_builtin_func: name is NULL");
-    wgsl_compiler_assert(out != NULL, "mp_msl_builtin_func: out is NULL");
-    static const struct {
-        const char *name;
-        SsirBuiltinId id;
-    } map[] = {
-        {"sin", SSIR_BUILTIN_SIN}, {"cos", SSIR_BUILTIN_COS}, {"tan", SSIR_BUILTIN_TAN},
-        {"asin", SSIR_BUILTIN_ASIN}, {"acos", SSIR_BUILTIN_ACOS}, {"atan", SSIR_BUILTIN_ATAN},
-        {"atan2", SSIR_BUILTIN_ATAN2}, {"sinh", SSIR_BUILTIN_SINH}, {"cosh", SSIR_BUILTIN_COSH},
-        {"tanh", SSIR_BUILTIN_TANH}, {"exp", SSIR_BUILTIN_EXP}, {"exp2", SSIR_BUILTIN_EXP2},
-        {"log", SSIR_BUILTIN_LOG}, {"log2", SSIR_BUILTIN_LOG2}, {"pow", SSIR_BUILTIN_POW},
-        {"sqrt", SSIR_BUILTIN_SQRT}, {"rsqrt", SSIR_BUILTIN_INVERSESQRT},
-        {"abs", SSIR_BUILTIN_ABS}, {"sign", SSIR_BUILTIN_SIGN},
-        {"floor", SSIR_BUILTIN_FLOOR}, {"ceil", SSIR_BUILTIN_CEIL},
-        {"round", SSIR_BUILTIN_ROUND}, {"trunc", SSIR_BUILTIN_TRUNC},
-        {"fract", SSIR_BUILTIN_FRACT}, {"min", SSIR_BUILTIN_MIN}, {"max", SSIR_BUILTIN_MAX},
-        {"clamp", SSIR_BUILTIN_CLAMP}, {"saturate", SSIR_BUILTIN_SATURATE},
-        {"mix", SSIR_BUILTIN_MIX}, {"step", SSIR_BUILTIN_STEP},
-        {"smoothstep", SSIR_BUILTIN_SMOOTHSTEP}, {"dot", SSIR_BUILTIN_DOT},
-        {"cross", SSIR_BUILTIN_CROSS}, {"length", SSIR_BUILTIN_LENGTH},
-        {"distance", SSIR_BUILTIN_DISTANCE}, {"normalize", SSIR_BUILTIN_NORMALIZE},
-        {"faceforward", SSIR_BUILTIN_FACEFORWARD}, {"reflect", SSIR_BUILTIN_REFLECT},
-        {"refract", SSIR_BUILTIN_REFRACT}, {"all", SSIR_BUILTIN_ALL}, {"any", SSIR_BUILTIN_ANY},
-        {"select", SSIR_BUILTIN_SELECT}, {"popcount", SSIR_BUILTIN_COUNTBITS},
-        {"reverse_bits", SSIR_BUILTIN_REVERSEBITS}, {"clz", SSIR_BUILTIN_FIRSTLEADINGBIT},
-        {"ctz", SSIR_BUILTIN_FIRSTTRAILINGBIT},
-        {"dfdx", SSIR_BUILTIN_DPDX}, {"dfdy", SSIR_BUILTIN_DPDY}, {"fwidth", SSIR_BUILTIN_FWIDTH},
-        {NULL, 0}};
-    for (int i = 0; map[i].name; i++) {
-        if (strcmp(name, map[i].name) == 0) {
-            *out = map[i].id;
-            return 1;
-        }
-    }
-    return 0;
 }
 
 /* Swizzle char → index */
@@ -1850,7 +1801,6 @@ static void mp_parse_stmt(MslParser *p) {
 
         /* Save continue expression for later */
         /* For now, parse and skip the increment */
-        uint32_t saved_block = p->block_id;
         p->block_id = cont;
         if (!mp_check(p, MTK_RPAREN)) {
             MslVal inc_lhs = mp_parse_postfix(p);
@@ -2206,12 +2156,10 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
 
         /* Check for pointer (*) or reference (&) */
         bool is_ptr = false;
-        bool is_ref = false;
         if (mp_check(p, MTK_STAR)) {
             is_ptr = true;
             mp_next(p);
         } else if (mp_check(p, MTK_AMP)) {
-            is_ref = true;
             mp_next(p);
         }
 

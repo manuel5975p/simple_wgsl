@@ -930,9 +930,9 @@ WgslRaiseResult wgsl_raise_parse(WgslRaiser *r) {
                         }
                         PendingWorkgroupSize *wg = &r->pending_wgs[r->pending_wg_count++];
                         wg->func_id = fn_id;
-                        wg->workgroup_size[0] = operands[2];
-                        wg->workgroup_size[1] = operands[3];
-                        wg->workgroup_size[2] = operands[4];
+                        wg->workgroup_size[0] = (int)operands[2];
+                        wg->workgroup_size[1] = (int)operands[3];
+                        wg->workgroup_size[2] = (int)operands[4];
                     }
                 }
                 break;
@@ -1174,7 +1174,6 @@ static const char *type_to_wgsl_buf(WgslRaiser *r, uint32_t type_id, char *buf, 
             break;
         case SPV_TYPE_FLOAT:
             if (info->type_info.float_type.width == 16) result = "f16";
-            else if (info->type_info.float_type.width == 32) result = "f32";
             else result = "f32";
             break;
         case SPV_TYPE_VECTOR: {
@@ -1251,9 +1250,7 @@ static const char *type_to_wgsl_buf(WgslRaiser *r, uint32_t type_id, char *buf, 
         }
         case SPV_TYPE_IMAGE: {
             SpvDim dim = info->type_info.image.dim;
-            if (dim == SpvDim2D && info->type_info.image.sampled == 1)
-                result = "texture_2d<f32>";
-            else if (dim == SpvDim2D)
+            if (dim == SpvDim2D && info->type_info.image.sampled != 1)
                 result = "texture_storage_2d<rgba8unorm, write>";
             else
                 result = "texture_2d<f32>";
@@ -1360,9 +1357,9 @@ static void emit_global_var(WgslRaiser *r, uint32_t var_id) {
     uint32_t group = 0, binding = 0, location = 0;
     int has_group = has_decoration(r, var_id, SpvDecorationDescriptorSet, &group);
     int has_binding = has_decoration(r, var_id, SpvDecorationBinding, &binding);
-    int has_location = has_decoration(r, var_id, SpvDecorationLocation, &location);
+    has_decoration(r, var_id, SpvDecorationLocation, &location);
     uint32_t builtin_val = 0;
-    int has_builtin = has_decoration(r, var_id, SpvDecorationBuiltIn, &builtin_val);
+    has_decoration(r, var_id, SpvDecorationBuiltIn, &builtin_val);
 
     if (sc == SpvStorageClassInput || sc == SpvStorageClassOutput) {
         return;
@@ -1394,9 +1391,7 @@ static void emit_global_var(WgslRaiser *r, uint32_t var_id) {
     } else if (sc == SpvStorageClassUniformConstant) {
         if (r->ids[pointee_type].kind == SPV_ID_TYPE) {
             SpvTypeKind tk = r->ids[pointee_type].type_info.kind;
-            if (tk == SPV_TYPE_IMAGE || tk == SPV_TYPE_SAMPLED_IMAGE) {
-                wr_sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
-            } else if (tk == SPV_TYPE_SAMPLER) {
+            if (tk == SPV_TYPE_SAMPLER) {
                 wr_sb_appendf(&r->sb, "var %s: sampler;\n", name);
             } else {
                 wr_sb_appendf(&r->sb, "var %s: %s;\n", name, type_str);
@@ -1503,23 +1498,23 @@ static const char *glsl_extinst_name(uint32_t inst) {
         case GLSLstd450Log2: return "log2";
         case GLSLstd450Sqrt: return "sqrt";
         case GLSLstd450InverseSqrt: return "inverseSqrt";
-        case GLSLstd450FAbs: return "abs";
+        case GLSLstd450FAbs:
         case GLSLstd450SAbs: return "abs";
-        case GLSLstd450FSign: return "sign";
+        case GLSLstd450FSign:
         case GLSLstd450SSign: return "sign";
         case GLSLstd450Floor: return "floor";
         case GLSLstd450Ceil: return "ceil";
         case GLSLstd450Round: return "round";
         case GLSLstd450Trunc: return "trunc";
         case GLSLstd450Fract: return "fract";
-        case GLSLstd450FMin: return "min";
-        case GLSLstd450SMin: return "min";
+        case GLSLstd450FMin:
+        case GLSLstd450SMin:
         case GLSLstd450UMin: return "min";
-        case GLSLstd450FMax: return "max";
-        case GLSLstd450SMax: return "max";
+        case GLSLstd450FMax:
+        case GLSLstd450SMax:
         case GLSLstd450UMax: return "max";
-        case GLSLstd450FClamp: return "clamp";
-        case GLSLstd450SClamp: return "clamp";
+        case GLSLstd450FClamp:
+        case GLSLstd450SClamp:
         case GLSLstd450UClamp: return "clamp";
         case GLSLstd450FMix: return "mix";
         case GLSLstd450Step: return "step";
@@ -1545,7 +1540,7 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
         wr_sb_appendf(out, "_id%u", id);
         return;
     }
-    if (r->emit_depth > 256 || r->emit_calls > 100000 || out->len > 4 * 1024 * 1024) {
+    if (r->emit_depth > 256 || r->emit_calls > 100000 || out->len > (size_t)4 * 1024 * 1024) {
         wr_sb_append(out, "/*deep*/0");
         return;
     }
@@ -1895,23 +1890,7 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
                     }
                     break;
                 case SpvOpVectorTimesScalar:
-                    if (op_count >= 2) {
-                        wr_sb_append(out, "(");
-                        emit_expression(r, ops[0], out);
-                        wr_sb_append(out, " * ");
-                        emit_expression(r, ops[1], out);
-                        wr_sb_append(out, ")");
-                    }
-                    break;
                 case SpvOpMatrixTimesScalar:
-                    if (op_count >= 2) {
-                        wr_sb_append(out, "(");
-                        emit_expression(r, ops[0], out);
-                        wr_sb_append(out, " * ");
-                        emit_expression(r, ops[1], out);
-                        wr_sb_append(out, ")");
-                    }
-                    break;
                 case SpvOpVectorTimesMatrix:
                 case SpvOpMatrixTimesVector:
                 case SpvOpMatrixTimesMatrix:
@@ -1993,7 +1972,7 @@ static void wr_emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
     wgsl_compiler_assert(r != NULL, "wr_emit_block: r is NULL");
     wgsl_compiler_assert(fn != NULL, "wr_emit_block: fn is NULL");
     wgsl_compiler_assert(blk != NULL, "wr_emit_block: blk is NULL");
-    if (blk->emitted || r->sb.len > 4 * 1024 * 1024) return;
+    if (blk->emitted || r->sb.len > (size_t)4 * 1024 * 1024) return;
     blk->emitted = 1;
 
     // Handle loop header - emit as while loop
@@ -2276,6 +2255,7 @@ static void wr_emit_function(WgslRaiser *r, SpvFunction *fn) {
 }
 
 const char *wgsl_raise_emit(WgslRaiser *r, const WgslRaiseOptions *options) {
+    (void)options;
     if (!r) return NULL;
 
     sb_free(&r->sb);

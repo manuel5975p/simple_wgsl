@@ -471,9 +471,7 @@ static Token lx_next(Lexer *L) {
         if (c == '0' && (L->src[L->pos + 1] == 'x' || L->src[L->pos + 1] == 'X')) {
             lx_advance(L); /* '0' */
             lx_advance(L); /* 'x' or 'X' */
-            int have_hex = 0;
             while (is_hex_digit_or_us(L->src[L->pos])) {
-                if (L->src[L->pos] != '_') have_hex = 1;
                 lx_advance(L);
             }
             /* optional integer suffix: i/I for signed, u/U for unsigned */
@@ -816,12 +814,6 @@ static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
             second = wgsl_strndup(secondTok.start, (size_t)secondTok.length);
         }
         expect(P, TOK_GT, "expected '>'");
-        int first_access = (!strcmp(first, "read") || !strcmp(first, "write") ||
-                            !strcmp(first, "read_write"));
-        int second_access =
-            second ? (!strcmp(second, "read") || !strcmp(second, "write") ||
-                         !strcmp(second, "read_write"))
-                   : 0;
         int first_addr =
             (!strcmp(first, "uniform") || !strcmp(first, "storage") ||
                 !strcmp(first, "workgroup") || !strcmp(first, "private"));
@@ -830,11 +822,7 @@ static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
                 ? (!strcmp(second, "uniform") || !strcmp(second, "storage") ||
                       !strcmp(second, "workgroup") || !strcmp(second, "private"))
                 : 0;
-        if (first_addr) {
-            addr_space = first;
-            if (second)
-                NODE_FREE(second);
-        } else if (second && second_addr) {
+        if (second && second_addr && !first_addr) {
             addr_space = second;
             NODE_FREE(first);
         } else {

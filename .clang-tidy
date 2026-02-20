@@ -3,10 +3,11 @@ Checks: >
   bugprone-*,
   performance-*,
   -bugprone-easily-swappable-parameters,
-  -bugprone-narrowing-conversions,
-  -bugprone-implicit-widening-of-multiplication-result,
-  -bugprone-assignment-in-if-condition,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  -bugprone-suspicious-realloc-usage,
+  -bugprone-suspicious-memory-comparison,
   -performance-no-int-to-ptr,
+  -performance-enum-size,
 
 WarningsAsErrors: ''
 

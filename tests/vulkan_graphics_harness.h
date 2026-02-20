@@ -131,9 +131,9 @@ class Image {
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkImageView view_ = VK_NULL_HANDLE;
-    VkFormat format_;
     uint32_t width_ = 0;
     uint32_t height_ = 0;
+    VkFormat format_;
 
     void cleanup();
 };

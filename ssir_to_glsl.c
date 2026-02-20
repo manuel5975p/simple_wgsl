@@ -217,7 +217,7 @@ static const char *bfunc_to_glsl(SsirBuiltinId id) {
         case SSIR_BUILTIN_TAN: return "tan";
         case SSIR_BUILTIN_ASIN: return "asin";
         case SSIR_BUILTIN_ACOS: return "acos";
-        case SSIR_BUILTIN_ATAN: return "atan";
+        case SSIR_BUILTIN_ATAN:
         case SSIR_BUILTIN_ATAN2: return "atan";
         case SSIR_BUILTIN_SINH: return "sinh";
         case SSIR_BUILTIN_COSH: return "cosh";
@@ -321,7 +321,7 @@ static void glsl_emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
         case SSIR_TYPE_BOOL: gb_append(b, "bool"); break;
         case SSIR_TYPE_I32: gb_append(b, "int"); break;
         case SSIR_TYPE_U32: gb_append(b, "uint"); break;
-        case SSIR_TYPE_F32: gb_append(b, "float"); break;
+        case SSIR_TYPE_F32:
         case SSIR_TYPE_F16: gb_append(b, "float"); break;
         case SSIR_TYPE_F64: gb_append(b, "double"); break;
         case SSIR_TYPE_I8: gb_append(b, "int"); break;
@@ -1036,15 +1036,6 @@ static void glsl_emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
             break;
 
         case SSIR_OP_TEX_GATHER:
-            gb_append(b, "textureGather(");
-            glsl_emit_expr(c, inst->operands[0], b);
-            gb_append(b, ", ");
-            glsl_emit_expr(c, inst->operands[2], b);
-            gb_append(b, ", ");
-            glsl_emit_expr(c, inst->operands[3], b);
-            gb_append(b, ")");
-            break;
-
         case SSIR_OP_TEX_GATHER_CMP:
             gb_append(b, "textureGather(");
             glsl_emit_expr(c, inst->operands[0], b);
@@ -1109,9 +1100,6 @@ static void glsl_emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
             break;
 
         case SSIR_OP_PHI:
-            gb_append(b, glsl_get_name(c, id));
-            break;
-
         default:
             gb_append(b, glsl_get_name(c, id));
             break;
@@ -1131,6 +1119,7 @@ static void glsl_emit_block(GlslCtx *c, SsirBlock *blk, SsirFunction *fn, GlslBl
 
 static void glsl_emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
     SsirFunction *fn, GlslBlkState *bs) {
+    (void)blk;
     switch (inst->op) {
         case SSIR_OP_STORE:
             gb_indent(&c->sb);
