@@ -151,7 +151,7 @@ static void mctx_free(MslCtx *c) {
     mb_free(&c->sb);
 }
 
-static const char *get_name(MslCtx *c, uint32_t id) {
+static const char *msl_get_name(MslCtx *c, uint32_t id) {
     if (id < c->id_names_cap && c->id_names[id]) return c->id_names[id];
     static char buf[32];
     snprintf(buf, sizeof(buf), "_v%u", id);
@@ -174,7 +174,7 @@ static int is_msl_reserved(const char *n) {
     return 0;
 }
 
-static void set_name(MslCtx *c, uint32_t id, const char *n) {
+static void msl_set_name(MslCtx *c, uint32_t id, const char *n) {
     if (id >= c->id_names_cap) return;
     STM_FREE(c->id_names[id]);
     if (n && is_msl_reserved(n)) {
@@ -340,9 +340,9 @@ static const char *bfunc_to_msl(SsirBuiltinId id) {
  * MSL Type Emission
  * ============================================================================ */
 
-static void emit_type(MslCtx *c, uint32_t tid, MslBuf *b);
+static void msl_emit_type(MslCtx *c, uint32_t tid, MslBuf *b);
 
-static void emit_type(MslCtx *c, uint32_t tid, MslBuf *b) {
+static void msl_emit_type(MslCtx *c, uint32_t tid, MslBuf *b) {
     SsirType *t = ssir_get_type((SsirModule *)c->mod, tid);
     if (!t) {
         mb_appendf(b, "_type%u", tid);
@@ -393,13 +393,13 @@ static void emit_type(MslCtx *c, uint32_t tid, MslBuf *b) {
 
         case SSIR_TYPE_ARRAY:
             mb_append(b, "array<");
-            emit_type(c, t->array.elem, b);
+            msl_emit_type(c, t->array.elem, b);
             mb_appendf(b, ", %u>", t->array.length);
             break;
 
         case SSIR_TYPE_RUNTIME_ARRAY:
             /* Runtime arrays in MSL are handled via pointer parameters */
-            emit_type(c, t->runtime_array.elem, b);
+            msl_emit_type(c, t->runtime_array.elem, b);
             break;
 
         case SSIR_TYPE_STRUCT:
@@ -407,7 +407,7 @@ static void emit_type(MslCtx *c, uint32_t tid, MslBuf *b) {
             break;
 
         case SSIR_TYPE_PTR:
-            emit_type(c, t->ptr.pointee, b);
+            msl_emit_type(c, t->ptr.pointee, b);
             break;
 
         case SSIR_TYPE_SAMPLER:
@@ -475,14 +475,14 @@ static void emit_type(MslCtx *c, uint32_t tid, MslBuf *b) {
 }
 
 /* Emit MSL declaration: type name */
-static void emit_decl(MslCtx *c, uint32_t tid, const char *name, MslBuf *b) {
+static void msl_emit_decl(MslCtx *c, uint32_t tid, const char *name, MslBuf *b) {
     SsirType *t = ssir_get_type((SsirModule *)c->mod, tid);
     if (t && t->kind == SSIR_TYPE_ARRAY) {
         mb_append(b, "array<");
-        emit_type(c, t->array.elem, b);
+        msl_emit_type(c, t->array.elem, b);
         mb_appendf(b, ", %u> %s", t->array.length, name);
     } else {
-        emit_type(c, tid, b);
+        msl_emit_type(c, tid, b);
         mb_appendf(b, " %s", name);
     }
 }
@@ -491,9 +491,9 @@ static void emit_decl(MslCtx *c, uint32_t tid, const char *name, MslBuf *b) {
  * Constant Emission
  * ============================================================================ */
 
-static void emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b);
+static void msl_emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b);
 
-static void emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b) {
+static void msl_emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b) {
     switch (k->kind) {
         case SSIR_CONST_BOOL:
             mb_append(b, k->bool_val ? "true" : "false");
@@ -547,19 +547,19 @@ static void emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b) {
             mb_appendf(b, "%lluUL", (unsigned long long)k->u64_val);
             break;
         case SSIR_CONST_COMPOSITE: {
-            emit_type(c, k->type, b);
+            msl_emit_type(c, k->type, b);
             mb_append(b, "(");
             for (uint32_t i = 0; i < k->composite.count; i++) {
                 if (i > 0) mb_append(b, ", ");
                 SsirConstant *elem = ssir_get_constant((SsirModule *)c->mod, k->composite.components[i]);
-                if (elem) emit_constant(c, elem, b);
+                if (elem) msl_emit_constant(c, elem, b);
                 else mb_appendf(b, "_const%u", k->composite.components[i]);
             }
             mb_append(b, ")");
             break;
         }
         case SSIR_CONST_NULL:
-            emit_type(c, k->type, b);
+            msl_emit_type(c, k->type, b);
             mb_append(b, "(0)");
             break;
         default:
@@ -572,14 +572,14 @@ static void emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b) {
  * Expression Emission
  * ============================================================================ */
 
-static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b);
+static void msl_emit_expr(MslCtx *c, uint32_t id, MslBuf *b);
 
-static SsirInst *find_inst(MslCtx *c, uint32_t id) {
+static SsirInst *msl_find_inst(MslCtx *c, uint32_t id) {
     if (c->inst_map && id < c->inst_map_cap) return c->inst_map[id];
     return NULL;
 }
 
-static SsirFunctionParam *find_param(MslCtx *c, uint32_t id) {
+static SsirFunctionParam *msl_find_param(MslCtx *c, uint32_t id) {
     if (!c->current_func) return NULL;
     for (uint32_t i = 0; i < c->current_func->param_count; i++) {
         if (c->current_func->params[i].id == id) return &c->current_func->params[i];
@@ -587,7 +587,7 @@ static SsirFunctionParam *find_param(MslCtx *c, uint32_t id) {
     return NULL;
 }
 
-static SsirLocalVar *find_local(MslCtx *c, uint32_t id) {
+static SsirLocalVar *msl_find_local(MslCtx *c, uint32_t id) {
     if (!c->current_func) return NULL;
     for (uint32_t i = 0; i < c->current_func->local_count; i++) {
         if (c->current_func->locals[i].id == id) return &c->current_func->locals[i];
@@ -611,11 +611,11 @@ static SsirTextureDim resolve_texture_dim(MslCtx *c, uint32_t id) {
         }
     }
     /* Check if it's a LOAD instruction result - follow to the pointer source */
-    SsirInst *inst = find_inst(c, id);
+    SsirInst *inst = msl_find_inst(c, id);
     if (inst && inst->op == SSIR_OP_LOAD)
         return resolve_texture_dim(c, inst->operands[0]);
     /* Check function parameters */
-    SsirFunctionParam *p = find_param(c, id);
+    SsirFunctionParam *p = msl_find_param(c, id);
     if (p) {
         SsirType *tt = ssir_get_type(mod, p->type);
         if (tt) {
@@ -627,26 +627,26 @@ static SsirTextureDim resolve_texture_dim(MslCtx *c, uint32_t id) {
     return SSIR_TEX_2D; /* fallback */
 }
 
-static void emit_binop(MslCtx *c, SsirInst *inst, const char *op, MslBuf *b) {
+static void msl_emit_binop(MslCtx *c, SsirInst *inst, const char *op, MslBuf *b) {
     mb_append(b, "(");
-    emit_expr(c, inst->operands[0], b);
+    msl_emit_expr(c, inst->operands[0], b);
     mb_append(b, op);
-    emit_expr(c, inst->operands[1], b);
+    msl_emit_expr(c, inst->operands[1], b);
     mb_append(b, ")");
 }
 
-static void emit_unop(MslCtx *c, SsirInst *inst, const char *op, MslBuf *b) {
+static void msl_emit_unop(MslCtx *c, SsirInst *inst, const char *op, MslBuf *b) {
     mb_append(b, "(");
     mb_append(b, op);
-    emit_expr(c, inst->operands[0], b);
+    msl_emit_expr(c, inst->operands[0], b);
     mb_append(b, ")");
 }
 
-static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
+static void msl_emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
     /* Constant? */
     SsirConstant *k = ssir_get_constant((SsirModule *)c->mod, id);
     if (k) {
-        emit_constant(c, k, b);
+        msl_emit_constant(c, k, b);
         return;
     }
 
@@ -657,38 +657,38 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
         if (c->in_entry_point) {
             const MslInterfaceField *of = find_output_field(c, id);
             if (of) {
-                mb_appendf(b, "_out.%s", get_name(c, id));
+                mb_appendf(b, "_out.%s", msl_get_name(c, id));
                 return;
             }
             /* Check if input field in fragment stage_in -> redirect to _in.name */
             if (c->has_stage_in) {
                 const MslInterfaceField *inf = find_input_field(c, id);
                 if (inf) {
-                    mb_appendf(b, "_in.%s", get_name(c, id));
+                    mb_appendf(b, "_in.%s", msl_get_name(c, id));
                     return;
                 }
             }
         }
-        mb_append(b, get_name(c, id));
+        mb_append(b, msl_get_name(c, id));
         return;
     }
 
     /* Param? */
-    if (find_param(c, id)) {
-        mb_append(b, get_name(c, id));
+    if (msl_find_param(c, id)) {
+        mb_append(b, msl_get_name(c, id));
         return;
     }
 
     /* Local? */
-    if (find_local(c, id)) {
-        mb_append(b, get_name(c, id));
+    if (msl_find_local(c, id)) {
+        mb_append(b, msl_get_name(c, id));
         return;
     }
 
     /* Instruction? */
-    SsirInst *inst = find_inst(c, id);
+    SsirInst *inst = msl_find_inst(c, id);
     if (!inst) {
-        mb_append(b, get_name(c, id));
+        mb_append(b, msl_get_name(c, id));
         return;
     }
 
@@ -700,42 +700,42 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
 
     switch (inst->op) {
         /* Arithmetic */
-        case SSIR_OP_ADD: emit_binop(c, inst, " + ", b); break;
-        case SSIR_OP_SUB: emit_binop(c, inst, " - ", b); break;
-        case SSIR_OP_MUL: emit_binop(c, inst, " * ", b); break;
-        case SSIR_OP_DIV: emit_binop(c, inst, " / ", b); break;
-        case SSIR_OP_MOD: emit_binop(c, inst, " % ", b); break;
+        case SSIR_OP_ADD: msl_emit_binop(c, inst, " + ", b); break;
+        case SSIR_OP_SUB: msl_emit_binop(c, inst, " - ", b); break;
+        case SSIR_OP_MUL: msl_emit_binop(c, inst, " * ", b); break;
+        case SSIR_OP_DIV: msl_emit_binop(c, inst, " / ", b); break;
+        case SSIR_OP_MOD: msl_emit_binop(c, inst, " % ", b); break;
         case SSIR_OP_REM: {
             /* C-style remainder: fmod for float, % for int */
             SsirType *rem_t = ssir_get_type((SsirModule *)c->mod, inst->type);
             if (rem_t && ssir_type_is_float(rem_t)) {
                 mb_append(b, "fmod(");
-                emit_expr(c, inst->operands[0], b);
+                msl_emit_expr(c, inst->operands[0], b);
                 mb_append(b, ", ");
-                emit_expr(c, inst->operands[1], b);
+                msl_emit_expr(c, inst->operands[1], b);
                 mb_append(b, ")");
             } else {
-                emit_binop(c, inst, " % ", b);
+                msl_emit_binop(c, inst, " % ", b);
             }
             break;
         }
-        case SSIR_OP_NEG: emit_unop(c, inst, "-", b); break;
+        case SSIR_OP_NEG: msl_emit_unop(c, inst, "-", b); break;
 
         /* Matrix */
-        case SSIR_OP_MAT_MUL: emit_binop(c, inst, " * ", b); break;
+        case SSIR_OP_MAT_MUL: msl_emit_binop(c, inst, " * ", b); break;
         case SSIR_OP_MAT_TRANSPOSE:
             mb_append(b, "transpose(");
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ")");
             break;
 
         /* Bitwise */
-        case SSIR_OP_BIT_AND: emit_binop(c, inst, " & ", b); break;
-        case SSIR_OP_BIT_OR: emit_binop(c, inst, " | ", b); break;
-        case SSIR_OP_BIT_XOR: emit_binop(c, inst, " ^ ", b); break;
-        case SSIR_OP_BIT_NOT: emit_unop(c, inst, "~", b); break;
-        case SSIR_OP_SHL: emit_binop(c, inst, " << ", b); break;
-        case SSIR_OP_SHR: emit_binop(c, inst, " >> ", b); break;
+        case SSIR_OP_BIT_AND: msl_emit_binop(c, inst, " & ", b); break;
+        case SSIR_OP_BIT_OR: msl_emit_binop(c, inst, " | ", b); break;
+        case SSIR_OP_BIT_XOR: msl_emit_binop(c, inst, " ^ ", b); break;
+        case SSIR_OP_BIT_NOT: msl_emit_unop(c, inst, "~", b); break;
+        case SSIR_OP_SHL: msl_emit_binop(c, inst, " << ", b); break;
+        case SSIR_OP_SHR: msl_emit_binop(c, inst, " >> ", b); break;
         case SSIR_OP_SHR_LOGICAL: {
             /* Logical shift right: must cast signed types to unsigned */
             SsirType *shr_type = ssir_get_type((SsirModule *)c->mod, inst->type);
@@ -744,43 +744,43 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
                                                   ssir_type_is_signed(ssir_get_type((SsirModule *)c->mod, shr_type->vec.elem))));
             if (shr_signed) {
                 mb_append(b, "static_cast<");
-                emit_type(c, inst->type, b);
+                msl_emit_type(c, inst->type, b);
                 mb_append(b, ">(static_cast<");
                 /* emit unsigned equivalent */
                 if (shr_type->kind == SSIR_TYPE_VEC) {
                     uint32_t uvec = ssir_type_vec((SsirModule *)c->mod,
                         ssir_type_u32((SsirModule *)c->mod), shr_type->vec.size);
-                    emit_type(c, uvec, b);
+                    msl_emit_type(c, uvec, b);
                 } else {
                     mb_append(b, "uint");
                 }
                 mb_append(b, ">(");
-                emit_expr(c, inst->operands[0], b);
+                msl_emit_expr(c, inst->operands[0], b);
                 mb_append(b, ") >> ");
-                emit_expr(c, inst->operands[1], b);
+                msl_emit_expr(c, inst->operands[1], b);
                 mb_append(b, ")");
             } else {
-                emit_binop(c, inst, " >> ", b);
+                msl_emit_binop(c, inst, " >> ", b);
             }
             break;
         }
 
         /* Comparison */
-        case SSIR_OP_EQ: emit_binop(c, inst, " == ", b); break;
-        case SSIR_OP_NE: emit_binop(c, inst, " != ", b); break;
-        case SSIR_OP_LT: emit_binop(c, inst, " < ", b); break;
-        case SSIR_OP_LE: emit_binop(c, inst, " <= ", b); break;
-        case SSIR_OP_GT: emit_binop(c, inst, " > ", b); break;
-        case SSIR_OP_GE: emit_binop(c, inst, " >= ", b); break;
+        case SSIR_OP_EQ: msl_emit_binop(c, inst, " == ", b); break;
+        case SSIR_OP_NE: msl_emit_binop(c, inst, " != ", b); break;
+        case SSIR_OP_LT: msl_emit_binop(c, inst, " < ", b); break;
+        case SSIR_OP_LE: msl_emit_binop(c, inst, " <= ", b); break;
+        case SSIR_OP_GT: msl_emit_binop(c, inst, " > ", b); break;
+        case SSIR_OP_GE: msl_emit_binop(c, inst, " >= ", b); break;
 
         /* Logical */
-        case SSIR_OP_AND: emit_binop(c, inst, " && ", b); break;
-        case SSIR_OP_OR: emit_binop(c, inst, " || ", b); break;
-        case SSIR_OP_NOT: emit_unop(c, inst, "!", b); break;
+        case SSIR_OP_AND: msl_emit_binop(c, inst, " && ", b); break;
+        case SSIR_OP_OR: msl_emit_binop(c, inst, " || ", b); break;
+        case SSIR_OP_NOT: msl_emit_unop(c, inst, "!", b); break;
 
         /* Composite */
         case SSIR_OP_CONSTRUCT: {
-            emit_type(c, inst->type, b);
+            msl_emit_type(c, inst->type, b);
             mb_append(b, "(");
             uint32_t cnt = inst->operand_count;
             const uint32_t *comps = inst->operands;
@@ -790,14 +790,14 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
             }
             for (uint32_t i = 0; i < cnt; i++) {
                 if (i > 0) mb_append(b, ", ");
-                emit_expr(c, comps[i], b);
+                msl_emit_expr(c, comps[i], b);
             }
             mb_append(b, ")");
             break;
         }
 
         case SSIR_OP_EXTRACT: {
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             uint32_t idx = inst->operands[1];
             if (idx < 4) {
                 const char sw[] = "xyzw";
@@ -810,20 +810,20 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
 
         case SSIR_OP_INSERT:
         case SSIR_OP_INSERT_DYN:
-            mb_append(b, get_name(c, id));
+            mb_append(b, msl_get_name(c, id));
             break;
 
         case SSIR_OP_SHUFFLE: {
-            emit_type(c, inst->type, b);
+            msl_emit_type(c, inst->type, b);
             mb_append(b, "(");
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 if (i > 0) mb_append(b, ", ");
                 uint32_t si = inst->extra[i];
                 uint32_t v1_sz = 4;
                 if (si < v1_sz) {
-                    emit_expr(c, inst->operands[0], b);
+                    msl_emit_expr(c, inst->operands[0], b);
                 } else {
-                    emit_expr(c, inst->operands[1], b);
+                    msl_emit_expr(c, inst->operands[1], b);
                     si -= v1_sz;
                 }
                 if (si < 4) {
@@ -836,27 +836,27 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
         }
 
         case SSIR_OP_SPLAT:
-            emit_type(c, inst->type, b);
+            msl_emit_type(c, inst->type, b);
             mb_append(b, "(");
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_EXTRACT_DYN:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, "[");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, "]");
             break;
 
         /* Memory */
         case SSIR_OP_LOAD:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             break;
 
         case SSIR_OP_ACCESS: {
             SsirModule *amod = (SsirModule *)c->mod;
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             /* Trace the struct type through the access chain for member names */
             uint32_t cur_type_id = 0;
             {
@@ -867,7 +867,7 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
                         cur_type_id = pt->ptr.pointee;
                 }
                 if (!cur_type_id) {
-                    SsirInst *ai = find_inst(c, inst->operands[0]);
+                    SsirInst *ai = msl_find_inst(c, inst->operands[0]);
                     if (ai && ai->op == SSIR_OP_LOAD) {
                         SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
                         if (lg) {
@@ -899,7 +899,7 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
                         cur_type_id = 0;
                 } else {
                     mb_append(b, "[");
-                    emit_expr(c, idx, b);
+                    msl_emit_expr(c, idx, b);
                     mb_append(b, "]");
                     /* Advance type through array element */
                     if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
@@ -923,11 +923,11 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
             if (callee && callee->name)
                 mb_append(b, callee->name);
             else
-                mb_append(b, get_name(c, callee_id));
+                mb_append(b, msl_get_name(c, callee_id));
             mb_append(b, "(");
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 if (i > 0) mb_append(b, ", ");
-                emit_expr(c, inst->extra[i], b);
+                msl_emit_expr(c, inst->extra[i], b);
             }
             mb_append(b, ")");
             break;
@@ -947,15 +947,15 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
                                                                              ssir_get_type((SsirModule *)c->mod, rt->vec.elem))));
                 if (is_signed) {
                     mb_append(b, "int(31u - clz(");
-                    emit_expr(c, inst->extra[0], b);
+                    msl_emit_expr(c, inst->extra[0], b);
                     mb_append(b, " >= 0 ? uint(");
-                    emit_expr(c, inst->extra[0], b);
+                    msl_emit_expr(c, inst->extra[0], b);
                     mb_append(b, ") : uint(~(");
-                    emit_expr(c, inst->extra[0], b);
+                    msl_emit_expr(c, inst->extra[0], b);
                     mb_append(b, "))))");
                 } else {
                     mb_append(b, "(31u - clz(");
-                    emit_expr(c, inst->extra[0], b);
+                    msl_emit_expr(c, inst->extra[0], b);
                     mb_append(b, "))");
                 }
                 break;
@@ -964,74 +964,74 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
             /* degrees/radians: MSL doesn't have these, use multiplication */
             if (bid == SSIR_BUILTIN_DEGREES && inst->extra_count > 0) {
                 mb_append(b, "(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, " * 57.2957795131f)");
                 break;
             }
             if (bid == SSIR_BUILTIN_RADIANS && inst->extra_count > 0) {
                 mb_append(b, "(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, " * 0.0174532925199f)");
                 break;
             }
             /* Pack/unpack builtins */
             if (bid == SSIR_BUILTIN_PACK4X8SNORM && inst->extra_count > 0) {
                 mb_append(b, "pack_float_to_snorm4x8(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, ")");
                 break;
             }
             if (bid == SSIR_BUILTIN_PACK4X8UNORM && inst->extra_count > 0) {
                 mb_append(b, "pack_float_to_unorm4x8(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, ")");
                 break;
             }
             if (bid == SSIR_BUILTIN_PACK2X16SNORM && inst->extra_count > 0) {
                 mb_append(b, "pack_float_to_snorm2x16(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, ")");
                 break;
             }
             if (bid == SSIR_BUILTIN_PACK2X16UNORM && inst->extra_count > 0) {
                 mb_append(b, "pack_float_to_unorm2x16(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, ")");
                 break;
             }
             if (bid == SSIR_BUILTIN_PACK2X16FLOAT && inst->extra_count > 0) {
                 mb_append(b, "as_type<uint>(half2(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, "))");
                 break;
             }
             if (bid == SSIR_BUILTIN_UNPACK4X8SNORM && inst->extra_count > 0) {
                 mb_append(b, "unpack_snorm4x8_to_float(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, ")");
                 break;
             }
             if (bid == SSIR_BUILTIN_UNPACK4X8UNORM && inst->extra_count > 0) {
                 mb_append(b, "unpack_unorm4x8_to_float(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, ")");
                 break;
             }
             if (bid == SSIR_BUILTIN_UNPACK2X16SNORM && inst->extra_count > 0) {
                 mb_append(b, "unpack_snorm2x16_to_float(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, ")");
                 break;
             }
             if (bid == SSIR_BUILTIN_UNPACK2X16UNORM && inst->extra_count > 0) {
                 mb_append(b, "unpack_unorm2x16_to_float(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, ")");
                 break;
             }
             if (bid == SSIR_BUILTIN_UNPACK2X16FLOAT && inst->extra_count > 0) {
                 mb_append(b, "float2(as_type<half2>(");
-                emit_expr(c, inst->extra[0], b);
+                msl_emit_expr(c, inst->extra[0], b);
                 mb_append(b, "))");
                 break;
             }
@@ -1041,7 +1041,7 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
             mb_append(b, "(");
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 if (i > 0) mb_append(b, ", ");
-                emit_expr(c, inst->extra[i], b);
+                msl_emit_expr(c, inst->extra[i], b);
             }
             mb_append(b, ")");
             break;
@@ -1050,196 +1050,196 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
         /* Conversion */
         case SSIR_OP_CONVERT:
             mb_append(b, "static_cast<");
-            emit_type(c, inst->type, b);
+            msl_emit_type(c, inst->type, b);
             mb_append(b, ">(");
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_BITCAST:
             mb_append(b, "as_type<");
-            emit_type(c, inst->type, b);
+            msl_emit_type(c, inst->type, b);
             mb_append(b, ">(");
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ")");
             break;
 
         /* Texture - MSL uses member function syntax */
         case SSIR_OP_TEX_SAMPLE:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_BIAS:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", bias(");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, "))");
             break;
 
         case SSIR_OP_TEX_SAMPLE_LEVEL:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", level(");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, "))");
             break;
 
         case SSIR_OP_TEX_SAMPLE_GRAD:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", gradient2d(");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            msl_emit_expr(c, inst->operands[4], b);
             mb_append(b, "))");
             break;
 
         case SSIR_OP_TEX_SAMPLE_CMP:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample_compare(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample_compare(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ", level(");
-            emit_expr(c, inst->operands[4], b);
+            msl_emit_expr(c, inst->operands[4], b);
             mb_append(b, "))");
             break;
 
         case SSIR_OP_TEX_SAMPLE_OFFSET:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", bias(");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, "), ");
-            emit_expr(c, inst->operands[4], b);
+            msl_emit_expr(c, inst->operands[4], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", level(");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, "), ");
-            emit_expr(c, inst->operands[4], b);
+            msl_emit_expr(c, inst->operands[4], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", gradient2d(");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            msl_emit_expr(c, inst->operands[4], b);
             mb_append(b, "), ");
-            emit_expr(c, inst->operands[5], b);
+            msl_emit_expr(c, inst->operands[5], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".sample_compare(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            msl_emit_expr(c, inst->operands[4], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_GATHER:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".gather(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", component::");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_GATHER_CMP:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".gather_compare(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_GATHER_OFFSET:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".gather(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            msl_emit_expr(c, inst->operands[4], b);
             mb_append(b, ", component::");
-            emit_expr(c, inst->operands[3], b);
+            msl_emit_expr(c, inst->operands[3], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_LOAD:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".read(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             if (inst->operands[2] != 0) {
                 mb_append(b, ", ");
-                emit_expr(c, inst->operands[2], b);
+                msl_emit_expr(c, inst->operands[2], b);
             }
             mb_append(b, ")");
             break;
@@ -1248,23 +1248,23 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
             SsirTextureDim dim = resolve_texture_dim(c, inst->operands[0]);
             switch (dim) {
                 case SSIR_TEX_1D:
-                    emit_expr(c, inst->operands[0], b);
+                    msl_emit_expr(c, inst->operands[0], b);
                     mb_append(b, ".get_width()");
                     break;
                 case SSIR_TEX_3D:
                     mb_append(b, "uint3(");
-                    emit_expr(c, inst->operands[0], b);
+                    msl_emit_expr(c, inst->operands[0], b);
                     mb_append(b, ".get_width(), ");
-                    emit_expr(c, inst->operands[0], b);
+                    msl_emit_expr(c, inst->operands[0], b);
                     mb_append(b, ".get_height(), ");
-                    emit_expr(c, inst->operands[0], b);
+                    msl_emit_expr(c, inst->operands[0], b);
                     mb_append(b, ".get_depth())");
                     break;
                 default: /* 2D, cube, 2D array, cube array, MS 2D */
                     mb_append(b, "uint2(");
-                    emit_expr(c, inst->operands[0], b);
+                    msl_emit_expr(c, inst->operands[0], b);
                     mb_append(b, ".get_width(), ");
-                    emit_expr(c, inst->operands[0], b);
+                    msl_emit_expr(c, inst->operands[0], b);
                     mb_append(b, ".get_height())");
                     break;
             }
@@ -1272,30 +1272,30 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
         }
 
         case SSIR_OP_TEX_QUERY_LOD:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".calculate_clamped_lod(");
-            emit_expr(c, inst->operands[1], b);
+            msl_emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            msl_emit_expr(c, inst->operands[2], b);
             mb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_QUERY_LEVELS:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".get_num_mip_levels()");
             break;
 
         case SSIR_OP_TEX_QUERY_SAMPLES:
-            emit_expr(c, inst->operands[0], b);
+            msl_emit_expr(c, inst->operands[0], b);
             mb_append(b, ".get_num_samples()");
             break;
 
         case SSIR_OP_PHI:
-            mb_append(b, get_name(c, id));
+            mb_append(b, msl_get_name(c, id));
             break;
 
         default:
-            mb_append(b, get_name(c, id));
+            mb_append(b, msl_get_name(c, id));
             break;
     }
 }
@@ -1307,28 +1307,28 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
 typedef struct {
     bool *emitted;
     uint32_t count;
-} BlkState;
+} MslBlkState;
 
-static void emit_block(MslCtx *c, SsirBlock *blk, SsirFunction *fn, BlkState *bs);
+static void msl_emit_block(MslCtx *c, SsirBlock *blk, SsirFunction *fn, MslBlkState *bs);
 
-static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
-    SsirFunction *fn, BlkState *bs) {
+static void msl_emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
+    SsirFunction *fn, MslBlkState *bs) {
     switch (inst->op) {
         case SSIR_OP_STORE:
             mb_indent(&c->sb);
-            emit_expr(c, inst->operands[0], &c->sb);
+            msl_emit_expr(c, inst->operands[0], &c->sb);
             mb_append(&c->sb, " = ");
-            emit_expr(c, inst->operands[1], &c->sb);
+            msl_emit_expr(c, inst->operands[1], &c->sb);
             mb_append(&c->sb, ";\n");
             break;
 
         case SSIR_OP_TEX_STORE:
             mb_indent(&c->sb);
-            emit_expr(c, inst->operands[0], &c->sb);
+            msl_emit_expr(c, inst->operands[0], &c->sb);
             mb_append(&c->sb, ".write(");
-            emit_expr(c, inst->operands[2], &c->sb);
+            msl_emit_expr(c, inst->operands[2], &c->sb);
             mb_append(&c->sb, ", ");
-            emit_expr(c, inst->operands[1], &c->sb);
+            msl_emit_expr(c, inst->operands[1], &c->sb);
             mb_append(&c->sb, ");\n");
             break;
 
@@ -1346,7 +1346,7 @@ static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
                 mb_append(&c->sb, "return _out;\n");
             } else {
                 mb_append(&c->sb, "return ");
-                emit_expr(c, inst->operands[0], &c->sb);
+                msl_emit_expr(c, inst->operands[0], &c->sb);
                 mb_append(&c->sb, ";\n");
             }
             break;
@@ -1355,7 +1355,7 @@ static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
             uint32_t target = inst->operands[0];
             for (uint32_t i = 0; i < fn->block_count; i++) {
                 if (fn->blocks[i].id == target && !bs->emitted[i]) {
-                    emit_block(c, &fn->blocks[i], fn, bs);
+                    msl_emit_block(c, &fn->blocks[i], fn, bs);
                     break;
                 }
             }
@@ -1383,13 +1383,13 @@ static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
 
             mb_indent(&c->sb);
             mb_append(&c->sb, "if (");
-            emit_expr(c, cond, &c->sb);
+            msl_emit_expr(c, cond, &c->sb);
             mb_append(&c->sb, ") {\n");
             c->sb.indent++;
 
             for (uint32_t i = 0; i < fn->block_count; i++) {
                 if (fn->blocks[i].id == true_blk && !bs->emitted[i]) {
-                    emit_block(c, &fn->blocks[i], fn, bs);
+                    msl_emit_block(c, &fn->blocks[i], fn, bs);
                     break;
                 }
             }
@@ -1404,7 +1404,7 @@ static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
 
                 for (uint32_t i = 0; i < fn->block_count; i++) {
                     if (fn->blocks[i].id == false_blk && !bs->emitted[i]) {
-                        emit_block(c, &fn->blocks[i], fn, bs);
+                        msl_emit_block(c, &fn->blocks[i], fn, bs);
                         break;
                     }
                 }
@@ -1418,7 +1418,7 @@ static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
             /* Now emit the merge block after the if-else */
             if (merge_idx >= 0) {
                 bs->emitted[merge_idx] = false; /* Un-mark so we can emit it */
-                emit_block(c, &fn->blocks[merge_idx], fn, bs);
+                msl_emit_block(c, &fn->blocks[merge_idx], fn, bs);
             }
             break;
         }
@@ -1440,16 +1440,16 @@ static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
 
         case SSIR_OP_INSERT_DYN:
             mb_indent(&c->sb);
-            emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+            msl_emit_decl(c, inst->type, msl_get_name(c, inst->result), &c->sb);
             mb_append(&c->sb, " = ");
-            emit_expr(c, inst->operands[0], &c->sb);
+            msl_emit_expr(c, inst->operands[0], &c->sb);
             mb_append(&c->sb, ";\n");
             mb_indent(&c->sb);
-            mb_append(&c->sb, get_name(c, inst->result));
+            mb_append(&c->sb, msl_get_name(c, inst->result));
             mb_append(&c->sb, "[");
-            emit_expr(c, inst->operands[2], &c->sb);
+            msl_emit_expr(c, inst->operands[2], &c->sb);
             mb_append(&c->sb, "] = ");
-            emit_expr(c, inst->operands[1], &c->sb);
+            msl_emit_expr(c, inst->operands[1], &c->sb);
             mb_append(&c->sb, ";\n");
             break;
 
@@ -1472,20 +1472,20 @@ static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
                 if (must_materialize || uses > 1) {
                     mb_indent(&c->sb);
                     if (!is_void) {
-                        emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+                        msl_emit_decl(c, inst->type, msl_get_name(c, inst->result), &c->sb);
                         mb_append(&c->sb, " = ");
                     }
-                    emit_expr(c, inst->result, &c->sb);
+                    msl_emit_expr(c, inst->result, &c->sb);
                     mb_append(&c->sb, ";\n");
                     if (!is_void)
-                        set_name(c, inst->result, get_name(c, inst->result));
+                        msl_set_name(c, inst->result, msl_get_name(c, inst->result));
                 }
             }
             break;
     }
 }
 
-static void emit_block(MslCtx *c, SsirBlock *blk, SsirFunction *fn, BlkState *bs) {
+static void msl_emit_block(MslCtx *c, SsirBlock *blk, SsirFunction *fn, MslBlkState *bs) {
     for (uint32_t i = 0; i < fn->block_count; i++) {
         if (fn->blocks[i].id == blk->id) {
             if (bs->emitted[i]) return;
@@ -1495,7 +1495,7 @@ static void emit_block(MslCtx *c, SsirBlock *blk, SsirFunction *fn, BlkState *bs
     }
 
     for (uint32_t i = 0; i < blk->inst_count; i++) {
-        emit_stmt(c, &blk->insts[i], blk, fn, bs);
+        msl_emit_stmt(c, &blk->insts[i], blk, fn, bs);
     }
 }
 
@@ -1515,7 +1515,7 @@ static bool type_is_buffer_pointee(MslCtx *c, uint32_t type_id) {
     return false;
 }
 
-static void emit_struct_def(MslCtx *c, SsirType *t) {
+static void msl_emit_struct_def(MslCtx *c, SsirType *t) {
     if (t->kind != SSIR_TYPE_STRUCT) return;
 
     mb_appendf(&c->sb, "struct %s {\n", t->struc.name ? t->struc.name : "_Struct");
@@ -1532,7 +1532,7 @@ static void emit_struct_def(MslCtx *c, SsirType *t) {
         SsirType *mt = ssir_get_type((SsirModule *)c->mod, t->struc.members[i]);
         if (mt && mt->kind == SSIR_TYPE_RUNTIME_ARRAY) {
             /* Flexible array member */
-            emit_type(c, mt->runtime_array.elem, &c->sb);
+            msl_emit_type(c, mt->runtime_array.elem, &c->sb);
             mb_appendf(&c->sb, " %s[1]", mname);
         } else if (mt && mt->kind == SSIR_TYPE_VEC && mt->vec.size == 3 &&
                    (t->struc.layout_rule == SSIR_LAYOUT_STD430 || t->struc.layout_rule == SSIR_LAYOUT_SCALAR)) {
@@ -1546,7 +1546,7 @@ static void emit_struct_def(MslCtx *c, SsirType *t) {
             }
             mb_appendf(&c->sb, "%s %s", packed, mname);
         } else {
-            emit_decl(c, t->struc.members[i], mname, &c->sb);
+            msl_emit_decl(c, t->struc.members[i], mname, &c->sb);
         }
         mb_append(&c->sb, ";\n");
     }
@@ -1702,7 +1702,7 @@ static void emit_output_struct(MslCtx *c, SsirEntryPoint *ep) {
     for (uint32_t i = 0; i < c->output_field_count; i++) {
         MslInterfaceField *f = &c->output_fields[i];
         mb_append(&c->sb, "    ");
-        emit_decl(c, f->pointee_type, get_name(c, f->global_id), &c->sb);
+        msl_emit_decl(c, f->pointee_type, msl_get_name(c, f->global_id), &c->sb);
 
         if (f->builtin != SSIR_BUILTIN_NONE) {
             const char *attr = builtin_to_msl_attr(f->builtin, true);
@@ -1732,7 +1732,7 @@ static void emit_stage_in_struct(MslCtx *c, SsirEntryPoint *ep) {
     for (uint32_t i = 0; i < c->input_field_count; i++) {
         MslInterfaceField *f = &c->input_fields[i];
         mb_append(&c->sb, "    ");
-        emit_decl(c, f->pointee_type, get_name(c, f->global_id), &c->sb);
+        msl_emit_decl(c, f->pointee_type, msl_get_name(c, f->global_id), &c->sb);
 
         if (f->builtin != SSIR_BUILTIN_NONE) {
             const char *attr = builtin_to_msl_attr(f->builtin, false);
@@ -1766,7 +1766,7 @@ static void emit_stage_in_struct(MslCtx *c, SsirEntryPoint *ep) {
  * Function Emission
  * ============================================================================ */
 
-static SsirEntryPoint *find_ep(MslCtx *c, uint32_t func_id) {
+static SsirEntryPoint *msl_find_ep(MslCtx *c, uint32_t func_id) {
     for (uint32_t i = 0; i < c->mod->entry_point_count; i++) {
         if (c->mod->entry_points[i].function == func_id)
             return &c->mod->entry_points[i];
@@ -1774,8 +1774,8 @@ static SsirEntryPoint *find_ep(MslCtx *c, uint32_t func_id) {
     return NULL;
 }
 
-static void emit_function(MslCtx *c, SsirFunction *fn) {
-    SsirEntryPoint *ep = find_ep(c, fn->id);
+static void msl_emit_function(MslCtx *c, SsirFunction *fn) {
+    SsirEntryPoint *ep = msl_find_ep(c, fn->id);
     int is_entry = (ep != NULL);
 
     if (is_entry) {
@@ -1812,7 +1812,7 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
             mb_append(&c->sb, "void");
         }
 
-        mb_appendf(&c->sb, " %s(\n", msl_entry_name(fn->name ? fn->name : get_name(c, fn->id)));
+        mb_appendf(&c->sb, " %s(\n", msl_entry_name(fn->name ? fn->name : msl_get_name(c, fn->id)));
 
         /* Parameters */
         int first = 1;
@@ -1839,11 +1839,11 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
                 case SSIR_ADDR_UNIFORM:
                     mb_append(&c->sb, "constant ");
                     if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
-                        emit_type(c, pointee_id, &c->sb);
-                        mb_appendf(&c->sb, "& %s", get_name(c, g->id));
+                        msl_emit_type(c, pointee_id, &c->sb);
+                        mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));
                     } else {
-                        emit_type(c, pointee_id, &c->sb);
-                        mb_appendf(&c->sb, "& %s", get_name(c, g->id));
+                        msl_emit_type(c, pointee_id, &c->sb);
+                        mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));
                     }
                     mb_appendf(&c->sb, " [[buffer(%u)]]", g->has_binding ? g->binding : 0);
                     break;
@@ -1851,22 +1851,22 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
                 case SSIR_ADDR_STORAGE:
                     mb_appendf(&c->sb, "%sdevice ", g->non_writable ? "const " : "");
                     if (pointee && pointee->kind == SSIR_TYPE_RUNTIME_ARRAY) {
-                        emit_type(c, pointee->runtime_array.elem, &c->sb);
-                        mb_appendf(&c->sb, "* %s", get_name(c, g->id));
+                        msl_emit_type(c, pointee->runtime_array.elem, &c->sb);
+                        mb_appendf(&c->sb, "* %s", msl_get_name(c, g->id));
                     } else if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
-                        emit_type(c, pointee_id, &c->sb);
-                        mb_appendf(&c->sb, "& %s", get_name(c, g->id));
+                        msl_emit_type(c, pointee_id, &c->sb);
+                        mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));
                     } else {
-                        emit_type(c, pointee_id, &c->sb);
-                        mb_appendf(&c->sb, "& %s", get_name(c, g->id));
+                        msl_emit_type(c, pointee_id, &c->sb);
+                        mb_appendf(&c->sb, "& %s", msl_get_name(c, g->id));
                     }
                     mb_appendf(&c->sb, " [[buffer(%u)]]", g->has_binding ? g->binding : 0);
                     break;
 
                 case SSIR_ADDR_UNIFORM_CONSTANT:
                     /* Textures and samplers */
-                    emit_type(c, pointee_id, &c->sb);
-                    mb_appendf(&c->sb, " %s", get_name(c, g->id));
+                    msl_emit_type(c, pointee_id, &c->sb);
+                    mb_appendf(&c->sb, " %s", msl_get_name(c, g->id));
                     if (pointee && (pointee->kind == SSIR_TYPE_TEXTURE ||
                                        pointee->kind == SSIR_TYPE_TEXTURE_STORAGE ||
                                        pointee->kind == SSIR_TYPE_TEXTURE_DEPTH)) {
@@ -1880,13 +1880,13 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
                 case SSIR_ADDR_WORKGROUP:
                     /* Threadgroup parameters */
                     mb_append(&c->sb, "threadgroup ");
-                    emit_type(c, pointee_id, &c->sb);
-                    mb_appendf(&c->sb, "* %s", get_name(c, g->id));
+                    msl_emit_type(c, pointee_id, &c->sb);
+                    mb_appendf(&c->sb, "* %s", msl_get_name(c, g->id));
                     break;
 
                 default:
-                    emit_type(c, pointee_id, &c->sb);
-                    mb_appendf(&c->sb, " %s", get_name(c, g->id));
+                    msl_emit_type(c, pointee_id, &c->sb);
+                    mb_appendf(&c->sb, " %s", msl_get_name(c, g->id));
                     break;
             }
         }
@@ -1899,7 +1899,7 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
                 first = 0;
                 mb_append(&c->sb, "    ");
 
-                emit_decl(c, f->pointee_type, get_name(c, f->global_id), &c->sb);
+                msl_emit_decl(c, f->pointee_type, msl_get_name(c, f->global_id), &c->sb);
 
                 if (f->builtin != SSIR_BUILTIN_NONE) {
                     const char *attr = builtin_to_msl_attr(f->builtin, false);
@@ -1927,15 +1927,15 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
 
         SsirType *ret = ssir_get_type((SsirModule *)c->mod, fn->return_type);
         if (ret && ret->kind != SSIR_TYPE_VOID) {
-            emit_type(c, fn->return_type, &c->sb);
+            msl_emit_type(c, fn->return_type, &c->sb);
         } else {
             mb_append(&c->sb, "void");
         }
-        mb_appendf(&c->sb, " %s(", fn->name ? fn->name : get_name(c, fn->id));
+        mb_appendf(&c->sb, " %s(", fn->name ? fn->name : msl_get_name(c, fn->id));
 
         for (uint32_t i = 0; i < fn->param_count; i++) {
             if (i > 0) mb_append(&c->sb, ", ");
-            emit_decl(c, fn->params[i].type, get_name(c, fn->params[i].id), &c->sb);
+            msl_emit_decl(c, fn->params[i].type, msl_get_name(c, fn->params[i].id), &c->sb);
         }
         mb_append(&c->sb, ") {\n");
     }
@@ -1981,24 +1981,24 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
         uint32_t pointee = (lpt && lpt->kind == SSIR_TYPE_PTR) ? lpt->ptr.pointee : l->type;
 
         mb_indent(&c->sb);
-        emit_decl(c, pointee, get_name(c, l->id), &c->sb);
+        msl_emit_decl(c, pointee, msl_get_name(c, l->id), &c->sb);
 
         if (l->has_initializer) {
             mb_append(&c->sb, " = ");
             SsirConstant *init = ssir_get_constant((SsirModule *)c->mod, l->initializer);
-            if (init) emit_constant(c, init, &c->sb);
+            if (init) msl_emit_constant(c, init, &c->sb);
         }
         mb_append(&c->sb, ";\n");
     }
 
     /* Function body */
     if (fn->block_count > 0) {
-        BlkState bs;
+        MslBlkState bs;
         bs.count = fn->block_count;
         bs.emitted = (bool *)STM_MALLOC(fn->block_count * sizeof(bool));
         if (bs.emitted) {
             memset(bs.emitted, 0, fn->block_count * sizeof(bool));
-            emit_block(c, &fn->blocks[0], fn, &bs);
+            msl_emit_block(c, &fn->blocks[0], fn, &bs);
             STM_FREE(bs.emitted);
         }
     }
@@ -2014,13 +2014,13 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
  * Name Assignment
  * ============================================================================ */
 
-static SsirAddressSpace global_addr_space(MslCtx *c, SsirGlobalVar *g) {
+static SsirAddressSpace msl_global_addr_space(MslCtx *c, SsirGlobalVar *g) {
     SsirType *pt = ssir_get_type((SsirModule *)c->mod, g->type);
     if (pt && pt->kind == SSIR_TYPE_PTR) return pt->ptr.space;
     return SSIR_ADDR_FUNCTION;
 }
 
-static int global_name_taken(MslCtx *c, const char *name, uint32_t exclude_id) {
+static int msl_global_name_taken(MslCtx *c, const char *name, uint32_t exclude_id) {
     for (uint32_t i = 0; i < c->mod->global_count; i++) {
         SsirGlobalVar *g = &c->mod->globals[i];
         if (g->id == exclude_id || g->builtin != SSIR_BUILTIN_NONE) continue;
@@ -2030,15 +2030,15 @@ static int global_name_taken(MslCtx *c, const char *name, uint32_t exclude_id) {
     return 0;
 }
 
-static void assign_names(MslCtx *c) {
+static void msl_assign_names(MslCtx *c) {
     for (uint32_t i = 0; i < c->mod->global_count; i++) {
         SsirGlobalVar *g = &c->mod->globals[i];
 
         if (g->name && c->opts.preserve_names) {
-            set_name(c, g->id, g->name);
+            msl_set_name(c, g->id, g->name);
             const char *assigned = c->id_names[g->id];
-            if (assigned && global_name_taken(c, assigned, g->id)) {
-                SsirAddressSpace sp = global_addr_space(c, g);
+            if (assigned && msl_global_name_taken(c, assigned, g->id)) {
+                SsirAddressSpace sp = msl_global_addr_space(c, g);
                 const char *prefix = (sp == SSIR_ADDR_OUTPUT) ? "_out_" : "_in_";
                 size_t len = strlen(prefix) + strlen(g->name) + 1;
                 char *tmp = (char *)STM_MALLOC(len);
@@ -2049,34 +2049,34 @@ static void assign_names(MslCtx *c) {
         } else {
             char buf[32];
             snprintf(buf, sizeof(buf), "_g%u", g->id);
-            set_name(c, g->id, buf);
+            msl_set_name(c, g->id, buf);
         }
     }
 
     for (uint32_t i = 0; i < c->mod->function_count; i++) {
         SsirFunction *fn = &c->mod->functions[i];
         if (fn->name && c->opts.preserve_names)
-            set_name(c, fn->id, fn->name);
+            msl_set_name(c, fn->id, fn->name);
 
         for (uint32_t j = 0; j < fn->param_count; j++) {
             SsirFunctionParam *p = &fn->params[j];
             if (p->name && c->opts.preserve_names) {
-                set_name(c, p->id, p->name);
+                msl_set_name(c, p->id, p->name);
             } else {
                 char buf[32];
                 snprintf(buf, sizeof(buf), "_p%u", p->id);
-                set_name(c, p->id, buf);
+                msl_set_name(c, p->id, buf);
             }
         }
 
         for (uint32_t j = 0; j < fn->local_count; j++) {
             SsirLocalVar *l = &fn->locals[j];
             if (l->name && c->opts.preserve_names) {
-                set_name(c, l->id, l->name);
+                msl_set_name(c, l->id, l->name);
             } else {
                 char buf[32];
                 snprintf(buf, sizeof(buf), "_l%u", l->id);
-                set_name(c, l->id, buf);
+                msl_set_name(c, l->id, buf);
             }
         }
     }
@@ -2103,7 +2103,7 @@ SsirToMslResult ssir_to_msl(const SsirModule *mod,
     }
 
     /* Phase 1: Assign names */
-    assign_names(&ctx);
+    msl_assign_names(&ctx);
 
     /* Phase 2: MSL header */
     mb_append(&ctx.sb, "#include <metal_stdlib>\n");
@@ -2112,7 +2112,7 @@ SsirToMslResult ssir_to_msl(const SsirModule *mod,
     /* Phase 3: Emit struct definitions */
     for (uint32_t i = 0; i < mod->type_count; i++) {
         if (mod->types[i].kind == SSIR_TYPE_STRUCT) {
-            emit_struct_def(&ctx, &mod->types[i]);
+            msl_emit_struct_def(&ctx, &mod->types[i]);
         }
     }
 
@@ -2121,15 +2121,15 @@ SsirToMslResult ssir_to_msl(const SsirModule *mod,
         SsirConstant *k = &mod->constants[i];
         if (!k->is_specialization) continue;
         mb_append(&ctx.sb, "constant ");
-        emit_type(&ctx, k->type, &ctx.sb);
+        msl_emit_type(&ctx, k->type, &ctx.sb);
         mb_appendf(&ctx.sb, " %s", k->name ? k->name : "spec_const");
         mb_appendf(&ctx.sb, " [[function_constant(%u)]];\n", k->spec_id);
     }
 
     /* Phase 4: Emit non-entry functions first */
     for (uint32_t i = 0; i < mod->function_count; i++) {
-        if (!find_ep(&ctx, mod->functions[i].id)) {
-            emit_function(&ctx, &mod->functions[i]);
+        if (!msl_find_ep(&ctx, mod->functions[i].id)) {
+            msl_emit_function(&ctx, &mod->functions[i]);
         }
     }
 
@@ -2138,7 +2138,7 @@ SsirToMslResult ssir_to_msl(const SsirModule *mod,
         SsirEntryPoint *ep = &mod->entry_points[i];
         SsirFunction *fn = ssir_get_function((SsirModule *)mod, ep->function);
         if (fn) {
-            emit_function(&ctx, fn);
+            msl_emit_function(&ctx, fn);
         }
     }
 

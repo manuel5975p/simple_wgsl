@@ -806,7 +806,7 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                         int ncap = c->pending_ep_cap ? c->pending_ep_cap * 2 : 4;
                         VtsPendingEntryPoint *tmp = (VtsPendingEntryPoint *)SPIRV_TO_SSIR_REALLOC(c->pending_eps, ncap * sizeof(VtsPendingEntryPoint));
                         if (!tmp) {
-                            SPIRV_TO_SSIR_FREE(name);
+                            if (name) SPIRV_TO_SSIR_FREE(name);
                             break;
                         }
                         c->pending_eps = tmp;

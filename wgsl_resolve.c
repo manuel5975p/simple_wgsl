@@ -1011,6 +1011,11 @@ const WgslResolverEntrypoint *wgsl_resolver_entrypoints(const WgslResolver *r, i
         return NULL;
     }
     WgslResolverEntrypoint *eps = (WgslResolverEntrypoint *)NODE_MALLOC(sizeof(WgslResolverEntrypoint) * n);
+    if (!eps) {
+        if (out_count)
+            *out_count = 0;
+        return NULL;
+    }
     int k = 0;
     for (int i = 0; i < r->fn_info_count; i++)
         if (r->fn_infos[i].is_entry) {

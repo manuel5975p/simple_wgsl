@@ -1428,9 +1428,9 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out);
 
 // r nonnull
 // out nonnull
-static void emit_constant(WgslRaiser *r, uint32_t id, StringBuffer *out) {
-    wgsl_compiler_assert(r != NULL, "emit_constant: r is NULL");
-    wgsl_compiler_assert(out != NULL, "emit_constant: out is NULL");
+static void wr_emit_constant(WgslRaiser *r, uint32_t id, StringBuffer *out) {
+    wgsl_compiler_assert(r != NULL, "wr_emit_constant: r is NULL");
+    wgsl_compiler_assert(out != NULL, "wr_emit_constant: out is NULL");
     if (id >= r->id_bound) {
         wr_sb_append(out, "0");
         return;
@@ -1555,7 +1555,7 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
 
     switch (info->kind) {
         case SPV_ID_CONSTANT:
-            emit_constant(r, id, out);
+            wr_emit_constant(r, id, out);
             break;
         case SPV_ID_VARIABLE:
             wr_sb_append(out, get_id_name(r, id));
@@ -1989,10 +1989,10 @@ static SpvBasicBlock *find_block(SpvFunction *fn, uint32_t label_id) {
 // r nonnull
 // fn nonnull
 // blk nonnull
-static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
-    wgsl_compiler_assert(r != NULL, "emit_block: r is NULL");
-    wgsl_compiler_assert(fn != NULL, "emit_block: fn is NULL");
-    wgsl_compiler_assert(blk != NULL, "emit_block: blk is NULL");
+static void wr_emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
+    wgsl_compiler_assert(r != NULL, "wr_emit_block: r is NULL");
+    wgsl_compiler_assert(fn != NULL, "wr_emit_block: fn is NULL");
+    wgsl_compiler_assert(blk != NULL, "wr_emit_block: blk is NULL");
     if (blk->emitted || r->sb.len > 4 * 1024 * 1024) return;
     blk->emitted = 1;
 
@@ -2031,11 +2031,11 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
 
                             // Emit body block (true branch)
                             SpvBasicBlock *body_blk = find_block(fn, coperands[1]);
-                            if (body_blk) emit_block(r, fn, body_blk);
+                            if (body_blk) wr_emit_block(r, fn, body_blk);
 
                             // Emit continue block (loop increment)
                             SpvBasicBlock *cont_blk = find_block(fn, blk->continue_block);
-                            if (cont_blk) emit_block(r, fn, cont_blk);
+                            if (cont_blk) wr_emit_block(r, fn, cont_blk);
 
                             r->sb.indent--;
                             sb_indent(&r->sb);
@@ -2048,7 +2048,7 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
 
         // Continue to merge block
         SpvBasicBlock *merge_blk = find_block(fn, blk->merge_block);
-        if (merge_blk) emit_block(r, fn, merge_blk);
+        if (merge_blk) wr_emit_block(r, fn, merge_blk);
         return;
     }
 
@@ -2093,7 +2093,7 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
                     r->sb.indent++;
                     for (int j = 0; j < fn->block_count; j++) {
                         if (fn->blocks[j].label_id == operands[1]) {
-                            emit_block(r, fn, &fn->blocks[j]);
+                            wr_emit_block(r, fn, &fn->blocks[j]);
                             break;
                         }
                     }
@@ -2103,7 +2103,7 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
                     r->sb.indent++;
                     for (int j = 0; j < fn->block_count; j++) {
                         if (fn->blocks[j].label_id == operands[2]) {
-                            emit_block(r, fn, &fn->blocks[j]);
+                            wr_emit_block(r, fn, &fn->blocks[j]);
                             break;
                         }
                     }
@@ -2138,9 +2138,9 @@ static void emit_block(WgslRaiser *r, SpvFunction *fn, SpvBasicBlock *blk) {
 
 // r nonnull
 // fn nonnull
-static void emit_function(WgslRaiser *r, SpvFunction *fn) {
-    wgsl_compiler_assert(r != NULL, "emit_function: r is NULL");
-    wgsl_compiler_assert(fn != NULL, "emit_function: fn is NULL");
+static void wr_emit_function(WgslRaiser *r, SpvFunction *fn) {
+    wgsl_compiler_assert(r != NULL, "wr_emit_function: r is NULL");
+    wgsl_compiler_assert(fn != NULL, "wr_emit_function: fn is NULL");
     const char *name = fn->name ? fn->name : "_fn";
 
     if (fn->is_entry_point) {
@@ -2268,7 +2268,7 @@ static void emit_function(WgslRaiser *r, SpvFunction *fn) {
     }
 
     for (int i = 0; i < fn->block_count; i++) {
-        emit_block(r, fn, &fn->blocks[i]);
+        wr_emit_block(r, fn, &fn->blocks[i]);
     }
 
     r->sb.indent--;
@@ -2305,7 +2305,7 @@ const char *wgsl_raise_emit(WgslRaiser *r, const WgslRaiseOptions *options) {
     sb_newline(&r->sb);
 
     for (int i = 0; i < r->function_count; i++) {
-        emit_function(r, &r->functions[i]);
+        wr_emit_function(r, &r->functions[i]);
     }
 
     if (r->output) WGSL_FREE(r->output);

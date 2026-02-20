@@ -126,7 +126,7 @@ static void gctx_free(GlslCtx *c) {
     gb_free(&c->sb);
 }
 
-static const char *get_name(GlslCtx *c, uint32_t id) {
+static const char *glsl_get_name(GlslCtx *c, uint32_t id) {
     if (id < c->id_names_cap && c->id_names[id]) return c->id_names[id];
     static char buf[32];
     snprintf(buf, sizeof(buf), "_v%u", id);
@@ -149,7 +149,7 @@ static int is_glsl_reserved(const char *n) {
     return 0;
 }
 
-static void set_name(GlslCtx *c, uint32_t id, const char *n) {
+static void glsl_set_name(GlslCtx *c, uint32_t id, const char *n) {
     if (id >= c->id_names_cap) return;
     STG_FREE(c->id_names[id]);
     if (n && (is_glsl_reserved(n) || strstr(n, "__"))) {
@@ -307,9 +307,9 @@ static const char *bfunc_to_glsl(SsirBuiltinId id) {
  * GLSL Type Emission
  * ============================================================================ */
 
-static void emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b);
+static void glsl_emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b);
 
-static void emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
+static void glsl_emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
     SsirType *t = ssir_get_type((SsirModule *)c->mod, tid);
     if (!t) {
         gb_appendf(b, "_type%u", tid);
@@ -354,12 +354,12 @@ static void emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
             break;
 
         case SSIR_TYPE_ARRAY:
-            emit_type(c, t->array.elem, b);
+            glsl_emit_type(c, t->array.elem, b);
             gb_appendf(b, "[%u]", t->array.length);
             break;
 
         case SSIR_TYPE_RUNTIME_ARRAY:
-            emit_type(c, t->runtime_array.elem, b);
+            glsl_emit_type(c, t->runtime_array.elem, b);
             gb_append(b, "[]");
             break;
 
@@ -368,7 +368,7 @@ static void emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
             break;
 
         case SSIR_TYPE_PTR:
-            emit_type(c, t->ptr.pointee, b);
+            glsl_emit_type(c, t->ptr.pointee, b);
             break;
 
         case SSIR_TYPE_SAMPLER:
@@ -429,16 +429,16 @@ static void emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
 }
 
 /* Emit declaration with GLSL array syntax: type name[N] */
-static void emit_decl(GlslCtx *c, uint32_t tid, const char *name, GlslBuf *b) {
+static void glsl_emit_decl(GlslCtx *c, uint32_t tid, const char *name, GlslBuf *b) {
     SsirType *t = ssir_get_type((SsirModule *)c->mod, tid);
     if (t && t->kind == SSIR_TYPE_ARRAY) {
-        emit_type(c, t->array.elem, b);
+        glsl_emit_type(c, t->array.elem, b);
         gb_appendf(b, " %s[%u]", name, t->array.length);
     } else if (t && t->kind == SSIR_TYPE_RUNTIME_ARRAY) {
-        emit_type(c, t->runtime_array.elem, b);
+        glsl_emit_type(c, t->runtime_array.elem, b);
         gb_appendf(b, " %s[]", name);
     } else {
-        emit_type(c, tid, b);
+        glsl_emit_type(c, tid, b);
         gb_appendf(b, " %s", name);
     }
 }
@@ -447,9 +447,9 @@ static void emit_decl(GlslCtx *c, uint32_t tid, const char *name, GlslBuf *b) {
  * Constant Emission
  * ============================================================================ */
 
-static void emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b);
+static void glsl_emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b);
 
-static void emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b) {
+static void glsl_emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b) {
     switch (k->kind) {
         case SSIR_CONST_BOOL:
             gb_append(b, k->bool_val ? "true" : "false");
@@ -503,19 +503,19 @@ static void emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b) {
             gb_appendf(b, "%lluul", (unsigned long long)k->u64_val);
             break;
         case SSIR_CONST_COMPOSITE: {
-            emit_type(c, k->type, b);
+            glsl_emit_type(c, k->type, b);
             gb_append(b, "(");
             for (uint32_t i = 0; i < k->composite.count; i++) {
                 if (i > 0) gb_append(b, ", ");
                 SsirConstant *elem = ssir_get_constant((SsirModule *)c->mod, k->composite.components[i]);
-                if (elem) emit_constant(c, elem, b);
+                if (elem) glsl_emit_constant(c, elem, b);
                 else gb_appendf(b, "_const%u", k->composite.components[i]);
             }
             gb_append(b, ")");
             break;
         }
         case SSIR_CONST_NULL:
-            emit_type(c, k->type, b);
+            glsl_emit_type(c, k->type, b);
             gb_append(b, "(0)");
             break;
         default:
@@ -528,14 +528,14 @@ static void emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b) {
  * Expression Emission
  * ============================================================================ */
 
-static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b);
+static void glsl_emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b);
 
-static SsirInst *find_inst(GlslCtx *c, uint32_t id) {
+static SsirInst *glsl_find_inst(GlslCtx *c, uint32_t id) {
     if (c->inst_map && id < c->inst_map_cap) return c->inst_map[id];
     return NULL;
 }
 
-static SsirFunctionParam *find_param(GlslCtx *c, uint32_t id) {
+static SsirFunctionParam *glsl_find_param(GlslCtx *c, uint32_t id) {
     if (!c->current_func) return NULL;
     for (uint32_t i = 0; i < c->current_func->param_count; i++) {
         if (c->current_func->params[i].id == id) return &c->current_func->params[i];
@@ -543,7 +543,7 @@ static SsirFunctionParam *find_param(GlslCtx *c, uint32_t id) {
     return NULL;
 }
 
-static SsirLocalVar *find_local(GlslCtx *c, uint32_t id) {
+static SsirLocalVar *glsl_find_local(GlslCtx *c, uint32_t id) {
     if (!c->current_func) return NULL;
     for (uint32_t i = 0; i < c->current_func->local_count; i++) {
         if (c->current_func->locals[i].id == id) return &c->current_func->locals[i];
@@ -551,26 +551,26 @@ static SsirLocalVar *find_local(GlslCtx *c, uint32_t id) {
     return NULL;
 }
 
-static void emit_binop(GlslCtx *c, SsirInst *inst, const char *op, GlslBuf *b) {
+static void glsl_emit_binop(GlslCtx *c, SsirInst *inst, const char *op, GlslBuf *b) {
     gb_append(b, "(");
-    emit_expr(c, inst->operands[0], b);
+    glsl_emit_expr(c, inst->operands[0], b);
     gb_append(b, op);
-    emit_expr(c, inst->operands[1], b);
+    glsl_emit_expr(c, inst->operands[1], b);
     gb_append(b, ")");
 }
 
-static void emit_unop(GlslCtx *c, SsirInst *inst, const char *op, GlslBuf *b) {
+static void glsl_emit_unop(GlslCtx *c, SsirInst *inst, const char *op, GlslBuf *b) {
     gb_append(b, "(");
     gb_append(b, op);
-    emit_expr(c, inst->operands[0], b);
+    glsl_emit_expr(c, inst->operands[0], b);
     gb_append(b, ")");
 }
 
-static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
+static void glsl_emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
     /* Constant? */
     SsirConstant *k = ssir_get_constant((SsirModule *)c->mod, id);
     if (k) {
-        emit_constant(c, k, b);
+        glsl_emit_constant(c, k, b);
         return;
     }
 
@@ -586,26 +586,26 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
                 return;
             }
         }
-        gb_append(b, get_name(c, id));
+        gb_append(b, glsl_get_name(c, id));
         return;
     }
 
     /* Param? */
-    if (find_param(c, id)) {
-        gb_append(b, get_name(c, id));
+    if (glsl_find_param(c, id)) {
+        gb_append(b, glsl_get_name(c, id));
         return;
     }
 
     /* Local? */
-    if (find_local(c, id)) {
-        gb_append(b, get_name(c, id));
+    if (glsl_find_local(c, id)) {
+        gb_append(b, glsl_get_name(c, id));
         return;
     }
 
     /* Instruction? */
-    SsirInst *inst = find_inst(c, id);
+    SsirInst *inst = glsl_find_inst(c, id);
     if (!inst) {
-        gb_append(b, get_name(c, id));
+        gb_append(b, glsl_get_name(c, id));
         return;
     }
 
@@ -617,87 +617,87 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
 
     switch (inst->op) {
         /* Arithmetic */
-        case SSIR_OP_ADD: emit_binop(c, inst, " + ", b); break;
-        case SSIR_OP_SUB: emit_binop(c, inst, " - ", b); break;
-        case SSIR_OP_MUL: emit_binop(c, inst, " * ", b); break;
-        case SSIR_OP_DIV: emit_binop(c, inst, " / ", b); break;
-        case SSIR_OP_MOD: emit_binop(c, inst, " % ", b); break;
+        case SSIR_OP_ADD: glsl_emit_binop(c, inst, " + ", b); break;
+        case SSIR_OP_SUB: glsl_emit_binop(c, inst, " - ", b); break;
+        case SSIR_OP_MUL: glsl_emit_binop(c, inst, " * ", b); break;
+        case SSIR_OP_DIV: glsl_emit_binop(c, inst, " / ", b); break;
+        case SSIR_OP_MOD: glsl_emit_binop(c, inst, " % ", b); break;
         case SSIR_OP_REM: {
             SsirType *rem_t = ssir_get_type((SsirModule *)c->mod, inst->type);
             if (rem_t && ssir_type_is_float(rem_t)) {
                 gb_append(b, "(");
-                emit_expr(c, inst->operands[0], b);
+                glsl_emit_expr(c, inst->operands[0], b);
                 gb_append(b, " - ");
-                emit_expr(c, inst->operands[1], b);
+                glsl_emit_expr(c, inst->operands[1], b);
                 gb_append(b, " * trunc(");
-                emit_expr(c, inst->operands[0], b);
+                glsl_emit_expr(c, inst->operands[0], b);
                 gb_append(b, " / ");
-                emit_expr(c, inst->operands[1], b);
+                glsl_emit_expr(c, inst->operands[1], b);
                 gb_append(b, "))");
             } else {
-                emit_binop(c, inst, " % ", b);
+                glsl_emit_binop(c, inst, " % ", b);
             }
             break;
         }
-        case SSIR_OP_NEG: emit_unop(c, inst, "-", b); break;
+        case SSIR_OP_NEG: glsl_emit_unop(c, inst, "-", b); break;
 
         /* Matrix */
-        case SSIR_OP_MAT_MUL: emit_binop(c, inst, " * ", b); break;
+        case SSIR_OP_MAT_MUL: glsl_emit_binop(c, inst, " * ", b); break;
         case SSIR_OP_MAT_TRANSPOSE:
             gb_append(b, "transpose(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ")");
             break;
 
         /* Bitwise */
-        case SSIR_OP_BIT_AND: emit_binop(c, inst, " & ", b); break;
-        case SSIR_OP_BIT_OR: emit_binop(c, inst, " | ", b); break;
-        case SSIR_OP_BIT_XOR: emit_binop(c, inst, " ^ ", b); break;
-        case SSIR_OP_BIT_NOT: emit_unop(c, inst, "~", b); break;
-        case SSIR_OP_SHL: emit_binop(c, inst, " << ", b); break;
-        case SSIR_OP_SHR: emit_binop(c, inst, " >> ", b); break;
+        case SSIR_OP_BIT_AND: glsl_emit_binop(c, inst, " & ", b); break;
+        case SSIR_OP_BIT_OR: glsl_emit_binop(c, inst, " | ", b); break;
+        case SSIR_OP_BIT_XOR: glsl_emit_binop(c, inst, " ^ ", b); break;
+        case SSIR_OP_BIT_NOT: glsl_emit_unop(c, inst, "~", b); break;
+        case SSIR_OP_SHL: glsl_emit_binop(c, inst, " << ", b); break;
+        case SSIR_OP_SHR: glsl_emit_binop(c, inst, " >> ", b); break;
         case SSIR_OP_SHR_LOGICAL: {
             SsirType *shr_type = ssir_get_type((SsirModule *)c->mod, inst->type);
             bool shr_signed = shr_type && (ssir_type_is_signed(shr_type) ||
                                               (shr_type->kind == SSIR_TYPE_VEC &&
                                                   ssir_type_is_signed(ssir_get_type((SsirModule *)c->mod, shr_type->vec.elem))));
             if (shr_signed) {
-                emit_type(c, inst->type, b);
+                glsl_emit_type(c, inst->type, b);
                 gb_append(b, "(");
                 if (shr_type->kind == SSIR_TYPE_VEC) {
                     uint32_t uvec = ssir_type_vec((SsirModule *)c->mod,
                         ssir_type_u32((SsirModule *)c->mod), shr_type->vec.size);
-                    emit_type(c, uvec, b);
+                    glsl_emit_type(c, uvec, b);
                 } else {
                     gb_append(b, "uint");
                 }
                 gb_append(b, "(");
-                emit_expr(c, inst->operands[0], b);
+                glsl_emit_expr(c, inst->operands[0], b);
                 gb_append(b, ") >> ");
-                emit_expr(c, inst->operands[1], b);
+                glsl_emit_expr(c, inst->operands[1], b);
                 gb_append(b, ")");
             } else {
-                emit_binop(c, inst, " >> ", b);
+                glsl_emit_binop(c, inst, " >> ", b);
             }
             break;
         }
 
         /* Comparison */
-        case SSIR_OP_EQ: emit_binop(c, inst, " == ", b); break;
-        case SSIR_OP_NE: emit_binop(c, inst, " != ", b); break;
-        case SSIR_OP_LT: emit_binop(c, inst, " < ", b); break;
-        case SSIR_OP_LE: emit_binop(c, inst, " <= ", b); break;
-        case SSIR_OP_GT: emit_binop(c, inst, " > ", b); break;
-        case SSIR_OP_GE: emit_binop(c, inst, " >= ", b); break;
+        case SSIR_OP_EQ: glsl_emit_binop(c, inst, " == ", b); break;
+        case SSIR_OP_NE: glsl_emit_binop(c, inst, " != ", b); break;
+        case SSIR_OP_LT: glsl_emit_binop(c, inst, " < ", b); break;
+        case SSIR_OP_LE: glsl_emit_binop(c, inst, " <= ", b); break;
+        case SSIR_OP_GT: glsl_emit_binop(c, inst, " > ", b); break;
+        case SSIR_OP_GE: glsl_emit_binop(c, inst, " >= ", b); break;
 
         /* Logical */
-        case SSIR_OP_AND: emit_binop(c, inst, " && ", b); break;
-        case SSIR_OP_OR: emit_binop(c, inst, " || ", b); break;
-        case SSIR_OP_NOT: emit_unop(c, inst, "!", b); break;
+        case SSIR_OP_AND: glsl_emit_binop(c, inst, " && ", b); break;
+        case SSIR_OP_OR: glsl_emit_binop(c, inst, " || ", b); break;
+        case SSIR_OP_NOT: glsl_emit_unop(c, inst, "!", b); break;
 
         /* Composite */
         case SSIR_OP_CONSTRUCT: {
-            emit_type(c, inst->type, b);
+            glsl_emit_type(c, inst->type, b);
             gb_append(b, "(");
             uint32_t cnt = inst->operand_count;
             const uint32_t *comps = inst->operands;
@@ -707,14 +707,14 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
             }
             for (uint32_t i = 0; i < cnt; i++) {
                 if (i > 0) gb_append(b, ", ");
-                emit_expr(c, comps[i], b);
+                glsl_emit_expr(c, comps[i], b);
             }
             gb_append(b, ")");
             break;
         }
 
         case SSIR_OP_EXTRACT: {
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             uint32_t idx = inst->operands[1];
             if (idx < 4) {
                 const char sw[] = "xyzw";
@@ -727,20 +727,20 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
 
         case SSIR_OP_INSERT:
         case SSIR_OP_INSERT_DYN:
-            gb_append(b, get_name(c, id));
+            gb_append(b, glsl_get_name(c, id));
             break;
 
         case SSIR_OP_SHUFFLE: {
-            emit_type(c, inst->type, b);
+            glsl_emit_type(c, inst->type, b);
             gb_append(b, "(");
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 if (i > 0) gb_append(b, ", ");
                 uint32_t si = inst->extra[i];
                 uint32_t v1_sz = 4;
                 if (si < v1_sz) {
-                    emit_expr(c, inst->operands[0], b);
+                    glsl_emit_expr(c, inst->operands[0], b);
                 } else {
-                    emit_expr(c, inst->operands[1], b);
+                    glsl_emit_expr(c, inst->operands[1], b);
                     si -= v1_sz;
                 }
                 if (si < 4) {
@@ -753,27 +753,27 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
         }
 
         case SSIR_OP_SPLAT:
-            emit_type(c, inst->type, b);
+            glsl_emit_type(c, inst->type, b);
             gb_append(b, "(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_EXTRACT_DYN:
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, "[");
-            emit_expr(c, inst->operands[1], b);
+            glsl_emit_expr(c, inst->operands[1], b);
             gb_append(b, "]");
             break;
 
         /* Memory */
         case SSIR_OP_LOAD:
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             break;
 
         case SSIR_OP_ACCESS: {
             SsirModule *amod = (SsirModule *)c->mod;
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             /* Trace struct type through the access chain for member names */
             uint32_t cur_type_id = 0;
             {
@@ -784,7 +784,7 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
                         cur_type_id = pt->ptr.pointee;
                 }
                 if (!cur_type_id) {
-                    SsirInst *ai = find_inst(c, inst->operands[0]);
+                    SsirInst *ai = glsl_find_inst(c, inst->operands[0]);
                     if (ai && ai->op == SSIR_OP_LOAD) {
                         SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
                         if (lg) {
@@ -816,7 +816,7 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
                         cur_type_id = 0;
                 } else {
                     gb_append(b, "[");
-                    emit_expr(c, idx, b);
+                    glsl_emit_expr(c, idx, b);
                     gb_append(b, "]");
                     /* Advance type through array element */
                     if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
@@ -829,7 +829,7 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
         }
 
         case SSIR_OP_ARRAY_LEN:
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ".length()");
             break;
 
@@ -840,11 +840,11 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
             if (callee && callee->name)
                 gb_append(b, callee->name);
             else
-                gb_append(b, get_name(c, callee_id));
+                gb_append(b, glsl_get_name(c, callee_id));
             gb_append(b, "(");
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 if (i > 0) gb_append(b, ", ");
-                emit_expr(c, inst->extra[i], b);
+                glsl_emit_expr(c, inst->extra[i], b);
             }
             gb_append(b, ")");
             break;
@@ -855,7 +855,7 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
 
             if (bid == SSIR_BUILTIN_SATURATE) {
                 gb_append(b, "clamp(");
-                if (inst->extra_count > 0) emit_expr(c, inst->extra[0], b);
+                if (inst->extra_count > 0) glsl_emit_expr(c, inst->extra[0], b);
                 gb_append(b, ", 0.0, 1.0)");
                 break;
             }
@@ -864,7 +864,7 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
                 gb_append(b, "mix(");
                 for (uint16_t i = 0; i < inst->extra_count; i++) {
                     if (i > 0) gb_append(b, ", ");
-                    emit_expr(c, inst->extra[i], b);
+                    glsl_emit_expr(c, inst->extra[i], b);
                 }
                 gb_append(b, ")");
                 break;
@@ -875,7 +875,7 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
             gb_append(b, "(");
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 if (i > 0) gb_append(b, ", ");
-                emit_expr(c, inst->extra[i], b);
+                glsl_emit_expr(c, inst->extra[i], b);
             }
             gb_append(b, ")");
             break;
@@ -883,9 +883,9 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
 
         /* Conversion */
         case SSIR_OP_CONVERT:
-            emit_type(c, inst->type, b);
+            glsl_emit_type(c, inst->type, b);
             gb_append(b, "(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ")");
             break;
 
@@ -893,20 +893,20 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
             SsirType *dst = ssir_get_type((SsirModule *)c->mod, inst->type);
             if (dst && dst->kind == SSIR_TYPE_F32) {
                 gb_append(b, "intBitsToFloat(");
-                emit_expr(c, inst->operands[0], b);
+                glsl_emit_expr(c, inst->operands[0], b);
                 gb_append(b, ")");
             } else if (dst && dst->kind == SSIR_TYPE_I32) {
                 gb_append(b, "floatBitsToInt(");
-                emit_expr(c, inst->operands[0], b);
+                glsl_emit_expr(c, inst->operands[0], b);
                 gb_append(b, ")");
             } else if (dst && dst->kind == SSIR_TYPE_U32) {
                 gb_append(b, "floatBitsToUint(");
-                emit_expr(c, inst->operands[0], b);
+                glsl_emit_expr(c, inst->operands[0], b);
                 gb_append(b, ")");
             } else {
-                emit_type(c, inst->type, b);
+                glsl_emit_type(c, inst->type, b);
                 gb_append(b, "(");
-                emit_expr(c, inst->operands[0], b);
+                glsl_emit_expr(c, inst->operands[0], b);
                 gb_append(b, ")");
             }
             break;
@@ -915,205 +915,205 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
         /* Texture */
         case SSIR_OP_TEX_SAMPLE:
             gb_append(b, "texture(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_BIAS:
             gb_append(b, "texture(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_LEVEL:
             gb_append(b, "textureLod(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_GRAD:
             gb_append(b, "textureGrad(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            glsl_emit_expr(c, inst->operands[4], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_CMP:
             gb_append(b, "texture(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", vec3(");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, "))");
             break;
 
         case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
             gb_append(b, "textureLod(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", vec3(");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, "), ");
-            emit_expr(c, inst->operands[4], b);
+            glsl_emit_expr(c, inst->operands[4], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_OFFSET:
             gb_append(b, "textureOffset(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
             gb_append(b, "textureOffset(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            glsl_emit_expr(c, inst->operands[4], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
             gb_append(b, "textureLodOffset(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            glsl_emit_expr(c, inst->operands[4], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
             gb_append(b, "textureGradOffset(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            glsl_emit_expr(c, inst->operands[4], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[5], b);
+            glsl_emit_expr(c, inst->operands[5], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
             gb_append(b, "textureOffset(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", vec3(");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, "), ");
-            emit_expr(c, inst->operands[4], b);
+            glsl_emit_expr(c, inst->operands[4], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_GATHER:
             gb_append(b, "textureGather(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_GATHER_CMP:
             gb_append(b, "textureGather(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_GATHER_OFFSET:
             gb_append(b, "textureGatherOffset(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[4], b);
+            glsl_emit_expr(c, inst->operands[4], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[3], b);
+            glsl_emit_expr(c, inst->operands[3], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_QUERY_LOD:
             gb_append(b, "textureQueryLod(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_QUERY_LEVELS:
             gb_append(b, "textureQueryLevels(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_QUERY_SAMPLES:
             gb_append(b, "textureSamples(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_LOAD:
             gb_append(b, "texelFetch(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[1], b);
+            glsl_emit_expr(c, inst->operands[1], b);
             gb_append(b, ", ");
-            emit_expr(c, inst->operands[2], b);
+            glsl_emit_expr(c, inst->operands[2], b);
             gb_append(b, ")");
             break;
 
         case SSIR_OP_TEX_SIZE:
             gb_append(b, "textureSize(");
-            emit_expr(c, inst->operands[0], b);
+            glsl_emit_expr(c, inst->operands[0], b);
             gb_append(b, ", ");
             if (inst->operand_count > 1 && inst->operands[1] != 0)
-                emit_expr(c, inst->operands[1], b);
+                glsl_emit_expr(c, inst->operands[1], b);
             else
                 gb_append(b, "0");
             gb_append(b, ")");
             break;
 
         case SSIR_OP_PHI:
-            gb_append(b, get_name(c, id));
+            gb_append(b, glsl_get_name(c, id));
             break;
 
         default:
-            gb_append(b, get_name(c, id));
+            gb_append(b, glsl_get_name(c, id));
             break;
     }
 }
@@ -1125,29 +1125,29 @@ static void emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
 typedef struct {
     bool *emitted;
     uint32_t count;
-} BlkState;
+} GlslBlkState;
 
-static void emit_block(GlslCtx *c, SsirBlock *blk, SsirFunction *fn, BlkState *bs);
+static void glsl_emit_block(GlslCtx *c, SsirBlock *blk, SsirFunction *fn, GlslBlkState *bs);
 
-static void emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
-    SsirFunction *fn, BlkState *bs) {
+static void glsl_emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
+    SsirFunction *fn, GlslBlkState *bs) {
     switch (inst->op) {
         case SSIR_OP_STORE:
             gb_indent(&c->sb);
-            emit_expr(c, inst->operands[0], &c->sb);
+            glsl_emit_expr(c, inst->operands[0], &c->sb);
             gb_append(&c->sb, " = ");
-            emit_expr(c, inst->operands[1], &c->sb);
+            glsl_emit_expr(c, inst->operands[1], &c->sb);
             gb_append(&c->sb, ";\n");
             break;
 
         case SSIR_OP_TEX_STORE:
             gb_indent(&c->sb);
             gb_append(&c->sb, "imageStore(");
-            emit_expr(c, inst->operands[0], &c->sb);
+            glsl_emit_expr(c, inst->operands[0], &c->sb);
             gb_append(&c->sb, ", ");
-            emit_expr(c, inst->operands[1], &c->sb);
+            glsl_emit_expr(c, inst->operands[1], &c->sb);
             gb_append(&c->sb, ", ");
-            emit_expr(c, inst->operands[2], &c->sb);
+            glsl_emit_expr(c, inst->operands[2], &c->sb);
             gb_append(&c->sb, ");\n");
             break;
 
@@ -1159,7 +1159,7 @@ static void emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
         case SSIR_OP_RETURN:
             gb_indent(&c->sb);
             gb_append(&c->sb, "return ");
-            emit_expr(c, inst->operands[0], &c->sb);
+            glsl_emit_expr(c, inst->operands[0], &c->sb);
             gb_append(&c->sb, ";\n");
             break;
 
@@ -1167,7 +1167,7 @@ static void emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
             uint32_t target = inst->operands[0];
             for (uint32_t i = 0; i < fn->block_count; i++) {
                 if (fn->blocks[i].id == target && !bs->emitted[i]) {
-                    emit_block(c, &fn->blocks[i], fn, bs);
+                    glsl_emit_block(c, &fn->blocks[i], fn, bs);
                     break;
                 }
             }
@@ -1181,13 +1181,13 @@ static void emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
 
             gb_indent(&c->sb);
             gb_append(&c->sb, "if (");
-            emit_expr(c, cond, &c->sb);
+            glsl_emit_expr(c, cond, &c->sb);
             gb_append(&c->sb, ") {\n");
             c->sb.indent++;
 
             for (uint32_t i = 0; i < fn->block_count; i++) {
                 if (fn->blocks[i].id == true_blk && !bs->emitted[i]) {
-                    emit_block(c, &fn->blocks[i], fn, bs);
+                    glsl_emit_block(c, &fn->blocks[i], fn, bs);
                     break;
                 }
             }
@@ -1199,7 +1199,7 @@ static void emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
 
             for (uint32_t i = 0; i < fn->block_count; i++) {
                 if (fn->blocks[i].id == false_blk && !bs->emitted[i]) {
-                    emit_block(c, &fn->blocks[i], fn, bs);
+                    glsl_emit_block(c, &fn->blocks[i], fn, bs);
                     break;
                 }
             }
@@ -1227,16 +1227,16 @@ static void emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
 
         case SSIR_OP_INSERT_DYN:
             gb_indent(&c->sb);
-            emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+            glsl_emit_decl(c, inst->type, glsl_get_name(c, inst->result), &c->sb);
             gb_append(&c->sb, " = ");
-            emit_expr(c, inst->operands[0], &c->sb);
+            glsl_emit_expr(c, inst->operands[0], &c->sb);
             gb_append(&c->sb, ";\n");
             gb_indent(&c->sb);
-            gb_append(&c->sb, get_name(c, inst->result));
+            gb_append(&c->sb, glsl_get_name(c, inst->result));
             gb_append(&c->sb, "[");
-            emit_expr(c, inst->operands[2], &c->sb);
+            glsl_emit_expr(c, inst->operands[2], &c->sb);
             gb_append(&c->sb, "] = ");
-            emit_expr(c, inst->operands[1], &c->sb);
+            glsl_emit_expr(c, inst->operands[1], &c->sb);
             gb_append(&c->sb, ";\n");
             break;
 
@@ -1259,20 +1259,20 @@ static void emit_stmt(GlslCtx *c, SsirInst *inst, SsirBlock *blk,
                 if (must_materialize || uses > 1) {
                     gb_indent(&c->sb);
                     if (!is_void) {
-                        emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+                        glsl_emit_decl(c, inst->type, glsl_get_name(c, inst->result), &c->sb);
                         gb_append(&c->sb, " = ");
                     }
-                    emit_expr(c, inst->result, &c->sb);
+                    glsl_emit_expr(c, inst->result, &c->sb);
                     gb_append(&c->sb, ";\n");
                     if (!is_void)
-                        set_name(c, inst->result, get_name(c, inst->result));
+                        glsl_set_name(c, inst->result, glsl_get_name(c, inst->result));
                 }
             }
             break;
     }
 }
 
-static void emit_block(GlslCtx *c, SsirBlock *blk, SsirFunction *fn, BlkState *bs) {
+static void glsl_emit_block(GlslCtx *c, SsirBlock *blk, SsirFunction *fn, GlslBlkState *bs) {
     for (uint32_t i = 0; i < fn->block_count; i++) {
         if (fn->blocks[i].id == blk->id) {
             if (bs->emitted[i]) return;
@@ -1282,7 +1282,7 @@ static void emit_block(GlslCtx *c, SsirBlock *blk, SsirFunction *fn, BlkState *b
     }
 
     for (uint32_t i = 0; i < blk->inst_count; i++) {
-        emit_stmt(c, &blk->insts[i], blk, fn, bs);
+        glsl_emit_stmt(c, &blk->insts[i], blk, fn, bs);
     }
 }
 
@@ -1302,7 +1302,7 @@ static bool type_is_in_interface_block(GlslCtx *c, uint32_t type_id) {
     return false;
 }
 
-static void emit_struct_def(GlslCtx *c, SsirType *t) {
+static void glsl_emit_struct_def(GlslCtx *c, SsirType *t) {
     if (t->kind != SSIR_TYPE_STRUCT) return;
     if (type_is_in_interface_block(c, t->id)) return;
 
@@ -1317,7 +1317,7 @@ static void emit_struct_def(GlslCtx *c, SsirType *t) {
             snprintf(mname_buf, sizeof(mname_buf), "member%u", i);
             mname = mname_buf;
         }
-        emit_decl(c, t->struc.members[i], mname, &c->sb);
+        glsl_emit_decl(c, t->struc.members[i], mname, &c->sb);
         gb_append(&c->sb, ";\n");
     }
     gb_append(&c->sb, "};\n\n");
@@ -1327,7 +1327,7 @@ static void emit_struct_def(GlslCtx *c, SsirType *t) {
  * Global Variable Emission
  * ============================================================================ */
 
-static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
+static void glsl_emit_global(GlslCtx *c, SsirGlobalVar *g) {
     SsirType *pt = ssir_get_type((SsirModule *)c->mod, g->type);
     if (!pt || pt->kind != SSIR_TYPE_PTR) return;
 
@@ -1338,7 +1338,7 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
     /* Skip builtins - they use gl_* names directly */
     if (g->builtin != SSIR_BUILTIN_NONE) return;
 
-    const char *vname = get_name(c, g->id);
+    const char *vname = glsl_get_name(c, g->id);
 
     switch (space) {
         case SSIR_ADDR_INPUT: {
@@ -1351,7 +1351,7 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
             if (g->interp_sampling == SSIR_INTERP_SAMPLING_CENTROID) gb_append(&c->sb, "centroid ");
             else if (g->interp_sampling == SSIR_INTERP_SAMPLING_SAMPLE) gb_append(&c->sb, "sample ");
             gb_append(&c->sb, "in ");
-            emit_decl(c, pointee_id, vname, &c->sb);
+            glsl_emit_decl(c, pointee_id, vname, &c->sb);
             gb_append(&c->sb, ";\n");
             break;
         }
@@ -1364,7 +1364,7 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
             if (g->interp_sampling == SSIR_INTERP_SAMPLING_CENTROID) gb_append(&c->sb, "centroid ");
             else if (g->interp_sampling == SSIR_INTERP_SAMPLING_SAMPLE) gb_append(&c->sb, "sample ");
             gb_append(&c->sb, "out ");
-            emit_decl(c, pointee_id, vname, &c->sb);
+            glsl_emit_decl(c, pointee_id, vname, &c->sb);
             gb_append(&c->sb, ";\n");
             break;
         }
@@ -1392,13 +1392,13 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
                         snprintf(mn_buf, sizeof(mn_buf), "member%u", m);
                         mn = mn_buf;
                     }
-                    emit_decl(c, pointee->struc.members[m], mn, &c->sb);
+                    glsl_emit_decl(c, pointee->struc.members[m], mn, &c->sb);
                     gb_append(&c->sb, ";\n");
                 }
                 gb_appendf(&c->sb, "} %s;\n", vname);
             } else {
                 gb_appendf(&c->sb, "_UB_%s {\n    ", vname);
-                emit_decl(c, pointee_id, "member0", &c->sb);
+                glsl_emit_decl(c, pointee_id, "member0", &c->sb);
                 gb_append(&c->sb, ";\n");
                 gb_appendf(&c->sb, "} %s;\n", vname);
             }
@@ -1430,13 +1430,13 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
                         snprintf(mn_buf, sizeof(mn_buf), "member%u", m);
                         mn = mn_buf;
                     }
-                    emit_decl(c, pointee->struc.members[m], mn, &c->sb);
+                    glsl_emit_decl(c, pointee->struc.members[m], mn, &c->sb);
                     gb_append(&c->sb, ";\n");
                 }
                 gb_appendf(&c->sb, "} %s;\n", vname);
             } else {
                 gb_appendf(&c->sb, "_SB_%s {\n    ", vname);
-                emit_decl(c, pointee_id, "member0", &c->sb);
+                glsl_emit_decl(c, pointee_id, "member0", &c->sb);
                 gb_append(&c->sb, ";\n");
                 gb_appendf(&c->sb, "} %s;\n", vname);
             }
@@ -1445,7 +1445,7 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
 
         case SSIR_ADDR_WORKGROUP:
             gb_append(&c->sb, "shared ");
-            emit_decl(c, pointee_id, vname, &c->sb);
+            glsl_emit_decl(c, pointee_id, vname, &c->sb);
             gb_append(&c->sb, ";\n");
             break;
 
@@ -1465,7 +1465,7 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
                 gb_append(&c->sb, ") ");
             }
             gb_append(&c->sb, "uniform ");
-            emit_decl(c, pointee_id, vname, &c->sb);
+            glsl_emit_decl(c, pointee_id, vname, &c->sb);
             gb_append(&c->sb, ";\n");
             break;
         }
@@ -1479,7 +1479,7 @@ static void emit_global(GlslCtx *c, SsirGlobalVar *g) {
  * Function Emission
  * ============================================================================ */
 
-static SsirEntryPoint *find_ep(GlslCtx *c, uint32_t func_id) {
+static SsirEntryPoint *glsl_find_ep(GlslCtx *c, uint32_t func_id) {
     for (uint32_t i = 0; i < c->mod->entry_point_count; i++) {
         if (c->mod->entry_points[i].function == func_id)
             return &c->mod->entry_points[i];
@@ -1487,8 +1487,8 @@ static SsirEntryPoint *find_ep(GlslCtx *c, uint32_t func_id) {
     return NULL;
 }
 
-static void emit_function(GlslCtx *c, SsirFunction *fn) {
-    SsirEntryPoint *ep = find_ep(c, fn->id);
+static void glsl_emit_function(GlslCtx *c, SsirFunction *fn) {
+    SsirEntryPoint *ep = glsl_find_ep(c, fn->id);
     int is_entry = (ep != NULL && ep == c->active_ep);
 
     if (is_entry) {
@@ -1498,15 +1498,15 @@ static void emit_function(GlslCtx *c, SsirFunction *fn) {
         /* Regular function */
         SsirType *ret = ssir_get_type((SsirModule *)c->mod, fn->return_type);
         if (ret && ret->kind != SSIR_TYPE_VOID) {
-            emit_type(c, fn->return_type, &c->sb);
+            glsl_emit_type(c, fn->return_type, &c->sb);
         } else {
             gb_append(&c->sb, "void");
         }
-        gb_appendf(&c->sb, " %s(", fn->name ? fn->name : get_name(c, fn->id));
+        gb_appendf(&c->sb, " %s(", fn->name ? fn->name : glsl_get_name(c, fn->id));
 
         for (uint32_t i = 0; i < fn->param_count; i++) {
             if (i > 0) gb_append(&c->sb, ", ");
-            emit_decl(c, fn->params[i].type, get_name(c, fn->params[i].id), &c->sb);
+            glsl_emit_decl(c, fn->params[i].type, glsl_get_name(c, fn->params[i].id), &c->sb);
         }
         gb_append(&c->sb, ") {\n");
     }
@@ -1545,24 +1545,24 @@ static void emit_function(GlslCtx *c, SsirFunction *fn) {
         uint32_t pointee = (lpt && lpt->kind == SSIR_TYPE_PTR) ? lpt->ptr.pointee : l->type;
 
         gb_indent(&c->sb);
-        emit_decl(c, pointee, get_name(c, l->id), &c->sb);
+        glsl_emit_decl(c, pointee, glsl_get_name(c, l->id), &c->sb);
 
         if (l->has_initializer) {
             gb_append(&c->sb, " = ");
             SsirConstant *init = ssir_get_constant((SsirModule *)c->mod, l->initializer);
-            if (init) emit_constant(c, init, &c->sb);
+            if (init) glsl_emit_constant(c, init, &c->sb);
         }
         gb_append(&c->sb, ";\n");
     }
 
     /* Function body */
     if (fn->block_count > 0) {
-        BlkState bs;
+        GlslBlkState bs;
         bs.count = fn->block_count;
         bs.emitted = (bool *)STG_MALLOC(fn->block_count * sizeof(bool));
         if (bs.emitted) {
             memset(bs.emitted, 0, fn->block_count * sizeof(bool));
-            emit_block(c, &fn->blocks[0], fn, &bs);
+            glsl_emit_block(c, &fn->blocks[0], fn, &bs);
             STG_FREE(bs.emitted);
         }
     }
@@ -1576,14 +1576,14 @@ static void emit_function(GlslCtx *c, SsirFunction *fn) {
  * Name Assignment
  * ============================================================================ */
 
-static SsirAddressSpace global_addr_space(GlslCtx *c, SsirGlobalVar *g) {
+static SsirAddressSpace glsl_global_addr_space(GlslCtx *c, SsirGlobalVar *g) {
     SsirType *pt = ssir_get_type((SsirModule *)c->mod, g->type);
     if (pt && pt->kind == SSIR_TYPE_PTR) return pt->ptr.space;
     return SSIR_ADDR_FUNCTION;
 }
 
 /* Check if name is already used by another global */
-static int global_name_taken(GlslCtx *c, const char *name, uint32_t exclude_id) {
+static int glsl_global_name_taken(GlslCtx *c, const char *name, uint32_t exclude_id) {
     for (uint32_t i = 0; i < c->mod->global_count; i++) {
         SsirGlobalVar *g = &c->mod->globals[i];
         if (g->id == exclude_id || g->builtin != SSIR_BUILTIN_NONE) continue;
@@ -1593,19 +1593,19 @@ static int global_name_taken(GlslCtx *c, const char *name, uint32_t exclude_id) 
     return 0;
 }
 
-static void assign_names(GlslCtx *c) {
+static void glsl_assign_names(GlslCtx *c) {
     for (uint32_t i = 0; i < c->mod->global_count; i++) {
         SsirGlobalVar *g = &c->mod->globals[i];
 
-        /* Builtins get gl_* names via emit_expr, no need for id names */
+        /* Builtins get gl_* names via glsl_emit_expr, no need for id names */
         if (g->builtin != SSIR_BUILTIN_NONE) continue;
 
         if (g->name && c->opts.preserve_names) {
-            set_name(c, g->id, g->name);
+            glsl_set_name(c, g->id, g->name);
             /* Disambiguate if name collides with an already-assigned global */
             const char *assigned = c->id_names[g->id];
-            if (assigned && global_name_taken(c, assigned, g->id)) {
-                SsirAddressSpace sp = global_addr_space(c, g);
+            if (assigned && glsl_global_name_taken(c, assigned, g->id)) {
+                SsirAddressSpace sp = glsl_global_addr_space(c, g);
                 const char *prefix = (sp == SSIR_ADDR_OUTPUT) ? "_out_" : "_in_";
                 size_t len = strlen(prefix) + strlen(g->name) + 1;
                 char *tmp = (char *)STG_MALLOC(len);
@@ -1616,34 +1616,34 @@ static void assign_names(GlslCtx *c) {
         } else {
             char buf[32];
             snprintf(buf, sizeof(buf), "_g%u", g->id);
-            set_name(c, g->id, buf);
+            glsl_set_name(c, g->id, buf);
         }
     }
 
     for (uint32_t i = 0; i < c->mod->function_count; i++) {
         SsirFunction *fn = &c->mod->functions[i];
         if (fn->name && c->opts.preserve_names)
-            set_name(c, fn->id, fn->name);
+            glsl_set_name(c, fn->id, fn->name);
 
         for (uint32_t j = 0; j < fn->param_count; j++) {
             SsirFunctionParam *p = &fn->params[j];
             if (p->name && c->opts.preserve_names) {
-                set_name(c, p->id, p->name);
+                glsl_set_name(c, p->id, p->name);
             } else {
                 char buf[32];
                 snprintf(buf, sizeof(buf), "_p%u", p->id);
-                set_name(c, p->id, buf);
+                glsl_set_name(c, p->id, buf);
             }
         }
 
         for (uint32_t j = 0; j < fn->local_count; j++) {
             SsirLocalVar *l = &fn->locals[j];
             if (l->name && c->opts.preserve_names) {
-                set_name(c, l->id, l->name);
+                glsl_set_name(c, l->id, l->name);
             } else {
                 char buf[32];
                 snprintf(buf, sizeof(buf), "_l%u", l->id);
-                set_name(c, l->id, buf);
+                glsl_set_name(c, l->id, buf);
             }
         }
     }
@@ -1686,7 +1686,7 @@ SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
     ctx.active_ep = ep;
 
     /* Phase 1: Assign names */
-    assign_names(&ctx);
+    glsl_assign_names(&ctx);
 
     /* Phase 2: Emit GLSL header */
     gb_append(&ctx.sb, "#version 450\n\n");
@@ -1706,7 +1706,7 @@ SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
     /* Phase 4: Emit struct definitions (non-interface-block types) */
     for (uint32_t i = 0; i < mod->type_count; i++) {
         if (mod->types[i].kind == SSIR_TYPE_STRUCT) {
-            emit_struct_def(&ctx, &mod->types[i]);
+            glsl_emit_struct_def(&ctx, &mod->types[i]);
         }
     }
 
@@ -1715,23 +1715,23 @@ SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
         SsirConstant *k = &mod->constants[i];
         if (!k->is_specialization) continue;
         gb_appendf(&ctx.sb, "layout(constant_id = %u) const ", k->spec_id);
-        emit_decl(&ctx, k->type, k->name ? k->name : "spec_const", &ctx.sb);
+        glsl_emit_decl(&ctx, k->type, k->name ? k->name : "spec_const", &ctx.sb);
         gb_append(&ctx.sb, " = ");
-        emit_constant(&ctx, k, &ctx.sb);
+        glsl_emit_constant(&ctx, k, &ctx.sb);
         gb_append(&ctx.sb, ";\n");
     }
 
     /* Phase 5: Emit global variables */
     for (uint32_t i = 0; i < mod->global_count; i++) {
-        emit_global(&ctx, &mod->globals[i]);
+        glsl_emit_global(&ctx, &mod->globals[i]);
     }
     if (mod->global_count > 0) gb_nl(&ctx.sb);
 
     /* Phase 6: Emit non-entry functions first */
     for (uint32_t i = 0; i < mod->function_count; i++) {
-        SsirEntryPoint *fep = find_ep(&ctx, mod->functions[i].id);
+        SsirEntryPoint *fep = glsl_find_ep(&ctx, mod->functions[i].id);
         if (!fep || fep != ep) {
-            emit_function(&ctx, &mod->functions[i]);
+            glsl_emit_function(&ctx, &mod->functions[i]);
         }
     }
 
@@ -1739,7 +1739,7 @@ SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
     if (ep) {
         SsirFunction *entry_fn = ssir_get_function((SsirModule *)mod, ep->function);
         if (entry_fn) {
-            emit_function(&ctx, entry_fn);
+            glsl_emit_function(&ctx, entry_fn);
         }
     }
 
