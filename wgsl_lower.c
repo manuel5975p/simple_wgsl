@@ -7598,9 +7598,11 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
     l->features.extensions = (const char *const *)l->ext_buf;
     l->features.extension_count = l->ext_count;
 
+    WGSL_FREE((void *)eps);
     return l;
 
 fail:
+    WGSL_FREE((void *)eps);
     spv_sections_free(&l->sections);
     type_cache_free(&l->type_cache);
     if (l->ssir) ssir_module_destroy(l->ssir);
