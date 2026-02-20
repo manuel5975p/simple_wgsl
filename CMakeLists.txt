@@ -40,6 +40,16 @@ if(SANITIZER_FLAGS)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}${SANITIZER_LINK_FLAGS}")
 endif()
 
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    add_compile_options(
+        -Wall
+        -Wextra
+        -Wno-unused-parameter
+        -Wno-missing-field-initializers
+        -Wno-sign-compare
+    )
+endif()
+
 add_library(wgsl_compiler STATIC
     wgsl_parser.c
     wgsl_resolve.c

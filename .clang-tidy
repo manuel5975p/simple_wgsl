@@ -1,0 +1,19 @@
+Checks: >
+  -*,
+  bugprone-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-assignment-in-if-condition,
+  -performance-no-int-to-ptr,
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: '.*'
+
+CheckOptions:
+  - key: bugprone-argument-comment.StrictMode
+    value: false
+  - key: bugprone-assert-side-effect.AssertMacros
+    value: 'assert,wgsl_compiler_assert'
