@@ -6288,7 +6288,7 @@ static int lower_globals(WgslLower *l) {
             l->global_map[l->global_map_count].ssir_id = ssir_var;
             l->global_map[l->global_map_count].type_id = elem_type;
             l->global_map[l->global_map_count].sc = sc;
-            l->global_map[l->global_map_count].name = gv->name;
+            l->global_map[l->global_map_count].name = gv->name ? strdup(gv->name) : NULL;
             l->global_map_count++;
         }
     }
@@ -6314,7 +6314,7 @@ static void add_global_map_entry(WgslLower *l, int symbol_id, uint32_t spv_id,
     l->global_map[l->global_map_count].ssir_id = ssir_id;
     l->global_map[l->global_map_count].type_id = type_id;
     l->global_map[l->global_map_count].sc = sc;
-    l->global_map[l->global_map_count].name = name;
+    l->global_map[l->global_map_count].name = name ? strdup(name) : NULL;
     l->global_map_count++;
 }
 
@@ -6568,7 +6568,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     l->global_map[l->global_map_count].ssir_id = ssir_var;
                     l->global_map[l->global_map_count].type_id = out_type;
                     l->global_map[l->global_map_count].sc = SpvStorageClassOutput;
-                    l->global_map[l->global_map_count].name = "_frag_output";
+                    l->global_map[l->global_map_count].name = strdup("_frag_output");
                     l->global_map_count++;
                 }
                 break;
@@ -6624,7 +6624,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                             l->global_map[l->global_map_count].ssir_id = ssir_var;
                             l->global_map[l->global_map_count].type_id = out_type;
                             l->global_map[l->global_map_count].sc = SpvStorageClassOutput;
-                            l->global_map[l->global_map_count].name = "gl_Position";
+                            l->global_map[l->global_map_count].name = strdup("gl_Position");
                             l->global_map_count++;
                         }
                         break;
@@ -6697,7 +6697,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                                         l->global_map[l->global_map_count].ssir_id = ssir_var;
                                         l->global_map[l->global_map_count].type_id = field_type;
                                         l->global_map[l->global_map_count].sc = SpvStorageClassOutput;
-                                        l->global_map[l->global_map_count].name = field->name;
+                                        l->global_map[l->global_map_count].name = field->name ? strdup(field->name) : NULL;
                                         l->global_map_count++;
                                     }
                                 }
@@ -6740,7 +6740,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                                 l->global_map[l->global_map_count].ssir_id = ssir_var;
                                 l->global_map[l->global_map_count].type_id = field_type;
                                 l->global_map[l->global_map_count].sc = SpvStorageClassOutput;
-                                l->global_map[l->global_map_count].name = field->name;
+                                l->global_map[l->global_map_count].name = field->name ? strdup(field->name) : NULL;
                                 l->global_map_count++;
                             }
                         }
@@ -6805,7 +6805,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     l->global_map[l->global_map_count].ssir_id = ssir_var;
                     l->global_map[l->global_map_count].type_id = param_type;
                     l->global_map[l->global_map_count].sc = SpvStorageClassInput;
-                    l->global_map[l->global_map_count].name = param->name;
+                    l->global_map[l->global_map_count].name = param->name ? strdup(param->name) : NULL;
                     l->global_map_count++;
                 }
             }
@@ -6900,12 +6900,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                             l->global_map[l->global_map_count].ssir_id = ssir_var;
                             l->global_map[l->global_map_count].type_id = field_type;
                             l->global_map[l->global_map_count].sc = SpvStorageClassInput;
-                            // Allocate and copy the compound name
-                            char *name_copy = (char *)WGSL_MALLOC(strlen(compound_name) + 1);
-                            if (name_copy) {
-                                strcpy(name_copy, compound_name);
-                                l->global_map[l->global_map_count].name = name_copy;
-                            }
+                            l->global_map[l->global_map_count].name = strdup(compound_name);
                             l->global_map_count++;
                         }
                     }
@@ -6999,11 +6994,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                             snprintf(compound_name, sizeof(compound_name), "%s.%s", param->name, field->name);
 
                             // Store in global_map for later access
-                            char *name_copy = (char *)WGSL_MALLOC(strlen(compound_name) + 1);
-                            if (name_copy) {
-                                strcpy(name_copy, compound_name);
-                                add_global_map_entry(l, -1, var_id, ssir_var, field_type, SpvStorageClassInput, name_copy);
-                            }
+                            add_global_map_entry(l, -1, var_id, ssir_var, field_type, SpvStorageClassInput, compound_name);
                         } else if (strcmp(attr->attribute.name, "builtin") == 0) {
                             // Handle @builtin field (e.g., @builtin(position) -> FragCoord)
                             if (attr->attribute.arg_count > 0 && attr->attribute.args[0]->type == WGSL_NODE_IDENT) {
@@ -7032,11 +7023,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                                     char compound_name[256];
                                     snprintf(compound_name, sizeof(compound_name), "%s.%s", param->name, field->name);
 
-                                    char *name_copy = (char *)WGSL_MALLOC(strlen(compound_name) + 1);
-                                    if (name_copy) {
-                                        strcpy(name_copy, compound_name);
-                                        add_global_map_entry(l, -1, var_id, ssir_var, field_type, SpvStorageClassInput, name_copy);
-                                    }
+                                    add_global_map_entry(l, -1, var_id, ssir_var, field_type, SpvStorageClassInput, compound_name);
                                 }
                             }
                         }
@@ -7104,7 +7091,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     l->global_map[l->global_map_count].ssir_id = ssir_var;
                     l->global_map[l->global_map_count].type_id = param_type;
                     l->global_map[l->global_map_count].sc = SpvStorageClassInput;
-                    l->global_map[l->global_map_count].name = param->name;
+                    l->global_map[l->global_map_count].name = param->name ? strdup(param->name) : NULL;
                     l->global_map_count++;
                 }
             }
@@ -7606,6 +7593,10 @@ fail:
     spv_sections_free(&l->sections);
     type_cache_free(&l->type_cache);
     if (l->ssir) ssir_module_destroy(l->ssir);
+    for (int i = 0; i < l->global_map_count; ++i) {
+        free((void *)l->global_map[i].name);
+    }
+    WGSL_FREE(l->global_map);
     WGSL_FREE(l->struct_cache);
     WGSL_FREE(l);
     return NULL;
@@ -7618,6 +7609,9 @@ void wgsl_lower_destroy(WgslLower *lower) {
     if (lower->ssir) ssir_module_destroy(lower->ssir);
     WGSL_FREE(lower->ssir_id_map);
     WGSL_FREE(lower->const_cache);
+    for (int i = 0; i < lower->global_map_count; ++i) {
+        free((void *)lower->global_map[i].name);
+    }
     WGSL_FREE(lower->global_map);
     WGSL_FREE(lower->struct_cache);
     for (int i = 0; i < lower->ep_count; ++i) {

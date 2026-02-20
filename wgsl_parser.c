@@ -1185,6 +1185,13 @@ static WgslAstNode *parse_statement(Parser *P) {
             C->case_clause.exprs = is_default ? NULL : case_exprs;
             C->case_clause.stmt_count = body ? body->block.stmt_count : 0;
             C->case_clause.stmts = body ? body->block.stmts : NULL;
+            if (body) {
+                /* Ownership of stmts moved to case_clause; zero out
+                   block fields so wgsl_free_ast won't double-free them. */
+                body->block.stmts = NULL;
+                body->block.stmt_count = 0;
+                wgsl_free_ast(body);
+            }
             if (case_count >= case_cap) {
                 case_cap = case_cap ? case_cap * 2 : 4;
                 cases = (WgslAstNode **)NODE_REALLOC(cases, (size_t)case_cap * sizeof(WgslAstNode *));
@@ -1940,6 +1947,7 @@ static void free_block(Block *b) {
 // v nonnull
 static void free_var_decl(VarDecl *v) {
     wgsl_compiler_assert(v != NULL, "free_var_decl: v is NULL");
+    free_node_list(v->attrs, v->attr_count);
     free_string(v->name);
     free_node(v->type);
     free_node(v->init);
@@ -2049,6 +2057,7 @@ static void free_node(WgslAstNode *n) {
             free_binary(&n->binary);
             break;
         case WGSL_NODE_ASSIGN:
+            free_string(n->assign.op);
             free_node(n->assign.lhs);
             free_node(n->assign.rhs);
             break;
@@ -2069,6 +2078,10 @@ static void free_node(WgslAstNode *n) {
         case WGSL_NODE_WHILE:
             free_node(n->while_stmt.cond);
             free_node(n->while_stmt.body);
+            break;
+        case WGSL_NODE_DO_WHILE:
+            free_node(n->do_while_stmt.body);
+            free_node(n->do_while_stmt.cond);
             break;
         case WGSL_NODE_FOR:
             free_node(n->for_stmt.init);

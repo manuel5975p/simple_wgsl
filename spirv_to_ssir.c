@@ -443,6 +443,7 @@ static SpirvToSsirResult parse_spirv(VtsConverter *c) {
                     int str_words;
                     char *name = vts_read_string(&operands[1], operand_count - 1, &str_words);
                     if (target < c->id_bound && name) {
+                        if (c->ids[target].name) free(c->ids[target].name);
                         c->ids[target].name = name;
                     }
                 }

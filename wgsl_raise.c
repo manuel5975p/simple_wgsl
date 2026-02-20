@@ -574,6 +574,7 @@ WgslRaiseResult wgsl_raise_parse(WgslRaiser *r) {
                     const char *name = read_string(&operands[1], operand_count - 1, &str_words);
                     if (name) {
                         if (target < r->id_bound) {
+                            if (r->ids[target].name) WGSL_FREE(r->ids[target].name);
                             r->ids[target].name = (char *)name;
                         } else {
                             WGSL_FREE((void *)name);
