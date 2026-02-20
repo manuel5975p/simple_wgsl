@@ -26,26 +26,26 @@ struct RenderResult {
 };
 
 class Context {
-public:
+  public:
     Context();
     ~Context();
 
-    Context(const Context&) = delete;
-    Context& operator=(const Context&) = delete;
+    Context(const Context &) = delete;
+    Context &operator=(const Context &) = delete;
 
-    ShaderCompileResult compileShader(GLenum type, const std::string& glsl_source);
-    ShaderCompileResult compileComputeShader(const std::string& glsl_source);
-    ShaderCompileResult linkProgram(const std::string& vert_source,
-                                    const std::string& frag_source);
+    ShaderCompileResult compileShader(GLenum type, const std::string &glsl_source);
+    ShaderCompileResult compileComputeShader(const std::string &glsl_source);
+    ShaderCompileResult linkProgram(const std::string &vert_source,
+        const std::string &frag_source);
 
     /* Render a fullscreen triangle with the given shaders and read back pixels */
-    RenderResult renderToPixels(const std::string& vert_glsl,
-                                const std::string& frag_glsl,
-                                int width, int height);
+    RenderResult renderToPixels(const std::string &vert_glsl,
+        const std::string &frag_glsl,
+        int width, int height);
 
     std::string glVersionString() const;
 
-private:
+  private:
     EGLDisplay display_ = EGL_NO_DISPLAY;
     ::EGLContext context_ = EGL_NO_CONTEXT;
     EGLSurface surface_ = EGL_NO_SURFACE;

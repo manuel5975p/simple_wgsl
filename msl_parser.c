@@ -33,7 +33,7 @@
  * String Utilities
  * ============================================================================ */
 
-//s nonnull
+// s nonnull
 static char *msl_strndup(const char *s, size_t n) {
     wgsl_compiler_assert(s != NULL, "msl_strndup: s is NULL");
     char *r = (char *)MSL_MALLOC(n + 1);
@@ -43,7 +43,7 @@ static char *msl_strndup(const char *s, size_t n) {
     return r;
 }
 
-//s nullable
+// s nullable
 static char *msl_strdup(const char *s) {
     return s ? msl_strndup(s, strlen(s)) : NULL;
 }
@@ -58,22 +58,52 @@ typedef enum {
     MTK_INT_LIT,
     MTK_FLOAT_LIT,
     /* punctuation */
-    MTK_SEMI, MTK_COMMA, MTK_COLON, MTK_DOT,
-    MTK_LBRACE, MTK_RBRACE,
-    MTK_LPAREN, MTK_RPAREN,
-    MTK_LBRACKET, MTK_RBRACKET,
-    MTK_LATTR, MTK_RATTR,       /* [[ and ]] */
-    MTK_STAR, MTK_SLASH, MTK_PLUS, MTK_MINUS, MTK_PERCENT,
-    MTK_AMP, MTK_PIPE, MTK_CARET, MTK_TILDE,
-    MTK_EQ, MTK_BANG, MTK_LT, MTK_GT, MTK_QMARK,
+    MTK_SEMI,
+    MTK_COMMA,
+    MTK_COLON,
+    MTK_DOT,
+    MTK_LBRACE,
+    MTK_RBRACE,
+    MTK_LPAREN,
+    MTK_RPAREN,
+    MTK_LBRACKET,
+    MTK_RBRACKET,
+    MTK_LATTR,
+    MTK_RATTR, /* [[ and ]] */
+    MTK_STAR,
+    MTK_SLASH,
+    MTK_PLUS,
+    MTK_MINUS,
+    MTK_PERCENT,
+    MTK_AMP,
+    MTK_PIPE,
+    MTK_CARET,
+    MTK_TILDE,
+    MTK_EQ,
+    MTK_BANG,
+    MTK_LT,
+    MTK_GT,
+    MTK_QMARK,
     /* multi-char */
-    MTK_EQEQ, MTK_NEQ, MTK_LE, MTK_GE,
-    MTK_ANDAND, MTK_OROR,
-    MTK_SHL, MTK_SHR,
-    MTK_PLUSEQ, MTK_MINUSEQ, MTK_STAREQ, MTK_SLASHEQ, MTK_PERCENTEQ,
-    MTK_AMPEQ, MTK_PIPEEQ, MTK_CARETEQ,
+    MTK_EQEQ,
+    MTK_NEQ,
+    MTK_LE,
+    MTK_GE,
+    MTK_ANDAND,
+    MTK_OROR,
+    MTK_SHL,
+    MTK_SHR,
+    MTK_PLUSEQ,
+    MTK_MINUSEQ,
+    MTK_STAREQ,
+    MTK_SLASHEQ,
+    MTK_PERCENTEQ,
+    MTK_AMPEQ,
+    MTK_PIPEEQ,
+    MTK_CARETEQ,
     MTK_COLONCOLON,
-    MTK_PLUSPLUS, MTK_MINUSMINUS,
+    MTK_PLUSPLUS,
+    MTK_MINUSMINUS,
 } MslTokType;
 
 typedef struct {
@@ -94,8 +124,8 @@ typedef struct {
     int line, col;
 } MslLexer;
 
-//L nonnull
-//src nonnull
+// L nonnull
+// src nonnull
 static void mlx_init(MslLexer *L, const char *src) {
     wgsl_compiler_assert(L != NULL, "mlx_init: L is NULL");
     wgsl_compiler_assert(src != NULL, "mlx_init: src is NULL");
@@ -105,21 +135,31 @@ static void mlx_init(MslLexer *L, const char *src) {
     L->col = 1;
 }
 
-//L nonnull
-static char mlx_peek(const MslLexer *L) { wgsl_compiler_assert(L != NULL, "mlx_peek: L is NULL"); return L->src[L->pos]; }
-//L nonnull
-static char mlx_peek2(const MslLexer *L) { wgsl_compiler_assert(L != NULL, "mlx_peek2: L is NULL"); return L->src[L->pos + 1]; }
+// L nonnull
+static char mlx_peek(const MslLexer *L) {
+    wgsl_compiler_assert(L != NULL, "mlx_peek: L is NULL");
+    return L->src[L->pos];
+}
+// L nonnull
+static char mlx_peek2(const MslLexer *L) {
+    wgsl_compiler_assert(L != NULL, "mlx_peek2: L is NULL");
+    return L->src[L->pos + 1];
+}
 
-//L nonnull
+// L nonnull
 static void mlx_advance(MslLexer *L) {
     wgsl_compiler_assert(L != NULL, "mlx_advance: L is NULL");
     if (!L->src[L->pos]) return;
-    if (L->src[L->pos] == '\n') { L->line++; L->col = 1; }
-    else { L->col++; }
+    if (L->src[L->pos] == '\n') {
+        L->line++;
+        L->col = 1;
+    } else {
+        L->col++;
+    }
     L->pos++;
 }
 
-//L nonnull
+// L nonnull
 static void mlx_skip_ws(MslLexer *L) {
     wgsl_compiler_assert(L != NULL, "mlx_skip_ws: L is NULL");
     for (;;) {
@@ -133,10 +173,12 @@ static void mlx_skip_ws(MslLexer *L) {
             continue;
         }
         if (c == '/' && mlx_peek2(L) == '*') {
-            mlx_advance(L); mlx_advance(L);
+            mlx_advance(L);
+            mlx_advance(L);
             while (mlx_peek(L)) {
                 if (mlx_peek(L) == '*' && mlx_peek2(L) == '/') {
-                    mlx_advance(L); mlx_advance(L);
+                    mlx_advance(L);
+                    mlx_advance(L);
                     break;
                 }
                 mlx_advance(L);
@@ -151,8 +193,8 @@ static void mlx_skip_ws(MslLexer *L) {
     }
 }
 
-//L nonnull
-//s nonnull
+// L nonnull
+// s nonnull
 static MslToken mlx_make(MslLexer *L, MslTokType t, const char *s, int len) {
     wgsl_compiler_assert(L != NULL, "mlx_make: L is NULL");
     wgsl_compiler_assert(s != NULL, "mlx_make: s is NULL");
@@ -166,7 +208,7 @@ static MslToken mlx_make(MslLexer *L, MslTokType t, const char *s, int len) {
     return tok;
 }
 
-//L nonnull
+// L nonnull
 static MslToken mlx_next(MslLexer *L) {
     wgsl_compiler_assert(L != NULL, "mlx_next: L is NULL");
     mlx_skip_ws(L);
@@ -181,7 +223,8 @@ static MslToken mlx_next(MslLexer *L) {
         bool is_float = false;
         const char *start = s;
         if (c == '0' && (mlx_peek2(L) == 'x' || mlx_peek2(L) == 'X')) {
-            mlx_advance(L); mlx_advance(L);
+            mlx_advance(L);
+            mlx_advance(L);
             while (isxdigit((unsigned char)mlx_peek(L))) mlx_advance(L);
         } else {
             while (isdigit((unsigned char)mlx_peek(L))) mlx_advance(L);
@@ -202,7 +245,8 @@ static MslToken mlx_next(MslLexer *L) {
         }
         if (is_float && (mlx_peek(L) == 'f' || mlx_peek(L) == 'h')) mlx_advance(L);
         MslToken tok = mlx_make(L, is_float ? MTK_FLOAT_LIT : MTK_INT_LIT, start, (int)(L->src + L->pos - start));
-        tok.line = sl; tok.col = sc;
+        tok.line = sl;
+        tok.col = sc;
         if (!is_float && mlx_peek(L) == 'u') {
             tok.is_unsigned = true;
             mlx_advance(L);
@@ -216,73 +260,137 @@ static MslToken mlx_next(MslLexer *L) {
         const char *start = s;
         while (isalnum((unsigned char)mlx_peek(L)) || mlx_peek(L) == '_') mlx_advance(L);
         MslToken tok = mlx_make(L, MTK_IDENT, start, (int)(L->src + L->pos - start));
-        tok.line = sl; tok.col = sc;
+        tok.line = sl;
+        tok.col = sc;
         return tok;
     }
 
     /* Multi-char operators */
     mlx_advance(L);
     switch (c) {
-    case ';': return mlx_make(L, MTK_SEMI, s, 1);
-    case ',': return mlx_make(L, MTK_COMMA, s, 1);
-    case '.': return mlx_make(L, MTK_DOT, s, 1);
-    case '{': return mlx_make(L, MTK_LBRACE, s, 1);
-    case '}': return mlx_make(L, MTK_RBRACE, s, 1);
-    case '(': return mlx_make(L, MTK_LPAREN, s, 1);
-    case ')': return mlx_make(L, MTK_RPAREN, s, 1);
-    case '[':
-        if (mlx_peek(L) == '[') { mlx_advance(L); return mlx_make(L, MTK_LATTR, s, 2); }
-        return mlx_make(L, MTK_LBRACKET, s, 1);
-    case ']':
-        if (mlx_peek(L) == ']') { mlx_advance(L); return mlx_make(L, MTK_RATTR, s, 2); }
-        return mlx_make(L, MTK_RBRACKET, s, 1);
-    case '~': return mlx_make(L, MTK_TILDE, s, 1);
-    case '?': return mlx_make(L, MTK_QMARK, s, 1);
-    case '*':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_STAREQ, s, 2); }
-        return mlx_make(L, MTK_STAR, s, 1);
-    case '/':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_SLASHEQ, s, 2); }
-        return mlx_make(L, MTK_SLASH, s, 1);
-    case '%':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_PERCENTEQ, s, 2); }
-        return mlx_make(L, MTK_PERCENT, s, 1);
-    case '+':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_PLUSEQ, s, 2); }
-        if (mlx_peek(L) == '+') { mlx_advance(L); return mlx_make(L, MTK_PLUSPLUS, s, 2); }
-        return mlx_make(L, MTK_PLUS, s, 1);
-    case '-':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_MINUSEQ, s, 2); }
-        if (mlx_peek(L) == '-') { mlx_advance(L); return mlx_make(L, MTK_MINUSMINUS, s, 2); }
-        return mlx_make(L, MTK_MINUS, s, 1);
-    case '=':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_EQEQ, s, 2); }
-        return mlx_make(L, MTK_EQ, s, 1);
-    case '!':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_NEQ, s, 2); }
-        return mlx_make(L, MTK_BANG, s, 1);
-    case '<':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_LE, s, 2); }
-        if (mlx_peek(L) == '<') { mlx_advance(L); return mlx_make(L, MTK_SHL, s, 2); }
-        return mlx_make(L, MTK_LT, s, 1);
-    case '>':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_GE, s, 2); }
-        if (mlx_peek(L) == '>') { mlx_advance(L); return mlx_make(L, MTK_SHR, s, 2); }
-        return mlx_make(L, MTK_GT, s, 1);
-    case '&':
-        if (mlx_peek(L) == '&') { mlx_advance(L); return mlx_make(L, MTK_ANDAND, s, 2); }
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_AMPEQ, s, 2); }
-        return mlx_make(L, MTK_AMP, s, 1);
-    case '|':
-        if (mlx_peek(L) == '|') { mlx_advance(L); return mlx_make(L, MTK_OROR, s, 2); }
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_PIPEEQ, s, 2); }
-        return mlx_make(L, MTK_PIPE, s, 1);
-    case '^':
-        if (mlx_peek(L) == '=') { mlx_advance(L); return mlx_make(L, MTK_CARETEQ, s, 2); }
-        return mlx_make(L, MTK_CARET, s, 1);
-    case ':':
-        if (mlx_peek(L) == ':') { mlx_advance(L); return mlx_make(L, MTK_COLONCOLON, s, 2); }
-        return mlx_make(L, MTK_COLON, s, 1);
+        case ';': return mlx_make(L, MTK_SEMI, s, 1);
+        case ',': return mlx_make(L, MTK_COMMA, s, 1);
+        case '.': return mlx_make(L, MTK_DOT, s, 1);
+        case '{': return mlx_make(L, MTK_LBRACE, s, 1);
+        case '}': return mlx_make(L, MTK_RBRACE, s, 1);
+        case '(': return mlx_make(L, MTK_LPAREN, s, 1);
+        case ')': return mlx_make(L, MTK_RPAREN, s, 1);
+        case '[':
+            if (mlx_peek(L) == '[') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_LATTR, s, 2);
+            }
+            return mlx_make(L, MTK_LBRACKET, s, 1);
+        case ']':
+            if (mlx_peek(L) == ']') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_RATTR, s, 2);
+            }
+            return mlx_make(L, MTK_RBRACKET, s, 1);
+        case '~': return mlx_make(L, MTK_TILDE, s, 1);
+        case '?': return mlx_make(L, MTK_QMARK, s, 1);
+        case '*':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_STAREQ, s, 2);
+            }
+            return mlx_make(L, MTK_STAR, s, 1);
+        case '/':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_SLASHEQ, s, 2);
+            }
+            return mlx_make(L, MTK_SLASH, s, 1);
+        case '%':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_PERCENTEQ, s, 2);
+            }
+            return mlx_make(L, MTK_PERCENT, s, 1);
+        case '+':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_PLUSEQ, s, 2);
+            }
+            if (mlx_peek(L) == '+') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_PLUSPLUS, s, 2);
+            }
+            return mlx_make(L, MTK_PLUS, s, 1);
+        case '-':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_MINUSEQ, s, 2);
+            }
+            if (mlx_peek(L) == '-') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_MINUSMINUS, s, 2);
+            }
+            return mlx_make(L, MTK_MINUS, s, 1);
+        case '=':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_EQEQ, s, 2);
+            }
+            return mlx_make(L, MTK_EQ, s, 1);
+        case '!':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_NEQ, s, 2);
+            }
+            return mlx_make(L, MTK_BANG, s, 1);
+        case '<':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_LE, s, 2);
+            }
+            if (mlx_peek(L) == '<') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_SHL, s, 2);
+            }
+            return mlx_make(L, MTK_LT, s, 1);
+        case '>':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_GE, s, 2);
+            }
+            if (mlx_peek(L) == '>') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_SHR, s, 2);
+            }
+            return mlx_make(L, MTK_GT, s, 1);
+        case '&':
+            if (mlx_peek(L) == '&') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_ANDAND, s, 2);
+            }
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_AMPEQ, s, 2);
+            }
+            return mlx_make(L, MTK_AMP, s, 1);
+        case '|':
+            if (mlx_peek(L) == '|') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_OROR, s, 2);
+            }
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_PIPEEQ, s, 2);
+            }
+            return mlx_make(L, MTK_PIPE, s, 1);
+        case '^':
+            if (mlx_peek(L) == '=') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_CARETEQ, s, 2);
+            }
+            return mlx_make(L, MTK_CARET, s, 1);
+        case ':':
+            if (mlx_peek(L) == ':') {
+                mlx_advance(L);
+                return mlx_make(L, MTK_COLONCOLON, s, 2);
+            }
+            return mlx_make(L, MTK_COLON, s, 1);
     }
 
     return mlx_make(L, MTK_EOF, s, 1);
@@ -294,23 +402,23 @@ static MslToken mlx_next(MslLexer *L) {
 
 /* Expression result: either a value or a pointer to a value */
 typedef struct {
-    uint32_t id;        /* SSIR value or pointer ID */
-    uint32_t val_type;  /* SSIR type of the underlying value */
-    bool is_ptr;        /* if true, id is a pointer; needs load for value */
+    uint32_t id;       /* SSIR value or pointer ID */
+    uint32_t val_type; /* SSIR type of the underlying value */
+    bool is_ptr;       /* if true, id is a pointer; needs load for value */
 } MslVal;
 
 /* Local symbol (variable, parameter, or mapped global) */
 typedef struct {
     char *name;
     uint32_t id;
-    uint32_t type_id;   /* pointer type for locals/globals */
-    uint32_t val_type;  /* value (pointee) type */
-    bool is_out_var;    /* _out magic variable */
-    bool is_in_var;     /* _in magic variable */
+    uint32_t type_id;  /* pointer type for locals/globals */
+    uint32_t val_type; /* value (pointee) type */
+    bool is_out_var;   /* _out magic variable */
+    bool is_in_var;    /* _in magic variable */
 } MslSym;
 
-#define MSL_SENTINEL_OUT  UINT32_MAX
-#define MSL_SENTINEL_IN   (UINT32_MAX - 1)
+#define MSL_SENTINEL_OUT UINT32_MAX
+#define MSL_SENTINEL_IN (UINT32_MAX - 1)
 
 /* Struct member info */
 typedef struct {
@@ -355,9 +463,9 @@ typedef struct {
 
     /* Entry point I/O globals */
     MslStructDef *out_struct;
-    uint32_t *out_globals;    /* parallel to out_struct members */
+    uint32_t *out_globals; /* parallel to out_struct members */
     MslStructDef *in_struct;
-    uint32_t *in_globals;     /* parallel to in_struct members */
+    uint32_t *in_globals; /* parallel to in_struct members */
 
     /* Interface global list for entry point */
     uint32_t *iface;
@@ -375,8 +483,8 @@ typedef struct {
  * Parser Helpers
  * ============================================================================ */
 
-//p nonnull
-//fmt nonnull
+// p nonnull
+// fmt nonnull
 static void mp_error(MslParser *p, const char *fmt, ...) {
     wgsl_compiler_assert(p != NULL, "mp_error: p is NULL");
     wgsl_compiler_assert(fmt != NULL, "mp_error: fmt is NULL");
@@ -388,20 +496,20 @@ static void mp_error(MslParser *p, const char *fmt, ...) {
     va_end(a);
 }
 
-//p nonnull
+// p nonnull
 static void mp_next(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_next: p is NULL");
     p->cur = mlx_next(&p->lex);
 }
 
-//p nonnull
+// p nonnull
 static bool mp_check(MslParser *p, MslTokType t) {
     wgsl_compiler_assert(p != NULL, "mp_check: p is NULL");
     return p->cur.type == t;
 }
 
-//p nonnull
-//kw nonnull
+// p nonnull
+// kw nonnull
 static bool mp_match_ident(MslParser *p, const char *kw) {
     wgsl_compiler_assert(p != NULL, "mp_match_ident: p is NULL");
     wgsl_compiler_assert(kw != NULL, "mp_match_ident: kw is NULL");
@@ -410,13 +518,13 @@ static bool mp_match_ident(MslParser *p, const char *kw) {
            strncmp(p->cur.start, kw, p->cur.length) == 0;
 }
 
-//p nonnull
+// p nonnull
 static char *mp_tok_str(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_tok_str: p is NULL");
     return msl_strndup(p->cur.start, p->cur.length);
 }
 
-//p nonnull
+// p nonnull
 static bool mp_eat(MslParser *p, MslTokType t) {
     wgsl_compiler_assert(p != NULL, "mp_eat: p is NULL");
     if (p->cur.type != t) return false;
@@ -424,7 +532,7 @@ static bool mp_eat(MslParser *p, MslTokType t) {
     return true;
 }
 
-//p nonnull
+// p nonnull
 static void mp_expect(MslParser *p, MslTokType t) {
     wgsl_compiler_assert(p != NULL, "mp_expect: p is NULL");
     if (!mp_eat(p, t))
@@ -432,7 +540,7 @@ static void mp_expect(MslParser *p, MslTokType t) {
 }
 
 /* Add an interface global to current entry point */
-//p nonnull
+// p nonnull
 static void mp_add_iface(MslParser *p, uint32_t gid) {
     wgsl_compiler_assert(p != NULL, "mp_add_iface: p is NULL");
     if (p->iface_count >= p->iface_cap) {
@@ -443,11 +551,11 @@ static void mp_add_iface(MslParser *p, uint32_t gid) {
 }
 
 /* Add a symbol to the current function scope */
-//p nonnull
-//name nonnull
+// p nonnull
+// name nonnull
 static void mp_add_sym(MslParser *p, const char *name, uint32_t id,
-                        uint32_t type_id, uint32_t val_type,
-                        bool is_out, bool is_in) {
+    uint32_t type_id, uint32_t val_type,
+    bool is_out, bool is_in) {
     wgsl_compiler_assert(p != NULL, "mp_add_sym: p is NULL");
     wgsl_compiler_assert(name != NULL, "mp_add_sym: name is NULL");
     if (p->sym_count >= p->sym_cap) {
@@ -463,8 +571,8 @@ static void mp_add_sym(MslParser *p, const char *name, uint32_t id,
     s->is_in_var = is_in;
 }
 
-//p nonnull
-//name nonnull
+// p nonnull
+// name nonnull
 static MslSym *mp_find_sym(MslParser *p, const char *name) {
     wgsl_compiler_assert(p != NULL, "mp_find_sym: p is NULL");
     wgsl_compiler_assert(name != NULL, "mp_find_sym: name is NULL");
@@ -475,7 +583,7 @@ static MslSym *mp_find_sym(MslParser *p, const char *name) {
 }
 
 /* Clear per-function state */
-//p nonnull
+// p nonnull
 static void mp_clear_func(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_clear_func: p is NULL");
     for (int i = 0; i < p->sym_count; i++) MSL_FREE(p->syms[i].name);
@@ -485,8 +593,10 @@ static void mp_clear_func(MslParser *p) {
     p->is_entry = 0;
     p->out_struct = NULL;
     p->in_struct = NULL;
-    MSL_FREE(p->out_globals); p->out_globals = NULL;
-    MSL_FREE(p->in_globals); p->in_globals = NULL;
+    MSL_FREE(p->out_globals);
+    p->out_globals = NULL;
+    MSL_FREE(p->in_globals);
+    p->in_globals = NULL;
     p->iface_count = 0;
 }
 
@@ -494,8 +604,8 @@ static void mp_clear_func(MslParser *p) {
  * Struct Registry
  * ============================================================================ */
 
-//p nonnull
-//name nonnull
+// p nonnull
+// name nonnull
 static MslStructDef *mp_find_struct(MslParser *p, const char *name) {
     wgsl_compiler_assert(p != NULL, "mp_find_struct: p is NULL");
     wgsl_compiler_assert(name != NULL, "mp_find_struct: name is NULL");
@@ -505,8 +615,8 @@ static MslStructDef *mp_find_struct(MslParser *p, const char *name) {
     return NULL;
 }
 
-//p nonnull
-//name nonnull
+// p nonnull
+// name nonnull
 static MslStructDef *mp_add_struct(MslParser *p, const char *name) {
     wgsl_compiler_assert(p != NULL, "mp_add_struct: p is NULL");
     wgsl_compiler_assert(name != NULL, "mp_add_struct: name is NULL");
@@ -520,10 +630,10 @@ static MslStructDef *mp_add_struct(MslParser *p, const char *name) {
     return sd;
 }
 
-//sd nonnull
-//name nonnull
+// sd nonnull
+// name nonnull
 static void mp_struct_add_member(MslStructDef *sd, const char *name, uint32_t type,
-                                  SsirBuiltinVar builtin, bool has_loc, uint32_t loc, bool flat) {
+    SsirBuiltinVar builtin, bool has_loc, uint32_t loc, bool flat) {
     wgsl_compiler_assert(sd != NULL, "mp_struct_add_member: sd is NULL");
     wgsl_compiler_assert(name != NULL, "mp_struct_add_member: name is NULL");
     int idx = sd->member_count++;
@@ -545,7 +655,7 @@ static void mp_struct_add_member(MslStructDef *sd, const char *name, uint32_t ty
 static uint32_t mp_parse_type(MslParser *p);
 
 /* Check if current identifier is a type name */
-//p nonnull
+// p nonnull
 static bool mp_is_type_name(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_is_type_name: p is NULL");
     if (p->cur.type != MTK_IDENT) return false;
@@ -593,7 +703,7 @@ static bool mp_is_type_name(MslParser *p) {
 }
 
 /* Parse a base scalar/vector/matrix/struct type, returns SSIR type ID */
-//p nonnull
+// p nonnull
 static uint32_t mp_parse_type(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_type: p is NULL");
     if (p->cur.type != MTK_IDENT) {
@@ -605,14 +715,32 @@ static uint32_t mp_parse_type(MslParser *p) {
     mp_next(p);
 
     /* void */
-    if (strcmp(name, "void") == 0) { MSL_FREE(name); return ssir_type_void(p->mod); }
+    if (strcmp(name, "void") == 0) {
+        MSL_FREE(name);
+        return ssir_type_void(p->mod);
+    }
 
     /* Scalars */
-    if (strcmp(name, "float") == 0) { MSL_FREE(name); return ssir_type_f32(p->mod); }
-    if (strcmp(name, "half") == 0) { MSL_FREE(name); return ssir_type_f16(p->mod); }
-    if (strcmp(name, "int") == 0) { MSL_FREE(name); return ssir_type_i32(p->mod); }
-    if (strcmp(name, "uint") == 0) { MSL_FREE(name); return ssir_type_u32(p->mod); }
-    if (strcmp(name, "bool") == 0) { MSL_FREE(name); return ssir_type_bool(p->mod); }
+    if (strcmp(name, "float") == 0) {
+        MSL_FREE(name);
+        return ssir_type_f32(p->mod);
+    }
+    if (strcmp(name, "half") == 0) {
+        MSL_FREE(name);
+        return ssir_type_f16(p->mod);
+    }
+    if (strcmp(name, "int") == 0) {
+        MSL_FREE(name);
+        return ssir_type_i32(p->mod);
+    }
+    if (strcmp(name, "uint") == 0) {
+        MSL_FREE(name);
+        return ssir_type_u32(p->mod);
+    }
+    if (strcmp(name, "bool") == 0) {
+        MSL_FREE(name);
+        return ssir_type_bool(p->mod);
+    }
 
     /* Vectors: float2..4, half2..4, int2..4, uint2..4 */
     if (strlen(name) >= 5 && strncmp(name, "float", 5) == 0 && name[5] >= '2' && name[5] <= '4' && name[6] == '\0') {
@@ -656,7 +784,10 @@ static uint32_t mp_parse_type(MslParser *p) {
     }
 
     /* sampler */
-    if (strcmp(name, "sampler") == 0) { MSL_FREE(name); return ssir_type_sampler(p->mod); }
+    if (strcmp(name, "sampler") == 0) {
+        MSL_FREE(name);
+        return ssir_type_sampler(p->mod);
+    }
 
     /* texture2d<T>, texture1d<T>, etc. */
     if (strncmp(name, "texture", 7) == 0 || strncmp(name, "depth", 5) == 0) {
@@ -762,7 +893,7 @@ typedef struct {
     uint32_t color;
 } MslAttr;
 
-//attr nonnull
+// attr nonnull
 static SsirBuiltinVar msl_attr_to_builtin(const char *attr) {
     wgsl_compiler_assert(attr != NULL, "msl_attr_to_builtin: attr is NULL");
     if (strcmp(attr, "position") == 0) return SSIR_BUILTIN_POSITION;
@@ -779,7 +910,7 @@ static SsirBuiltinVar msl_attr_to_builtin(const char *attr) {
     return SSIR_BUILTIN_NONE;
 }
 
-//p nonnull
+// p nonnull
 static MslAttr mp_parse_attrs(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_attrs: p is NULL");
     MslAttr a;
@@ -803,7 +934,10 @@ static MslAttr mp_parse_attrs(MslParser *p) {
             mp_expect(p, MTK_RPAREN);
             a.has_binding = true;
             a.binding = n;
-            if (is_buffer) { a.has_group = true; a.group = 0; }
+            if (is_buffer) {
+                a.has_group = true;
+                a.group = 0;
+            }
         } else if (strcmp(attr_name, "color") == 0) {
             mp_expect(p, MTK_LPAREN);
             char *num = mp_tok_str(p);
@@ -857,7 +991,7 @@ static MslAttr mp_parse_attrs(MslParser *p) {
  * Struct Definition Parsing
  * ============================================================================ */
 
-//p nonnull
+// p nonnull
 static void mp_parse_struct(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_struct: p is NULL");
     mp_next(p); /* skip 'struct' */
@@ -880,7 +1014,7 @@ static void mp_parse_struct(MslParser *p) {
             sd->is_interface = true;
 
         mp_struct_add_member(sd, mname, mtype, attr.builtin,
-                             attr.has_location, attr.location, attr.is_flat);
+            attr.has_location, attr.location, attr.is_flat);
         MSL_FREE(mname);
     }
     mp_expect(p, MTK_RBRACE);
@@ -892,7 +1026,7 @@ static void mp_parse_struct(MslParser *p) {
  * ============================================================================ */
 
 /* Get the pointee type from a pointer SSIR type */
-//p nonnull
+// p nonnull
 static uint32_t mp_pointee_type(MslParser *p, uint32_t ptr_type_id) {
     wgsl_compiler_assert(p != NULL, "mp_pointee_type: p is NULL");
     SsirType *t = ssir_get_type(p->mod, ptr_type_id);
@@ -901,7 +1035,7 @@ static uint32_t mp_pointee_type(MslParser *p, uint32_t ptr_type_id) {
 }
 
 /* Get the address space from a pointer SSIR type */
-//p nonnull
+// p nonnull
 static SsirAddressSpace mp_ptr_space(MslParser *p, uint32_t ptr_type_id) {
     wgsl_compiler_assert(p != NULL, "mp_ptr_space: p is NULL");
     SsirType *t = ssir_get_type(p->mod, ptr_type_id);
@@ -910,7 +1044,7 @@ static SsirAddressSpace mp_ptr_space(MslParser *p, uint32_t ptr_type_id) {
 }
 
 /* Ensure a value (load from pointer if needed) */
-//p nonnull
+// p nonnull
 static MslVal mp_ensure_val(MslParser *p, MslVal v) {
     wgsl_compiler_assert(p != NULL, "mp_ensure_val: p is NULL");
     if (v.is_ptr && p->func_id && p->block_id) {
@@ -922,16 +1056,16 @@ static MslVal mp_ensure_val(MslParser *p, MslVal v) {
 }
 
 /* Get the element type when indexing into a container type */
-//p nonnull
+// p nonnull
 static uint32_t mp_element_type(MslParser *p, uint32_t container_type) {
     wgsl_compiler_assert(p != NULL, "mp_element_type: p is NULL");
     SsirType *t = ssir_get_type(p->mod, container_type);
     if (!t) return container_type;
     switch (t->kind) {
-    case SSIR_TYPE_RUNTIME_ARRAY: return t->runtime_array.elem;
-    case SSIR_TYPE_ARRAY: return t->array.elem;
-    case SSIR_TYPE_VEC: return t->vec.elem;
-    default: return container_type;
+        case SSIR_TYPE_RUNTIME_ARRAY: return t->runtime_array.elem;
+        case SSIR_TYPE_ARRAY: return t->array.elem;
+        case SSIR_TYPE_VEC: return t->vec.elem;
+        default: return container_type;
     }
 }
 
@@ -943,7 +1077,7 @@ static MslVal mp_parse_expr(MslParser *p);
 static MslVal mp_parse_assign_expr(MslParser *p);
 
 /* Parse primary expression */
-//p nonnull
+// p nonnull
 static MslVal mp_parse_primary(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_primary: p is NULL");
     MslVal v = {0, 0, false};
@@ -964,7 +1098,7 @@ static MslVal mp_parse_primary(MslParser *p) {
         if (is_u) {
             /* Remove trailing 'u' for parsing */
             size_t len = strlen(s);
-            if (len > 0 && s[len-1] == 'u') s[len-1] = '\0';
+            if (len > 0 && s[len - 1] == 'u') s[len - 1] = '\0';
             uint32_t val = (uint32_t)strtoul(s, NULL, 0);
             v.id = ssir_const_u32(p->mod, val);
             v.val_type = ssir_type_u32(p->mod);
@@ -1088,12 +1222,15 @@ static MslVal mp_parse_primary(MslParser *p) {
 }
 
 /* MSL builtin function name → SSIR builtin ID */
-//name nonnull
-//out nonnull
+// name nonnull
+// out nonnull
 static int mp_msl_builtin_func(const char *name, SsirBuiltinId *out) {
     wgsl_compiler_assert(name != NULL, "mp_msl_builtin_func: name is NULL");
     wgsl_compiler_assert(out != NULL, "mp_msl_builtin_func: out is NULL");
-    static const struct { const char *name; SsirBuiltinId id; } map[] = {
+    static const struct {
+        const char *name;
+        SsirBuiltinId id;
+    } map[] = {
         {"sin", SSIR_BUILTIN_SIN}, {"cos", SSIR_BUILTIN_COS}, {"tan", SSIR_BUILTIN_TAN},
         {"asin", SSIR_BUILTIN_ASIN}, {"acos", SSIR_BUILTIN_ACOS}, {"atan", SSIR_BUILTIN_ATAN},
         {"atan2", SSIR_BUILTIN_ATAN2}, {"sinh", SSIR_BUILTIN_SINH}, {"cosh", SSIR_BUILTIN_COSH},
@@ -1115,10 +1252,12 @@ static int mp_msl_builtin_func(const char *name, SsirBuiltinId *out) {
         {"reverse_bits", SSIR_BUILTIN_REVERSEBITS}, {"clz", SSIR_BUILTIN_FIRSTLEADINGBIT},
         {"ctz", SSIR_BUILTIN_FIRSTTRAILINGBIT},
         {"dfdx", SSIR_BUILTIN_DPDX}, {"dfdy", SSIR_BUILTIN_DPDY}, {"fwidth", SSIR_BUILTIN_FWIDTH},
-        {NULL, 0}
-    };
+        {NULL, 0}};
     for (int i = 0; map[i].name; i++) {
-        if (strcmp(name, map[i].name) == 0) { *out = map[i].id; return 1; }
+        if (strcmp(name, map[i].name) == 0) {
+            *out = map[i].id;
+            return 1;
+        }
     }
     return 0;
 }
@@ -1126,16 +1265,20 @@ static int mp_msl_builtin_func(const char *name, SsirBuiltinId *out) {
 /* Swizzle char → index */
 static int mp_swizzle_index(char c) {
     switch (c) {
-    case 'x': case 'r': return 0;
-    case 'y': case 'g': return 1;
-    case 'z': case 'b': return 2;
-    case 'w': case 'a': return 3;
-    default: return -1;
+        case 'x':
+        case 'r': return 0;
+        case 'y':
+        case 'g': return 1;
+        case 'z':
+        case 'b': return 2;
+        case 'w':
+        case 'a': return 3;
+        default: return -1;
     }
 }
 
 /* Parse postfix: .member, [index], (args) */
-//p nonnull
+// p nonnull
 static MslVal mp_parse_postfix(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_postfix: p is NULL");
     MslVal v = mp_parse_primary(p);
@@ -1258,45 +1401,54 @@ static MslVal mp_parse_postfix(MslParser *p) {
 
             /* Texture member functions: .sample(), .read(), .write(), .get_width(), .get_height() */
             if (vt && (vt->kind == SSIR_TYPE_TEXTURE || vt->kind == SSIR_TYPE_TEXTURE_STORAGE ||
-                       vt->kind == SSIR_TYPE_TEXTURE_DEPTH || vt->kind == SSIR_TYPE_SAMPLER)) {
+                          vt->kind == SSIR_TYPE_TEXTURE_DEPTH || vt->kind == SSIR_TYPE_SAMPLER)) {
                 v = mp_ensure_val(p, v);
                 MslVal tex = v;
                 if (strcmp(member, "sample") == 0 && mp_check(p, MTK_LPAREN)) {
                     mp_next(p);
-                    MslVal samp = mp_parse_assign_expr(p); samp = mp_ensure_val(p, samp);
+                    MslVal samp = mp_parse_assign_expr(p);
+                    samp = mp_ensure_val(p, samp);
                     mp_expect(p, MTK_COMMA);
-                    MslVal coord = mp_parse_assign_expr(p); coord = mp_ensure_val(p, coord);
+                    MslVal coord = mp_parse_assign_expr(p);
+                    coord = mp_ensure_val(p, coord);
                     /* Check for optional bias/level */
                     if (mp_eat(p, MTK_COMMA)) {
                         /* bias(...) or level(...) */
                         if (mp_match_ident(p, "bias")) {
-                            mp_next(p); mp_expect(p, MTK_LPAREN);
-                            MslVal bias = mp_parse_expr(p); bias = mp_ensure_val(p, bias);
+                            mp_next(p);
+                            mp_expect(p, MTK_LPAREN);
+                            MslVal bias = mp_parse_expr(p);
+                            bias = mp_ensure_val(p, bias);
                             mp_expect(p, MTK_RPAREN);
                             mp_expect(p, MTK_RPAREN);
                             uint32_t res_type = ssir_type_vec(p->mod, ssir_type_f32(p->mod), 4);
                             v.id = ssir_build_tex_sample_bias(p->mod, p->func_id, p->block_id,
-                                                               res_type, tex.id, samp.id, coord.id, bias.id);
+                                res_type, tex.id, samp.id, coord.id, bias.id);
                             v.val_type = res_type;
                         } else if (mp_match_ident(p, "level")) {
-                            mp_next(p); mp_expect(p, MTK_LPAREN);
-                            MslVal lod = mp_parse_expr(p); lod = mp_ensure_val(p, lod);
+                            mp_next(p);
+                            mp_expect(p, MTK_LPAREN);
+                            MslVal lod = mp_parse_expr(p);
+                            lod = mp_ensure_val(p, lod);
                             mp_expect(p, MTK_RPAREN);
                             mp_expect(p, MTK_RPAREN);
                             uint32_t res_type = ssir_type_vec(p->mod, ssir_type_f32(p->mod), 4);
                             v.id = ssir_build_tex_sample_level(p->mod, p->func_id, p->block_id,
-                                                                res_type, tex.id, samp.id, coord.id, lod.id);
+                                res_type, tex.id, samp.id, coord.id, lod.id);
                             v.val_type = res_type;
                         } else if (mp_match_ident(p, "gradient2d")) {
-                            mp_next(p); mp_expect(p, MTK_LPAREN);
-                            MslVal ddx = mp_parse_expr(p); ddx = mp_ensure_val(p, ddx);
+                            mp_next(p);
+                            mp_expect(p, MTK_LPAREN);
+                            MslVal ddx = mp_parse_expr(p);
+                            ddx = mp_ensure_val(p, ddx);
                             mp_expect(p, MTK_COMMA);
-                            MslVal ddy = mp_parse_expr(p); ddy = mp_ensure_val(p, ddy);
+                            MslVal ddy = mp_parse_expr(p);
+                            ddy = mp_ensure_val(p, ddy);
                             mp_expect(p, MTK_RPAREN);
                             mp_expect(p, MTK_RPAREN);
                             uint32_t res_type = ssir_type_vec(p->mod, ssir_type_f32(p->mod), 4);
                             v.id = ssir_build_tex_sample_grad(p->mod, p->func_id, p->block_id,
-                                                               res_type, tex.id, samp.id, coord.id, ddx.id, ddy.id);
+                                res_type, tex.id, samp.id, coord.id, ddx.id, ddy.id);
                             v.val_type = res_type;
                         } else {
                             mp_expect(p, MTK_RPAREN);
@@ -1305,55 +1457,64 @@ static MslVal mp_parse_postfix(MslParser *p) {
                         mp_expect(p, MTK_RPAREN);
                         uint32_t res_type = ssir_type_vec(p->mod, ssir_type_f32(p->mod), 4);
                         v.id = ssir_build_tex_sample(p->mod, p->func_id, p->block_id,
-                                                      res_type, tex.id, samp.id, coord.id);
+                            res_type, tex.id, samp.id, coord.id);
                         v.val_type = res_type;
                     }
                     v.is_ptr = false;
                 } else if (strcmp(member, "sample_compare") == 0 && mp_check(p, MTK_LPAREN)) {
                     mp_next(p);
-                    MslVal samp = mp_parse_assign_expr(p); samp = mp_ensure_val(p, samp);
+                    MslVal samp = mp_parse_assign_expr(p);
+                    samp = mp_ensure_val(p, samp);
                     mp_expect(p, MTK_COMMA);
-                    MslVal coord = mp_parse_assign_expr(p); coord = mp_ensure_val(p, coord);
+                    MslVal coord = mp_parse_assign_expr(p);
+                    coord = mp_ensure_val(p, coord);
                     mp_expect(p, MTK_COMMA);
-                    MslVal ref = mp_parse_assign_expr(p); ref = mp_ensure_val(p, ref);
+                    MslVal ref = mp_parse_assign_expr(p);
+                    ref = mp_ensure_val(p, ref);
                     mp_expect(p, MTK_RPAREN);
                     uint32_t res_type = ssir_type_f32(p->mod);
                     v.id = ssir_build_tex_sample_cmp(p->mod, p->func_id, p->block_id,
-                                                      res_type, tex.id, samp.id, coord.id, ref.id);
+                        res_type, tex.id, samp.id, coord.id, ref.id);
                     v.val_type = res_type;
                     v.is_ptr = false;
                 } else if (strcmp(member, "read") == 0 && mp_check(p, MTK_LPAREN)) {
                     mp_next(p);
-                    MslVal coord = mp_parse_assign_expr(p); coord = mp_ensure_val(p, coord);
+                    MslVal coord = mp_parse_assign_expr(p);
+                    coord = mp_ensure_val(p, coord);
                     uint32_t level_id = 0;
                     if (mp_eat(p, MTK_COMMA)) {
-                        MslVal lv = mp_parse_assign_expr(p); lv = mp_ensure_val(p, lv);
+                        MslVal lv = mp_parse_assign_expr(p);
+                        lv = mp_ensure_val(p, lv);
                         level_id = lv.id;
                     }
                     mp_expect(p, MTK_RPAREN);
                     uint32_t res_type = ssir_type_vec(p->mod, ssir_type_f32(p->mod), 4);
                     v.id = ssir_build_tex_load(p->mod, p->func_id, p->block_id,
-                                                res_type, tex.id, coord.id, level_id);
+                        res_type, tex.id, coord.id, level_id);
                     v.val_type = res_type;
                     v.is_ptr = false;
                 } else if (strcmp(member, "write") == 0 && mp_check(p, MTK_LPAREN)) {
                     mp_next(p);
-                    MslVal val = mp_parse_assign_expr(p); val = mp_ensure_val(p, val);
+                    MslVal val = mp_parse_assign_expr(p);
+                    val = mp_ensure_val(p, val);
                     mp_expect(p, MTK_COMMA);
-                    MslVal coord = mp_parse_assign_expr(p); coord = mp_ensure_val(p, coord);
+                    MslVal coord = mp_parse_assign_expr(p);
+                    coord = mp_ensure_val(p, coord);
                     mp_expect(p, MTK_RPAREN);
                     ssir_build_tex_store(p->mod, p->func_id, p->block_id, tex.id, coord.id, val.id);
                     v.id = 0;
                     v.val_type = ssir_type_void(p->mod);
                     v.is_ptr = false;
                 } else if (strcmp(member, "get_width") == 0 && mp_check(p, MTK_LPAREN)) {
-                    mp_next(p); mp_expect(p, MTK_RPAREN);
+                    mp_next(p);
+                    mp_expect(p, MTK_RPAREN);
                     uint32_t res_type = ssir_type_u32(p->mod);
                     v.id = ssir_build_tex_size(p->mod, p->func_id, p->block_id, res_type, tex.id, 0);
                     v.val_type = res_type;
                     v.is_ptr = false;
                 } else if (strcmp(member, "get_height") == 0 && mp_check(p, MTK_LPAREN)) {
-                    mp_next(p); mp_expect(p, MTK_RPAREN);
+                    mp_next(p);
+                    mp_expect(p, MTK_RPAREN);
                     uint32_t res_type = ssir_type_u32(p->mod);
                     v.id = ssir_build_tex_size(p->mod, p->func_id, p->block_id, res_type, tex.id, 0);
                     v.val_type = res_type;
@@ -1408,7 +1569,7 @@ static MslVal mp_parse_postfix(MslParser *p) {
 }
 
 /* Parse unary expression */
-//p nonnull
+// p nonnull
 static MslVal mp_parse_unary(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_unary: p is NULL");
     if (mp_check(p, MTK_MINUS)) {
@@ -1447,49 +1608,57 @@ static MslVal mp_parse_unary(MslParser *p) {
 /* Operator precedence */
 static int mp_precedence(MslTokType t) {
     switch (t) {
-    case MTK_OROR: return 1;
-    case MTK_ANDAND: return 2;
-    case MTK_PIPE: return 3;
-    case MTK_CARET: return 4;
-    case MTK_AMP: return 5;
-    case MTK_EQEQ: case MTK_NEQ: return 6;
-    case MTK_LT: case MTK_LE: case MTK_GT: case MTK_GE: return 7;
-    case MTK_SHL: case MTK_SHR: return 8;
-    case MTK_PLUS: case MTK_MINUS: return 9;
-    case MTK_STAR: case MTK_SLASH: case MTK_PERCENT: return 10;
-    default: return 0;
+        case MTK_OROR: return 1;
+        case MTK_ANDAND: return 2;
+        case MTK_PIPE: return 3;
+        case MTK_CARET: return 4;
+        case MTK_AMP: return 5;
+        case MTK_EQEQ:
+        case MTK_NEQ: return 6;
+        case MTK_LT:
+        case MTK_LE:
+        case MTK_GT:
+        case MTK_GE: return 7;
+        case MTK_SHL:
+        case MTK_SHR: return 8;
+        case MTK_PLUS:
+        case MTK_MINUS: return 9;
+        case MTK_STAR:
+        case MTK_SLASH:
+        case MTK_PERCENT: return 10;
+        default: return 0;
     }
 }
 
 /* Build binary instruction from operator token */
-//p nonnull
+// p nonnull
 static uint32_t mp_build_binop(MslParser *p, MslTokType op, uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(p != NULL, "mp_build_binop: p is NULL");
     switch (op) {
-    case MTK_PLUS: return ssir_build_add(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_MINUS: return ssir_build_sub(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_STAR: return ssir_build_mul(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_SLASH: return ssir_build_div(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_PERCENT: return ssir_build_mod(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_EQEQ: return ssir_build_eq(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
-    case MTK_NEQ: return ssir_build_ne(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
-    case MTK_LT: return ssir_build_lt(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
-    case MTK_LE: return ssir_build_le(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
-    case MTK_GT: return ssir_build_gt(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
-    case MTK_GE: return ssir_build_ge(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
-    case MTK_ANDAND: return ssir_build_and(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
-    case MTK_OROR: return ssir_build_or(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
-    case MTK_AMP: return ssir_build_bit_and(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_PIPE: return ssir_build_bit_or(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_CARET: return ssir_build_bit_xor(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_SHL: return ssir_build_shl(p->mod, p->func_id, p->block_id, type, a, b);
-    case MTK_SHR: return ssir_build_shr(p->mod, p->func_id, p->block_id, type, a, b);
-    default: return a;
+        case MTK_PLUS: return ssir_build_add(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_MINUS: return ssir_build_sub(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_STAR: return ssir_build_mul(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_SLASH: return ssir_build_div(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_PERCENT: return ssir_build_mod(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_EQEQ: return ssir_build_eq(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
+        case MTK_NEQ: return ssir_build_ne(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
+        case MTK_LT: return ssir_build_lt(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
+        case MTK_LE: return ssir_build_le(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
+        case MTK_GT: return ssir_build_gt(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
+        case MTK_GE: return ssir_build_ge(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
+        case MTK_ANDAND: return ssir_build_and(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
+        case MTK_OROR: return ssir_build_or(p->mod, p->func_id, p->block_id, ssir_type_bool(p->mod), a, b);
+        case MTK_AMP: return ssir_build_bit_and(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_PIPE: return ssir_build_bit_or(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_CARET: return ssir_build_bit_xor(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_SHL: return ssir_build_shl(p->mod, p->func_id, p->block_id, type, a, b);
+        case MTK_SHR: return ssir_build_shr(p->mod, p->func_id, p->block_id, type, a, b);
+        default: return a;
     }
 }
 
 /* Parse binary expression with precedence climbing */
-//p nonnull
+// p nonnull
 static MslVal mp_parse_binary(MslParser *p, int min_prec) {
     wgsl_compiler_assert(p != NULL, "mp_parse_binary: p is NULL");
     MslVal left = mp_parse_unary(p);
@@ -1520,14 +1689,14 @@ static MslVal mp_parse_binary(MslParser *p, int min_prec) {
 }
 
 /* Parse full expression (binary with min precedence 1) */
-//p nonnull
+// p nonnull
 static MslVal mp_parse_expr(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_expr: p is NULL");
     return mp_parse_binary(p, 1);
 }
 
 /* Parse assignment expression (used in function args - same as expr for now) */
-//p nonnull
+// p nonnull
 static MslVal mp_parse_assign_expr(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_assign_expr: p is NULL");
     return mp_parse_expr(p);
@@ -1541,7 +1710,7 @@ static void mp_parse_block(MslParser *p);
 static void mp_parse_stmt(MslParser *p);
 
 /* Is current position the start of a type? (for var declarations) */
-//p nonnull
+// p nonnull
 static bool mp_at_var_decl(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_at_var_decl: p is NULL");
     if (mp_is_type_name(p)) return true;
@@ -1552,16 +1721,22 @@ static bool mp_at_var_decl(MslParser *p) {
     return false;
 }
 
-//p nonnull
+// p nonnull
 static void mp_parse_stmt(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_stmt: p is NULL");
     if (p->had_error) return;
 
     /* Empty statement */
-    if (mp_check(p, MTK_SEMI)) { mp_next(p); return; }
+    if (mp_check(p, MTK_SEMI)) {
+        mp_next(p);
+        return;
+    }
 
     /* Block */
-    if (mp_check(p, MTK_LBRACE)) { mp_parse_block(p); return; }
+    if (mp_check(p, MTK_LBRACE)) {
+        mp_parse_block(p);
+        return;
+    }
 
     /* Return */
     if (mp_match_ident(p, "return")) {
@@ -1606,7 +1781,7 @@ static void mp_parse_stmt(MslParser *p) {
         bool has_else = false;
 
         ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
-                                      cond.id, true_blk, false_blk, merge_blk);
+            cond.id, true_blk, false_blk, merge_blk);
 
         /* True branch */
         p->block_id = true_blk;
@@ -1689,9 +1864,9 @@ static void mp_parse_stmt(MslParser *p) {
                     ssir_build_store(p->mod, p->func_id, p->block_id, inc_lhs.id, rhs.id);
                 } else {
                     MslVal loaded = mp_ensure_val(p, inc_lhs);
-                    MslTokType bop = (aop == MTK_PLUSEQ) ? MTK_PLUS :
-                                     (aop == MTK_MINUSEQ) ? MTK_MINUS :
-                                     (aop == MTK_STAREQ) ? MTK_STAR : MTK_SLASH;
+                    MslTokType bop = (aop == MTK_PLUSEQ) ? MTK_PLUS : (aop == MTK_MINUSEQ) ? MTK_MINUS
+                                                                  : (aop == MTK_STAREQ)    ? MTK_STAR
+                                                                                           : MTK_SLASH;
                     uint32_t res = mp_build_binop(p, bop, loaded.val_type, loaded.id, rhs.id);
                     ssir_build_store(p->mod, p->func_id, p->block_id, inc_lhs.id, res);
                 }
@@ -1779,8 +1954,16 @@ static void mp_parse_stmt(MslParser *p) {
     }
 
     /* Break/continue */
-    if (mp_match_ident(p, "break")) { mp_next(p); mp_expect(p, MTK_SEMI); return; }
-    if (mp_match_ident(p, "continue")) { mp_next(p); mp_expect(p, MTK_SEMI); return; }
+    if (mp_match_ident(p, "break")) {
+        mp_next(p);
+        mp_expect(p, MTK_SEMI);
+        return;
+    }
+    if (mp_match_ident(p, "continue")) {
+        mp_next(p);
+        mp_expect(p, MTK_SEMI);
+        return;
+    }
 
     /* Discard */
     if (mp_match_ident(p, "discard_fragment")) {
@@ -1889,15 +2072,15 @@ static void mp_parse_stmt(MslParser *p) {
             MslVal loaded = mp_ensure_val(p, lhs);
             MslTokType bop;
             switch (aop) {
-            case MTK_PLUSEQ: bop = MTK_PLUS; break;
-            case MTK_MINUSEQ: bop = MTK_MINUS; break;
-            case MTK_STAREQ: bop = MTK_STAR; break;
-            case MTK_SLASHEQ: bop = MTK_SLASH; break;
-            case MTK_PERCENTEQ: bop = MTK_PERCENT; break;
-            case MTK_AMPEQ: bop = MTK_AMP; break;
-            case MTK_PIPEEQ: bop = MTK_PIPE; break;
-            case MTK_CARETEQ: bop = MTK_CARET; break;
-            default: bop = MTK_PLUS; break;
+                case MTK_PLUSEQ: bop = MTK_PLUS; break;
+                case MTK_MINUSEQ: bop = MTK_MINUS; break;
+                case MTK_STAREQ: bop = MTK_STAR; break;
+                case MTK_SLASHEQ: bop = MTK_SLASH; break;
+                case MTK_PERCENTEQ: bop = MTK_PERCENT; break;
+                case MTK_AMPEQ: bop = MTK_AMP; break;
+                case MTK_PIPEEQ: bop = MTK_PIPE; break;
+                case MTK_CARETEQ: bop = MTK_CARET; break;
+                default: bop = MTK_PLUS; break;
             }
             uint32_t res = mp_build_binop(p, bop, loaded.val_type, loaded.id, rhs.id);
             if (lhs.is_ptr)
@@ -1913,9 +2096,7 @@ static void mp_parse_stmt(MslParser *p) {
             if (lhs.is_ptr) {
                 MslVal loaded = mp_ensure_val(p, lhs);
                 uint32_t one = ssir_const_i32(p->mod, 1);
-                uint32_t res = is_inc ?
-                    ssir_build_add(p->mod, p->func_id, p->block_id, loaded.val_type, loaded.id, one) :
-                    ssir_build_sub(p->mod, p->func_id, p->block_id, loaded.val_type, loaded.id, one);
+                uint32_t res = is_inc ? ssir_build_add(p->mod, p->func_id, p->block_id, loaded.val_type, loaded.id, one) : ssir_build_sub(p->mod, p->func_id, p->block_id, loaded.val_type, loaded.id, one);
                 ssir_build_store(p->mod, p->func_id, p->block_id, lhs.id, res);
             }
             mp_expect(p, MTK_SEMI);
@@ -1928,7 +2109,7 @@ static void mp_parse_stmt(MslParser *p) {
     }
 }
 
-//p nonnull
+// p nonnull
 static void mp_parse_block(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_block: p is NULL");
     mp_expect(p, MTK_LBRACE);
@@ -1942,14 +2123,14 @@ static void mp_parse_block(MslParser *p) {
  * ============================================================================ */
 
 /* Demangle MSL entry point name: "main0" -> "main" */
-//name nonnull
+// name nonnull
 static const char *mp_demangle_name(const char *name) {
     wgsl_compiler_assert(name != NULL, "mp_demangle_name: name is NULL");
     if (strcmp(name, "main0") == 0) return "main";
     return name;
 }
 
-//p nonnull
+// p nonnull
 static void mp_parse_function(MslParser *p, SsirStage stage) {
     wgsl_compiler_assert(p != NULL, "mp_parse_function: p is NULL");
     mp_clear_func(p);
@@ -1973,9 +2154,8 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
     MSL_FREE(ret_type_name);
 
     /* Create SSIR function (entry points return void, outputs via globals) */
-    uint32_t ssir_ret = (p->is_entry && ret_struct) ? ssir_type_void(p->mod) :
-                         (p->is_entry && stage == SSIR_STAGE_COMPUTE) ? ssir_type_void(p->mod) :
-                         ret_type;
+    uint32_t ssir_ret = (p->is_entry && ret_struct) ? ssir_type_void(p->mod) : (p->is_entry && stage == SSIR_STAGE_COMPUTE) ? ssir_type_void(p->mod)
+                                                                                                                            : ret_type;
     const char *demangled = mp_demangle_name(func_name);
     p->func_id = ssir_function_create(p->mod, demangled, ssir_ret);
 
@@ -2007,11 +2187,17 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
         SsirAddressSpace addr_space = SSIR_ADDR_FUNCTION;
         bool has_addr_space = false;
         if (mp_match_ident(p, "device")) {
-            addr_space = SSIR_ADDR_STORAGE; has_addr_space = true; mp_next(p);
+            addr_space = SSIR_ADDR_STORAGE;
+            has_addr_space = true;
+            mp_next(p);
         } else if (mp_match_ident(p, "constant")) {
-            addr_space = SSIR_ADDR_UNIFORM; has_addr_space = true; mp_next(p);
+            addr_space = SSIR_ADDR_UNIFORM;
+            has_addr_space = true;
+            mp_next(p);
         } else if (mp_match_ident(p, "threadgroup")) {
-            addr_space = SSIR_ADDR_WORKGROUP; has_addr_space = true; mp_next(p);
+            addr_space = SSIR_ADDR_WORKGROUP;
+            has_addr_space = true;
+            mp_next(p);
         }
 
         /* Save type name for stage_in struct lookup */
@@ -2021,8 +2207,13 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
         /* Check for pointer (*) or reference (&) */
         bool is_ptr = false;
         bool is_ref = false;
-        if (mp_check(p, MTK_STAR)) { is_ptr = true; mp_next(p); }
-        else if (mp_check(p, MTK_AMP)) { is_ref = true; mp_next(p); }
+        if (mp_check(p, MTK_STAR)) {
+            is_ptr = true;
+            mp_next(p);
+        } else if (mp_check(p, MTK_AMP)) {
+            is_ref = true;
+            mp_next(p);
+        }
 
         /* Parameter name */
         char *pname = mp_tok_str(p);
@@ -2122,9 +2313,9 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
             ssir_entry_point_add_interface(p->mod, p->ep_index, p->iface[i]);
         if (stage == SSIR_STAGE_COMPUTE)
             ssir_entry_point_set_workgroup_size(p->mod, p->ep_index,
-                                                 p->wg_size[0] ? p->wg_size[0] : 1,
-                                                 p->wg_size[1] ? p->wg_size[1] : 1,
-                                                 p->wg_size[2] ? p->wg_size[2] : 1);
+                p->wg_size[0] ? p->wg_size[0] : 1,
+                p->wg_size[1] ? p->wg_size[1] : 1,
+                p->wg_size[2] ? p->wg_size[2] : 1);
     }
 
     /* Parse function body */
@@ -2138,11 +2329,11 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
     {
         SsirBlock *blk = ssir_get_block(p->mod, p->func_id, p->block_id);
         if (blk && (blk->inst_count == 0 ||
-            (blk->insts[blk->inst_count - 1].op != SSIR_OP_RETURN &&
-             blk->insts[blk->inst_count - 1].op != SSIR_OP_RETURN_VOID &&
-             blk->insts[blk->inst_count - 1].op != SSIR_OP_BRANCH &&
-             blk->insts[blk->inst_count - 1].op != SSIR_OP_BRANCH_COND &&
-             blk->insts[blk->inst_count - 1].op != SSIR_OP_UNREACHABLE))) {
+                       (blk->insts[blk->inst_count - 1].op != SSIR_OP_RETURN &&
+                           blk->insts[blk->inst_count - 1].op != SSIR_OP_RETURN_VOID &&
+                           blk->insts[blk->inst_count - 1].op != SSIR_OP_BRANCH &&
+                           blk->insts[blk->inst_count - 1].op != SSIR_OP_BRANCH_COND &&
+                           blk->insts[blk->inst_count - 1].op != SSIR_OP_UNREACHABLE))) {
             ssir_build_return_void(p->mod, p->func_id, p->block_id);
         }
     }
@@ -2154,7 +2345,7 @@ static void mp_parse_function(MslParser *p, SsirStage stage) {
  * Top-Level Parsing
  * ============================================================================ */
 
-//p nonnull
+// p nonnull
 static void mp_parse_toplevel(MslParser *p) {
     wgsl_compiler_assert(p != NULL, "mp_parse_toplevel: p is NULL");
     while (!mp_check(p, MTK_EOF) && !p->had_error) {
@@ -2175,11 +2366,17 @@ static void mp_parse_toplevel(MslParser *p) {
         SsirStage stage = SSIR_STAGE_COMPUTE;
         bool is_entry = false;
         if (mp_match_ident(p, "kernel")) {
-            stage = SSIR_STAGE_COMPUTE; is_entry = true; mp_next(p);
+            stage = SSIR_STAGE_COMPUTE;
+            is_entry = true;
+            mp_next(p);
         } else if (mp_match_ident(p, "vertex")) {
-            stage = SSIR_STAGE_VERTEX; is_entry = true; mp_next(p);
+            stage = SSIR_STAGE_VERTEX;
+            is_entry = true;
+            mp_next(p);
         } else if (mp_match_ident(p, "fragment")) {
-            stage = SSIR_STAGE_FRAGMENT; is_entry = true; mp_next(p);
+            stage = SSIR_STAGE_FRAGMENT;
+            is_entry = true;
+            mp_next(p);
         }
 
         if (is_entry) {
@@ -2205,12 +2402,12 @@ static void mp_parse_toplevel(MslParser *p) {
  * Public API
  * ============================================================================ */
 
-//msl_source nonnull
-//opts nullable
-//out_module nonnull
-//out_error nullable
+// msl_source nonnull
+// opts nullable
+// out_module nonnull
+// out_error nullable
 MslToSsirResult msl_to_ssir(const char *msl_source, const MslToSsirOptions *opts,
-                              SsirModule **out_module, char **out_error) {
+    SsirModule **out_module, char **out_error) {
     if (!msl_source || !out_module) {
         if (out_error) *out_error = msl_strdup("Invalid input: null source or output pointer");
         return MSL_TO_SSIR_PARSE_ERROR;
@@ -2271,17 +2468,17 @@ MslToSsirResult msl_to_ssir(const char *msl_source, const MslToSsirOptions *opts
     return MSL_TO_SSIR_OK;
 }
 
-//str nullable
+// str nullable
 void msl_to_ssir_free(char *str) {
     MSL_FREE(str);
 }
 
 const char *msl_to_ssir_result_string(MslToSsirResult r) {
     switch (r) {
-    case MSL_TO_SSIR_OK: return "Success";
-    case MSL_TO_SSIR_PARSE_ERROR: return "Parse error";
-    case MSL_TO_SSIR_TYPE_ERROR: return "Type error";
-    case MSL_TO_SSIR_UNSUPPORTED: return "Unsupported feature";
-    default: return "Unknown error";
+        case MSL_TO_SSIR_OK: return "Success";
+        case MSL_TO_SSIR_PARSE_ERROR: return "Parse error";
+        case MSL_TO_SSIR_TYPE_ERROR: return "Type error";
+        case MSL_TO_SSIR_UNSUPPORTED: return "Unsupported feature";
+        default: return "Unknown error";
     }
 }

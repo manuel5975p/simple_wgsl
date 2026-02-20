@@ -8,35 +8,38 @@ extern "C" {
 namespace {
 
 class SsirGuard {
-public:
-    explicit SsirGuard(SsirModule* m) : m_(m) {}
-    ~SsirGuard() { if (m_) ssir_module_destroy(m_); }
-    SsirModule* get() { return m_; }
-private:
-    SsirModule* m_;
+  public:
+    explicit SsirGuard(SsirModule *m) : m_(m) {}
+    ~SsirGuard() {
+        if (m_) ssir_module_destroy(m_);
+    }
+    SsirModule *get() { return m_; }
+
+  private:
+    SsirModule *m_;
 };
 
 struct SsirCompileResult {
     bool success;
     std::string error;
-    const SsirModule* ssir;  // Valid only while lower context is alive
-    WgslLower* lower;        // Caller must destroy
+    const SsirModule *ssir; // Valid only while lower context is alive
+    WgslLower *lower;       // Caller must destroy
 };
 
 // Compile WGSL to SSIR using the lowering context
-SsirCompileResult CompileToSsir(const char* source) {
+SsirCompileResult CompileToSsir(const char *source) {
     SsirCompileResult result;
     result.success = false;
     result.ssir = nullptr;
     result.lower = nullptr;
 
-    WgslAstNode* ast = wgsl_parse(source);
+    WgslAstNode *ast = wgsl_parse(source);
     if (!ast) {
         result.error = "Parse failed";
         return result;
     }
 
-    WgslResolver* resolver = wgsl_resolver_build(ast);
+    WgslResolver *resolver = wgsl_resolver_build(ast);
     if (!resolver) {
         wgsl_free_ast(ast);
         result.error = "Resolve failed";
@@ -70,11 +73,14 @@ SsirCompileResult CompileToSsir(const char* source) {
 
 // RAII wrapper for SsirCompileResult
 class SsirCompileGuard {
-public:
-    explicit SsirCompileGuard(const SsirCompileResult& r) : r_(r) {}
-    ~SsirCompileGuard() { if (r_.lower) wgsl_lower_destroy(r_.lower); }
-    const SsirCompileResult& get() { return r_; }
-private:
+  public:
+    explicit SsirCompileGuard(const SsirCompileResult &r) : r_(r) {}
+    ~SsirCompileGuard() {
+        if (r_.lower) wgsl_lower_destroy(r_.lower);
+    }
+    const SsirCompileResult &get() { return r_; }
+
+  private:
     SsirCompileResult r_;
 };
 
@@ -82,21 +88,23 @@ private:
 
 // Test minimal empty function
 TEST(SsirRaiseTest, MinimalFunction) {
-    const char* source = "fn main() {}";
+    const char *source = "fn main() {}";
     auto compile = CompileToSsir(source);
     SsirCompileGuard guard(compile);
     ASSERT_TRUE(compile.success) << compile.error;
 
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
     SsirToWgslOptions opts = {};
     opts.preserve_names = 1;
 
     SsirToWgslResult result = ssir_to_wgsl(compile.ssir, &opts, &wgsl, &error);
     EXPECT_EQ(result, SSIR_TO_WGSL_OK) << (error ? error : "unknown error");
     ASSERT_NE(wgsl, nullptr);
-    EXPECT_TRUE(strstr(wgsl, "fn ") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "main") != nullptr) << "WGSL:\n" << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "fn ") != nullptr) << "WGSL:\n"
+                                                << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "main") != nullptr) << "WGSL:\n"
+                                                 << wgsl;
 
     ssir_to_wgsl_free(wgsl);
     ssir_to_wgsl_free(error);
@@ -104,23 +112,25 @@ TEST(SsirRaiseTest, MinimalFunction) {
 
 // Test vertex shader with builtin position output
 TEST(SsirRaiseTest, VertexShader) {
-    const char* source = R"(
+    const char *source = R"(
         @vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }
     )";
     auto compile = CompileToSsir(source);
     SsirCompileGuard guard(compile);
     ASSERT_TRUE(compile.success) << compile.error;
 
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
     SsirToWgslOptions opts = {};
     opts.preserve_names = 1;
 
     SsirToWgslResult result = ssir_to_wgsl(compile.ssir, &opts, &wgsl, &error);
     EXPECT_EQ(result, SSIR_TO_WGSL_OK) << (error ? error : "unknown error");
     ASSERT_NE(wgsl, nullptr);
-    EXPECT_TRUE(strstr(wgsl, "@vertex") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "position") != nullptr) << "WGSL:\n" << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@vertex") != nullptr) << "WGSL:\n"
+                                                    << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "position") != nullptr) << "WGSL:\n"
+                                                     << wgsl;
 
     ssir_to_wgsl_free(wgsl);
     ssir_to_wgsl_free(error);
@@ -128,23 +138,25 @@ TEST(SsirRaiseTest, VertexShader) {
 
 // Test fragment shader with location output
 TEST(SsirRaiseTest, FragmentShader) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
     )";
     auto compile = CompileToSsir(source);
     SsirCompileGuard guard(compile);
     ASSERT_TRUE(compile.success) << compile.error;
 
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
     SsirToWgslOptions opts = {};
     opts.preserve_names = 1;
 
     SsirToWgslResult result = ssir_to_wgsl(compile.ssir, &opts, &wgsl, &error);
     EXPECT_EQ(result, SSIR_TO_WGSL_OK) << (error ? error : "unknown error");
     ASSERT_NE(wgsl, nullptr);
-    EXPECT_TRUE(strstr(wgsl, "@fragment") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "@location(0)") != nullptr) << "WGSL:\n" << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@fragment") != nullptr) << "WGSL:\n"
+                                                      << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@location(0)") != nullptr) << "WGSL:\n"
+                                                         << wgsl;
 
     ssir_to_wgsl_free(wgsl);
     ssir_to_wgsl_free(error);
@@ -152,23 +164,25 @@ TEST(SsirRaiseTest, FragmentShader) {
 
 // Test compute shader with workgroup size
 TEST(SsirRaiseTest, ComputeShader) {
-    const char* source = R"(
+    const char *source = R"(
         @compute @workgroup_size(8, 8, 1) fn cs() {}
     )";
     auto compile = CompileToSsir(source);
     SsirCompileGuard guard(compile);
     ASSERT_TRUE(compile.success) << compile.error;
 
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
     SsirToWgslOptions opts = {};
     opts.preserve_names = 1;
 
     SsirToWgslResult result = ssir_to_wgsl(compile.ssir, &opts, &wgsl, &error);
     EXPECT_EQ(result, SSIR_TO_WGSL_OK) << (error ? error : "unknown error");
     ASSERT_NE(wgsl, nullptr);
-    EXPECT_TRUE(strstr(wgsl, "@compute") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "@workgroup_size") != nullptr) << "WGSL:\n" << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@compute") != nullptr) << "WGSL:\n"
+                                                     << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@workgroup_size") != nullptr) << "WGSL:\n"
+                                                            << wgsl;
 
     ssir_to_wgsl_free(wgsl);
     ssir_to_wgsl_free(error);
@@ -176,7 +190,7 @@ TEST(SsirRaiseTest, ComputeShader) {
 
 // Test uniform buffer with struct
 TEST(SsirRaiseTest, UniformBuffer) {
-    const char* source = R"(
+    const char *source = R"(
         struct Uniforms { color: vec4f };
         @group(0) @binding(0) var<uniform> u: Uniforms;
         @fragment fn fs() -> @location(0) vec4f { return u.color; }
@@ -185,18 +199,22 @@ TEST(SsirRaiseTest, UniformBuffer) {
     SsirCompileGuard guard(compile);
     ASSERT_TRUE(compile.success) << compile.error;
 
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
     SsirToWgslOptions opts = {};
     opts.preserve_names = 1;
 
     SsirToWgslResult result = ssir_to_wgsl(compile.ssir, &opts, &wgsl, &error);
     EXPECT_EQ(result, SSIR_TO_WGSL_OK) << (error ? error : "unknown error");
     ASSERT_NE(wgsl, nullptr);
-    EXPECT_TRUE(strstr(wgsl, "struct") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "@group(0)") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "@binding(0)") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "var<uniform>") != nullptr) << "WGSL:\n" << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "struct") != nullptr) << "WGSL:\n"
+                                                   << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@group(0)") != nullptr) << "WGSL:\n"
+                                                      << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@binding(0)") != nullptr) << "WGSL:\n"
+                                                        << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "var<uniform>") != nullptr) << "WGSL:\n"
+                                                         << wgsl;
 
     ssir_to_wgsl_free(wgsl);
     ssir_to_wgsl_free(error);
@@ -204,7 +222,7 @@ TEST(SsirRaiseTest, UniformBuffer) {
 
 // Test arithmetic operations
 TEST(SsirRaiseTest, ArithmeticOps) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = 1.0;
             let b = 2.0;
@@ -219,8 +237,8 @@ TEST(SsirRaiseTest, ArithmeticOps) {
     SsirCompileGuard guard(compile);
     ASSERT_TRUE(compile.success) << compile.error;
 
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
     SsirToWgslOptions opts = {};
     opts.preserve_names = 1;
 
@@ -228,7 +246,8 @@ TEST(SsirRaiseTest, ArithmeticOps) {
     EXPECT_EQ(result, SSIR_TO_WGSL_OK) << (error ? error : "unknown error");
     ASSERT_NE(wgsl, nullptr);
     // Just verify it produces valid output with vec4
-    EXPECT_TRUE(strstr(wgsl, "vec4") != nullptr) << "WGSL:\n" << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "vec4") != nullptr) << "WGSL:\n"
+                                                 << wgsl;
 
     ssir_to_wgsl_free(wgsl);
     ssir_to_wgsl_free(error);
@@ -236,7 +255,7 @@ TEST(SsirRaiseTest, ArithmeticOps) {
 
 // Test math builtin functions
 TEST(SsirRaiseTest, MathBuiltins) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let x = 0.5;
             let s = sin(x);
@@ -249,17 +268,20 @@ TEST(SsirRaiseTest, MathBuiltins) {
     SsirCompileGuard guard(compile);
     ASSERT_TRUE(compile.success) << compile.error;
 
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
     SsirToWgslOptions opts = {};
     opts.preserve_names = 1;
 
     SsirToWgslResult result = ssir_to_wgsl(compile.ssir, &opts, &wgsl, &error);
     EXPECT_EQ(result, SSIR_TO_WGSL_OK) << (error ? error : "unknown error");
     ASSERT_NE(wgsl, nullptr);
-    EXPECT_TRUE(strstr(wgsl, "sin") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "cos") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "sqrt") != nullptr) << "WGSL:\n" << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "sin") != nullptr) << "WGSL:\n"
+                                                << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "cos") != nullptr) << "WGSL:\n"
+                                                << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "sqrt") != nullptr) << "WGSL:\n"
+                                                 << wgsl;
 
     ssir_to_wgsl_free(wgsl);
     ssir_to_wgsl_free(error);
@@ -267,7 +289,7 @@ TEST(SsirRaiseTest, MathBuiltins) {
 
 // Test vertex input
 TEST(SsirRaiseTest, VertexInput) {
-    const char* source = R"(
+    const char *source = R"(
         @vertex fn vs(@location(0) pos: vec3f) -> @builtin(position) vec4f {
             return vec4f(pos, 1.0);
         }
@@ -276,16 +298,18 @@ TEST(SsirRaiseTest, VertexInput) {
     SsirCompileGuard guard(compile);
     ASSERT_TRUE(compile.success) << compile.error;
 
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
     SsirToWgslOptions opts = {};
     opts.preserve_names = 1;
 
     SsirToWgslResult result = ssir_to_wgsl(compile.ssir, &opts, &wgsl, &error);
     EXPECT_EQ(result, SSIR_TO_WGSL_OK) << (error ? error : "unknown error");
     ASSERT_NE(wgsl, nullptr);
-    EXPECT_TRUE(strstr(wgsl, "@vertex") != nullptr) << "WGSL:\n" << wgsl;
-    EXPECT_TRUE(strstr(wgsl, "@builtin(position)") != nullptr) << "WGSL:\n" << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@vertex") != nullptr) << "WGSL:\n"
+                                                    << wgsl;
+    EXPECT_TRUE(strstr(wgsl, "@builtin(position)") != nullptr) << "WGSL:\n"
+                                                               << wgsl;
 
     ssir_to_wgsl_free(wgsl);
     ssir_to_wgsl_free(error);
@@ -293,8 +317,8 @@ TEST(SsirRaiseTest, VertexInput) {
 
 // Test null input error
 TEST(SsirRaiseTest, NullInput) {
-    char* wgsl = nullptr;
-    char* error = nullptr;
+    char *wgsl = nullptr;
+    char *error = nullptr;
 
     SsirToWgslResult result = ssir_to_wgsl(nullptr, nullptr, &wgsl, &error);
     EXPECT_EQ(result, SSIR_TO_WGSL_ERR_INVALID_INPUT);

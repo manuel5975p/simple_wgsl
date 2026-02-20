@@ -56,14 +56,32 @@ extern "C" {
 #elif defined(_MSC_VER)
 #define WGSL_COMPILER_TRAP() __debugbreak()
 #else
-#define WGSL_COMPILER_TRAP() (*(volatile int*)0 = 0)
+#define WGSL_COMPILER_TRAP() (*(volatile int *)0 = 0)
 #endif
 #endif
 
+#ifndef NDEBUG
 #ifndef wgsl_compiler_assert
-#define wgsl_compiler_assert(cond, fmt, ...) do { \
-    if (!(cond)) { WGSL_COMPILER_TRAP(); } \
-} while(0)
+#define wgsl_compiler_assert(cond, fmt, ...)   \
+    do {                                       \
+        if (!(cond)) { WGSL_COMPILER_TRAP(); } \
+    } while (0)
+#endif
+#else
+#ifndef wgsl_compiler_assert
+#if defined(__clang__)
+#define wgsl_compiler_assert(cond, fmt, ...) __builtin_assume(cond)
+#elif defined(__GNUC__)
+#define wgsl_compiler_assert(cond, fmt, ...)  \
+    do {                                      \
+        if (!(cond)) __builtin_unreachable(); \
+    } while (0)
+#elif defined(_MSC_VER)
+#define wgsl_compiler_assert(cond, fmt, ...) __assume(cond)
+#else
+#define wgsl_compiler_assert(cond, fmt, ...) ((void)0)
+#endif
+#endif
 #endif
 
 /* ============================================================================
@@ -213,7 +231,8 @@ typedef struct Ident {
     char *name;
 } Ident;
 
-typedef enum WgslLiteralKind { WGSL_LIT_INT, WGSL_LIT_FLOAT } WgslLiteralKind;
+typedef enum WgslLiteralKind { WGSL_LIT_INT,
+    WGSL_LIT_FLOAT } WgslLiteralKind;
 
 typedef struct Literal {
     WgslLiteralKind kind;
@@ -272,8 +291,8 @@ typedef struct SwitchStmt {
 } SwitchStmt;
 
 typedef struct CaseClause {
-    int expr_count;       /* 0 for default case */
-    WgslAstNode **exprs;  /* case value expressions (NULL when expr_count==0) */
+    int expr_count;      /* 0 for default case */
+    WgslAstNode **exprs; /* case value expressions (NULL when expr_count==0) */
     int stmt_count;
     WgslAstNode **stmts;
 } CaseClause;
@@ -331,7 +350,7 @@ const char *wgsl_node_type_name(WgslNodeType t);
 void wgsl_debug_print(const WgslAstNode *node, int indent);
 
 /* Shader Stage (also used by resolver, declared early for glsl_parse) */
-typedef enum WgslStage{
+typedef enum WgslStage {
     WGSL_STAGE_UNKNOWN = 0,
     WGSL_STAGE_VERTEX,
     WGSL_STAGE_FRAGMENT,
@@ -361,8 +380,8 @@ typedef struct {
     int binding_index;
     int has_min_binding_size;
     int min_binding_size;
-    const WgslAstNode* decl_node;
-    const WgslAstNode* function_node;
+    const WgslAstNode *decl_node;
+    const WgslAstNode *function_node;
 } WgslSymbolInfo;
 
 typedef enum {
@@ -374,20 +393,20 @@ typedef enum {
     WGSL_NUM_BOOL
 } WgslNumericType;
 
-typedef struct WgslVertexSlot{
+typedef struct WgslVertexSlot {
     int location;
     int component_count;
     WgslNumericType numeric_type;
     int byte_size;
 } WgslVertexSlot;
 
-typedef struct WgslFragmentOutput{
+typedef struct WgslFragmentOutput {
     int location;
     int component_count;
     WgslNumericType numeric_type;
 } WgslFragmentOutput;
 
-typedef struct WgslResolverEntrypoint{
+typedef struct WgslResolverEntrypoint {
     const char *name;
     WgslStage stage;
     const WgslAstNode *function_node;
@@ -470,25 +489,25 @@ typedef struct {
 } WgslLowerModuleFeatures;
 
 WgslLower *wgsl_lower_create(const WgslAstNode *program,
-                             const WgslResolver *resolver,
-                             const WgslLowerOptions *opts);
+    const WgslResolver *resolver,
+    const WgslLowerOptions *opts);
 
 void wgsl_lower_destroy(WgslLower *lower);
 
 WgslLowerResult wgsl_lower_emit_spirv(const WgslAstNode *program,
-                                      const WgslResolver *resolver,
-                                      const WgslLowerOptions *opts,
-                                      uint32_t **out_words,
-                                      size_t *out_word_count);
+    const WgslResolver *resolver,
+    const WgslLowerOptions *opts,
+    uint32_t **out_words,
+    size_t *out_word_count);
 
 WgslLowerResult wgsl_lower_serialize(const WgslLower *lower,
-                                     uint32_t **out_words,
-                                     size_t *out_word_count);
+    uint32_t **out_words,
+    size_t *out_word_count);
 
 WgslLowerResult wgsl_lower_serialize_into(const WgslLower *lower,
-                                          uint32_t *out_words,
-                                          size_t max_words,
-                                          size_t *out_written);
+    uint32_t *out_words,
+    size_t max_words,
+    size_t *out_written);
 
 const char *wgsl_lower_last_error(const WgslLower *lower);
 
@@ -529,8 +548,7 @@ WgslRaiseResult wgsl_raise_to_wgsl(
     size_t word_count,
     const WgslRaiseOptions *options,
     char **out_wgsl,
-    char **out_error
-);
+    char **out_error);
 
 WgslRaiser *wgsl_raise_create(const uint32_t *spirv, size_t word_count);
 WgslRaiseResult wgsl_raise_parse(WgslRaiser *r);
@@ -606,10 +624,10 @@ typedef enum SsirLayoutRule {
 } SsirLayoutRule;
 
 typedef enum SsirClipSpaceConvention {
-    SSIR_CLIP_SPACE_VULKAN,   /* Y-down, Z [0,1] */
-    SSIR_CLIP_SPACE_OPENGL,   /* Y-up, Z [-1,1] */
-    SSIR_CLIP_SPACE_DIRECTX,  /* Y-up, Z [0,1] */
-    SSIR_CLIP_SPACE_METAL,    /* Y-up, Z [0,1] (same as DirectX) */
+    SSIR_CLIP_SPACE_VULKAN,  /* Y-down, Z [0,1] */
+    SSIR_CLIP_SPACE_OPENGL,  /* Y-up, Z [-1,1] */
+    SSIR_CLIP_SPACE_DIRECTX, /* Y-up, Z [0,1] */
+    SSIR_CLIP_SPACE_METAL,   /* Y-up, Z [0,1] (same as DirectX) */
 } SsirClipSpaceConvention;
 
 typedef enum SsirTextureDim {
@@ -1152,19 +1170,19 @@ uint32_t ssir_type_array(SsirModule *mod, uint32_t elem_type, uint32_t length);
 uint32_t ssir_type_array_stride(SsirModule *mod, uint32_t elem_type, uint32_t length, uint32_t stride);
 uint32_t ssir_type_runtime_array(SsirModule *mod, uint32_t elem_type);
 uint32_t ssir_type_struct(SsirModule *mod, const char *name,
-                          const uint32_t *members, uint32_t member_count,
-                          const uint32_t *offsets);
+    const uint32_t *members, uint32_t member_count,
+    const uint32_t *offsets);
 uint32_t ssir_type_struct_named(SsirModule *mod, const char *name,
-                                const uint32_t *members, uint32_t member_count,
-                                const uint32_t *offsets,
-                                const char *const *member_names);
+    const uint32_t *members, uint32_t member_count,
+    const uint32_t *offsets,
+    const char *const *member_names);
 uint32_t ssir_type_ptr(SsirModule *mod, uint32_t pointee_type, SsirAddressSpace space);
 
 uint32_t ssir_type_sampler(SsirModule *mod);
 uint32_t ssir_type_sampler_comparison(SsirModule *mod);
 uint32_t ssir_type_texture(SsirModule *mod, SsirTextureDim dim, uint32_t sampled_type);
 uint32_t ssir_type_texture_storage(SsirModule *mod, SsirTextureDim dim,
-                                   uint32_t format, SsirAccessMode access);
+    uint32_t format, SsirAccessMode access);
 uint32_t ssir_type_texture_depth(SsirModule *mod, SsirTextureDim dim);
 
 SsirType *ssir_get_type(SsirModule *mod, uint32_t type_id);
@@ -1196,7 +1214,7 @@ uint32_t ssir_const_u16(SsirModule *mod, uint16_t val);
 uint32_t ssir_const_i64(SsirModule *mod, int64_t val);
 uint32_t ssir_const_u64(SsirModule *mod, uint64_t val);
 uint32_t ssir_const_composite(SsirModule *mod, uint32_t type_id,
-                              const uint32_t *components, uint32_t count);
+    const uint32_t *components, uint32_t count);
 uint32_t ssir_const_null(SsirModule *mod, uint32_t type_id);
 uint32_t ssir_const_spec_bool(SsirModule *mod, bool default_val, uint32_t spec_id);
 uint32_t ssir_const_spec_i32(SsirModule *mod, int32_t default_val, uint32_t spec_id);
@@ -1226,10 +1244,10 @@ uint32_t ssir_function_create(SsirModule *mod, const char *name, uint32_t return
 SsirFunction *ssir_get_function(SsirModule *mod, uint32_t func_id);
 
 uint32_t ssir_function_add_param(SsirModule *mod, uint32_t func_id,
-                                 const char *name, uint32_t type);
+    const char *name, uint32_t type);
 
 uint32_t ssir_function_add_local(SsirModule *mod, uint32_t func_id,
-                                 const char *name, uint32_t ptr_type);
+    const char *name, uint32_t ptr_type);
 
 /* Block API */
 
@@ -1240,196 +1258,196 @@ SsirBlock *ssir_get_block(SsirModule *mod, uint32_t func_id, uint32_t block_id);
 /* Instruction Builder API */
 
 uint32_t ssir_build_add(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_sub(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_mul(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_div(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_mod(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_neg(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a);
+    uint32_t type, uint32_t a);
 
 uint32_t ssir_build_mat_mul(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_mat_transpose(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                  uint32_t type, uint32_t m);
+    uint32_t type, uint32_t m);
 
 uint32_t ssir_build_bit_and(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_bit_or(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_bit_xor(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_bit_not(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t a);
+    uint32_t type, uint32_t a);
 uint32_t ssir_build_shl(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_shr(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_shr_logical(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 
 uint32_t ssir_build_eq(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_ne(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_lt(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_le(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_gt(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_ge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 
 uint32_t ssir_build_and(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_or(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 uint32_t ssir_build_not(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a);
+    uint32_t type, uint32_t a);
 
 uint32_t ssir_build_construct(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                              uint32_t type, const uint32_t *components, uint32_t count);
+    uint32_t type, const uint32_t *components, uint32_t count);
 uint32_t ssir_build_extract(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t composite, uint32_t index);
+    uint32_t type, uint32_t composite, uint32_t index);
 uint32_t ssir_build_insert(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t type, uint32_t composite, uint32_t value, uint32_t index);
+    uint32_t type, uint32_t composite, uint32_t value, uint32_t index);
 uint32_t ssir_build_shuffle(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t v1, uint32_t v2,
-                            const uint32_t *indices, uint32_t index_count);
+    uint32_t type, uint32_t v1, uint32_t v2,
+    const uint32_t *indices, uint32_t index_count);
 uint32_t ssir_build_splat(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                          uint32_t type, uint32_t scalar);
+    uint32_t type, uint32_t scalar);
 uint32_t ssir_build_extract_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                uint32_t type, uint32_t composite, uint32_t index);
+    uint32_t type, uint32_t composite, uint32_t index);
 uint32_t ssir_build_insert_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                               uint32_t type, uint32_t vector, uint32_t value, uint32_t index);
+    uint32_t type, uint32_t vector, uint32_t value, uint32_t index);
 
 uint32_t ssir_build_load(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                         uint32_t type, uint32_t ptr);
+    uint32_t type, uint32_t ptr);
 void ssir_build_store(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                      uint32_t ptr, uint32_t value);
+    uint32_t ptr, uint32_t value);
 uint32_t ssir_build_access(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t type, uint32_t base,
-                           const uint32_t *indices, uint32_t index_count);
+    uint32_t type, uint32_t base,
+    const uint32_t *indices, uint32_t index_count);
 uint32_t ssir_build_array_len(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                              uint32_t ptr);
+    uint32_t ptr);
 
 void ssir_build_branch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t target_block);
+    uint32_t target_block);
 void ssir_build_branch_cond(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t cond, uint32_t true_block, uint32_t false_block);
+    uint32_t cond, uint32_t true_block, uint32_t false_block);
 void ssir_build_branch_cond_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                  uint32_t cond, uint32_t true_block, uint32_t false_block,
-                                  uint32_t merge_block);
+    uint32_t cond, uint32_t true_block, uint32_t false_block,
+    uint32_t merge_block);
 void ssir_build_loop_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t merge_block, uint32_t continue_block);
+    uint32_t merge_block, uint32_t continue_block);
 void ssir_build_selection_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                uint32_t merge_block);
+    uint32_t merge_block);
 void ssir_build_switch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t selector, uint32_t default_block,
-                       const uint32_t *cases, uint32_t case_count);
+    uint32_t selector, uint32_t default_block,
+    const uint32_t *cases, uint32_t case_count);
 uint32_t ssir_build_phi(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, const uint32_t *incoming, uint32_t count);
+    uint32_t type, const uint32_t *incoming, uint32_t count);
 void ssir_build_return(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t value);
+    uint32_t value);
 void ssir_build_return_void(SsirModule *mod, uint32_t func_id, uint32_t block_id);
 void ssir_build_unreachable(SsirModule *mod, uint32_t func_id, uint32_t block_id);
 
 uint32_t ssir_build_call(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                         uint32_t type, uint32_t callee,
-                         const uint32_t *args, uint32_t arg_count);
+    uint32_t type, uint32_t callee,
+    const uint32_t *args, uint32_t arg_count);
 uint32_t ssir_build_builtin(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, SsirBuiltinId builtin,
-                            const uint32_t *args, uint32_t arg_count);
+    uint32_t type, SsirBuiltinId builtin,
+    const uint32_t *args, uint32_t arg_count);
 
 uint32_t ssir_build_convert(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t value);
+    uint32_t type, uint32_t value);
 uint32_t ssir_build_bitcast(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t value);
+    uint32_t type, uint32_t value);
 
 uint32_t ssir_build_tex_sample(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                               uint32_t type, uint32_t texture, uint32_t sampler,
-                               uint32_t coord);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord);
 uint32_t ssir_build_tex_sample_bias(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                    uint32_t type, uint32_t texture, uint32_t sampler,
-                                    uint32_t coord, uint32_t bias);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t bias);
 uint32_t ssir_build_tex_sample_level(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                     uint32_t type, uint32_t texture, uint32_t sampler,
-                                     uint32_t coord, uint32_t lod);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t lod);
 uint32_t ssir_build_tex_sample_grad(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                    uint32_t type, uint32_t texture, uint32_t sampler,
-                                    uint32_t coord, uint32_t ddx, uint32_t ddy);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ddx, uint32_t ddy);
 uint32_t ssir_build_tex_sample_cmp(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                   uint32_t type, uint32_t texture, uint32_t sampler,
-                                   uint32_t coord, uint32_t ref);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ref);
 uint32_t ssir_build_tex_sample_cmp_level(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                         uint32_t type, uint32_t texture, uint32_t sampler,
-                                         uint32_t coord, uint32_t ref, uint32_t lod);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ref, uint32_t lod);
 uint32_t ssir_build_tex_sample_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                      uint32_t type, uint32_t texture, uint32_t sampler,
-                                      uint32_t coord, uint32_t offset);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t offset);
 uint32_t ssir_build_tex_sample_bias_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                           uint32_t type, uint32_t texture, uint32_t sampler,
-                                           uint32_t coord, uint32_t bias, uint32_t offset);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t bias, uint32_t offset);
 uint32_t ssir_build_tex_sample_level_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                            uint32_t type, uint32_t texture, uint32_t sampler,
-                                            uint32_t coord, uint32_t lod, uint32_t offset);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t lod, uint32_t offset);
 uint32_t ssir_build_tex_sample_grad_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                           uint32_t type, uint32_t texture, uint32_t sampler,
-                                           uint32_t coord, uint32_t ddx, uint32_t ddy,
-                                           uint32_t offset);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ddx, uint32_t ddy,
+    uint32_t offset);
 uint32_t ssir_build_tex_sample_cmp_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                          uint32_t type, uint32_t texture, uint32_t sampler,
-                                          uint32_t coord, uint32_t ref, uint32_t offset);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ref, uint32_t offset);
 uint32_t ssir_build_tex_gather(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                               uint32_t type, uint32_t texture, uint32_t sampler,
-                               uint32_t coord, uint32_t component);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t component);
 uint32_t ssir_build_tex_gather_cmp(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                   uint32_t type, uint32_t texture, uint32_t sampler,
-                                   uint32_t coord, uint32_t ref);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ref);
 uint32_t ssir_build_tex_gather_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                      uint32_t type, uint32_t texture, uint32_t sampler,
-                                      uint32_t coord, uint32_t component, uint32_t offset);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t component, uint32_t offset);
 uint32_t ssir_build_tex_load(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                             uint32_t type, uint32_t texture, uint32_t coord, uint32_t level);
+    uint32_t type, uint32_t texture, uint32_t coord, uint32_t level);
 void ssir_build_tex_store(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                          uint32_t texture, uint32_t coord, uint32_t value);
+    uint32_t texture, uint32_t coord, uint32_t value);
 uint32_t ssir_build_tex_size(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                             uint32_t type, uint32_t texture, uint32_t level);
+    uint32_t type, uint32_t texture, uint32_t level);
 uint32_t ssir_build_tex_query_lod(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                  uint32_t type, uint32_t texture, uint32_t sampler,
-                                  uint32_t coord);
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord);
 uint32_t ssir_build_tex_query_levels(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                     uint32_t type, uint32_t texture);
+    uint32_t type, uint32_t texture);
 uint32_t ssir_build_tex_query_samples(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                      uint32_t type, uint32_t texture);
+    uint32_t type, uint32_t texture);
 
 void ssir_build_barrier(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        SsirBarrierScope scope);
+    SsirBarrierScope scope);
 uint32_t ssir_build_atomic(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t type, SsirAtomicOp op, uint32_t ptr,
-                           uint32_t value, uint32_t comparator);
+    uint32_t type, SsirAtomicOp op, uint32_t ptr,
+    uint32_t value, uint32_t comparator);
 uint32_t ssir_build_atomic_ex(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                              uint32_t type, SsirAtomicOp op, uint32_t ptr,
-                              uint32_t value, uint32_t comparator,
-                              SsirMemoryScope scope, SsirMemorySemantics semantics);
+    uint32_t type, SsirAtomicOp op, uint32_t ptr,
+    uint32_t value, uint32_t comparator,
+    SsirMemoryScope scope, SsirMemorySemantics semantics);
 void ssir_build_discard(SsirModule *mod, uint32_t func_id, uint32_t block_id);
 uint32_t ssir_build_rem(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b);
+    uint32_t type, uint32_t a, uint32_t b);
 
 /* Entry Point API */
 
 uint32_t ssir_entry_point_create(SsirModule *mod, SsirStage stage,
-                                 uint32_t func_id, const char *name);
+    uint32_t func_id, const char *name);
 SsirEntryPoint *ssir_get_entry_point(SsirModule *mod, uint32_t index);
 
 void ssir_entry_point_add_interface(SsirModule *mod, uint32_t ep_index, uint32_t global_id);
 void ssir_entry_point_set_workgroup_size(SsirModule *mod, uint32_t ep_index,
-                                         uint32_t x, uint32_t y, uint32_t z);
+    uint32_t x, uint32_t y, uint32_t z);
 void ssir_entry_point_set_depth_replacing(SsirModule *mod, uint32_t ep_index, bool v);
 void ssir_entry_point_set_origin_upper_left(SsirModule *mod, uint32_t ep_index, bool v);
 void ssir_entry_point_set_early_fragment_tests(SsirModule *mod, uint32_t ep_index, bool v);
@@ -1486,9 +1504,9 @@ typedef enum SsirToSpirvResult {
 } SsirToSpirvResult;
 
 SsirToSpirvResult ssir_to_spirv(const SsirModule *mod,
-                                 const SsirToSpirvOptions *opts,
-                                 uint32_t **out_words,
-                                 size_t *out_count);
+    const SsirToSpirvOptions *opts,
+    uint32_t **out_words,
+    size_t *out_count);
 
 void ssir_to_spirv_free(void *p);
 
@@ -1511,9 +1529,9 @@ typedef struct SsirToWgslOptions {
 } SsirToWgslOptions;
 
 SsirToWgslResult ssir_to_wgsl(const SsirModule *mod,
-                              const SsirToWgslOptions *opts,
-                              char **out_wgsl,
-                              char **out_error);
+    const SsirToWgslOptions *opts,
+    char **out_wgsl,
+    char **out_error);
 
 void ssir_to_wgsl_free(void *p);
 
@@ -1537,10 +1555,10 @@ typedef struct SsirToGlslOptions {
 } SsirToGlslOptions;
 
 SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
-                               SsirStage stage,
-                               const SsirToGlslOptions *opts,
-                               char **out_glsl,
-                               char **out_error);
+    SsirStage stage,
+    const SsirToGlslOptions *opts,
+    char **out_glsl,
+    char **out_error);
 
 void ssir_to_glsl_free(void *p);
 
@@ -1563,9 +1581,9 @@ typedef struct SsirToMslOptions {
 } SsirToMslOptions;
 
 SsirToMslResult ssir_to_msl(const SsirModule *mod,
-                              const SsirToMslOptions *opts,
-                              char **out_msl,
-                              char **out_error);
+    const SsirToMslOptions *opts,
+    char **out_msl,
+    char **out_error);
 
 void ssir_to_msl_free(void *p);
 
@@ -1592,8 +1610,7 @@ SpirvToSsirResult spirv_to_ssir(
     size_t word_count,
     const SpirvToSsirOptions *opts,
     SsirModule **out_module,
-    char **out_error
-);
+    char **out_error);
 
 const char *spirv_to_ssir_result_string(SpirvToSsirResult result);
 
@@ -1618,10 +1635,10 @@ typedef struct SsirToHlslOptions {
 } SsirToHlslOptions;
 
 SsirToHlslResult ssir_to_hlsl(const SsirModule *mod,
-                              SsirStage stage,
-                              const SsirToHlslOptions *opts,
-                              char **out_hlsl,
-                              char **out_error);
+    SsirStage stage,
+    const SsirToHlslOptions *opts,
+    char **out_hlsl,
+    char **out_error);
 
 void ssir_to_hlsl_free(void *p);
 
@@ -1643,7 +1660,7 @@ typedef struct {
 } MslToSsirOptions;
 
 MslToSsirResult msl_to_ssir(const char *msl_source, const MslToSsirOptions *opts,
-                              SsirModule **out_module, char **out_error);
+    SsirModule **out_module, char **out_error);
 
 void msl_to_ssir_free(char *str);
 

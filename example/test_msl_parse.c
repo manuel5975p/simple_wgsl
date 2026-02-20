@@ -95,7 +95,10 @@ int main(void) {
 
     /* First, convert WGSL → MSL */
     WgslAstNode *ast = wgsl_parse(wgsl2);
-    if (!ast) { fprintf(stderr, "WGSL parse failed\n"); return 1; }
+    if (!ast) {
+        fprintf(stderr, "WGSL parse failed\n");
+        return 1;
+    }
     WgslResolver *resolver = wgsl_resolver_build(ast);
     WgslLowerOptions lower_opts = {0};
     lower_opts.enable_debug_names = 1;
@@ -111,7 +114,10 @@ int main(void) {
     wgsl_resolver_free(resolver);
     wgsl_free_ast(ast);
 
-    if (!msl_vf) { printf("FAIL: WGSL to MSL conversion failed\n"); return 1; }
+    if (!msl_vf) {
+        printf("FAIL: WGSL to MSL conversion failed\n");
+        return 1;
+    }
     printf("Original MSL:\n%s\n", msl_vf);
     fflush(stdout);
 

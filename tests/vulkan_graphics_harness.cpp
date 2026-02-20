@@ -137,10 +137,9 @@ void GraphicsContext::createCommandPool() {
 
 void GraphicsContext::createDescriptorPool() {
     VkDescriptorPoolSize pool_sizes[] = {
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100 }
-    };
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100}};
 
     VkDescriptorPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -170,7 +169,7 @@ Image GraphicsContext::createImage(uint32_t width, uint32_t height, ImageFormat 
     return Image(*this, width, height, format);
 }
 
-GraphicsPipeline GraphicsContext::createPipeline(const GraphicsPipelineConfig& config) {
+GraphicsPipeline GraphicsContext::createPipeline(const GraphicsPipelineConfig &config) {
     return GraphicsPipeline(*this, config);
 }
 
@@ -204,8 +203,8 @@ void GraphicsContext::executeCommands(std::function<void(VkCommandBuffer)> recor
 }
 
 void GraphicsContext::transitionImageLayout(VkCommandBuffer cmd, VkImage image,
-                                             VkImageLayout old_layout, VkImageLayout new_layout,
-                                             VkImageAspectFlags aspect) {
+    VkImageLayout old_layout, VkImageLayout new_layout,
+    VkImageAspectFlags aspect) {
     VkImageMemoryBarrier2 barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
     barrier.oldLayout = old_layout;
@@ -265,13 +264,13 @@ void GraphicsContext::transitionImageLayout(VkCommandBuffer cmd, VkImage image,
     vkCmdPipelineBarrier2(cmd, &dep_info);
 }
 
-void GraphicsContext::draw(GraphicsPipeline& pipeline,
-                            Image& color_target,
-                            Buffer* vertex_buffer,
-                            const DrawParams& params,
-                            const std::vector<DescriptorBinding>& bindings,
-                            const ClearColor& clear,
-                            Image* depth_target) {
+void GraphicsContext::draw(GraphicsPipeline &pipeline,
+    Image &color_target,
+    Buffer *vertex_buffer,
+    const DrawParams &params,
+    const std::vector<DescriptorBinding> &bindings,
+    const ClearColor &clear,
+    Image *depth_target) {
     VkDescriptorSet desc_set = VK_NULL_HANDLE;
 
     // Allocate and update descriptor set if needed
@@ -304,21 +303,21 @@ void GraphicsContext::draw(GraphicsPipeline& pipeline,
         }
 
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()),
-                               writes.data(), 0, nullptr);
+            writes.data(), 0, nullptr);
     }
 
     executeCommands([&](VkCommandBuffer cmd) {
         // Transition color target to attachment layout
         transitionImageLayout(cmd, color_target.handle(),
-                              VK_IMAGE_LAYOUT_UNDEFINED,
-                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
         // Transition depth target if present
         if (depth_target) {
             transitionImageLayout(cmd, depth_target->handle(),
-                                  VK_IMAGE_LAYOUT_UNDEFINED,
-                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                                  VK_IMAGE_ASPECT_DEPTH_BIT);
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_ASPECT_DEPTH_BIT);
         }
 
         // Setup color attachment for dynamic rendering
@@ -370,7 +369,7 @@ void GraphicsContext::draw(GraphicsPipeline& pipeline,
         // Bind descriptor set if present
         if (desc_set != VK_NULL_HANDLE) {
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeline.layout(), 0, 1, &desc_set, 0, nullptr);
+                pipeline.layout(), 0, 1, &desc_set, 0, nullptr);
         }
 
         // Bind vertex buffer if present
@@ -381,14 +380,14 @@ void GraphicsContext::draw(GraphicsPipeline& pipeline,
         }
 
         vkCmdDraw(cmd, params.vertex_count, params.instance_count,
-                  params.first_vertex, params.first_instance);
+            params.first_vertex, params.first_instance);
 
         vkCmdEndRendering(cmd);
 
         // Transition for readback
         transitionImageLayout(cmd, color_target.handle(),
-                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     });
 
     // Free descriptor set
@@ -397,15 +396,15 @@ void GraphicsContext::draw(GraphicsPipeline& pipeline,
     }
 }
 
-void GraphicsContext::drawIndexed(GraphicsPipeline& pipeline,
-                                   Image& color_target,
-                                   Buffer* vertex_buffer,
-                                   Buffer* index_buffer,
-                                   VkIndexType index_type,
-                                   const DrawIndexedParams& params,
-                                   const std::vector<DescriptorBinding>& bindings,
-                                   const ClearColor& clear,
-                                   Image* depth_target) {
+void GraphicsContext::drawIndexed(GraphicsPipeline &pipeline,
+    Image &color_target,
+    Buffer *vertex_buffer,
+    Buffer *index_buffer,
+    VkIndexType index_type,
+    const DrawIndexedParams &params,
+    const std::vector<DescriptorBinding> &bindings,
+    const ClearColor &clear,
+    Image *depth_target) {
     VkDescriptorSet desc_set = VK_NULL_HANDLE;
 
     if (!bindings.empty()) {
@@ -437,19 +436,19 @@ void GraphicsContext::drawIndexed(GraphicsPipeline& pipeline,
         }
 
         vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()),
-                               writes.data(), 0, nullptr);
+            writes.data(), 0, nullptr);
     }
 
     executeCommands([&](VkCommandBuffer cmd) {
         transitionImageLayout(cmd, color_target.handle(),
-                              VK_IMAGE_LAYOUT_UNDEFINED,
-                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
         if (depth_target) {
             transitionImageLayout(cmd, depth_target->handle(),
-                                  VK_IMAGE_LAYOUT_UNDEFINED,
-                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                                  VK_IMAGE_ASPECT_DEPTH_BIT);
+                VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                VK_IMAGE_ASPECT_DEPTH_BIT);
         }
 
         VkRenderingAttachmentInfo color_attachment = {};
@@ -496,7 +495,7 @@ void GraphicsContext::drawIndexed(GraphicsPipeline& pipeline,
 
         if (desc_set != VK_NULL_HANDLE) {
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    pipeline.layout(), 0, 1, &desc_set, 0, nullptr);
+                pipeline.layout(), 0, 1, &desc_set, 0, nullptr);
         }
 
         if (vertex_buffer) {
@@ -510,13 +509,13 @@ void GraphicsContext::drawIndexed(GraphicsPipeline& pipeline,
         }
 
         vkCmdDrawIndexed(cmd, params.index_count, params.instance_count,
-                         params.first_index, params.vertex_offset, params.first_instance);
+            params.first_index, params.vertex_offset, params.first_instance);
 
         vkCmdEndRendering(cmd);
 
         transitionImageLayout(cmd, color_target.handle(),
-                              VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     });
 
     if (desc_set != VK_NULL_HANDLE) {
@@ -528,7 +527,7 @@ void GraphicsContext::drawIndexed(GraphicsPipeline& pipeline,
 // Buffer
 // ============================================================================
 
-Buffer::Buffer(GraphicsContext& ctx, size_t size, BufferUsage usage)
+Buffer::Buffer(GraphicsContext &ctx, size_t size, BufferUsage usage)
     : ctx_(&ctx), size_(size), usage_(usage) {
 
     VkBufferCreateInfo buffer_info = {};
@@ -541,34 +540,34 @@ Buffer::Buffer(GraphicsContext& ctx, size_t size, BufferUsage usage)
     switch (usage) {
         case BufferUsage::Vertex:
             buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
         case BufferUsage::Index:
             buffer_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
         case BufferUsage::Uniform:
             buffer_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
         case BufferUsage::Storage:
             buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
         case BufferUsage::Staging:
             buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
     }
 
@@ -608,20 +607,15 @@ void Buffer::cleanup() {
     }
 }
 
-Buffer::Buffer(Buffer&& other) noexcept
-    : ctx_(other.ctx_)
-    , buffer_(other.buffer_)
-    , memory_(other.memory_)
-    , size_(other.size_)
-    , usage_(other.usage_)
-    , mapped_(other.mapped_) {
+Buffer::Buffer(Buffer &&other) noexcept
+    : ctx_(other.ctx_), buffer_(other.buffer_), memory_(other.memory_), size_(other.size_), usage_(other.usage_), mapped_(other.mapped_) {
     other.ctx_ = nullptr;
     other.buffer_ = VK_NULL_HANDLE;
     other.memory_ = VK_NULL_HANDLE;
     other.mapped_ = nullptr;
 }
 
-Buffer& Buffer::operator=(Buffer&& other) noexcept {
+Buffer &Buffer::operator=(Buffer &&other) noexcept {
     if (this != &other) {
         cleanup();
         ctx_ = other.ctx_;
@@ -638,25 +632,25 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     return *this;
 }
 
-void Buffer::upload(const void* data, size_t size, size_t offset) {
+void Buffer::upload(const void *data, size_t size, size_t offset) {
     if (offset + size > size_) {
         throw std::runtime_error("Buffer upload exceeds buffer size");
     }
-    std::memcpy(static_cast<char*>(mapped_) + offset, data, size);
+    std::memcpy(static_cast<char *>(mapped_) + offset, data, size);
 }
 
-void Buffer::download(void* data, size_t size, size_t offset) {
+void Buffer::download(void *data, size_t size, size_t offset) {
     if (offset + size > size_) {
         throw std::runtime_error("Buffer download exceeds buffer size");
     }
-    std::memcpy(data, static_cast<char*>(mapped_) + offset, size);
+    std::memcpy(data, static_cast<char *>(mapped_) + offset, size);
 }
 
 // ============================================================================
 // Image
 // ============================================================================
 
-Image::Image(GraphicsContext& ctx, uint32_t width, uint32_t height, ImageFormat format)
+Image::Image(GraphicsContext &ctx, uint32_t width, uint32_t height, ImageFormat format)
     : ctx_(&ctx), width_(width), height_(height), format_(toVkFormat(format)) {
 
     VkImageCreateInfo image_info = {};
@@ -673,11 +667,11 @@ Image::Image(GraphicsContext& ctx, uint32_t width, uint32_t height, ImageFormat 
 
     if (isDepthFormat()) {
         image_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     } else {
         image_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                          VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+                           VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                           VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     }
 
     VK_CHECK(vkCreateImage(ctx_->device(), &image_info, nullptr, &image_));
@@ -689,7 +683,7 @@ Image::Image(GraphicsContext& ctx, uint32_t width, uint32_t height, ImageFormat 
     alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc_info.allocationSize = mem_reqs.size;
     alloc_info.memoryTypeIndex = ctx_->findMemoryType(mem_reqs.memoryTypeBits,
-                                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     VK_CHECK(vkAllocateMemory(ctx_->device(), &alloc_info, nullptr, &memory_));
     VK_CHECK(vkBindImageMemory(ctx_->device(), image_, memory_, 0));
@@ -735,21 +729,15 @@ void Image::cleanup() {
     }
 }
 
-Image::Image(Image&& other) noexcept
-    : ctx_(other.ctx_)
-    , image_(other.image_)
-    , memory_(other.memory_)
-    , view_(other.view_)
-    , format_(other.format_)
-    , width_(other.width_)
-    , height_(other.height_) {
+Image::Image(Image &&other) noexcept
+    : ctx_(other.ctx_), image_(other.image_), memory_(other.memory_), view_(other.view_), format_(other.format_), width_(other.width_), height_(other.height_) {
     other.ctx_ = nullptr;
     other.image_ = VK_NULL_HANDLE;
     other.memory_ = VK_NULL_HANDLE;
     other.view_ = VK_NULL_HANDLE;
 }
 
-Image& Image::operator=(Image&& other) noexcept {
+Image &Image::operator=(Image &&other) noexcept {
     if (this != &other) {
         cleanup();
         ctx_ = other.ctx_;
@@ -795,8 +783,7 @@ std::vector<uint8_t> Image::download() {
         region.bufferOffset = 0;
         region.bufferRowLength = 0;
         region.bufferImageHeight = 0;
-        region.imageSubresource.aspectMask = isDepthFormat() ?
-            VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.aspectMask = isDepthFormat() ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         region.imageSubresource.mipLevel = 0;
         region.imageSubresource.baseArrayLayer = 0;
         region.imageSubresource.layerCount = 1;
@@ -804,7 +791,7 @@ std::vector<uint8_t> Image::download() {
         region.imageExtent = {width_, height_, 1};
 
         vkCmdCopyImageToBuffer(cmd, image_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               staging.handle(), 1, &region);
+            staging.handle(), 1, &region);
     });
 
     std::vector<uint8_t> data(image_size);
@@ -816,7 +803,7 @@ std::vector<uint8_t> Image::download() {
 // GraphicsPipeline
 // ============================================================================
 
-GraphicsPipeline::GraphicsPipeline(GraphicsContext& ctx, const GraphicsPipelineConfig& config)
+GraphicsPipeline::GraphicsPipeline(GraphicsContext &ctx, const GraphicsPipelineConfig &config)
     : ctx_(&ctx) {
 
     // Create shader modules
@@ -851,7 +838,7 @@ GraphicsPipeline::GraphicsPipeline(GraphicsContext& ctx, const GraphicsPipelineC
     binding_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
     std::vector<VkVertexInputAttributeDescription> attr_descs;
-    for (const auto& attr : config.vertex_attributes) {
+    for (const auto &attr : config.vertex_attributes) {
         VkVertexInputAttributeDescription desc = {};
         desc.location = attr.location;
         desc.binding = 0;
@@ -930,8 +917,7 @@ GraphicsPipeline::GraphicsPipeline(GraphicsContext& ctx, const GraphicsPipelineC
     // Dynamic states
     VkDynamicState dynamic_states[] = {
         VK_DYNAMIC_STATE_VIEWPORT,
-        VK_DYNAMIC_STATE_SCISSOR
-    };
+        VK_DYNAMIC_STATE_SCISSOR};
 
     VkPipelineDynamicStateCreateInfo dynamic_state = {};
     dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
@@ -986,10 +972,10 @@ GraphicsPipeline::GraphicsPipeline(GraphicsContext& ctx, const GraphicsPipelineC
     pipeline_info.pColorBlendState = &color_blending;
     pipeline_info.pDynamicState = &dynamic_state;
     pipeline_info.layout = layout_;
-    pipeline_info.renderPass = VK_NULL_HANDLE;  // Dynamic rendering - no render pass
+    pipeline_info.renderPass = VK_NULL_HANDLE; // Dynamic rendering - no render pass
 
     VK_CHECK(vkCreateGraphicsPipelines(ctx_->device(), VK_NULL_HANDLE, 1, &pipeline_info,
-                                        nullptr, &pipeline_));
+        nullptr, &pipeline_));
 }
 
 GraphicsPipeline::~GraphicsPipeline() {
@@ -1021,13 +1007,8 @@ void GraphicsPipeline::cleanup() {
     }
 }
 
-GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&& other) noexcept
-    : ctx_(other.ctx_)
-    , vertex_module_(other.vertex_module_)
-    , fragment_module_(other.fragment_module_)
-    , desc_set_layout_(other.desc_set_layout_)
-    , layout_(other.layout_)
-    , pipeline_(other.pipeline_) {
+GraphicsPipeline::GraphicsPipeline(GraphicsPipeline &&other) noexcept
+    : ctx_(other.ctx_), vertex_module_(other.vertex_module_), fragment_module_(other.fragment_module_), desc_set_layout_(other.desc_set_layout_), layout_(other.layout_), pipeline_(other.pipeline_) {
     other.ctx_ = nullptr;
     other.vertex_module_ = VK_NULL_HANDLE;
     other.fragment_module_ = VK_NULL_HANDLE;
@@ -1036,7 +1017,7 @@ GraphicsPipeline::GraphicsPipeline(GraphicsPipeline&& other) noexcept
     other.pipeline_ = VK_NULL_HANDLE;
 }
 
-GraphicsPipeline& GraphicsPipeline::operator=(GraphicsPipeline&& other) noexcept {
+GraphicsPipeline &GraphicsPipeline::operator=(GraphicsPipeline &&other) noexcept {
     if (this != &other) {
         cleanup();
         ctx_ = other.ctx_;

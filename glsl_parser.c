@@ -21,7 +21,7 @@
  * String Utilities
  * ============================================================================ */
 
-//s nonnull
+// s nonnull
 static char *glsl_strndup(const char *s, size_t n) {
     wgsl_compiler_assert(s != NULL, "glsl_strndup: s is NULL");
     char *r = (char *)NODE_MALLOC(n + 1);
@@ -31,12 +31,12 @@ static char *glsl_strndup(const char *s, size_t n) {
     return r;
 }
 
-//s allowed to be NULL
+// s allowed to be NULL
 static char *glsl_strdup(const char *s) {
     return s ? glsl_strndup(s, strlen(s)) : NULL;
 }
 
-//cap nonnull
+// cap nonnull
 static void *gp_grow_ptr_array(void *p, int needed, int *cap, size_t elem) {
     wgsl_compiler_assert(cap != NULL, "gp_grow_ptr_array: cap is NULL");
     if (needed <= *cap) return p;
@@ -48,14 +48,14 @@ static void *gp_grow_ptr_array(void *p, int needed, int *cap, size_t elem) {
     return np;
 }
 
-//arr nonnull, count nonnull, cap nonnull
+// arr nonnull, count nonnull, cap nonnull
 static void gp_vec_push_node(WgslAstNode ***arr, int *count, int *cap,
-                           WgslAstNode *v) {
+    WgslAstNode *v) {
     wgsl_compiler_assert(arr != NULL, "gp_vec_push_node: arr is NULL");
     wgsl_compiler_assert(count != NULL, "gp_vec_push_node: count is NULL");
     wgsl_compiler_assert(cap != NULL, "gp_vec_push_node: cap is NULL");
     *arr = (WgslAstNode **)gp_grow_ptr_array(*arr, *count + 1, cap,
-                                           sizeof(WgslAstNode *));
+        sizeof(WgslAstNode *));
     (*arr)[(*count)++] = v;
 }
 
@@ -150,25 +150,29 @@ typedef struct GpLexer {
 } GpLexer;
 
 /* PRE: src is null-terminated, bounds checks rely on null byte */
-//L nonnull
+// L nonnull
 static bool gp_lx_peek2(const GpLexer *L, char a, char b) {
     wgsl_compiler_assert(L != NULL, "gp_lx_peek2: L is NULL");
     if (L->pos + 1 >= L->src_len) return false;
     return (L->src[L->pos] == a && L->src[L->pos + 1] == b);
 }
 
-//L nonnull
+// L nonnull
 static void gp_lx_advance(GpLexer *L) {
     wgsl_compiler_assert(L != NULL, "gp_lx_advance: L is NULL");
     if (L->pos >= L->src_len) return;
     char c = L->src[L->pos];
     if (!c) return;
     L->pos++;
-    if (c == '\n') { L->line++; L->col = 1; }
-    else { L->col++; }
+    if (c == '\n') {
+        L->line++;
+        L->col = 1;
+    } else {
+        L->col++;
+    }
 }
 
-//L nonnull
+// L nonnull
 static void gp_lx_skip_ws_comments(GpLexer *L) {
     wgsl_compiler_assert(L != NULL, "gp_lx_skip_ws_comments: L is NULL");
     for (;;) {
@@ -185,10 +189,12 @@ static void gp_lx_skip_ws_comments(GpLexer *L) {
             continue;
         }
         if (c == '/' && L->pos + 1 < L->src_len && L->src[L->pos + 1] == '*') {
-            gp_lx_advance(L); gp_lx_advance(L);
+            gp_lx_advance(L);
+            gp_lx_advance(L);
             while (L->src[L->pos]) {
                 if (L->pos + 1 < L->src_len && L->src[L->pos] == '*' && L->src[L->pos + 1] == '/') {
-                    gp_lx_advance(L); gp_lx_advance(L);
+                    gp_lx_advance(L);
+                    gp_lx_advance(L);
                     break;
                 }
                 gp_lx_advance(L);
@@ -212,7 +218,7 @@ static bool gp_is_ident_part(char c) {
     return isalnum((unsigned char)c) || c == '_';
 }
 
-//L nonnull, s nonnull
+// L nonnull, s nonnull
 static GpToken gp_make_token(GpLexer *L, GpTokenType t, const char *s, int len, bool f) {
     wgsl_compiler_assert(L != NULL, "gp_make_token: L is NULL");
     wgsl_compiler_assert(s != NULL, "gp_make_token: s is NULL");
@@ -229,29 +235,32 @@ static GpToken gp_make_token(GpLexer *L, GpTokenType t, const char *s, int len, 
 static int gp_is_dec_digit_or_us(char c) { return isdigit((unsigned char)c) || c == '_'; }
 static int gp_is_hex_digit_or_us(char c) { return isxdigit((unsigned char)c) || c == '_'; }
 
-typedef struct { const char *word; int len; GpTokenType tok; } Keyword;
+typedef struct {
+    const char *word;
+    int len;
+    GpTokenType tok;
+} Keyword;
 
 static const Keyword glsl_keywords[] = {
-    {"struct",    6, GP_TOK_STRUCT},
-    {"if",        2, GP_TOK_IF},
-    {"else",      4, GP_TOK_ELSE},
-    {"while",     5, GP_TOK_WHILE},
-    {"for",       3, GP_TOK_FOR},
-    {"do",        2, GP_TOK_DO},
-    {"switch",    6, GP_TOK_SWITCH},
-    {"case",      4, GP_TOK_CASE},
-    {"default",   7, GP_TOK_DEFAULT},
-    {"break",     5, GP_TOK_BREAK},
-    {"continue",  8, GP_TOK_CONTINUE},
-    {"return",    6, GP_TOK_RETURN},
-    {"discard",   7, GP_TOK_DISCARD},
-    {"layout",    6, GP_TOK_LAYOUT},
-    {"const",     5, GP_TOK_CONST},
+    {"struct", 6, GP_TOK_STRUCT},
+    {"if", 2, GP_TOK_IF},
+    {"else", 4, GP_TOK_ELSE},
+    {"while", 5, GP_TOK_WHILE},
+    {"for", 3, GP_TOK_FOR},
+    {"do", 2, GP_TOK_DO},
+    {"switch", 6, GP_TOK_SWITCH},
+    {"case", 4, GP_TOK_CASE},
+    {"default", 7, GP_TOK_DEFAULT},
+    {"break", 5, GP_TOK_BREAK},
+    {"continue", 8, GP_TOK_CONTINUE},
+    {"return", 6, GP_TOK_RETURN},
+    {"discard", 7, GP_TOK_DISCARD},
+    {"layout", 6, GP_TOK_LAYOUT},
+    {"const", 5, GP_TOK_CONST},
     {"precision", 9, GP_TOK_PRECISION},
-    {NULL, 0, GP_TOK_EOF}
-};
+    {NULL, 0, GP_TOK_EOF}};
 
-//L nonnull
+// L nonnull
 static GpToken gp_lx_next(GpLexer *L) {
     wgsl_compiler_assert(L != NULL, "gp_lx_next: L is NULL");
     gp_lx_skip_ws_comments(L);
@@ -261,62 +270,138 @@ static GpToken gp_lx_next(GpLexer *L) {
 
     /* multi-char operators (3-char first) */
     /* PRE: check pos+2 bounds before accessing 3-char operators */
-    if (L->pos + 2 < L->src_len && L->src[L->pos] == '<' && L->src[L->pos+1] == '<' && L->src[L->pos+2] == '=') {
-        gp_lx_advance(L); gp_lx_advance(L); gp_lx_advance(L);
+    if (L->pos + 2 < L->src_len && L->src[L->pos] == '<' && L->src[L->pos + 1] == '<' && L->src[L->pos + 2] == '=') {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        gp_lx_advance(L);
         return gp_make_token(L, GP_TOK_SHLEQ, s, 3, false);
     }
-    if (L->pos + 2 < L->src_len && L->src[L->pos] == '>' && L->src[L->pos+1] == '>' && L->src[L->pos+2] == '=') {
-        gp_lx_advance(L); gp_lx_advance(L); gp_lx_advance(L);
+    if (L->pos + 2 < L->src_len && L->src[L->pos] == '>' && L->src[L->pos + 1] == '>' && L->src[L->pos + 2] == '=') {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        gp_lx_advance(L);
         return gp_make_token(L, GP_TOK_SHREQ, s, 3, false);
     }
 
     /* 2-char operators */
-    if (gp_lx_peek2(L, '<', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_LE, s, 2, false); }
-    if (gp_lx_peek2(L, '<', '<')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_SHL, s, 2, false); }
-    if (gp_lx_peek2(L, '>', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_GE, s, 2, false); }
-    if (gp_lx_peek2(L, '>', '>')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_SHR, s, 2, false); }
-    if (gp_lx_peek2(L, '=', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_EQEQ, s, 2, false); }
-    if (gp_lx_peek2(L, '!', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_NEQ, s, 2, false); }
-    if (gp_lx_peek2(L, '&', '&')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_ANDAND, s, 2, false); }
-    if (gp_lx_peek2(L, '|', '|')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_OROR, s, 2, false); }
-    if (gp_lx_peek2(L, '+', '+')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_PLUSPLUS, s, 2, false); }
-    if (gp_lx_peek2(L, '-', '-')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_MINUSMINUS, s, 2, false); }
-    if (gp_lx_peek2(L, '+', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_PLUSEQ, s, 2, false); }
-    if (gp_lx_peek2(L, '-', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_MINUSEQ, s, 2, false); }
-    if (gp_lx_peek2(L, '*', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_STAREQ, s, 2, false); }
-    if (gp_lx_peek2(L, '/', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_SLASHEQ, s, 2, false); }
-    if (gp_lx_peek2(L, '%', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_PERCENTEQ, s, 2, false); }
-    if (gp_lx_peek2(L, '&', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_AMPEQ, s, 2, false); }
-    if (gp_lx_peek2(L, '|', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_PIPEEQ, s, 2, false); }
-    if (gp_lx_peek2(L, '^', '=')) { gp_lx_advance(L); gp_lx_advance(L); return gp_make_token(L, GP_TOK_CARETEQ, s, 2, false); }
+    if (gp_lx_peek2(L, '<', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_LE, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '<', '<')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_SHL, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '>', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_GE, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '>', '>')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_SHR, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '=', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_EQEQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '!', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_NEQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '&', '&')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_ANDAND, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '|', '|')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_OROR, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '+', '+')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_PLUSPLUS, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '-', '-')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_MINUSMINUS, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '+', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_PLUSEQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '-', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_MINUSEQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '*', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_STAREQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '/', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_SLASHEQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '%', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_PERCENTEQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '&', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_AMPEQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '|', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_PIPEEQ, s, 2, false);
+    }
+    if (gp_lx_peek2(L, '^', '=')) {
+        gp_lx_advance(L);
+        gp_lx_advance(L);
+        return gp_make_token(L, GP_TOK_CARETEQ, s, 2, false);
+    }
 
     /* single-char punctuation */
     switch (c) {
-    case ':': gp_lx_advance(L); return gp_make_token(L, GP_TOK_COLON, s, 1, false);
-    case ';': gp_lx_advance(L); return gp_make_token(L, GP_TOK_SEMI, s, 1, false);
-    case ',': gp_lx_advance(L); return gp_make_token(L, GP_TOK_COMMA, s, 1, false);
-    case '{': gp_lx_advance(L); return gp_make_token(L, GP_TOK_LBRACE, s, 1, false);
-    case '}': gp_lx_advance(L); return gp_make_token(L, GP_TOK_RBRACE, s, 1, false);
-    case '(': gp_lx_advance(L); return gp_make_token(L, GP_TOK_LPAREN, s, 1, false);
-    case ')': gp_lx_advance(L); return gp_make_token(L, GP_TOK_RPAREN, s, 1, false);
-    case '<': gp_lx_advance(L); return gp_make_token(L, GP_TOK_LT, s, 1, false);
-    case '>': gp_lx_advance(L); return gp_make_token(L, GP_TOK_GT, s, 1, false);
-    case '[': gp_lx_advance(L); return gp_make_token(L, GP_TOK_LBRACKET, s, 1, false);
-    case ']': gp_lx_advance(L); return gp_make_token(L, GP_TOK_RBRACKET, s, 1, false);
-    case '.': gp_lx_advance(L); return gp_make_token(L, GP_TOK_DOT, s, 1, false);
-    case '*': gp_lx_advance(L); return gp_make_token(L, GP_TOK_STAR, s, 1, false);
-    case '/': gp_lx_advance(L); return gp_make_token(L, GP_TOK_SLASH, s, 1, false);
-    case '+': gp_lx_advance(L); return gp_make_token(L, GP_TOK_PLUS, s, 1, false);
-    case '-': gp_lx_advance(L); return gp_make_token(L, GP_TOK_MINUS, s, 1, false);
-    case '%': gp_lx_advance(L); return gp_make_token(L, GP_TOK_PERCENT, s, 1, false);
-    case '=': gp_lx_advance(L); return gp_make_token(L, GP_TOK_EQ, s, 1, false);
-    case '!': gp_lx_advance(L); return gp_make_token(L, GP_TOK_BANG, s, 1, false);
-    case '~': gp_lx_advance(L); return gp_make_token(L, GP_TOK_TILDE, s, 1, false);
-    case '?': gp_lx_advance(L); return gp_make_token(L, GP_TOK_QMARK, s, 1, false);
-    case '&': gp_lx_advance(L); return gp_make_token(L, GP_TOK_AMP, s, 1, false);
-    case '|': gp_lx_advance(L); return gp_make_token(L, GP_TOK_PIPE, s, 1, false);
-    case '^': gp_lx_advance(L); return gp_make_token(L, GP_TOK_CARET, s, 1, false);
-    default: break;
+        case ':': gp_lx_advance(L); return gp_make_token(L, GP_TOK_COLON, s, 1, false);
+        case ';': gp_lx_advance(L); return gp_make_token(L, GP_TOK_SEMI, s, 1, false);
+        case ',': gp_lx_advance(L); return gp_make_token(L, GP_TOK_COMMA, s, 1, false);
+        case '{': gp_lx_advance(L); return gp_make_token(L, GP_TOK_LBRACE, s, 1, false);
+        case '}': gp_lx_advance(L); return gp_make_token(L, GP_TOK_RBRACE, s, 1, false);
+        case '(': gp_lx_advance(L); return gp_make_token(L, GP_TOK_LPAREN, s, 1, false);
+        case ')': gp_lx_advance(L); return gp_make_token(L, GP_TOK_RPAREN, s, 1, false);
+        case '<': gp_lx_advance(L); return gp_make_token(L, GP_TOK_LT, s, 1, false);
+        case '>': gp_lx_advance(L); return gp_make_token(L, GP_TOK_GT, s, 1, false);
+        case '[': gp_lx_advance(L); return gp_make_token(L, GP_TOK_LBRACKET, s, 1, false);
+        case ']': gp_lx_advance(L); return gp_make_token(L, GP_TOK_RBRACKET, s, 1, false);
+        case '.': gp_lx_advance(L); return gp_make_token(L, GP_TOK_DOT, s, 1, false);
+        case '*': gp_lx_advance(L); return gp_make_token(L, GP_TOK_STAR, s, 1, false);
+        case '/': gp_lx_advance(L); return gp_make_token(L, GP_TOK_SLASH, s, 1, false);
+        case '+': gp_lx_advance(L); return gp_make_token(L, GP_TOK_PLUS, s, 1, false);
+        case '-': gp_lx_advance(L); return gp_make_token(L, GP_TOK_MINUS, s, 1, false);
+        case '%': gp_lx_advance(L); return gp_make_token(L, GP_TOK_PERCENT, s, 1, false);
+        case '=': gp_lx_advance(L); return gp_make_token(L, GP_TOK_EQ, s, 1, false);
+        case '!': gp_lx_advance(L); return gp_make_token(L, GP_TOK_BANG, s, 1, false);
+        case '~': gp_lx_advance(L); return gp_make_token(L, GP_TOK_TILDE, s, 1, false);
+        case '?': gp_lx_advance(L); return gp_make_token(L, GP_TOK_QMARK, s, 1, false);
+        case '&': gp_lx_advance(L); return gp_make_token(L, GP_TOK_AMP, s, 1, false);
+        case '|': gp_lx_advance(L); return gp_make_token(L, GP_TOK_PIPE, s, 1, false);
+        case '^': gp_lx_advance(L); return gp_make_token(L, GP_TOK_CARET, s, 1, false);
+        default: break;
     }
 
     /* identifiers and keywords */
@@ -341,7 +426,8 @@ static GpToken gp_lx_next(GpLexer *L) {
         bool is_float = false;
         /* PRE: check pos+1 bounds for hex prefix */
         if (c == '0' && L->pos + 1 < L->src_len && (L->src[L->pos + 1] == 'x' || L->src[L->pos + 1] == 'X')) {
-            gp_lx_advance(L); gp_lx_advance(L);
+            gp_lx_advance(L);
+            gp_lx_advance(L);
             while (gp_is_hex_digit_or_us(L->src[L->pos]))
                 gp_lx_advance(L);
             if (L->src[L->pos] == 'u' || L->src[L->pos] == 'U')
@@ -431,32 +517,41 @@ typedef struct GpParser {
     int known_type_cap;
 } GpParser;
 
-//P nonnull
-static void gp_advance(GpParser *P) { wgsl_compiler_assert(P != NULL, "gp_advance: P is NULL"); P->cur = gp_lx_next(&P->L); }
-//P nonnull
-static bool gp_check(GpParser *P, GpTokenType t) { wgsl_compiler_assert(P != NULL, "gp_check: P is NULL"); return P->cur.type == t; }
-//P nonnull
+// P nonnull
+static void gp_advance(GpParser *P) {
+    wgsl_compiler_assert(P != NULL, "gp_advance: P is NULL");
+    P->cur = gp_lx_next(&P->L);
+}
+// P nonnull
+static bool gp_check(GpParser *P, GpTokenType t) {
+    wgsl_compiler_assert(P != NULL, "gp_check: P is NULL");
+    return P->cur.type == t;
+}
+// P nonnull
 static bool gp_match(GpParser *P, GpTokenType t) {
     wgsl_compiler_assert(P != NULL, "gp_match: P is NULL");
-    if (gp_check(P, t)) { gp_advance(P); return true; }
+    if (gp_check(P, t)) {
+        gp_advance(P);
+        return true;
+    }
     return false;
 }
-//P nonnull, msg nonnull
+// P nonnull, msg nonnull
 static void gp_parse_error(GpParser *P, const char *msg) {
     wgsl_compiler_assert(P != NULL, "gp_parse_error: P is NULL");
     wgsl_compiler_assert(msg != NULL, "gp_parse_error: msg is NULL");
     fprintf(stderr, "[glsl-parser] error at %d:%d: %s\n",
-            P->cur.line, P->cur.col, msg);
+        P->cur.line, P->cur.col, msg);
     P->had_error = true;
 }
-//P nonnull, msg nonnull
+// P nonnull, msg nonnull
 static void gp_expect(GpParser *P, GpTokenType t, const char *msg) {
     wgsl_compiler_assert(P != NULL, "gp_expect: P is NULL");
     wgsl_compiler_assert(msg != NULL, "gp_expect: msg is NULL");
     if (!gp_match(P, t)) gp_parse_error(P, msg);
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_new_node(GpParser *P, WgslNodeType k) {
     wgsl_compiler_assert(P != NULL, "gp_new_node: P is NULL");
     WgslAstNode *n = NODE_ALLOC(WgslAstNode);
@@ -468,7 +563,7 @@ static WgslAstNode *gp_new_node(GpParser *P, WgslNodeType k) {
     return n;
 }
 
-//t nonnull, s nonnull
+// t nonnull, s nonnull
 static bool tok_eq(const GpToken *t, const char *s) {
     wgsl_compiler_assert(t != NULL, "tok_eq: t is NULL");
     wgsl_compiler_assert(s != NULL, "tok_eq: s is NULL");
@@ -476,7 +571,7 @@ static bool tok_eq(const GpToken *t, const char *s) {
     return t->length == len && strncmp(t->start, s, (size_t)len) == 0;
 }
 
-//P nonnull, t nonnull
+// P nonnull, t nonnull
 static WgslAstNode *gp_new_ident(GpParser *P, const GpToken *t) {
     wgsl_compiler_assert(P != NULL, "gp_new_ident: P is NULL");
     wgsl_compiler_assert(t != NULL, "gp_new_ident: t is NULL");
@@ -484,7 +579,7 @@ static WgslAstNode *gp_new_ident(GpParser *P, const GpToken *t) {
     n->ident.name = glsl_strndup(t->start, (size_t)t->length);
     return n;
 }
-//P nonnull, t nonnull
+// P nonnull, t nonnull
 static WgslAstNode *gp_new_literal(GpParser *P, const GpToken *t) {
     wgsl_compiler_assert(P != NULL, "gp_new_literal: P is NULL");
     wgsl_compiler_assert(t != NULL, "gp_new_literal: t is NULL");
@@ -493,7 +588,7 @@ static WgslAstNode *gp_new_literal(GpParser *P, const GpToken *t) {
     n->literal.kind = t->is_float ? WGSL_LIT_FLOAT : WGSL_LIT_INT;
     return n;
 }
-//P nonnull, name nonnull
+// P nonnull, name nonnull
 static WgslAstNode *gp_new_type(GpParser *P, const char *name) {
     wgsl_compiler_assert(P != NULL, "gp_new_type: P is NULL");
     wgsl_compiler_assert(name != NULL, "gp_new_type: name is NULL");
@@ -526,10 +621,9 @@ static const char *glsl_type_keywords[] = {
     "image2D", "image3D", "imageCube",
     "image2DArray", "imageBuffer",
     "iimage2D", "iimage3D", "uimage2D", "uimage3D",
-    NULL
-};
+    NULL};
 
-//name nonnull
+// name nonnull
 static bool is_type_keyword_str(const char *name, int len) {
     wgsl_compiler_assert(name != NULL, "is_type_keyword_str: name is NULL");
     for (const char **kw = glsl_type_keywords; *kw; kw++) {
@@ -539,7 +633,7 @@ static bool is_type_keyword_str(const char *name, int len) {
     return false;
 }
 
-//t nonnull
+// t nonnull
 static bool is_type_keyword_tok(const GpToken *t) {
     wgsl_compiler_assert(t != NULL, "is_type_keyword_tok: t is NULL");
     if (t->type != GP_TOK_IDENT) return false;
@@ -547,7 +641,7 @@ static bool is_type_keyword_tok(const GpToken *t) {
 }
 
 /* Known struct tracking */
-//P nonnull, name nonnull
+// P nonnull, name nonnull
 static void register_struct(GpParser *P, const char *name) {
     wgsl_compiler_assert(P != NULL, "register_struct: P is NULL");
     wgsl_compiler_assert(name != NULL, "register_struct: name is NULL");
@@ -558,7 +652,7 @@ static void register_struct(GpParser *P, const char *name) {
     P->known_type_count++;
 }
 
-//P nonnull, t nonnull
+// P nonnull, t nonnull
 static bool is_known_struct(const GpParser *P, const GpToken *t) {
     wgsl_compiler_assert(P != NULL, "is_known_struct: P is NULL");
     wgsl_compiler_assert(t != NULL, "is_known_struct: t is NULL");
@@ -571,7 +665,7 @@ static bool is_known_struct(const GpParser *P, const GpToken *t) {
     return false;
 }
 
-//P nonnull, t nonnull
+// P nonnull, t nonnull
 static bool is_type_start(const GpParser *P, const GpToken *t) {
     wgsl_compiler_assert(P != NULL, "is_type_start: P is NULL");
     wgsl_compiler_assert(t != NULL, "is_type_start: t is NULL");
@@ -579,7 +673,7 @@ static bool is_type_start(const GpParser *P, const GpToken *t) {
 }
 
 /* Storage qualifier detection */
-//t nonnull
+// t nonnull
 static bool is_storage_qualifier_tok(const GpToken *t) {
     wgsl_compiler_assert(t != NULL, "is_storage_qualifier_tok: t is NULL");
     if (t->type != GP_TOK_IDENT) return false;
@@ -588,7 +682,7 @@ static bool is_storage_qualifier_tok(const GpToken *t) {
 }
 
 /* Interpolation qualifier detection */
-//t nonnull
+// t nonnull
 static bool is_interp_qualifier_tok(const GpToken *t) {
     wgsl_compiler_assert(t != NULL, "is_interp_qualifier_tok: t is NULL");
     if (t->type != GP_TOK_IDENT) return false;
@@ -596,7 +690,7 @@ static bool is_interp_qualifier_tok(const GpToken *t) {
 }
 
 /* Precision qualifier detection */
-//t nonnull
+// t nonnull
 static bool is_precision_qualifier_tok(const GpToken *t) {
     wgsl_compiler_assert(t != NULL, "is_precision_qualifier_tok: t is NULL");
     if (t->type != GP_TOK_IDENT) return false;
@@ -633,7 +727,7 @@ static WgslAstNode *gp_parse_primary(GpParser *P);
  * Maps: set→group, binding→binding, location→location,
  *       local_size_x/y/z→workgroup_size
  */
-//P nonnull, out_attrs nonnull
+// P nonnull, out_attrs nonnull
 static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
     wgsl_compiler_assert(P != NULL, "parse_layout_qualifier: P is NULL");
     wgsl_compiler_assert(out_attrs != NULL, "parse_layout_qualifier: out_attrs is NULL");
@@ -653,7 +747,10 @@ static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
         if (count > 0 || has_wg) {
             if (!gp_match(P, GP_TOK_COMMA)) break;
         }
-        if (!gp_check(P, GP_TOK_IDENT)) { gp_parse_error(P, "expected layout qualifier name"); break; }
+        if (!gp_check(P, GP_TOK_IDENT)) {
+            gp_parse_error(P, "expected layout qualifier name");
+            break;
+        }
         GpToken name = P->cur;
         gp_advance(P);
 
@@ -763,7 +860,7 @@ static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
  * Type Parsing
  * ============================================================================ */
 
-//name allowed to be NULL
+// name allowed to be NULL
 static const char *normalize_glsl_type(const char *name) {
     if (!name) return name;
     /* scalars */
@@ -803,7 +900,7 @@ static const char *normalize_glsl_type(const char *name) {
     return name;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_type_node(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_type_node: P is NULL");
     if (!gp_check(P, GP_TOK_IDENT) && !gp_check(P, GP_TOK_STRUCT)) {
@@ -820,7 +917,7 @@ static WgslAstNode *gp_parse_type_node(GpParser *P) {
 }
 
 /* Parse C-style array dimensions after a variable name: [N][M]... */
-//P nonnull, base_type nonnull
+// P nonnull, base_type nonnull
 static WgslAstNode *wrap_type_with_array_dims(GpParser *P, WgslAstNode *base_type) {
     wgsl_compiler_assert(P != NULL, "wrap_type_with_array_dims: P is NULL");
     wgsl_compiler_assert(base_type != NULL, "wrap_type_with_array_dims: base_type is NULL");
@@ -858,7 +955,7 @@ static WgslAstNode *wrap_type_with_array_dims(GpParser *P, WgslAstNode *base_typ
  * ============================================================================ */
 
 /* Parse a struct definition: struct Name { type field; ... }; */
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_struct_def(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "parse_struct_def: P is NULL");
     gp_expect(P, GP_TOK_STRUCT, "expected 'struct'");
@@ -921,11 +1018,11 @@ static WgslAstNode *parse_struct_def(GpParser *P) {
  *
  * Decomposes into: struct BlockName + global var instance_name
  */
-//P nonnull, out_struct nonnull, out_var nonnull
+// P nonnull, out_struct nonnull, out_var nonnull
 static void parse_interface_block(GpParser *P, WgslAstNode **out_struct,
-                                  WgslAstNode **out_var,
-                                  WgslAstNode **attrs, int attr_count,
-                                  const char *address_space) {
+    WgslAstNode **out_var,
+    WgslAstNode **attrs, int attr_count,
+    const char *address_space) {
     wgsl_compiler_assert(P != NULL, "parse_interface_block: P is NULL");
     wgsl_compiler_assert(out_struct != NULL, "parse_interface_block: out_struct is NULL");
     wgsl_compiler_assert(out_var != NULL, "parse_interface_block: out_var is NULL");
@@ -1003,13 +1100,13 @@ static void parse_interface_block(GpParser *P, WgslAstNode **out_struct,
 }
 
 /* Parse function parameters: (in/out/inout type name, ...) */
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_param(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_param: P is NULL");
     /* Optional parameter qualifier */
     char *param_qual = NULL;
     if (gp_check(P, GP_TOK_IDENT) && (tok_eq(&P->cur, "in") || tok_eq(&P->cur, "out") ||
-                                 tok_eq(&P->cur, "inout"))) {
+                                         tok_eq(&P->cur, "inout"))) {
         param_qual = glsl_strndup(P->cur.start, (size_t)P->cur.length);
         gp_advance(P);
     } else if (gp_check(P, GP_TOK_CONST)) {
@@ -1046,10 +1143,10 @@ static WgslAstNode *gp_parse_param(GpParser *P) {
 }
 
 /* Parse function definition: type name(params) { body } */
-//P nonnull, ret_type nonnull, name nonnull
+// P nonnull, ret_type nonnull, name nonnull
 static WgslAstNode *parse_function_def(GpParser *P, WgslAstNode *ret_type,
-                                        const char *name,
-                                        WgslAstNode **attrs, int attr_count) {
+    const char *name,
+    WgslAstNode **attrs, int attr_count) {
     wgsl_compiler_assert(P != NULL, "parse_function_def: P is NULL");
     wgsl_compiler_assert(ret_type != NULL, "parse_function_def: ret_type is NULL");
     wgsl_compiler_assert(name != NULL, "parse_function_def: name is NULL");
@@ -1069,7 +1166,7 @@ static WgslAstNode *parse_function_def(GpParser *P, WgslAstNode *ret_type,
                 goto parse_params;
             }
         } else {
-parse_params:;
+        parse_params:;
             WgslAstNode *par = gp_parse_param(P);
             if (par) gp_vec_push_node(&params, &pcount, &pcap, par);
             while (gp_match(P, GP_TOK_COMMA)) {
@@ -1100,11 +1197,11 @@ parse_params:;
  *          interface block
  *          precision declaration
  */
-//P nonnull, extra_decls nonnull, extra_count nonnull, extra_cap nonnull
+// P nonnull, extra_decls nonnull, extra_count nonnull, extra_cap nonnull
 static WgslAstNode *parse_external_declaration(GpParser *P,
-                                                WgslAstNode ***extra_decls,
-                                                int *extra_count,
-                                                int *extra_cap) {
+    WgslAstNode ***extra_decls,
+    int *extra_count,
+    int *extra_cap) {
     wgsl_compiler_assert(P != NULL, "parse_external_declaration: P is NULL");
     wgsl_compiler_assert(extra_decls != NULL, "parse_external_declaration: extra_decls is NULL");
     wgsl_compiler_assert(extra_count != NULL, "parse_external_declaration: extra_count is NULL");
@@ -1311,7 +1408,7 @@ static WgslAstNode *parse_external_declaration(GpParser *P,
     return G;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_block(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_block: P is NULL");
     gp_expect(P, GP_TOK_LBRACE, "expected '{'");
@@ -1333,7 +1430,7 @@ static WgslAstNode *gp_parse_block(GpParser *P) {
     return B;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_if_stmt(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_if_stmt: P is NULL");
     gp_expect(P, GP_TOK_IF, "expected 'if'");
@@ -1379,7 +1476,7 @@ static WgslAstNode *gp_parse_if_stmt(GpParser *P) {
     return I;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_while_stmt(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_while_stmt: P is NULL");
     gp_expect(P, GP_TOK_WHILE, "expected 'while'");
@@ -1393,7 +1490,7 @@ static WgslAstNode *gp_parse_while_stmt(GpParser *P) {
     return W;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_do_while_stmt(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "parse_do_while_stmt: P is NULL");
     gp_expect(P, GP_TOK_DO, "expected 'do'");
@@ -1409,7 +1506,7 @@ static WgslAstNode *parse_do_while_stmt(GpParser *P) {
     return D;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_for_stmt(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_for_stmt: P is NULL");
     gp_expect(P, GP_TOK_FOR, "expected 'for'");
@@ -1467,7 +1564,7 @@ static WgslAstNode *gp_parse_for_stmt(GpParser *P) {
     return F;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_switch_stmt(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "parse_switch_stmt: P is NULL");
     gp_expect(P, GP_TOK_SWITCH, "expected 'switch'");
@@ -1523,7 +1620,7 @@ static WgslAstNode *parse_switch_stmt(GpParser *P) {
 }
 
 /* Try to parse a local variable declaration (type-led) */
-//P nonnull
+// P nonnull
 static WgslAstNode *try_parse_local_var_decl(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "try_parse_local_var_decl: P is NULL");
     WgslAstNode *type = gp_parse_type_node(P);
@@ -1549,7 +1646,7 @@ static WgslAstNode *try_parse_local_var_decl(GpParser *P) {
     return V;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_statement(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_statement: P is NULL");
     /* Empty statement */
@@ -1622,10 +1719,13 @@ static WgslAstNode *gp_parse_statement(GpParser *P) {
  * Expression Parsing (Precedence Climbing)
  * ============================================================================ */
 
-//P nonnull
-static WgslAstNode *gp_parse_expr(GpParser *P) { wgsl_compiler_assert(P != NULL, "gp_parse_expr: P is NULL"); return gp_parse_assignment(P); }
+// P nonnull
+static WgslAstNode *gp_parse_expr(GpParser *P) {
+    wgsl_compiler_assert(P != NULL, "gp_parse_expr: P is NULL");
+    return gp_parse_assignment(P);
+}
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_assignment(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_assignment: P is NULL");
     WgslAstNode *left = gp_parse_conditional(P);
@@ -1641,13 +1741,15 @@ static WgslAstNode *gp_parse_assignment(GpParser *P) {
     }
 
     /* Compound assignment operators */
-    struct { GpTokenType tok; const char *op; } compounds[] = {
+    struct {
+        GpTokenType tok;
+        const char *op;
+    } compounds[] = {
         {GP_TOK_PLUSEQ, "+="}, {GP_TOK_MINUSEQ, "-="}, {GP_TOK_STAREQ, "*="},
         {GP_TOK_SLASHEQ, "/="}, {GP_TOK_PERCENTEQ, "%="},
         {GP_TOK_AMPEQ, "&="}, {GP_TOK_PIPEEQ, "|="}, {GP_TOK_CARETEQ, "^="},
         {GP_TOK_SHLEQ, "<<="}, {GP_TOK_SHREQ, ">>="},
-        {GP_TOK_EOF, NULL}
-    };
+        {GP_TOK_EOF, NULL}};
     for (int i = 0; compounds[i].op; i++) {
         if (gp_match(P, compounds[i].tok)) {
             WgslAstNode *right = gp_parse_assignment(P);
@@ -1661,7 +1763,7 @@ static WgslAstNode *gp_parse_assignment(GpParser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_conditional(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_conditional: P is NULL");
     WgslAstNode *c = gp_parse_logical_or(P);
@@ -1678,7 +1780,7 @@ static WgslAstNode *gp_parse_conditional(GpParser *P) {
     return c;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_logical_or(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_logical_or: P is NULL");
     WgslAstNode *left = gp_parse_logical_and(P);
@@ -1693,7 +1795,7 @@ static WgslAstNode *gp_parse_logical_or(GpParser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_logical_and(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_logical_and: P is NULL");
     WgslAstNode *left = parse_bitwise_or(P);
@@ -1708,7 +1810,7 @@ static WgslAstNode *gp_parse_logical_and(GpParser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_bitwise_or(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "parse_bitwise_or: P is NULL");
     WgslAstNode *left = parse_bitwise_xor(P);
@@ -1723,7 +1825,7 @@ static WgslAstNode *parse_bitwise_or(GpParser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_bitwise_xor(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "parse_bitwise_xor: P is NULL");
     WgslAstNode *left = parse_bitwise_and(P);
@@ -1738,7 +1840,7 @@ static WgslAstNode *parse_bitwise_xor(GpParser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_bitwise_and(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "parse_bitwise_and: P is NULL");
     WgslAstNode *left = gp_parse_equality(P);
@@ -1753,7 +1855,7 @@ static WgslAstNode *parse_bitwise_and(GpParser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_equality(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_equality: P is NULL");
     WgslAstNode *left = gp_parse_relational(P);
@@ -1781,7 +1883,7 @@ static WgslAstNode *gp_parse_equality(GpParser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_relational(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_relational: P is NULL");
     WgslAstNode *left = gp_parse_shift(P);
@@ -1790,32 +1892,44 @@ static WgslAstNode *gp_parse_relational(GpParser *P) {
             WgslAstNode *r = gp_parse_shift(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup("<");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         if (gp_match(P, GP_TOK_GT)) {
             WgslAstNode *r = gp_parse_shift(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup(">");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         if (gp_match(P, GP_TOK_LE)) {
             WgslAstNode *r = gp_parse_shift(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup("<=");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         if (gp_match(P, GP_TOK_GE)) {
             WgslAstNode *r = gp_parse_shift(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup(">=");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         break;
     }
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_shift(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_shift: P is NULL");
     WgslAstNode *left = gp_parse_additive(P);
@@ -1824,20 +1938,26 @@ static WgslAstNode *gp_parse_shift(GpParser *P) {
             WgslAstNode *r = gp_parse_additive(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup("<<");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         if (gp_match(P, GP_TOK_SHR)) {
             WgslAstNode *r = gp_parse_additive(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup(">>");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         break;
     }
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_additive(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_additive: P is NULL");
     WgslAstNode *left = gp_parse_multiplicative(P);
@@ -1846,20 +1966,26 @@ static WgslAstNode *gp_parse_additive(GpParser *P) {
             WgslAstNode *r = gp_parse_multiplicative(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup("+");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         if (gp_match(P, GP_TOK_MINUS)) {
             WgslAstNode *r = gp_parse_multiplicative(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup("-");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         break;
     }
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_multiplicative(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_multiplicative: P is NULL");
     WgslAstNode *left = gp_parse_unary(P);
@@ -1868,68 +1994,89 @@ static WgslAstNode *gp_parse_multiplicative(GpParser *P) {
             WgslAstNode *r = gp_parse_unary(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup("*");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         if (gp_match(P, GP_TOK_SLASH)) {
             WgslAstNode *r = gp_parse_unary(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup("/");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         if (gp_match(P, GP_TOK_PERCENT)) {
             WgslAstNode *r = gp_parse_unary(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
             B->binary.op = glsl_strdup("%");
-            B->binary.left = left; B->binary.right = r; left = B; continue;
+            B->binary.left = left;
+            B->binary.right = r;
+            left = B;
+            continue;
         }
         break;
     }
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_unary(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_unary: P is NULL");
     if (gp_match(P, GP_TOK_PLUSPLUS)) {
         WgslAstNode *e = gp_parse_unary(P);
         WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("++"); U->unary.is_postfix = 0; U->unary.expr = e;
+        U->unary.op = glsl_strdup("++");
+        U->unary.is_postfix = 0;
+        U->unary.expr = e;
         return U;
     }
     if (gp_match(P, GP_TOK_MINUSMINUS)) {
         WgslAstNode *e = gp_parse_unary(P);
         WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("--"); U->unary.is_postfix = 0; U->unary.expr = e;
+        U->unary.op = glsl_strdup("--");
+        U->unary.is_postfix = 0;
+        U->unary.expr = e;
         return U;
     }
     if (gp_match(P, GP_TOK_PLUS)) {
         WgslAstNode *e = gp_parse_unary(P);
         WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("+"); U->unary.is_postfix = 0; U->unary.expr = e;
+        U->unary.op = glsl_strdup("+");
+        U->unary.is_postfix = 0;
+        U->unary.expr = e;
         return U;
     }
     if (gp_match(P, GP_TOK_MINUS)) {
         WgslAstNode *e = gp_parse_unary(P);
         WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("-"); U->unary.is_postfix = 0; U->unary.expr = e;
+        U->unary.op = glsl_strdup("-");
+        U->unary.is_postfix = 0;
+        U->unary.expr = e;
         return U;
     }
     if (gp_match(P, GP_TOK_BANG)) {
         WgslAstNode *e = gp_parse_unary(P);
         WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("!"); U->unary.is_postfix = 0; U->unary.expr = e;
+        U->unary.op = glsl_strdup("!");
+        U->unary.is_postfix = 0;
+        U->unary.expr = e;
         return U;
     }
     if (gp_match(P, GP_TOK_TILDE)) {
         WgslAstNode *e = gp_parse_unary(P);
         WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("~"); U->unary.is_postfix = 0; U->unary.expr = e;
+        U->unary.op = glsl_strdup("~");
+        U->unary.is_postfix = 0;
+        U->unary.expr = e;
         return U;
     }
     return gp_parse_postfix(P);
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_postfix(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_postfix: P is NULL");
     WgslAstNode *expr = gp_parse_primary(P);
@@ -1978,13 +2125,17 @@ static WgslAstNode *gp_parse_postfix(GpParser *P) {
         }
         if (gp_match(P, GP_TOK_PLUSPLUS)) {
             WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-            U->unary.op = glsl_strdup("++"); U->unary.is_postfix = 1; U->unary.expr = expr;
+            U->unary.op = glsl_strdup("++");
+            U->unary.is_postfix = 1;
+            U->unary.expr = expr;
             expr = U;
             continue;
         }
         if (gp_match(P, GP_TOK_MINUSMINUS)) {
             WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-            U->unary.op = glsl_strdup("--"); U->unary.is_postfix = 1; U->unary.expr = expr;
+            U->unary.op = glsl_strdup("--");
+            U->unary.is_postfix = 1;
+            U->unary.expr = expr;
             expr = U;
             continue;
         }
@@ -1993,7 +2144,7 @@ static WgslAstNode *gp_parse_postfix(GpParser *P) {
     return expr;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_primary(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_primary: P is NULL");
     /* Type keyword as constructor: vec3(...), mat4(...), etc. */
@@ -2052,7 +2203,7 @@ static WgslAstNode *gp_parse_primary(GpParser *P) {
  * Program (entry point)
  * ============================================================================ */
 
-//P nonnull
+// P nonnull
 static WgslAstNode *gp_parse_program(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_program: P is NULL");
     WgslAstNode *root = gp_new_node(P, WGSL_NODE_PROGRAM);
@@ -2092,94 +2243,93 @@ static WgslAstNode *gp_parse_program(GpParser *P) {
  * ============================================================================ */
 
 typedef struct {
-    const char* glsl_name;
-    const char* builtin_name;
-    const char* wgsl_type;
-    const char* addr_space; /* "in" or "out" */
+    const char *glsl_name;
+    const char *builtin_name;
+    const char *wgsl_type;
+    const char *addr_space; /* "in" or "out" */
     WgslStage stage;
 } GlslBuiltinDef;
 
 static const GlslBuiltinDef glsl_builtins[] = {
-    {"gl_Position",            "position",              "vec4f", "out", WGSL_STAGE_VERTEX},
-    {"gl_VertexIndex",         "vertex_index",          "u32",   "in",  WGSL_STAGE_VERTEX},
-    {"gl_InstanceIndex",       "instance_index",        "u32",   "in",  WGSL_STAGE_VERTEX},
-    {"gl_FragCoord",           "position",              "vec4f", "in",  WGSL_STAGE_FRAGMENT},
-    {"gl_FrontFacing",         "front_facing",          "bool",  "in",  WGSL_STAGE_FRAGMENT},
-    {"gl_FragDepth",           "frag_depth",            "f32",   "out", WGSL_STAGE_FRAGMENT},
-    {"gl_GlobalInvocationID",  "global_invocation_id",  "vec3u", "in",  WGSL_STAGE_COMPUTE},
-    {"gl_LocalInvocationID",   "local_invocation_id",   "vec3u", "in",  WGSL_STAGE_COMPUTE},
-    {"gl_WorkGroupID",         "workgroup_id",          "vec3u", "in",  WGSL_STAGE_COMPUTE},
-    {"gl_NumWorkGroups",       "num_workgroups",        "vec3u", "in",  WGSL_STAGE_COMPUTE},
-    {"gl_LocalInvocationIndex","local_invocation_index", "u32",  "in",  WGSL_STAGE_COMPUTE},
-    {NULL, NULL, NULL, NULL, WGSL_STAGE_UNKNOWN}
-};
+    {"gl_Position", "position", "vec4f", "out", WGSL_STAGE_VERTEX},
+    {"gl_VertexIndex", "vertex_index", "u32", "in", WGSL_STAGE_VERTEX},
+    {"gl_InstanceIndex", "instance_index", "u32", "in", WGSL_STAGE_VERTEX},
+    {"gl_FragCoord", "position", "vec4f", "in", WGSL_STAGE_FRAGMENT},
+    {"gl_FrontFacing", "front_facing", "bool", "in", WGSL_STAGE_FRAGMENT},
+    {"gl_FragDepth", "frag_depth", "f32", "out", WGSL_STAGE_FRAGMENT},
+    {"gl_GlobalInvocationID", "global_invocation_id", "vec3u", "in", WGSL_STAGE_COMPUTE},
+    {"gl_LocalInvocationID", "local_invocation_id", "vec3u", "in", WGSL_STAGE_COMPUTE},
+    {"gl_WorkGroupID", "workgroup_id", "vec3u", "in", WGSL_STAGE_COMPUTE},
+    {"gl_NumWorkGroups", "num_workgroups", "vec3u", "in", WGSL_STAGE_COMPUTE},
+    {"gl_LocalInvocationIndex", "local_invocation_index", "u32", "in", WGSL_STAGE_COMPUTE},
+    {NULL, NULL, NULL, NULL, WGSL_STAGE_UNKNOWN}};
 
-//name nonnull
+// name nonnull
 static int ast_uses_ident(const WgslAstNode *n, const char *name) {
     wgsl_compiler_assert(name != NULL, "ast_uses_ident: name is NULL");
     if (!n) return 0;
     switch (n->type) {
-    case WGSL_NODE_IDENT:
-        return strcmp(n->ident.name, name) == 0;
-    case WGSL_NODE_BINARY:
-        return ast_uses_ident(n->binary.left, name) || ast_uses_ident(n->binary.right, name);
-    case WGSL_NODE_ASSIGN:
-        return ast_uses_ident(n->assign.lhs, name) || ast_uses_ident(n->assign.rhs, name);
-    case WGSL_NODE_CALL:
-        if (ast_uses_ident(n->call.callee, name)) return 1;
-        for (int i = 0; i < n->call.arg_count; i++)
-            if (ast_uses_ident(n->call.args[i], name)) return 1;
-        return 0;
-    case WGSL_NODE_MEMBER:
-        return ast_uses_ident(n->member.object, name);
-    case WGSL_NODE_INDEX:
-        return ast_uses_ident(n->index.object, name) || ast_uses_ident(n->index.index, name);
-    case WGSL_NODE_UNARY:
-        return ast_uses_ident(n->unary.expr, name);
-    case WGSL_NODE_TERNARY:
-        return ast_uses_ident(n->ternary.cond, name) ||
-               ast_uses_ident(n->ternary.then_expr, name) ||
-               ast_uses_ident(n->ternary.else_expr, name);
-    case WGSL_NODE_BLOCK:
-        for (int i = 0; i < n->block.stmt_count; i++)
-            if (ast_uses_ident(n->block.stmts[i], name)) return 1;
-        return 0;
-    case WGSL_NODE_VAR_DECL:
-        return ast_uses_ident(n->var_decl.init, name);
-    case WGSL_NODE_RETURN:
-        return ast_uses_ident(n->return_stmt.expr, name);
-    case WGSL_NODE_EXPR_STMT:
-        return ast_uses_ident(n->expr_stmt.expr, name);
-    case WGSL_NODE_IF:
-        return ast_uses_ident(n->if_stmt.cond, name) ||
-               ast_uses_ident(n->if_stmt.then_branch, name) ||
-               ast_uses_ident(n->if_stmt.else_branch, name);
-    case WGSL_NODE_WHILE:
-        return ast_uses_ident(n->while_stmt.cond, name) || ast_uses_ident(n->while_stmt.body, name);
-    case WGSL_NODE_FOR:
-        return ast_uses_ident(n->for_stmt.init, name) || ast_uses_ident(n->for_stmt.cond, name) ||
-               ast_uses_ident(n->for_stmt.cont, name) || ast_uses_ident(n->for_stmt.body, name);
-    case WGSL_NODE_DO_WHILE:
-        return ast_uses_ident(n->do_while_stmt.body, name) || ast_uses_ident(n->do_while_stmt.cond, name);
-    case WGSL_NODE_SWITCH:
-        if (ast_uses_ident(n->switch_stmt.expr, name)) return 1;
-        for (int i = 0; i < n->switch_stmt.case_count; i++)
-            if (ast_uses_ident(n->switch_stmt.cases[i], name)) return 1;
-        return 0;
-    case WGSL_NODE_CASE:
-        for (int i = 0; i < n->case_clause.expr_count; i++)
-            if (ast_uses_ident(n->case_clause.exprs[i], name)) return 1;
-        for (int i = 0; i < n->case_clause.stmt_count; i++)
-            if (ast_uses_ident(n->case_clause.stmts[i], name)) return 1;
-        return 0;
-    case WGSL_NODE_FUNCTION:
-        return ast_uses_ident(n->function.body, name);
-    default:
-        return 0;
+        case WGSL_NODE_IDENT:
+            return strcmp(n->ident.name, name) == 0;
+        case WGSL_NODE_BINARY:
+            return ast_uses_ident(n->binary.left, name) || ast_uses_ident(n->binary.right, name);
+        case WGSL_NODE_ASSIGN:
+            return ast_uses_ident(n->assign.lhs, name) || ast_uses_ident(n->assign.rhs, name);
+        case WGSL_NODE_CALL:
+            if (ast_uses_ident(n->call.callee, name)) return 1;
+            for (int i = 0; i < n->call.arg_count; i++)
+                if (ast_uses_ident(n->call.args[i], name)) return 1;
+            return 0;
+        case WGSL_NODE_MEMBER:
+            return ast_uses_ident(n->member.object, name);
+        case WGSL_NODE_INDEX:
+            return ast_uses_ident(n->index.object, name) || ast_uses_ident(n->index.index, name);
+        case WGSL_NODE_UNARY:
+            return ast_uses_ident(n->unary.expr, name);
+        case WGSL_NODE_TERNARY:
+            return ast_uses_ident(n->ternary.cond, name) ||
+                   ast_uses_ident(n->ternary.then_expr, name) ||
+                   ast_uses_ident(n->ternary.else_expr, name);
+        case WGSL_NODE_BLOCK:
+            for (int i = 0; i < n->block.stmt_count; i++)
+                if (ast_uses_ident(n->block.stmts[i], name)) return 1;
+            return 0;
+        case WGSL_NODE_VAR_DECL:
+            return ast_uses_ident(n->var_decl.init, name);
+        case WGSL_NODE_RETURN:
+            return ast_uses_ident(n->return_stmt.expr, name);
+        case WGSL_NODE_EXPR_STMT:
+            return ast_uses_ident(n->expr_stmt.expr, name);
+        case WGSL_NODE_IF:
+            return ast_uses_ident(n->if_stmt.cond, name) ||
+                   ast_uses_ident(n->if_stmt.then_branch, name) ||
+                   ast_uses_ident(n->if_stmt.else_branch, name);
+        case WGSL_NODE_WHILE:
+            return ast_uses_ident(n->while_stmt.cond, name) || ast_uses_ident(n->while_stmt.body, name);
+        case WGSL_NODE_FOR:
+            return ast_uses_ident(n->for_stmt.init, name) || ast_uses_ident(n->for_stmt.cond, name) ||
+                   ast_uses_ident(n->for_stmt.cont, name) || ast_uses_ident(n->for_stmt.body, name);
+        case WGSL_NODE_DO_WHILE:
+            return ast_uses_ident(n->do_while_stmt.body, name) || ast_uses_ident(n->do_while_stmt.cond, name);
+        case WGSL_NODE_SWITCH:
+            if (ast_uses_ident(n->switch_stmt.expr, name)) return 1;
+            for (int i = 0; i < n->switch_stmt.case_count; i++)
+                if (ast_uses_ident(n->switch_stmt.cases[i], name)) return 1;
+            return 0;
+        case WGSL_NODE_CASE:
+            for (int i = 0; i < n->case_clause.expr_count; i++)
+                if (ast_uses_ident(n->case_clause.exprs[i], name)) return 1;
+            for (int i = 0; i < n->case_clause.stmt_count; i++)
+                if (ast_uses_ident(n->case_clause.stmts[i], name)) return 1;
+            return 0;
+        case WGSL_NODE_FUNCTION:
+            return ast_uses_ident(n->function.body, name);
+        default:
+            return 0;
     }
 }
 
-//def nonnull
+// def nonnull
 static WgslAstNode *make_builtin_global(const GlslBuiltinDef *def) {
     wgsl_compiler_assert(def != NULL, "make_builtin_global: def is NULL");
     WgslAstNode *gv = NODE_ALLOC(WgslAstNode);
@@ -2212,7 +2362,7 @@ static WgslAstNode *make_builtin_global(const GlslBuiltinDef *def) {
     return gv;
 }
 
-//ast allowed to be NULL
+// ast allowed to be NULL
 static void inject_glsl_builtins(WgslAstNode *ast, WgslStage stage) {
     if (!ast || ast->type != WGSL_NODE_PROGRAM || stage == WGSL_STAGE_UNKNOWN)
         return;
@@ -2254,7 +2404,7 @@ static void inject_glsl_builtins(WgslAstNode *ast, WgslStage stage) {
  * Public API
  * ============================================================================ */
 
-//ast allowed to be NULL
+// ast allowed to be NULL
 static void inject_stage_attr(WgslAstNode *ast, WgslStage stage) {
     if (!ast || ast->type != WGSL_NODE_PROGRAM || stage == WGSL_STAGE_UNKNOWN)
         return;
@@ -2290,7 +2440,7 @@ static void inject_stage_attr(WgslAstNode *ast, WgslStage stage) {
     }
 }
 
-//source allowed to be NULL
+// source allowed to be NULL
 WgslAstNode *glsl_parse(const char *source, WgslStage stage) {
     GpParser P;
     memset(&P, 0, sizeof(P));

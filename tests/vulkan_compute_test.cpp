@@ -11,11 +11,11 @@ extern "C" {
 }
 
 class VulkanComputeTest : public ::testing::Test {
-protected:
+  protected:
     static void SetUpTestSuite() {
         try {
             ctx_ = std::make_unique<vk_compute::VulkanContext>();
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             GTEST_SKIP() << "Vulkan not available: " << e.what();
         }
     }
@@ -36,7 +36,7 @@ protected:
 std::unique_ptr<vk_compute::VulkanContext> VulkanComputeTest::ctx_;
 
 TEST_F(VulkanComputeTest, BufferCopy) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -58,10 +58,7 @@ TEST_F(VulkanComputeTest, BufferCopy) {
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto output_data = output.download<float>(input_data.size());
     for (size_t i = 0; i < input_data.size(); i++) {
@@ -70,7 +67,7 @@ TEST_F(VulkanComputeTest, BufferCopy) {
 }
 
 TEST_F(VulkanComputeTest, ScalarAdd) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -95,11 +92,7 @@ TEST_F(VulkanComputeTest, ScalarAdd) {
     auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto output_data = out.download<float>(a_data.size());
     for (size_t i = 0; i < a_data.size(); i++) {
@@ -108,7 +101,7 @@ TEST_F(VulkanComputeTest, ScalarAdd) {
 }
 
 TEST_F(VulkanComputeTest, ScalarMultiply) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -133,11 +126,7 @@ TEST_F(VulkanComputeTest, ScalarMultiply) {
     auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto output_data = out.download<float>(a_data.size());
     for (size_t i = 0; i < a_data.size(); i++) {
@@ -146,7 +135,7 @@ TEST_F(VulkanComputeTest, ScalarMultiply) {
 }
 
 TEST_F(VulkanComputeTest, IntegerArithmetic) {
-    const char* source = R"(
+    const char *source = R"(
         struct IntBuffer {
             data: array<i32>,
         };
@@ -171,11 +160,7 @@ TEST_F(VulkanComputeTest, IntegerArithmetic) {
     auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(int32_t));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto output_data = out.download<int32_t>(a_data.size());
     for (size_t i = 0; i < a_data.size(); i++) {
@@ -184,7 +169,7 @@ TEST_F(VulkanComputeTest, IntegerArithmetic) {
 }
 
 TEST_F(VulkanComputeTest, ConditionalSelect) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -213,11 +198,7 @@ TEST_F(VulkanComputeTest, ConditionalSelect) {
     auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto output_data = out.download<float>(a_data.size());
     for (size_t i = 0; i < a_data.size(); i++) {
@@ -227,7 +208,7 @@ TEST_F(VulkanComputeTest, ConditionalSelect) {
 }
 
 TEST_F(VulkanComputeTest, LoopSum) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -253,10 +234,7 @@ TEST_F(VulkanComputeTest, LoopSum) {
     auto output = ctx_->createStorageBuffer(sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto output_data = output.download<float>(1);
     float expected = 1.0f + 2.0f + 3.0f + 4.0f;
@@ -264,7 +242,7 @@ TEST_F(VulkanComputeTest, LoopSum) {
 }
 
 TEST_F(VulkanComputeTest, MathAbs) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -286,10 +264,7 @@ TEST_F(VulkanComputeTest, MathAbs) {
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto output_data = output.download<float>(input_data.size());
     for (size_t i = 0; i < input_data.size(); i++) {
@@ -298,7 +273,7 @@ TEST_F(VulkanComputeTest, MathAbs) {
 }
 
 TEST_F(VulkanComputeTest, MathMinMax) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -326,12 +301,7 @@ TEST_F(VulkanComputeTest, MathMinMax) {
     auto max_out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &min_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {3, &max_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &min_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {3, &max_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto min_data = min_out.download<float>(a_data.size());
     auto max_data = max_out.download<float>(a_data.size());
@@ -342,7 +312,7 @@ TEST_F(VulkanComputeTest, MathMinMax) {
 }
 
 TEST_F(VulkanComputeTest, MathClamp) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -364,10 +334,7 @@ TEST_F(VulkanComputeTest, MathClamp) {
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto output_data = output.download<float>(input_data.size());
     std::vector<float> expected = {0.0f, 0.5f, 1.0f, 0.0f};
@@ -377,7 +344,7 @@ TEST_F(VulkanComputeTest, MathClamp) {
 }
 
 TEST_F(VulkanComputeTest, MathFloorCeil) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -402,11 +369,7 @@ TEST_F(VulkanComputeTest, MathFloorCeil) {
     auto ceil_out = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &floor_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &ceil_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &floor_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &ceil_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto floor_data = floor_out.download<float>(input_data.size());
     auto ceil_data = ceil_out.download<float>(input_data.size());
@@ -417,7 +380,7 @@ TEST_F(VulkanComputeTest, MathFloorCeil) {
 }
 
 TEST_F(VulkanComputeTest, RoundtripSpirvIdentity) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -446,7 +409,8 @@ TEST_F(VulkanComputeTest, RoundtripSpirvIdentity) {
 
     auto second_compile = wgsl_test::CompileWgsl(raised.wgsl.c_str());
     ASSERT_TRUE(second_compile.success) << "Second compile failed: " << second_compile.error
-        << "\nRaised WGSL:\n" << raised.wgsl;
+                                        << "\nRaised WGSL:\n"
+                                        << raised.wgsl;
 
     std::vector<float> a_data = {5.0f, 2.0f, 8.0f, 1.0f, 3.0f, 7.0f, 4.0f, 6.0f};
     std::vector<float> b_data = {3.0f, 7.0f, 4.0f, 9.0f, 6.0f, 2.0f, 8.0f, 5.0f};
@@ -456,22 +420,14 @@ TEST_F(VulkanComputeTest, RoundtripSpirvIdentity) {
     auto out1 = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline1 = ctx_->createPipeline(first_compile.spirv);
-    ctx_->dispatch(pipeline1, {
-        {0, &a1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline1, {{0, &a1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto a2 = ctx_->createStorageBuffer(a_data);
     auto b2 = ctx_->createStorageBuffer(b_data);
     auto out2 = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline2 = ctx_->createPipeline(second_compile.spirv);
-    ctx_->dispatch(pipeline2, {
-        {0, &a2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline2, {{0, &a2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto result1 = out1.download<float>(a_data.size());
     auto result2 = out2.download<float>(a_data.size());
@@ -485,7 +441,7 @@ TEST_F(VulkanComputeTest, RoundtripSpirvIdentity) {
 }
 
 TEST_F(VulkanComputeTest, RoundtripWithLoop) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer {
             data: array<f32>,
         };
@@ -511,25 +467,20 @@ TEST_F(VulkanComputeTest, RoundtripWithLoop) {
 
     auto second_compile = wgsl_test::CompileWgsl(raised.wgsl.c_str());
     ASSERT_TRUE(second_compile.success) << "Second compile failed: " << second_compile.error
-        << "\nRaised WGSL:\n" << raised.wgsl;
+                                        << "\nRaised WGSL:\n"
+                                        << raised.wgsl;
 
     std::vector<float> input_data = {1.0f, 2.0f, 3.0f, 4.0f};
 
     auto in1 = ctx_->createStorageBuffer(input_data);
     auto out1 = ctx_->createStorageBuffer(sizeof(float));
     auto pipeline1 = ctx_->createPipeline(first_compile.spirv);
-    ctx_->dispatch(pipeline1, {
-        {0, &in1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &out1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline1, {{0, &in1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &out1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto in2 = ctx_->createStorageBuffer(input_data);
     auto out2 = ctx_->createStorageBuffer(sizeof(float));
     auto pipeline2 = ctx_->createPipeline(second_compile.spirv);
-    ctx_->dispatch(pipeline2, {
-        {0, &in2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &out2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline2, {{0, &in2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &out2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto result1 = out1.download<float>(1);
     auto result2 = out2.download<float>(1);
@@ -540,7 +491,7 @@ TEST_F(VulkanComputeTest, RoundtripWithLoop) {
 }
 
 TEST_F(VulkanComputeTest, TrigSinCos) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -558,17 +509,13 @@ TEST_F(VulkanComputeTest, TrigSinCos) {
     ASSERT_TRUE(result.success) << result.error;
 
     const float PI = 3.14159265359f;
-    std::vector<float> input_data = {0.0f, PI/6.0f, PI/4.0f, PI/3.0f, PI/2.0f, PI, 3.0f*PI/2.0f, 2.0f*PI};
+    std::vector<float> input_data = {0.0f, PI / 6.0f, PI / 4.0f, PI / 3.0f, PI / 2.0f, PI, 3.0f * PI / 2.0f, 2.0f * PI};
     auto input = ctx_->createStorageBuffer(input_data);
     auto sin_out = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
     auto cos_out = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &sin_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &cos_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &sin_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &cos_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto sin_data = sin_out.download<float>(input_data.size());
     auto cos_data = cos_out.download<float>(input_data.size());
@@ -579,7 +526,7 @@ TEST_F(VulkanComputeTest, TrigSinCos) {
 }
 
 TEST_F(VulkanComputeTest, TrigTan) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -595,15 +542,12 @@ TEST_F(VulkanComputeTest, TrigTan) {
     ASSERT_TRUE(result.success) << result.error;
 
     const float PI = 3.14159265359f;
-    std::vector<float> input_data = {0.0f, PI/6.0f, PI/4.0f, PI/3.0f, -PI/4.0f, -PI/6.0f};
+    std::vector<float> input_data = {0.0f, PI / 6.0f, PI / 4.0f, PI / 3.0f, -PI / 4.0f, -PI / 6.0f};
     auto input = ctx_->createStorageBuffer(input_data);
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto output_data = output.download<float>(input_data.size());
     for (size_t i = 0; i < input_data.size(); i++) {
@@ -612,7 +556,7 @@ TEST_F(VulkanComputeTest, TrigTan) {
 }
 
 TEST_F(VulkanComputeTest, TrigInverse) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -638,12 +582,7 @@ TEST_F(VulkanComputeTest, TrigInverse) {
     auto atan_out = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &asin_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &acos_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {3, &atan_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &asin_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &acos_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {3, &atan_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto asin_data = asin_out.download<float>(input_data.size());
     auto acos_data = acos_out.download<float>(input_data.size());
@@ -656,7 +595,7 @@ TEST_F(VulkanComputeTest, TrigInverse) {
 }
 
 TEST_F(VulkanComputeTest, TrigAtan2) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> y_in: Buffer;
@@ -679,11 +618,7 @@ TEST_F(VulkanComputeTest, TrigAtan2) {
     auto output = ctx_->createStorageBuffer(y_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &y_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &x_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(y_data.size()));
+    ctx_->dispatch(pipeline, {{0, &y_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &x_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(y_data.size()));
 
     auto output_data = output.download<float>(y_data.size());
     for (size_t i = 0; i < y_data.size(); i++) {
@@ -692,7 +627,7 @@ TEST_F(VulkanComputeTest, TrigAtan2) {
 }
 
 TEST_F(VulkanComputeTest, TrigHyperbolic) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -718,12 +653,7 @@ TEST_F(VulkanComputeTest, TrigHyperbolic) {
     auto tanh_out = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &sinh_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &cosh_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {3, &tanh_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &sinh_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &cosh_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {3, &tanh_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto sinh_data = sinh_out.download<float>(input_data.size());
     auto cosh_data = cosh_out.download<float>(input_data.size());
@@ -736,7 +666,7 @@ TEST_F(VulkanComputeTest, TrigHyperbolic) {
 }
 
 TEST_F(VulkanComputeTest, ExpLogPow) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -765,13 +695,7 @@ TEST_F(VulkanComputeTest, ExpLogPow) {
     auto log2_out = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &exp_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &log_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {3, &exp2_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {4, &log2_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &exp_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &log_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {3, &exp2_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {4, &log2_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto exp_data = exp_out.download<float>(input_data.size());
     auto log_data = log_out.download<float>(input_data.size());
@@ -788,7 +712,7 @@ TEST_F(VulkanComputeTest, ExpLogPow) {
 }
 
 TEST_F(VulkanComputeTest, SqrtInverseSqrt) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -811,22 +735,18 @@ TEST_F(VulkanComputeTest, SqrtInverseSqrt) {
     auto inverseSqrt_out = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &sqrt_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &inverseSqrt_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &sqrt_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &inverseSqrt_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto sqrt_data = sqrt_out.download<float>(input_data.size());
     auto inverseSqrt_data = inverseSqrt_out.download<float>(input_data.size());
     for (size_t i = 0; i < input_data.size(); i++) {
         EXPECT_NEAR(sqrt_data[i], std::sqrt(input_data[i]), 1e-5f) << "sqrt mismatch at " << i;
-        EXPECT_NEAR(inverseSqrt_data[i], 1.0f/std::sqrt(input_data[i]), 1e-5f) << "inverseSqrt mismatch at " << i;
+        EXPECT_NEAR(inverseSqrt_data[i], 1.0f / std::sqrt(input_data[i]), 1e-5f) << "inverseSqrt mismatch at " << i;
     }
 }
 
 TEST_F(VulkanComputeTest, PowFunction) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> base_in: Buffer;
@@ -849,11 +769,7 @@ TEST_F(VulkanComputeTest, PowFunction) {
     auto output = ctx_->createStorageBuffer(base_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &base_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &exp_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(base_data.size()));
+    ctx_->dispatch(pipeline, {{0, &base_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &exp_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(base_data.size()));
 
     auto output_data = output.download<float>(base_data.size());
     for (size_t i = 0; i < base_data.size(); i++) {
@@ -862,7 +778,7 @@ TEST_F(VulkanComputeTest, PowFunction) {
 }
 
 TEST_F(VulkanComputeTest, CompileTimeUnrolledDotProduct) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> a: Buffer;
@@ -891,21 +807,17 @@ TEST_F(VulkanComputeTest, CompileTimeUnrolledDotProduct) {
     auto output = ctx_->createStorageBuffer(2 * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 2);
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 2);
 
     auto output_data = output.download<float>(2);
-    float expected0 = 1.0f*2.0f + 2.0f*3.0f + 3.0f*4.0f + 4.0f*5.0f;
-    float expected1 = 5.0f*1.0f + 6.0f*1.0f + 7.0f*1.0f + 8.0f*1.0f;
+    float expected0 = 1.0f * 2.0f + 2.0f * 3.0f + 3.0f * 4.0f + 4.0f * 5.0f;
+    float expected1 = 5.0f * 1.0f + 6.0f * 1.0f + 7.0f * 1.0f + 8.0f * 1.0f;
     EXPECT_NEAR(output_data[0], expected0, 1e-5f);
     EXPECT_NEAR(output_data[1], expected1, 1e-5f);
 }
 
 TEST_F(VulkanComputeTest, CompileTimeUnrolledPolynomial) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> x_in: Buffer;
@@ -930,21 +842,18 @@ TEST_F(VulkanComputeTest, CompileTimeUnrolledPolynomial) {
     auto output = ctx_->createStorageBuffer(x_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &x_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(x_data.size()));
+    ctx_->dispatch(pipeline, {{0, &x_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(x_data.size()));
 
     auto output_data = output.download<float>(x_data.size());
     for (size_t i = 0; i < x_data.size(); i++) {
         float x = x_data[i];
-        float expected = 1.0f + 2.0f*x + 3.0f*x*x + 4.0f*x*x*x;
+        float expected = 1.0f + 2.0f * x + 3.0f * x * x + 4.0f * x * x * x;
         EXPECT_NEAR(output_data[i], expected, 1e-5f) << "polynomial mismatch at " << i;
     }
 }
 
 TEST_F(VulkanComputeTest, TrigIdentitySinCosSquared) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -963,15 +872,12 @@ TEST_F(VulkanComputeTest, TrigIdentitySinCosSquared) {
     ASSERT_TRUE(result.success) << result.error;
 
     const float PI = 3.14159265359f;
-    std::vector<float> input_data = {0.0f, PI/4.0f, PI/2.0f, PI, 1.5f, 2.7f, -0.5f, 3.0f};
+    std::vector<float> input_data = {0.0f, PI / 4.0f, PI / 2.0f, PI, 1.5f, 2.7f, -0.5f, 3.0f};
     auto input = ctx_->createStorageBuffer(input_data);
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto output_data = output.download<float>(input_data.size());
     for (size_t i = 0; i < input_data.size(); i++) {
@@ -980,7 +886,7 @@ TEST_F(VulkanComputeTest, TrigIdentitySinCosSquared) {
 }
 
 TEST_F(VulkanComputeTest, SmoothstepFunction) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -1000,10 +906,7 @@ TEST_F(VulkanComputeTest, SmoothstepFunction) {
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto smoothstep_cpu = [](float edge0, float edge1, float x) {
         float t = std::max(0.0f, std::min((x - edge0) / (edge1 - edge0), 1.0f));
@@ -1017,7 +920,7 @@ TEST_F(VulkanComputeTest, SmoothstepFunction) {
 }
 
 TEST_F(VulkanComputeTest, MixLerp) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> a_in: Buffer;
@@ -1043,12 +946,7 @@ TEST_F(VulkanComputeTest, MixLerp) {
     auto output = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &t_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {3, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &t_in, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {3, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto output_data = output.download<float>(a_data.size());
     for (size_t i = 0; i < a_data.size(); i++) {
@@ -1058,7 +956,7 @@ TEST_F(VulkanComputeTest, MixLerp) {
 }
 
 TEST_F(VulkanComputeTest, ComplexTrigExpression) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -1082,10 +980,7 @@ TEST_F(VulkanComputeTest, ComplexTrigExpression) {
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto output_data = output.download<float>(input_data.size());
     for (size_t i = 0; i < input_data.size(); i++) {
@@ -1096,7 +991,7 @@ TEST_F(VulkanComputeTest, ComplexTrigExpression) {
 }
 
 TEST_F(VulkanComputeTest, CompileTimeUnrolledMatrixMultiply2x2) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> mat_a: Buffer;
@@ -1126,21 +1021,17 @@ TEST_F(VulkanComputeTest, CompileTimeUnrolledMatrixMultiply2x2) {
     auto mat_c = ctx_->createStorageBuffer(4 * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &mat_a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &mat_b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &mat_c, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &mat_a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &mat_b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &mat_c, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto output_data = mat_c.download<float>(4);
-    EXPECT_NEAR(output_data[0], 1.0f*5.0f + 2.0f*7.0f, 1e-5f);
-    EXPECT_NEAR(output_data[1], 1.0f*6.0f + 2.0f*8.0f, 1e-5f);
-    EXPECT_NEAR(output_data[2], 3.0f*5.0f + 4.0f*7.0f, 1e-5f);
-    EXPECT_NEAR(output_data[3], 3.0f*6.0f + 4.0f*8.0f, 1e-5f);
+    EXPECT_NEAR(output_data[0], 1.0f * 5.0f + 2.0f * 7.0f, 1e-5f);
+    EXPECT_NEAR(output_data[1], 1.0f * 6.0f + 2.0f * 8.0f, 1e-5f);
+    EXPECT_NEAR(output_data[2], 3.0f * 5.0f + 4.0f * 7.0f, 1e-5f);
+    EXPECT_NEAR(output_data[3], 3.0f * 6.0f + 4.0f * 8.0f, 1e-5f);
 }
 
 TEST_F(VulkanComputeTest, RoundtripTrigFunctions) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
 
         @group(0) @binding(0) var<storage, read> input: Buffer;
@@ -1161,25 +1052,20 @@ TEST_F(VulkanComputeTest, RoundtripTrigFunctions) {
 
     auto second_compile = wgsl_test::CompileWgsl(raised.wgsl.c_str());
     ASSERT_TRUE(second_compile.success) << "Second compile failed: " << second_compile.error
-        << "\nRaised WGSL:\n" << raised.wgsl;
+                                        << "\nRaised WGSL:\n"
+                                        << raised.wgsl;
 
     std::vector<float> input_data = {0.0f, 0.5f, 1.0f, 1.5f, 2.0f, -0.5f, -1.0f, -1.5f};
 
     auto in1 = ctx_->createStorageBuffer(input_data);
     auto out1 = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
     auto pipeline1 = ctx_->createPipeline(first_compile.spirv);
-    ctx_->dispatch(pipeline1, {
-        {0, &in1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &out1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline1, {{0, &in1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &out1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto in2 = ctx_->createStorageBuffer(input_data);
     auto out2 = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
     auto pipeline2 = ctx_->createPipeline(second_compile.spirv);
-    ctx_->dispatch(pipeline2, {
-        {0, &in2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &out2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline2, {{0, &in2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &out2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto result1 = out1.download<float>(input_data.size());
     auto result2 = out2.download<float>(input_data.size());
@@ -1197,7 +1083,7 @@ TEST_F(VulkanComputeTest, RoundtripTrigFunctions) {
 // ============================================================================
 
 TEST_F(VulkanComputeTest, GlslBufferCopy) {
-    const char* source = R"(
+    const char *source = R"(
         #version 450
         layout(local_size_x = 1) in;
 
@@ -1223,10 +1109,7 @@ TEST_F(VulkanComputeTest, GlslBufferCopy) {
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto output_data = output.download<float>(input_data.size());
     for (size_t i = 0; i < input_data.size(); i++) {
@@ -1235,7 +1118,7 @@ TEST_F(VulkanComputeTest, GlslBufferCopy) {
 }
 
 TEST_F(VulkanComputeTest, GlslScalarAdd) {
-    const char* source = R"(
+    const char *source = R"(
         #version 450
         layout(local_size_x = 1) in;
 
@@ -1267,11 +1150,7 @@ TEST_F(VulkanComputeTest, GlslScalarAdd) {
     auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto output_data = out.download<float>(a_data.size());
     for (size_t i = 0; i < a_data.size(); i++) {
@@ -1280,7 +1159,7 @@ TEST_F(VulkanComputeTest, GlslScalarAdd) {
 }
 
 TEST_F(VulkanComputeTest, GlslScalarMultiply) {
-    const char* source = R"(
+    const char *source = R"(
         #version 450
         layout(local_size_x = 1) in;
 
@@ -1312,11 +1191,7 @@ TEST_F(VulkanComputeTest, GlslScalarMultiply) {
     auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto output_data = out.download<float>(a_data.size());
     for (size_t i = 0; i < a_data.size(); i++) {
@@ -1325,7 +1200,7 @@ TEST_F(VulkanComputeTest, GlslScalarMultiply) {
 }
 
 TEST_F(VulkanComputeTest, GlslConditionalSelect) {
-    const char* source = R"(
+    const char *source = R"(
         #version 450
         layout(local_size_x = 1) in;
 
@@ -1361,11 +1236,7 @@ TEST_F(VulkanComputeTest, GlslConditionalSelect) {
     auto out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto output_data = out.download<float>(a_data.size());
     for (size_t i = 0; i < a_data.size(); i++) {
@@ -1375,7 +1246,7 @@ TEST_F(VulkanComputeTest, GlslConditionalSelect) {
 }
 
 TEST_F(VulkanComputeTest, GlslLoopSum) {
-    const char* source = R"(
+    const char *source = R"(
         #version 450
         layout(local_size_x = 1) in;
 
@@ -1404,10 +1275,7 @@ TEST_F(VulkanComputeTest, GlslLoopSum) {
     auto output = ctx_->createStorageBuffer(sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto output_data = output.download<float>(1);
     float expected = 1.0f + 2.0f + 3.0f + 4.0f;
@@ -1415,7 +1283,7 @@ TEST_F(VulkanComputeTest, GlslLoopSum) {
 }
 
 TEST_F(VulkanComputeTest, GlslMathAbs) {
-    const char* source = R"(
+    const char *source = R"(
         #version 450
         layout(local_size_x = 1) in;
 
@@ -1441,10 +1309,7 @@ TEST_F(VulkanComputeTest, GlslMathAbs) {
     auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(input_data.size()));
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(input_data.size()));
 
     auto output_data = output.download<float>(input_data.size());
     for (size_t i = 0; i < input_data.size(); i++) {
@@ -1453,7 +1318,7 @@ TEST_F(VulkanComputeTest, GlslMathAbs) {
 }
 
 TEST_F(VulkanComputeTest, GlslMathMinMax) {
-    const char* source = R"(
+    const char *source = R"(
         #version 450
         layout(local_size_x = 1) in;
 
@@ -1491,12 +1356,7 @@ TEST_F(VulkanComputeTest, GlslMathMinMax) {
     auto max_out = ctx_->createStorageBuffer(a_data.size() * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {2, &min_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {3, &max_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, static_cast<uint32_t>(a_data.size()));
+    ctx_->dispatch(pipeline, {{0, &a, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &b, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {2, &min_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {3, &max_out, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, static_cast<uint32_t>(a_data.size()));
 
     auto min_data = min_out.download<float>(a_data.size());
     auto max_data = max_out.download<float>(a_data.size());
@@ -1510,8 +1370,8 @@ TEST_F(VulkanComputeTest, GlslMathMinMax) {
 // Mandelbrot Image Tests
 // ============================================================================
 
-static void mandelbrot_colorize(const std::vector<float>& data, uint32_t width, uint32_t height,
-                                 std::vector<uint8_t>& image) {
+static void mandelbrot_colorize(const std::vector<float> &data, uint32_t width, uint32_t height,
+    std::vector<uint8_t> &image) {
     image.resize(width * height * 4);
     for (uint32_t i = 0; i < width * height; i++) {
         float t = data[i];
@@ -1531,7 +1391,7 @@ static void mandelbrot_colorize(const std::vector<float>& data, uint32_t width, 
 }
 
 TEST_F(VulkanComputeTest, WgslMandelbrotImage) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buffer { data: array<f32>, };
         @group(0) @binding(0) var<storage, read_write> output: Buffer;
 
@@ -1574,9 +1434,7 @@ TEST_F(VulkanComputeTest, WgslMandelbrotImage) {
     auto output = ctx_->createStorageBuffer(W * H * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, W, H);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, W, H);
 
     auto data = output.download<float>(W * H);
 
@@ -1586,14 +1444,15 @@ TEST_F(VulkanComputeTest, WgslMandelbrotImage) {
 
     int black = 0, nonblack = 0;
     for (uint32_t i = 0; i < W * H; i++) {
-        if (data[i] >= 1.0f) black++; else nonblack++;
+        if (data[i] >= 1.0f) black++;
+        else nonblack++;
     }
     EXPECT_GT(black, 1000) << "Should have substantial set interior";
     EXPECT_GT(nonblack, 1000) << "Should have substantial set exterior";
 }
 
 TEST_F(VulkanComputeTest, GlslMandelbrotImage) {
-    const char* source = R"(
+    const char *source = R"(
         #version 450
         layout(local_size_x = 1) in;
 
@@ -1639,9 +1498,7 @@ TEST_F(VulkanComputeTest, GlslMandelbrotImage) {
     auto output = ctx_->createStorageBuffer(W * H * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, W, H);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, W, H);
 
     auto data = output.download<float>(W * H);
 
@@ -1651,7 +1508,8 @@ TEST_F(VulkanComputeTest, GlslMandelbrotImage) {
 
     int black = 0, nonblack = 0;
     for (uint32_t i = 0; i < W * H; i++) {
-        if (data[i] >= 1.0f) black++; else nonblack++;
+        if (data[i] >= 1.0f) black++;
+        else nonblack++;
     }
     EXPECT_GT(black, 1000) << "Should have substantial set interior";
     EXPECT_GT(nonblack, 1000) << "Should have substantial set exterior";
@@ -1662,7 +1520,7 @@ TEST_F(VulkanComputeTest, GlslMandelbrotImage) {
 // ============================================================================
 
 TEST_F(VulkanComputeTest, MatrixTimesVector_Identity3x3) {
-    const char* source = R"(
+    const char *source = R"(
         struct In  { v: vec3<f32>, };
         struct Out { v: array<f32>, };
         @group(0) @binding(0) var<storage, read> input: In;
@@ -1690,10 +1548,7 @@ TEST_F(VulkanComputeTest, MatrixTimesVector_Identity3x3) {
     auto output = ctx_->createStorageBuffer(3 * sizeof(float));
 
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
-        {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}, {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto out = output.download<float>(3);
     EXPECT_FLOAT_EQ(out[0], 1.0f);
@@ -1702,7 +1557,7 @@ TEST_F(VulkanComputeTest, MatrixTimesVector_Identity3x3) {
 }
 
 TEST_F(VulkanComputeTest, MatrixTimesVector_Scale3x3) {
-    const char* source = R"(
+    const char *source = R"(
         struct Out { v: array<f32>, };
         @group(0) @binding(0) var<storage, read_write> output: Out;
 
@@ -1725,9 +1580,7 @@ TEST_F(VulkanComputeTest, MatrixTimesVector_Scale3x3) {
 
     auto output = ctx_->createStorageBuffer(3 * sizeof(float));
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto out = output.download<float>(3);
     EXPECT_FLOAT_EQ(out[0], 2.0f);
@@ -1736,7 +1589,7 @@ TEST_F(VulkanComputeTest, MatrixTimesVector_Scale3x3) {
 }
 
 TEST_F(VulkanComputeTest, MatrixTimesVector_4x4_Translation) {
-    const char* source = R"(
+    const char *source = R"(
         struct Out { v: array<f32>, };
         @group(0) @binding(0) var<storage, read_write> output: Out;
 
@@ -1762,19 +1615,17 @@ TEST_F(VulkanComputeTest, MatrixTimesVector_4x4_Translation) {
 
     auto output = ctx_->createStorageBuffer(4 * sizeof(float));
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto out = output.download<float>(4);
-    EXPECT_FLOAT_EQ(out[0], 11.0f);  // 1 + 10*1
-    EXPECT_FLOAT_EQ(out[1], 22.0f);  // 2 + 20*1
-    EXPECT_FLOAT_EQ(out[2], 33.0f);  // 3 + 30*1
+    EXPECT_FLOAT_EQ(out[0], 11.0f); // 1 + 10*1
+    EXPECT_FLOAT_EQ(out[1], 22.0f); // 2 + 20*1
+    EXPECT_FLOAT_EQ(out[2], 33.0f); // 3 + 30*1
     EXPECT_FLOAT_EQ(out[3], 1.0f);
 }
 
 TEST_F(VulkanComputeTest, VectorTimesMatrix_3x3) {
-    const char* source = R"(
+    const char *source = R"(
         struct Out { v: array<f32>, };
         @group(0) @binding(0) var<storage, read_write> output: Out;
 
@@ -1797,18 +1648,16 @@ TEST_F(VulkanComputeTest, VectorTimesMatrix_3x3) {
 
     auto output = ctx_->createStorageBuffer(3 * sizeof(float));
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto out = output.download<float>(3);
-    EXPECT_FLOAT_EQ(out[0], 2.0f);   // (1,2,3) dot col0=(2,0,0)
-    EXPECT_FLOAT_EQ(out[1], 6.0f);   // (1,2,3) dot col1=(0,3,0)
-    EXPECT_FLOAT_EQ(out[2], 12.0f);  // (1,2,3) dot col2=(0,0,4)
+    EXPECT_FLOAT_EQ(out[0], 2.0f);  // (1,2,3) dot col0=(2,0,0)
+    EXPECT_FLOAT_EQ(out[1], 6.0f);  // (1,2,3) dot col1=(0,3,0)
+    EXPECT_FLOAT_EQ(out[2], 12.0f); // (1,2,3) dot col2=(0,0,4)
 }
 
 TEST_F(VulkanComputeTest, MatrixTimesMatrix_3x3_Identity) {
-    const char* source = R"(
+    const char *source = R"(
         struct Out { v: array<f32>, };
         @group(0) @binding(0) var<storage, read_write> output: Out;
 
@@ -1836,9 +1685,7 @@ TEST_F(VulkanComputeTest, MatrixTimesMatrix_3x3_Identity) {
 
     auto output = ctx_->createStorageBuffer(3 * sizeof(float));
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto out = output.download<float>(3);
     // a * identity = a, so first column should be (1,2,3)
@@ -1848,7 +1695,7 @@ TEST_F(VulkanComputeTest, MatrixTimesMatrix_3x3_Identity) {
 }
 
 TEST_F(VulkanComputeTest, MatrixTimesScalar_3x3) {
-    const char* source = R"(
+    const char *source = R"(
         struct Out { v: array<f32>, };
         @group(0) @binding(0) var<storage, read_write> output: Out;
 
@@ -1872,9 +1719,7 @@ TEST_F(VulkanComputeTest, MatrixTimesScalar_3x3) {
 
     auto output = ctx_->createStorageBuffer(3 * sizeof(float));
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto out = output.download<float>(3);
     EXPECT_FLOAT_EQ(out[0], 2.0f);
@@ -1883,7 +1728,7 @@ TEST_F(VulkanComputeTest, MatrixTimesScalar_3x3) {
 }
 
 TEST_F(VulkanComputeTest, MatVecChain_ModelViewProjection) {
-    const char* source = R"(
+    const char *source = R"(
         struct Out { v: array<f32>, };
         @group(0) @binding(0) var<storage, read_write> output: Out;
 
@@ -1916,9 +1761,7 @@ TEST_F(VulkanComputeTest, MatVecChain_ModelViewProjection) {
 
     auto output = ctx_->createStorageBuffer(4 * sizeof(float));
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto out = output.download<float>(4);
     // model * (1,0,0,1) = (2,0,0,1)
@@ -1930,7 +1773,7 @@ TEST_F(VulkanComputeTest, MatVecChain_ModelViewProjection) {
 }
 
 TEST_F(VulkanComputeTest, MatrixTimesVector_GeneralMultiply) {
-    const char* source = R"(
+    const char *source = R"(
         struct Out { v: array<f32>, };
         @group(0) @binding(0) var<storage, read_write> output: Out;
 
@@ -1954,9 +1797,7 @@ TEST_F(VulkanComputeTest, MatrixTimesVector_GeneralMultiply) {
 
     auto output = ctx_->createStorageBuffer(3 * sizeof(float));
     auto pipeline = ctx_->createPipeline(result.spirv);
-    ctx_->dispatch(pipeline, {
-        {0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}
-    }, 1);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
 
     auto out = output.download<float>(3);
     // m * (1,1,1) = col0 + col1 + col2 = (1+2+3, 4+5+6, 7+8+9) = (6, 15, 24)

@@ -11,19 +11,20 @@
 namespace vk_graphics {
 
 class VulkanError : public std::runtime_error {
-public:
-    VulkanError(VkResult result, const char* msg)
-        : std::runtime_error(std::string(msg) + " (VkResult: " + std::to_string(result) + ")")
-        , result_(result) {}
+  public:
+    VulkanError(VkResult result, const char *msg)
+        : std::runtime_error(std::string(msg) + " (VkResult: " + std::to_string(result) + ")"), result_(result) {}
     VkResult result() const { return result_; }
-private:
+
+  private:
     VkResult result_;
 };
 
-#define VK_CHECK(expr) do { \
-    VkResult _res = (expr); \
-    if (_res != VK_SUCCESS) throw VulkanError(_res, #expr); \
-} while(0)
+#define VK_CHECK(expr)                                          \
+    do {                                                        \
+        VkResult _res = (expr);                                 \
+        if (_res != VK_SUCCESS) throw VulkanError(_res, #expr); \
+    } while (0)
 
 // Forward declarations
 class GraphicsContext;
@@ -33,43 +34,43 @@ class GraphicsPipeline;
 
 // Buffer usage flags
 enum class BufferUsage {
-    Vertex,       // Vertex buffer
-    Index,        // Index buffer
-    Uniform,      // Uniform buffer
-    Storage,      // Storage buffer
-    Staging       // CPU-visible staging buffer
+    Vertex,  // Vertex buffer
+    Index,   // Index buffer
+    Uniform, // Uniform buffer
+    Storage, // Storage buffer
+    Staging  // CPU-visible staging buffer
 };
 
 // Image format presets
 enum class ImageFormat {
-    RGBA8_Unorm,      // VK_FORMAT_R8G8B8A8_UNORM
-    RGBA8_Srgb,       // VK_FORMAT_R8G8B8A8_SRGB
-    RGBA16_Float,     // VK_FORMAT_R16G16B16A16_SFLOAT
-    RGBA32_Float,     // VK_FORMAT_R32G32B32A32_SFLOAT
-    R32_Float,        // VK_FORMAT_R32_SFLOAT
-    Depth32_Float,    // VK_FORMAT_D32_SFLOAT
+    RGBA8_Unorm,   // VK_FORMAT_R8G8B8A8_UNORM
+    RGBA8_Srgb,    // VK_FORMAT_R8G8B8A8_SRGB
+    RGBA16_Float,  // VK_FORMAT_R16G16B16A16_SFLOAT
+    RGBA32_Float,  // VK_FORMAT_R32G32B32A32_SFLOAT
+    R32_Float,     // VK_FORMAT_R32_SFLOAT
+    Depth32_Float, // VK_FORMAT_D32_SFLOAT
 };
 
 // RAII buffer wrapper
 class Buffer {
-public:
-    Buffer(GraphicsContext& ctx, size_t size, BufferUsage usage);
+  public:
+    Buffer(GraphicsContext &ctx, size_t size, BufferUsage usage);
     ~Buffer();
 
-    Buffer(const Buffer&) = delete;
-    Buffer& operator=(const Buffer&) = delete;
-    Buffer(Buffer&& other) noexcept;
-    Buffer& operator=(Buffer&& other) noexcept;
+    Buffer(const Buffer &) = delete;
+    Buffer &operator=(const Buffer &) = delete;
+    Buffer(Buffer &&other) noexcept;
+    Buffer &operator=(Buffer &&other) noexcept;
 
-    void upload(const void* data, size_t size, size_t offset = 0);
-    void download(void* data, size_t size, size_t offset = 0);
+    void upload(const void *data, size_t size, size_t offset = 0);
+    void download(void *data, size_t size, size_t offset = 0);
 
-    template<typename T>
-    void upload(const std::vector<T>& data, size_t offset = 0) {
+    template <typename T>
+    void upload(const std::vector<T> &data, size_t offset = 0) {
         upload(data.data(), data.size() * sizeof(T), offset);
     }
 
-    template<typename T>
+    template <typename T>
     std::vector<T> download(size_t count, size_t offset = 0) {
         std::vector<T> data(count);
         download(data.data(), count * sizeof(T), offset);
@@ -80,33 +81,33 @@ public:
     size_t size() const { return size_; }
     BufferUsage usage() const { return usage_; }
 
-private:
-    GraphicsContext* ctx_;
+  private:
+    GraphicsContext *ctx_;
     VkBuffer buffer_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     size_t size_ = 0;
     BufferUsage usage_;
-    void* mapped_ = nullptr;
+    void *mapped_ = nullptr;
 
     void cleanup();
 };
 
 // RAII image wrapper for render targets
 class Image {
-public:
-    Image(GraphicsContext& ctx, uint32_t width, uint32_t height, ImageFormat format);
+  public:
+    Image(GraphicsContext &ctx, uint32_t width, uint32_t height, ImageFormat format);
     ~Image();
 
-    Image(const Image&) = delete;
-    Image& operator=(const Image&) = delete;
-    Image(Image&& other) noexcept;
-    Image& operator=(Image&& other) noexcept;
+    Image(const Image &) = delete;
+    Image &operator=(const Image &) = delete;
+    Image(Image &&other) noexcept;
+    Image &operator=(Image &&other) noexcept;
 
     // Download image data to CPU
     std::vector<uint8_t> download();
 
     // Download as typed data
-    template<typename T>
+    template <typename T>
     std::vector<T> downloadAs() {
         auto bytes = download();
         std::vector<T> result(bytes.size() / sizeof(T));
@@ -125,8 +126,8 @@ public:
         return format_ == VK_FORMAT_D32_SFLOAT;
     }
 
-private:
-    GraphicsContext* ctx_;
+  private:
+    GraphicsContext *ctx_;
     VkImage image_ = VK_NULL_HANDLE;
     VkDeviceMemory memory_ = VK_NULL_HANDLE;
     VkImageView view_ = VK_NULL_HANDLE;
@@ -147,13 +148,13 @@ struct VertexAttribute {
 // Graphics pipeline configuration
 struct GraphicsPipelineConfig {
     // Shaders (required)
-    const uint32_t* vertex_spirv = nullptr;
+    const uint32_t *vertex_spirv = nullptr;
     size_t vertex_spirv_words = 0;
-    const char* vertex_entry = "main";
+    const char *vertex_entry = "main";
 
-    const uint32_t* fragment_spirv = nullptr;
+    const uint32_t *fragment_spirv = nullptr;
     size_t fragment_spirv_words = 0;
-    const char* fragment_entry = "main";
+    const char *fragment_entry = "main";
 
     // Vertex input
     uint32_t vertex_stride = 0;
@@ -180,21 +181,21 @@ struct GraphicsPipelineConfig {
 
 // Graphics pipeline wrapper
 class GraphicsPipeline {
-public:
-    GraphicsPipeline(GraphicsContext& ctx, const GraphicsPipelineConfig& config);
+  public:
+    GraphicsPipeline(GraphicsContext &ctx, const GraphicsPipelineConfig &config);
     ~GraphicsPipeline();
 
-    GraphicsPipeline(const GraphicsPipeline&) = delete;
-    GraphicsPipeline& operator=(const GraphicsPipeline&) = delete;
-    GraphicsPipeline(GraphicsPipeline&& other) noexcept;
-    GraphicsPipeline& operator=(GraphicsPipeline&& other) noexcept;
+    GraphicsPipeline(const GraphicsPipeline &) = delete;
+    GraphicsPipeline &operator=(const GraphicsPipeline &) = delete;
+    GraphicsPipeline(GraphicsPipeline &&other) noexcept;
+    GraphicsPipeline &operator=(GraphicsPipeline &&other) noexcept;
 
     VkPipeline handle() const { return pipeline_; }
     VkPipelineLayout layout() const { return layout_; }
     VkDescriptorSetLayout descriptorSetLayout() const { return desc_set_layout_; }
 
-private:
-    GraphicsContext* ctx_;
+  private:
+    GraphicsContext *ctx_;
     VkShaderModule vertex_module_ = VK_NULL_HANDLE;
     VkShaderModule fragment_module_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout desc_set_layout_ = VK_NULL_HANDLE;
@@ -207,7 +208,7 @@ private:
 // Descriptor binding for draw calls
 struct DescriptorBinding {
     uint32_t binding;
-    Buffer* buffer;
+    Buffer *buffer;
     VkDescriptorType type;
 };
 
@@ -234,12 +235,12 @@ struct ClearColor {
 
 // Main Vulkan graphics context
 class GraphicsContext {
-public:
+  public:
     GraphicsContext();
     ~GraphicsContext();
 
-    GraphicsContext(const GraphicsContext&) = delete;
-    GraphicsContext& operator=(const GraphicsContext&) = delete;
+    GraphicsContext(const GraphicsContext &) = delete;
+    GraphicsContext &operator=(const GraphicsContext &) = delete;
 
     // Device access
     VkDevice device() const { return device_; }
@@ -251,22 +252,22 @@ public:
     // Buffer creation
     Buffer createBuffer(size_t size, BufferUsage usage);
 
-    template<typename T>
-    Buffer createVertexBuffer(const std::vector<T>& data) {
+    template <typename T>
+    Buffer createVertexBuffer(const std::vector<T> &data) {
         Buffer buf = createBuffer(data.size() * sizeof(T), BufferUsage::Vertex);
         buf.upload(data);
         return buf;
     }
 
-    template<typename T>
-    Buffer createIndexBuffer(const std::vector<T>& data) {
+    template <typename T>
+    Buffer createIndexBuffer(const std::vector<T> &data) {
         Buffer buf = createBuffer(data.size() * sizeof(T), BufferUsage::Index);
         buf.upload(data);
         return buf;
     }
 
-    template<typename T>
-    Buffer createUniformBuffer(const T& data) {
+    template <typename T>
+    Buffer createUniformBuffer(const T &data) {
         Buffer buf = createBuffer(sizeof(T), BufferUsage::Uniform);
         buf.upload(&data, sizeof(T));
         return buf;
@@ -280,7 +281,7 @@ public:
     Image createImage(uint32_t width, uint32_t height, ImageFormat format);
 
     Image createColorTarget(uint32_t width, uint32_t height,
-                            ImageFormat format = ImageFormat::RGBA8_Unorm) {
+        ImageFormat format = ImageFormat::RGBA8_Unorm) {
         return createImage(width, height, format);
     }
 
@@ -289,41 +290,41 @@ public:
     }
 
     // Pipeline creation
-    GraphicsPipeline createPipeline(const GraphicsPipelineConfig& config);
+    GraphicsPipeline createPipeline(const GraphicsPipelineConfig &config);
 
     // Draw to image using dynamic rendering
-    void draw(GraphicsPipeline& pipeline,
-              Image& color_target,
-              Buffer* vertex_buffer,
-              const DrawParams& params,
-              const std::vector<DescriptorBinding>& bindings = {},
-              const ClearColor& clear = {},
-              Image* depth_target = nullptr);
+    void draw(GraphicsPipeline &pipeline,
+        Image &color_target,
+        Buffer *vertex_buffer,
+        const DrawParams &params,
+        const std::vector<DescriptorBinding> &bindings = {},
+        const ClearColor &clear = {},
+        Image *depth_target = nullptr);
 
-    void drawIndexed(GraphicsPipeline& pipeline,
-                     Image& color_target,
-                     Buffer* vertex_buffer,
-                     Buffer* index_buffer,
-                     VkIndexType index_type,
-                     const DrawIndexedParams& params,
-                     const std::vector<DescriptorBinding>& bindings = {},
-                     const ClearColor& clear = {},
-                     Image* depth_target = nullptr);
+    void drawIndexed(GraphicsPipeline &pipeline,
+        Image &color_target,
+        Buffer *vertex_buffer,
+        Buffer *index_buffer,
+        VkIndexType index_type,
+        const DrawIndexedParams &params,
+        const std::vector<DescriptorBinding> &bindings = {},
+        const ClearColor &clear = {},
+        Image *depth_target = nullptr);
 
     // Execute a one-shot command buffer
     void executeCommands(std::function<void(VkCommandBuffer)> recorder);
 
     // Image layout transitions
     void transitionImageLayout(VkCommandBuffer cmd, VkImage image,
-                               VkImageLayout old_layout, VkImageLayout new_layout,
-                               VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT);
+        VkImageLayout old_layout, VkImageLayout new_layout,
+        VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT);
 
     // Memory utilities
     uint32_t findMemoryType(uint32_t type_filter, VkMemoryPropertyFlags properties);
 
-    const VkPhysicalDeviceProperties& deviceProperties() const { return device_props_; }
+    const VkPhysicalDeviceProperties &deviceProperties() const { return device_props_; }
 
-private:
+  private:
     VkInstance instance_ = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device_ = VK_NULL_HANDLE;
     VkDevice device_ = VK_NULL_HANDLE;
@@ -349,11 +350,11 @@ private:
 // Helper to convert ImageFormat enum to VkFormat
 inline VkFormat toVkFormat(ImageFormat format) {
     switch (format) {
-        case ImageFormat::RGBA8_Unorm:   return VK_FORMAT_R8G8B8A8_UNORM;
-        case ImageFormat::RGBA8_Srgb:    return VK_FORMAT_R8G8B8A8_SRGB;
-        case ImageFormat::RGBA16_Float:  return VK_FORMAT_R16G16B16A16_SFLOAT;
-        case ImageFormat::RGBA32_Float:  return VK_FORMAT_R32G32B32A32_SFLOAT;
-        case ImageFormat::R32_Float:     return VK_FORMAT_R32_SFLOAT;
+        case ImageFormat::RGBA8_Unorm: return VK_FORMAT_R8G8B8A8_UNORM;
+        case ImageFormat::RGBA8_Srgb: return VK_FORMAT_R8G8B8A8_SRGB;
+        case ImageFormat::RGBA16_Float: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case ImageFormat::RGBA32_Float: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case ImageFormat::R32_Float: return VK_FORMAT_R32_SFLOAT;
         case ImageFormat::Depth32_Float: return VK_FORMAT_D32_SFLOAT;
         default: return VK_FORMAT_R8G8B8A8_UNORM;
     }

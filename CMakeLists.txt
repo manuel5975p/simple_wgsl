@@ -9,14 +9,35 @@ include(FetchContent)
 option(WGSL_BUILD_TESTS "Build tests" ON)
 option(WGSL_BUILD_EXPRESSION_TESTS "Build expression golden-file tests (requires expressions/ data)" OFF)
 option(WGSL_USE_ASAN "Enable Address Sanitizer" OFF)
+option(WGSL_USE_UBSAN "Enable Undefined Behavior Sanitizer" OFF)
+option(WGSL_USE_LSAN "Enable Leak Sanitizer (standalone, not with ASan)" OFF)
 option(WGSL_BUILD_EGL_TESTS "Build EGL/OpenGL compute shader validation tests" OFF)
 option(WGSL_BUILD_METAL_EXAMPLES "Build Metal/MSL example programs (macOS only)" OFF)
 option(WGSL_BUILD_FUZZ "Build libFuzzer fuzz targets" OFF)
 
+set(SANITIZER_FLAGS "")
+set(SANITIZER_LINK_FLAGS "")
+
 if(WGSL_USE_ASAN)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
+    string(APPEND SANITIZER_FLAGS " -fsanitize=address")
+    string(APPEND SANITIZER_LINK_FLAGS " -fsanitize=address")
+endif()
+
+if(WGSL_USE_UBSAN)
+    string(APPEND SANITIZER_FLAGS " -fsanitize=undefined")
+    string(APPEND SANITIZER_LINK_FLAGS " -fsanitize=undefined")
+endif()
+
+if(WGSL_USE_LSAN AND NOT WGSL_USE_ASAN)
+    string(APPEND SANITIZER_FLAGS " -fsanitize=leak")
+    string(APPEND SANITIZER_LINK_FLAGS " -fsanitize=leak")
+endif()
+
+if(SANITIZER_FLAGS)
+    string(APPEND SANITIZER_FLAGS " -fno-omit-frame-pointer")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}${SANITIZER_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}${SANITIZER_FLAGS}")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS}${SANITIZER_LINK_FLAGS}")
 endif()
 
 add_library(wgsl_compiler STATIC

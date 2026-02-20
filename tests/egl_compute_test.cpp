@@ -22,30 +22,44 @@ struct GlslResult {
     std::string error;
 };
 
-GlslResult WgslToOpenGlsl(const char* wgsl_source) {
+GlslResult WgslToOpenGlsl(const char *wgsl_source) {
     GlslResult r;
     r.success = false;
 
-    WgslAstNode* ast = wgsl_parse(wgsl_source);
-    if (!ast) { r.error = "WGSL parse failed"; return r; }
+    WgslAstNode *ast = wgsl_parse(wgsl_source);
+    if (!ast) {
+        r.error = "WGSL parse failed";
+        return r;
+    }
 
-    WgslResolver* resolver = wgsl_resolver_build(ast);
-    if (!resolver) { wgsl_free_ast(ast); r.error = "Resolve failed"; return r; }
+    WgslResolver *resolver = wgsl_resolver_build(ast);
+    if (!resolver) {
+        wgsl_free_ast(ast);
+        r.error = "Resolve failed";
+        return r;
+    }
 
     WgslLowerOptions lopts = {};
     lopts.env = WGSL_LOWER_ENV_VULKAN_1_3;
     lopts.enable_debug_names = 1;
 
-    WgslLower* lower = wgsl_lower_create(ast, resolver, &lopts);
+    WgslLower *lower = wgsl_lower_create(ast, resolver, &lopts);
     wgsl_resolver_free(resolver);
     wgsl_free_ast(ast);
-    if (!lower) { r.error = "Lower failed"; return r; }
+    if (!lower) {
+        r.error = "Lower failed";
+        return r;
+    }
 
-    const SsirModule* ssir = wgsl_lower_get_ssir(lower);
-    if (!ssir) { wgsl_lower_destroy(lower); r.error = "No SSIR"; return r; }
+    const SsirModule *ssir = wgsl_lower_get_ssir(lower);
+    if (!ssir) {
+        wgsl_lower_destroy(lower);
+        r.error = "No SSIR";
+        return r;
+    }
 
-    char* glsl = nullptr;
-    char* glsl_err = nullptr;
+    char *glsl = nullptr;
+    char *glsl_err = nullptr;
     SsirToGlslOptions gopts = {};
     gopts.preserve_names = 1;
     gopts.target_opengl = 1;
@@ -72,11 +86,11 @@ GlslResult WgslToOpenGlsl(const char* wgsl_source) {
 /* ---- test fixture ---- */
 
 class EGLComputeTest : public ::testing::Test {
-protected:
+  protected:
     static void SetUpTestSuite() {
         try {
             ctx_ = std::make_unique<egl_compute::Context>();
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             skip_reason_ = std::string("EGL/OpenGL not available: ") + e.what();
         }
     }
@@ -100,7 +114,9 @@ TEST_F(EGLComputeTest, SimpleCompute) {
     )");
     ASSERT_TRUE(g.success) << g.error;
     auto r = ctx_->compileComputeShader(g.glsl);
-    EXPECT_TRUE(r.success) << "GLSL:\n" << g.glsl << "\nGL error:\n" << r.info_log;
+    EXPECT_TRUE(r.success) << "GLSL:\n"
+                           << g.glsl << "\nGL error:\n"
+                           << r.info_log;
 }
 
 TEST_F(EGLComputeTest, StorageBufferCopy) {
@@ -115,7 +131,9 @@ TEST_F(EGLComputeTest, StorageBufferCopy) {
     )");
     ASSERT_TRUE(g.success) << g.error;
     auto r = ctx_->compileComputeShader(g.glsl);
-    EXPECT_TRUE(r.success) << "GLSL:\n" << g.glsl << "\nGL error:\n" << r.info_log;
+    EXPECT_TRUE(r.success) << "GLSL:\n"
+                           << g.glsl << "\nGL error:\n"
+                           << r.info_log;
 }
 
 TEST_F(EGLComputeTest, ArithmeticOps) {
@@ -132,7 +150,9 @@ TEST_F(EGLComputeTest, ArithmeticOps) {
     )");
     ASSERT_TRUE(g.success) << g.error;
     auto r = ctx_->compileComputeShader(g.glsl);
-    EXPECT_TRUE(r.success) << "GLSL:\n" << g.glsl << "\nGL error:\n" << r.info_log;
+    EXPECT_TRUE(r.success) << "GLSL:\n"
+                           << g.glsl << "\nGL error:\n"
+                           << r.info_log;
 }
 
 TEST_F(EGLComputeTest, IntegerArithmetic) {
@@ -149,7 +169,9 @@ TEST_F(EGLComputeTest, IntegerArithmetic) {
     )");
     ASSERT_TRUE(g.success) << g.error;
     auto r = ctx_->compileComputeShader(g.glsl);
-    EXPECT_TRUE(r.success) << "GLSL:\n" << g.glsl << "\nGL error:\n" << r.info_log;
+    EXPECT_TRUE(r.success) << "GLSL:\n"
+                           << g.glsl << "\nGL error:\n"
+                           << r.info_log;
 }
 
 TEST_F(EGLComputeTest, UniformBuffer) {
@@ -165,7 +187,9 @@ TEST_F(EGLComputeTest, UniformBuffer) {
     )");
     ASSERT_TRUE(g.success) << g.error;
     auto r = ctx_->compileComputeShader(g.glsl);
-    EXPECT_TRUE(r.success) << "GLSL:\n" << g.glsl << "\nGL error:\n" << r.info_log;
+    EXPECT_TRUE(r.success) << "GLSL:\n"
+                           << g.glsl << "\nGL error:\n"
+                           << r.info_log;
 }
 
 TEST_F(EGLComputeTest, MathBuiltins) {
@@ -182,7 +206,9 @@ TEST_F(EGLComputeTest, MathBuiltins) {
     )");
     ASSERT_TRUE(g.success) << g.error;
     auto r = ctx_->compileComputeShader(g.glsl);
-    EXPECT_TRUE(r.success) << "GLSL:\n" << g.glsl << "\nGL error:\n" << r.info_log;
+    EXPECT_TRUE(r.success) << "GLSL:\n"
+                           << g.glsl << "\nGL error:\n"
+                           << r.info_log;
 }
 
 TEST_F(EGLComputeTest, Conditional) {
@@ -202,7 +228,9 @@ TEST_F(EGLComputeTest, Conditional) {
     )");
     ASSERT_TRUE(g.success) << g.error;
     auto r = ctx_->compileComputeShader(g.glsl);
-    EXPECT_TRUE(r.success) << "GLSL:\n" << g.glsl << "\nGL error:\n" << r.info_log;
+    EXPECT_TRUE(r.success) << "GLSL:\n"
+                           << g.glsl << "\nGL error:\n"
+                           << r.info_log;
 }
 
 TEST_F(EGLComputeTest, Loop) {
@@ -220,7 +248,9 @@ TEST_F(EGLComputeTest, Loop) {
     )");
     ASSERT_TRUE(g.success) << g.error;
     auto r = ctx_->compileComputeShader(g.glsl);
-    EXPECT_TRUE(r.success) << "GLSL:\n" << g.glsl << "\nGL error:\n" << r.info_log;
+    EXPECT_TRUE(r.success) << "GLSL:\n"
+                           << g.glsl << "\nGL error:\n"
+                           << r.info_log;
 }
 
 #endif // WGSL_HAS_EGL

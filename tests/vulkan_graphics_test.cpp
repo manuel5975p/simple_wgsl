@@ -5,11 +5,11 @@
 #include "vulkan_graphics_harness.h"
 
 class VulkanGraphicsTest : public ::testing::Test {
-protected:
+  protected:
     static void SetUpTestSuite() {
         try {
             ctx_ = std::make_unique<vk_graphics::GraphicsContext>();
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             GTEST_SKIP() << "Vulkan graphics not available: " << e.what();
         }
     }
@@ -30,7 +30,7 @@ protected:
 std::unique_ptr<vk_graphics::GraphicsContext> VulkanGraphicsTest::ctx_;
 
 // Helper to extract RGBA from packed uint32_t (assuming RGBA8_Unorm layout)
-inline void unpackRGBA(uint32_t pixel, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) {
+inline void unpackRGBA(uint32_t pixel, uint8_t &r, uint8_t &g, uint8_t &b, uint8_t &a) {
     r = (pixel >> 0) & 0xFF;
     g = (pixel >> 8) & 0xFF;
     b = (pixel >> 16) & 0xFF;
@@ -44,14 +44,14 @@ struct SimpleVertex {
 
 static const std::vector<SimpleVertex> kFullScreenTriangle = {
     {-1.0f, -1.0f},
-    { 3.0f, -1.0f},
-    {-1.0f,  3.0f},
+    {3.0f, -1.0f},
+    {-1.0f, 3.0f},
 };
 
 // Test: Solid color fill - fragment shader outputs constant color
 TEST_F(VulkanGraphicsTest, SolidColorFill) {
     // Compile vertex and fragment shaders separately to avoid duplicate type errors
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
         };
@@ -61,7 +61,7 @@ TEST_F(VulkanGraphicsTest, SolidColorFill) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             return vec4f(1.0, 0.0, 0.0, 1.0);
         }
@@ -108,7 +108,7 @@ TEST_F(VulkanGraphicsTest, SolidColorFill) {
 
 // Test: Clear color verification
 TEST_F(VulkanGraphicsTest, ClearColor) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
         };
@@ -118,7 +118,7 @@ TEST_F(VulkanGraphicsTest, ClearColor) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             return vec4f(1.0, 1.0, 1.0, 1.0);
         }
@@ -172,7 +172,7 @@ TEST_F(VulkanGraphicsTest, ClearColor) {
 
 // Test: Vertex attribute passing with color
 TEST_F(VulkanGraphicsTest, VertexAttributes) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
             @location(1) color: vec3f,
@@ -191,7 +191,7 @@ TEST_F(VulkanGraphicsTest, VertexAttributes) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) color: vec3f) -> @location(0) vec4f {
             return vec4f(color, 1.0);
         }
@@ -212,8 +212,8 @@ TEST_F(VulkanGraphicsTest, VertexAttributes) {
     // Full-screen triangle with blue color
     std::vector<ColorVertex> vertices = {
         {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f},
-        { 3.0f, -1.0f, 0.0f, 0.0f, 1.0f},
-        {-1.0f,  3.0f, 0.0f, 0.0f, 1.0f},
+        {3.0f, -1.0f, 0.0f, 0.0f, 1.0f},
+        {-1.0f, 3.0f, 0.0f, 0.0f, 1.0f},
     };
 
     auto vb = ctx_->createVertexBuffer(vertices);
@@ -250,7 +250,7 @@ TEST_F(VulkanGraphicsTest, VertexAttributes) {
 
 // Test: Color interpolation across triangle
 TEST_F(VulkanGraphicsTest, ColorInterpolation) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
             @location(1) color: vec3f,
@@ -269,7 +269,7 @@ TEST_F(VulkanGraphicsTest, ColorInterpolation) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) color: vec3f) -> @location(0) vec4f {
             return vec4f(color, 1.0);
         }
@@ -289,8 +289,8 @@ TEST_F(VulkanGraphicsTest, ColorInterpolation) {
     // Triangle with RGB corners - full screen coverage
     std::vector<ColorVertex> vertices = {
         {-1.0f, -1.0f, 1.0f, 0.0f, 0.0f}, // Red at bottom-left
-        { 3.0f, -1.0f, 0.0f, 1.0f, 0.0f}, // Green at right
-        {-1.0f,  3.0f, 0.0f, 0.0f, 1.0f}, // Blue at top
+        {3.0f, -1.0f, 0.0f, 1.0f, 0.0f},  // Green at right
+        {-1.0f, 3.0f, 0.0f, 0.0f, 1.0f},  // Blue at top
     };
 
     auto vb = ctx_->createVertexBuffer(vertices);
@@ -331,7 +331,7 @@ TEST_F(VulkanGraphicsTest, ColorInterpolation) {
 
 // Test: Indexed drawing
 TEST_F(VulkanGraphicsTest, IndexedDrawing) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
         };
@@ -341,7 +341,7 @@ TEST_F(VulkanGraphicsTest, IndexedDrawing) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             return vec4f(1.0, 1.0, 0.0, 1.0);
         }
@@ -356,9 +356,9 @@ TEST_F(VulkanGraphicsTest, IndexedDrawing) {
     // Quad as 4 vertices
     std::vector<SimpleVertex> vertices = {
         {-1.0f, -1.0f},
-        { 1.0f, -1.0f},
-        { 1.0f,  1.0f},
-        {-1.0f,  1.0f},
+        {1.0f, -1.0f},
+        {1.0f, 1.0f},
+        {-1.0f, 1.0f},
     };
 
     // Two triangles forming the quad
@@ -384,7 +384,7 @@ TEST_F(VulkanGraphicsTest, IndexedDrawing) {
 
     auto pipeline = ctx_->createPipeline(config);
     ctx_->drawIndexed(pipeline, target, &vb, &ib, VK_INDEX_TYPE_UINT16,
-                      {.index_count = 6});
+        {.index_count = 6});
 
     auto pixels = target.downloadAs<uint32_t>();
 
@@ -399,7 +399,7 @@ TEST_F(VulkanGraphicsTest, IndexedDrawing) {
 
 // Test: Fragment shader math operations
 TEST_F(VulkanGraphicsTest, FragmentMathOps) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
         };
@@ -409,7 +409,7 @@ TEST_F(VulkanGraphicsTest, FragmentMathOps) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             let a = 0.5;
             let b = abs(-0.3);
@@ -463,7 +463,7 @@ TEST_F(VulkanGraphicsTest, FragmentMathOps) {
 
 // Test: Vertex position transformation
 TEST_F(VulkanGraphicsTest, VertexTransform) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
         };
@@ -474,7 +474,7 @@ TEST_F(VulkanGraphicsTest, VertexTransform) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             return vec4f(0.0, 1.0, 1.0, 1.0);
         }
@@ -489,11 +489,11 @@ TEST_F(VulkanGraphicsTest, VertexTransform) {
     // Full quad vertices, will be scaled to half
     std::vector<SimpleVertex> vertices = {
         {-1.0f, -1.0f},
-        { 1.0f, -1.0f},
-        {-1.0f,  1.0f},
-        { 1.0f, -1.0f},
-        { 1.0f,  1.0f},
-        {-1.0f,  1.0f},
+        {1.0f, -1.0f},
+        {-1.0f, 1.0f},
+        {1.0f, -1.0f},
+        {1.0f, 1.0f},
+        {-1.0f, 1.0f},
     };
 
     auto vb = ctx_->createVertexBuffer(vertices);
@@ -539,7 +539,7 @@ TEST_F(VulkanGraphicsTest, VertexTransform) {
 
 // Test: Vector operations in shaders
 TEST_F(VulkanGraphicsTest, VectorOperations) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
         };
@@ -549,7 +549,7 @@ TEST_F(VulkanGraphicsTest, VectorOperations) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             let a = vec3f(0.5, 0.5, 0.5);
             let b = vec3f(0.5, 0.0, 0.5);
@@ -596,7 +596,7 @@ TEST_F(VulkanGraphicsTest, VectorOperations) {
 
 // Test: Simple conditional in fragment shader
 TEST_F(VulkanGraphicsTest, FragmentConditional) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VertexInput {
             @location(0) position: vec2f,
         };
@@ -614,7 +614,7 @@ TEST_F(VulkanGraphicsTest, FragmentConditional) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) ndc: vec2f) -> @location(0) vec4f {
             if (ndc.x > 0.0) {
                 return vec4f(1.0, 0.0, 0.0, 1.0);
@@ -670,7 +670,7 @@ TEST_F(VulkanGraphicsTest, FragmentConditional) {
 // ============================================================================
 
 TEST_F(VulkanGraphicsTest, GlslSolidColorFill) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         #version 450
         layout(location = 0) in vec2 position;
 
@@ -679,7 +679,7 @@ TEST_F(VulkanGraphicsTest, GlslSolidColorFill) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         #version 450
         layout(location = 0) out vec4 outColor;
 
@@ -727,7 +727,7 @@ TEST_F(VulkanGraphicsTest, GlslSolidColorFill) {
 }
 
 TEST_F(VulkanGraphicsTest, GlslVertexAttributes) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         #version 450
         layout(location = 0) in vec2 position;
         layout(location = 1) in vec3 color;
@@ -740,7 +740,7 @@ TEST_F(VulkanGraphicsTest, GlslVertexAttributes) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         #version 450
         layout(location = 0) in vec3 fragColor;
         layout(location = 0) out vec4 outColor;
@@ -763,8 +763,8 @@ TEST_F(VulkanGraphicsTest, GlslVertexAttributes) {
 
     std::vector<ColorVertex> vertices = {
         {-1.0f, -1.0f, 0.0f, 0.0f, 1.0f},
-        { 3.0f, -1.0f, 0.0f, 0.0f, 1.0f},
-        {-1.0f,  3.0f, 0.0f, 0.0f, 1.0f},
+        {3.0f, -1.0f, 0.0f, 0.0f, 1.0f},
+        {-1.0f, 3.0f, 0.0f, 0.0f, 1.0f},
     };
 
     auto vb = ctx_->createVertexBuffer(vertices);
@@ -799,7 +799,7 @@ TEST_F(VulkanGraphicsTest, GlslVertexAttributes) {
 }
 
 TEST_F(VulkanGraphicsTest, GlslFragmentMathOps) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         #version 450
         layout(location = 0) in vec2 position;
 
@@ -808,7 +808,7 @@ TEST_F(VulkanGraphicsTest, GlslFragmentMathOps) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         #version 450
         layout(location = 0) out vec4 outColor;
 
@@ -860,7 +860,7 @@ TEST_F(VulkanGraphicsTest, GlslFragmentMathOps) {
 }
 
 TEST_F(VulkanGraphicsTest, GlslVertexTransform) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         #version 450
         layout(location = 0) in vec2 position;
 
@@ -870,7 +870,7 @@ TEST_F(VulkanGraphicsTest, GlslVertexTransform) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         #version 450
         layout(location = 0) out vec4 outColor;
 
@@ -887,11 +887,11 @@ TEST_F(VulkanGraphicsTest, GlslVertexTransform) {
 
     std::vector<SimpleVertex> vertices = {
         {-1.0f, -1.0f},
-        { 1.0f, -1.0f},
-        {-1.0f,  1.0f},
-        { 1.0f, -1.0f},
-        { 1.0f,  1.0f},
-        {-1.0f,  1.0f},
+        {1.0f, -1.0f},
+        {-1.0f, 1.0f},
+        {1.0f, -1.0f},
+        {1.0f, 1.0f},
+        {-1.0f, 1.0f},
     };
 
     auto vb = ctx_->createVertexBuffer(vertices);

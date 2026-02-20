@@ -16,11 +16,11 @@ extern "C" {
 // ============================================================================
 
 class VulkanGraphicsComplexTest : public ::testing::Test {
-protected:
+  protected:
     static void SetUpTestSuite() {
         try {
             ctx_ = std::make_unique<vk_graphics::GraphicsContext>();
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             GTEST_SKIP() << "Vulkan graphics not available: " << e.what();
         }
     }
@@ -62,7 +62,7 @@ struct PosNormal3D {
     float nx, ny, nz;
 };
 
-inline void unpackRGBA(uint32_t pixel, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) {
+inline void unpackRGBA(uint32_t pixel, uint8_t &r, uint8_t &g, uint8_t &b, uint8_t &a) {
     r = (pixel >> 0) & 0xFF;
     g = (pixel >> 8) & 0xFF;
     b = (pixel >> 16) & 0xFF;
@@ -71,13 +71,17 @@ inline void unpackRGBA(uint32_t pixel, uint8_t& r, uint8_t& g, uint8_t& b, uint8
 
 static const std::vector<Pos2D> kFullScreenTri = {
     {-1.0f, -1.0f},
-    { 3.0f, -1.0f},
-    {-1.0f,  3.0f},
+    {3.0f, -1.0f},
+    {-1.0f, 3.0f},
 };
 
 static const std::vector<Pos2D> kFullScreenQuad = {
-    {-1.0f, -1.0f}, { 1.0f, -1.0f}, {-1.0f,  1.0f},
-    { 1.0f, -1.0f}, { 1.0f,  1.0f}, {-1.0f,  1.0f},
+    {-1.0f, -1.0f},
+    {1.0f, -1.0f},
+    {-1.0f, 1.0f},
+    {1.0f, -1.0f},
+    {1.0f, 1.0f},
+    {-1.0f, 1.0f},
 };
 
 // RAII wrapper for manually created MRT pipeline resources
@@ -90,10 +94,10 @@ struct MRTPipelineResources {
     VkPipeline pipeline = VK_NULL_HANDLE;
 
     MRTPipelineResources() = default;
-    MRTPipelineResources(const MRTPipelineResources&) = delete;
-    MRTPipelineResources& operator=(const MRTPipelineResources&) = delete;
+    MRTPipelineResources(const MRTPipelineResources &) = delete;
+    MRTPipelineResources &operator=(const MRTPipelineResources &) = delete;
 
-    MRTPipelineResources(MRTPipelineResources&& o) noexcept
+    MRTPipelineResources(MRTPipelineResources &&o) noexcept
         : device(o.device), vert(o.vert), frag(o.frag),
           desc_layout(o.desc_layout), layout(o.layout), pipeline(o.pipeline) {
         o.device = VK_NULL_HANDLE;
@@ -104,7 +108,7 @@ struct MRTPipelineResources {
         o.pipeline = VK_NULL_HANDLE;
     }
 
-    MRTPipelineResources& operator=(MRTPipelineResources&& o) noexcept {
+    MRTPipelineResources &operator=(MRTPipelineResources &&o) noexcept {
         if (this != &o) {
             if (device) {
                 if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
@@ -145,7 +149,7 @@ struct MRTPipelineResources {
 
 // Procedural checkerboard pattern computed entirely in fragment shader
 TEST_F(VulkanGraphicsComplexTest, ProceduralCheckerboard) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -159,7 +163,7 @@ TEST_F(VulkanGraphicsComplexTest, ProceduralCheckerboard) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             let gx = floor(uv.x * 8.0);
             let gy = floor(uv.y * 8.0);
@@ -218,7 +222,7 @@ TEST_F(VulkanGraphicsComplexTest, ProceduralCheckerboard) {
 
 // Concentric rings using distance-from-center SDF
 TEST_F(VulkanGraphicsComplexTest, ConcentricRings2D) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -232,7 +236,7 @@ TEST_F(VulkanGraphicsComplexTest, ConcentricRings2D) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) ndc: vec2f) -> @location(0) vec4f {
             let dist = sqrt(ndc.x * ndc.x + ndc.y * ndc.y);
             let rings = sin(dist * 20.0);
@@ -289,7 +293,7 @@ TEST_F(VulkanGraphicsComplexTest, ConcentricRings2D) {
 
 // Two overlapping full-screen triangles at different depths in a single draw call
 TEST_F(VulkanGraphicsComplexTest, DepthTestOverlap3D) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn {
             @location(0) pos: vec3f,
             @location(1) color: vec3f,
@@ -306,7 +310,7 @@ TEST_F(VulkanGraphicsComplexTest, DepthTestOverlap3D) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) color: vec3f) -> @location(0) vec4f {
             return vec4f(color, 1.0);
         }
@@ -321,13 +325,13 @@ TEST_F(VulkanGraphicsComplexTest, DepthTestOverlap3D) {
     // With depth test LESS, red (0.3 < 0.7) should win.
     std::vector<PosColor3D> verts = {
         // Blue (far, z=0.7) - rasterized first
-        {-1.0f, -1.0f, 0.7f,  0.0f, 0.0f, 1.0f},
-        { 3.0f, -1.0f, 0.7f,  0.0f, 0.0f, 1.0f},
-        {-1.0f,  3.0f, 0.7f,  0.0f, 0.0f, 1.0f},
+        {-1.0f, -1.0f, 0.7f, 0.0f, 0.0f, 1.0f},
+        {3.0f, -1.0f, 0.7f, 0.0f, 0.0f, 1.0f},
+        {-1.0f, 3.0f, 0.7f, 0.0f, 0.0f, 1.0f},
         // Red (near, z=0.3) - rasterized second, should overwrite
-        {-1.0f, -1.0f, 0.3f,  1.0f, 0.0f, 0.0f},
-        { 3.0f, -1.0f, 0.3f,  1.0f, 0.0f, 0.0f},
-        {-1.0f,  3.0f, 0.3f,  1.0f, 0.0f, 0.0f},
+        {-1.0f, -1.0f, 0.3f, 1.0f, 0.0f, 0.0f},
+        {3.0f, -1.0f, 0.3f, 1.0f, 0.0f, 0.0f},
+        {-1.0f, 3.0f, 0.3f, 1.0f, 0.0f, 0.0f},
     };
 
     auto vb = ctx_->createVertexBuffer(verts);
@@ -364,7 +368,7 @@ TEST_F(VulkanGraphicsComplexTest, DepthTestOverlap3D) {
 
 // Vertex transformation: scale + offset transform producing a centered quad
 TEST_F(VulkanGraphicsComplexTest, UniformMVPTransform) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
 
         @vertex fn main(in: VIn) -> @builtin(position) vec4f {
@@ -376,7 +380,7 @@ TEST_F(VulkanGraphicsComplexTest, UniformMVPTransform) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             return vec4f(0.0, 1.0, 0.0, 1.0);
         }
@@ -435,7 +439,7 @@ TEST_F(VulkanGraphicsComplexTest, UniformMVPTransform) {
 // Diffuse (Lambertian) lighting: full-screen pass with per-vertex normal interpolation
 // The fragment shader evaluates lighting from the interpolated normal Z component
 TEST_F(VulkanGraphicsComplexTest, DiffuseLighting3D) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -452,7 +456,7 @@ TEST_F(VulkanGraphicsComplexTest, DiffuseLighting3D) {
     // Fragment shader simulates diffuse lighting:
     // Left half (uv.x < 0.5): normal faces toward light → bright
     // Right half (uv.x >= 0.5): normal faces away → dark
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             let nz = 1.0 - uv.x * 2.0;
             if (nz > 0.0) {
@@ -500,7 +504,7 @@ TEST_F(VulkanGraphicsComplexTest, DiffuseLighting3D) {
 
 // Indexed cube faces with depth testing - draw front and back faces
 TEST_F(VulkanGraphicsComplexTest, IndexedCubeDepthTest) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn {
             @location(0) pos: vec3f,
             @location(1) color: vec3f,
@@ -517,7 +521,7 @@ TEST_F(VulkanGraphicsComplexTest, IndexedCubeDepthTest) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) color: vec3f) -> @location(0) vec4f {
             return vec4f(color, 1.0);
         }
@@ -531,21 +535,31 @@ TEST_F(VulkanGraphicsComplexTest, IndexedCubeDepthTest) {
     // Two overlapping quads: red at z=0.2 (front), green at z=0.8 (back)
     std::vector<PosColor3D> verts = {
         // Front quad (red, z=0.2)
-        {-0.8f, -0.8f, 0.2f,  1.0f, 0.0f, 0.0f},
-        { 0.8f, -0.8f, 0.2f,  1.0f, 0.0f, 0.0f},
-        { 0.8f,  0.8f, 0.2f,  1.0f, 0.0f, 0.0f},
-        {-0.8f,  0.8f, 0.2f,  1.0f, 0.0f, 0.0f},
+        {-0.8f, -0.8f, 0.2f, 1.0f, 0.0f, 0.0f},
+        {0.8f, -0.8f, 0.2f, 1.0f, 0.0f, 0.0f},
+        {0.8f, 0.8f, 0.2f, 1.0f, 0.0f, 0.0f},
+        {-0.8f, 0.8f, 0.2f, 1.0f, 0.0f, 0.0f},
         // Back quad (green, z=0.8)
-        {-0.8f, -0.8f, 0.8f,  0.0f, 1.0f, 0.0f},
-        { 0.8f, -0.8f, 0.8f,  0.0f, 1.0f, 0.0f},
-        { 0.8f,  0.8f, 0.8f,  0.0f, 1.0f, 0.0f},
-        {-0.8f,  0.8f, 0.8f,  0.0f, 1.0f, 0.0f},
+        {-0.8f, -0.8f, 0.8f, 0.0f, 1.0f, 0.0f},
+        {0.8f, -0.8f, 0.8f, 0.0f, 1.0f, 0.0f},
+        {0.8f, 0.8f, 0.8f, 0.0f, 1.0f, 0.0f},
+        {-0.8f, 0.8f, 0.8f, 0.0f, 1.0f, 0.0f},
     };
 
     // Draw back quad first (indices 4-7), then front (0-3)
     std::vector<uint16_t> indices = {
-        4, 5, 6,  4, 6, 7,  // Back (green)
-        0, 1, 2,  0, 2, 3,  // Front (red)
+        4,
+        5,
+        6,
+        4,
+        6,
+        7, // Back (green)
+        0,
+        1,
+        2,
+        0,
+        2,
+        3, // Front (red)
     };
 
     auto vb = ctx_->createVertexBuffer(verts);
@@ -572,8 +586,8 @@ TEST_F(VulkanGraphicsComplexTest, IndexedCubeDepthTest) {
 
     auto pipeline = ctx_->createPipeline(cfg);
     ctx_->drawIndexed(pipeline, color_target, &vb, &ib, VK_INDEX_TYPE_UINT16,
-                      {.index_count = 12}, {}, {0.0f, 0.0f, 0.0f, 1.0f},
-                      &depth_target);
+        {.index_count = 12}, {}, {0.0f, 0.0f, 0.0f, 1.0f},
+        &depth_target);
 
     auto pixels = color_target.downloadAs<uint32_t>();
     uint8_t r, g, b, a;
@@ -591,7 +605,7 @@ TEST_F(VulkanGraphicsComplexTest, IndexedCubeDepthTest) {
 
 // Bright-pass extraction: threshold brightness, output only bright pixels
 TEST_F(VulkanGraphicsComplexTest, BrightPassExtraction) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -606,7 +620,7 @@ TEST_F(VulkanGraphicsComplexTest, BrightPassExtraction) {
     )";
 
     // Horizontal gradient, bright-pass threshold at 0.7
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             let scene_color = vec3f(uv.x, uv.x * 0.5, uv.x * 0.2);
             let brightness = scene_color.x * 0.299 + scene_color.y * 0.587 + scene_color.z * 0.114;
@@ -656,7 +670,7 @@ TEST_F(VulkanGraphicsComplexTest, BrightPassExtraction) {
 
 // Radial glow/bloom: bright center with smooth falloff
 TEST_F(VulkanGraphicsComplexTest, RadialGlowBloom) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -670,7 +684,7 @@ TEST_F(VulkanGraphicsComplexTest, RadialGlowBloom) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) ndc: vec2f) -> @location(0) vec4f {
             let dist = sqrt(ndc.x * ndc.x + ndc.y * ndc.y);
             let glow = exp(-dist * dist * 4.0);
@@ -725,7 +739,7 @@ TEST_F(VulkanGraphicsComplexTest, RadialGlowBloom) {
 
 // Bloom with HDR-like tone mapping
 TEST_F(VulkanGraphicsComplexTest, BloomTonemapping) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -740,7 +754,7 @@ TEST_F(VulkanGraphicsComplexTest, BloomTonemapping) {
     )";
 
     // Reinhard-style tonemapping of a bright scene
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             let hdr_color = vec3f(uv.x * 3.0, uv.y * 2.0, 0.5);
             let mapped = hdr_color / (hdr_color + vec3f(1.0));
@@ -801,14 +815,14 @@ TEST_F(VulkanGraphicsComplexTest, BloomTonemapping) {
 
 // Alpha blending: semi-transparent red over green clear color
 TEST_F(VulkanGraphicsComplexTest, AlphaBlendOverClear) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         @vertex fn main(in: VIn) -> @builtin(position) vec4f {
             return vec4f(in.pos, 0.0, 1.0);
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             return vec4f(1.0, 0.0, 0.0, 0.5);
         }
@@ -853,14 +867,14 @@ TEST_F(VulkanGraphicsComplexTest, AlphaBlendOverClear) {
 
 // Additive blending for glow accumulation
 TEST_F(VulkanGraphicsComplexTest, AdditiveBlendGlow) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         @vertex fn main(in: VIn) -> @builtin(position) vec4f {
             return vec4f(in.pos, 0.0, 1.0);
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main() -> @location(0) vec4f {
             return vec4f(0.3, 0.0, 0.0, 1.0);
         }
@@ -909,7 +923,7 @@ TEST_F(VulkanGraphicsComplexTest, AdditiveBlendGlow) {
 
 // Fragment shader writes to two separate color attachments simultaneously
 TEST_F(VulkanGraphicsComplexTest, DualColorAttachmentMRT) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -924,7 +938,7 @@ TEST_F(VulkanGraphicsComplexTest, DualColorAttachmentMRT) {
     )";
 
     // Use GLSL for the MRT fragment shader (outputs to two locations)
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         #version 450
         layout(location = 0) in vec2 uv;
         layout(location = 0) out vec4 outColor0;
@@ -1035,7 +1049,7 @@ TEST_F(VulkanGraphicsComplexTest, DualColorAttachmentMRT) {
     VkDescriptorSetLayoutCreateInfo dl_info = {};
     dl_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     ASSERT_EQ(vkCreateDescriptorSetLayout(ctx_->device(), &dl_info, nullptr, &res.desc_layout),
-              VK_SUCCESS);
+        VK_SUCCESS);
 
     VkPipelineLayoutCreateInfo pl_info = {};
     pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1066,7 +1080,8 @@ TEST_F(VulkanGraphicsComplexTest, DualColorAttachmentMRT) {
     pi.layout = res.layout;
 
     ASSERT_EQ(vkCreateGraphicsPipelines(ctx_->device(), VK_NULL_HANDLE, 1, &pi, nullptr,
-                                         &res.pipeline), VK_SUCCESS);
+                  &res.pipeline),
+        VK_SUCCESS);
 
     // Record draw with 2 color attachments
     ctx_->executeCommands([&](VkCommandBuffer cmd) {
@@ -1156,7 +1171,7 @@ TEST_F(VulkanGraphicsComplexTest, DualColorAttachmentMRT) {
 
 // Julia set fractal with smooth iteration coloring, exported as PNG
 TEST_F(VulkanGraphicsComplexTest, JuliaSetFractal) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -1172,7 +1187,7 @@ TEST_F(VulkanGraphicsComplexTest, JuliaSetFractal) {
 
     // Julia set z = z^2 + c, c = (-0.7, 0.27015)
     // Smooth coloring via iteration count + log escape
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             var zr = (uv.x - 0.5) * 3.0;
             var zi = (uv.y - 0.5) * 3.0;
@@ -1241,7 +1256,7 @@ TEST_F(VulkanGraphicsComplexTest, JuliaSetFractal) {
 
 // Voronoi cell pattern from hardcoded seed grid
 TEST_F(VulkanGraphicsComplexTest, VoronoiCellPattern) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -1257,7 +1272,7 @@ TEST_F(VulkanGraphicsComplexTest, VoronoiCellPattern) {
 
     // Voronoi: distance-to-nearest-seed computed per pixel
     // Uses unique let bindings per cell to avoid variable reassignment issues
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             let su = uv.x * 5.0;
             let sv = uv.y * 5.0;
@@ -1406,7 +1421,7 @@ TEST_F(VulkanGraphicsComplexTest, VoronoiCellPattern) {
 
 // Sphere lit by directional light, computed from SDF normal
 TEST_F(VulkanGraphicsComplexTest, NormalMappedSphere) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -1421,7 +1436,7 @@ TEST_F(VulkanGraphicsComplexTest, NormalMappedSphere) {
     )";
 
     // Sphere SDF: project UV onto sphere surface, compute normal, shade with Lambertian
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             let cx = uv.x * 2.0 - 1.0;
             let cy = uv.y * 2.0 - 1.0;
@@ -1502,7 +1517,7 @@ TEST_F(VulkanGraphicsComplexTest, NormalMappedSphere) {
 
 // Classic demoscene plasma effect
 TEST_F(VulkanGraphicsComplexTest, PlasmaEffect) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -1517,7 +1532,7 @@ TEST_F(VulkanGraphicsComplexTest, PlasmaEffect) {
     )";
 
     // Overlapping sine waves creating a plasma effect
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             let time = 2.5;
             let x = uv.x * 10.0;
@@ -1577,7 +1592,7 @@ TEST_F(VulkanGraphicsComplexTest, PlasmaEffect) {
 
 // Depth visualization: render overlapping colored geometry, export color + depth
 TEST_F(VulkanGraphicsComplexTest, DepthVisualization) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn {
             @location(0) pos: vec3f,
             @location(1) color: vec3f,
@@ -1594,7 +1609,7 @@ TEST_F(VulkanGraphicsComplexTest, DepthVisualization) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) color: vec3f) -> @location(0) vec4f {
             return vec4f(color, 1.0);
         }
@@ -1608,26 +1623,26 @@ TEST_F(VulkanGraphicsComplexTest, DepthVisualization) {
     // Three overlapping quads at different depths with different colors
     std::vector<PosColor3D> verts = {
         // Red quad (z=0.2, front) - centered
-        {-0.6f, -0.6f, 0.2f,  1.0f, 0.0f, 0.0f},
-        { 0.6f, -0.6f, 0.2f,  1.0f, 0.0f, 0.0f},
-        { 0.6f,  0.6f, 0.2f,  1.0f, 0.0f, 0.0f},
-        {-0.6f, -0.6f, 0.2f,  1.0f, 0.0f, 0.0f},
-        { 0.6f,  0.6f, 0.2f,  1.0f, 0.0f, 0.0f},
-        {-0.6f,  0.6f, 0.2f,  1.0f, 0.0f, 0.0f},
+        {-0.6f, -0.6f, 0.2f, 1.0f, 0.0f, 0.0f},
+        {0.6f, -0.6f, 0.2f, 1.0f, 0.0f, 0.0f},
+        {0.6f, 0.6f, 0.2f, 1.0f, 0.0f, 0.0f},
+        {-0.6f, -0.6f, 0.2f, 1.0f, 0.0f, 0.0f},
+        {0.6f, 0.6f, 0.2f, 1.0f, 0.0f, 0.0f},
+        {-0.6f, 0.6f, 0.2f, 1.0f, 0.0f, 0.0f},
         // Green quad (z=0.5, middle) - offset right+down
-        {-0.3f, -0.3f, 0.5f,  0.0f, 1.0f, 0.0f},
-        { 0.9f, -0.3f, 0.5f,  0.0f, 1.0f, 0.0f},
-        { 0.9f,  0.9f, 0.5f,  0.0f, 1.0f, 0.0f},
-        {-0.3f, -0.3f, 0.5f,  0.0f, 1.0f, 0.0f},
-        { 0.9f,  0.9f, 0.5f,  0.0f, 1.0f, 0.0f},
-        {-0.3f,  0.9f, 0.5f,  0.0f, 1.0f, 0.0f},
+        {-0.3f, -0.3f, 0.5f, 0.0f, 1.0f, 0.0f},
+        {0.9f, -0.3f, 0.5f, 0.0f, 1.0f, 0.0f},
+        {0.9f, 0.9f, 0.5f, 0.0f, 1.0f, 0.0f},
+        {-0.3f, -0.3f, 0.5f, 0.0f, 1.0f, 0.0f},
+        {0.9f, 0.9f, 0.5f, 0.0f, 1.0f, 0.0f},
+        {-0.3f, 0.9f, 0.5f, 0.0f, 1.0f, 0.0f},
         // Blue quad (z=0.8, back) - offset left+up
-        {-0.9f, -0.9f, 0.8f,  0.0f, 0.0f, 1.0f},
-        { 0.3f, -0.9f, 0.8f,  0.0f, 0.0f, 1.0f},
-        { 0.3f,  0.3f, 0.8f,  0.0f, 0.0f, 1.0f},
-        {-0.9f, -0.9f, 0.8f,  0.0f, 0.0f, 1.0f},
-        { 0.3f,  0.3f, 0.8f,  0.0f, 0.0f, 1.0f},
-        {-0.9f,  0.3f, 0.8f,  0.0f, 0.0f, 1.0f},
+        {-0.9f, -0.9f, 0.8f, 0.0f, 0.0f, 1.0f},
+        {0.3f, -0.9f, 0.8f, 0.0f, 0.0f, 1.0f},
+        {0.3f, 0.3f, 0.8f, 0.0f, 0.0f, 1.0f},
+        {-0.9f, -0.9f, 0.8f, 0.0f, 0.0f, 1.0f},
+        {0.3f, 0.3f, 0.8f, 0.0f, 0.0f, 1.0f},
+        {-0.9f, 0.3f, 0.8f, 0.0f, 0.0f, 1.0f},
     };
 
     auto vb = ctx_->createVertexBuffer(verts);
@@ -1662,7 +1677,7 @@ TEST_F(VulkanGraphicsComplexTest, DepthVisualization) {
     // Export depth visualization as grayscale
     auto depth_bytes = depth_target.download();
     ASSERT_EQ(depth_bytes.size(), W * H * sizeof(float));
-    const float* depth_data = reinterpret_cast<const float*>(depth_bytes.data());
+    const float *depth_data = reinterpret_cast<const float *>(depth_bytes.data());
 
     std::vector<uint8_t> depth_vis(W * H * 4);
     for (uint32_t i = 0; i < W * H; i++) {
@@ -1697,7 +1712,7 @@ TEST_F(VulkanGraphicsComplexTest, DepthVisualization) {
 
 // 1) 1D horizontal Gaussian blur on a hard step edge
 TEST_F(VulkanGraphicsComplexTest, GaussianBlurStep) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -1711,7 +1726,7 @@ TEST_F(VulkanGraphicsComplexTest, GaussianBlurStep) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             var blurred = 0.0;
             var wsum = 0.0;
@@ -1779,7 +1794,7 @@ TEST_F(VulkanGraphicsComplexTest, GaussianBlurStep) {
 
 // 2) 2D box blur applied to a hard circle, producing soft edges
 TEST_F(VulkanGraphicsComplexTest, BoxBlurSoftCircle) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -1793,7 +1808,7 @@ TEST_F(VulkanGraphicsComplexTest, BoxBlurSoftCircle) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             var total = 0.0;
             var samples = 0;
@@ -1861,7 +1876,7 @@ TEST_F(VulkanGraphicsComplexTest, BoxBlurSoftCircle) {
 
 // 3) Horizontal directional blur creating light streaks from two point lights
 TEST_F(VulkanGraphicsComplexTest, DirectionalBlurStreaks) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -1875,7 +1890,7 @@ TEST_F(VulkanGraphicsComplexTest, DirectionalBlurStreaks) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) ndc: vec2f) -> @location(0) vec4f {
             var cr = 0.0;
             var cg = 0.0;
@@ -1959,7 +1974,7 @@ TEST_F(VulkanGraphicsComplexTest, DirectionalBlurStreaks) {
 
 // 4) Full bloom pipeline: scene + bright-pass + 2D Gaussian blur + composite + Reinhard tonemap
 TEST_F(VulkanGraphicsComplexTest, BloomCompositeHDR) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -1973,7 +1988,7 @@ TEST_F(VulkanGraphicsComplexTest, BloomCompositeHDR) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) ndc: vec2f) -> @location(0) vec4f {
             let px = ndc.x;
             let py = ndc.y;
@@ -2085,7 +2100,7 @@ TEST_F(VulkanGraphicsComplexTest, BloomCompositeHDR) {
 
 // 5) Multi-scale bloom: 4 lights with different blur radii, anamorphic stretch, fog, ACES tonemap
 TEST_F(VulkanGraphicsComplexTest, MultiScaleBloomFog) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -2099,7 +2114,7 @@ TEST_F(VulkanGraphicsComplexTest, MultiScaleBloomFog) {
         }
     )";
 
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) ndc: vec2f) -> @location(0) vec4f {
             let px = ndc.x;
             let py = ndc.y;

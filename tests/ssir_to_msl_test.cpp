@@ -15,16 +15,16 @@ struct MslResult {
 
 // Use the direct WGSL -> AST -> Lower -> SSIR -> MSL path (no SPIR-V round-trip)
 // so that all SSIR metadata (address spaces, bindings, builtins) is preserved.
-MslResult WgslToMsl(const std::string& wgsl) {
+MslResult WgslToMsl(const std::string &wgsl) {
     MslResult res = {false, "", ""};
 
-    WgslAstNode* ast = wgsl_parse(wgsl.c_str());
+    WgslAstNode *ast = wgsl_parse(wgsl.c_str());
     if (!ast) {
         res.error = "WGSL parse failed";
         return res;
     }
 
-    WgslResolver* resolver = wgsl_resolver_build(ast);
+    WgslResolver *resolver = wgsl_resolver_build(ast);
     if (!resolver) {
         wgsl_free_ast(ast);
         res.error = "WGSL resolve failed";
@@ -33,7 +33,7 @@ MslResult WgslToMsl(const std::string& wgsl) {
 
     WgslLowerOptions lower_opts = {};
     lower_opts.enable_debug_names = 1;
-    WgslLower* lower = wgsl_lower_create(ast, resolver, &lower_opts);
+    WgslLower *lower = wgsl_lower_create(ast, resolver, &lower_opts);
     if (!lower) {
         wgsl_resolver_free(resolver);
         wgsl_free_ast(ast);
@@ -41,7 +41,7 @@ MslResult WgslToMsl(const std::string& wgsl) {
         return res;
     }
 
-    const SsirModule* ssir = wgsl_lower_get_ssir(lower);
+    const SsirModule *ssir = wgsl_lower_get_ssir(lower);
     if (!ssir) {
         wgsl_lower_destroy(lower);
         wgsl_resolver_free(resolver);
@@ -50,8 +50,8 @@ MslResult WgslToMsl(const std::string& wgsl) {
         return res;
     }
 
-    char* msl = nullptr;
-    char* err = nullptr;
+    char *msl = nullptr;
+    char *err = nullptr;
     SsirToMslOptions msl_opts = {};
     msl_opts.preserve_names = 1;
 
@@ -81,7 +81,7 @@ MslResult WgslToMsl(const std::string& wgsl) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, VertexShaderSimple) {
-    const char* source = R"(
+    const char *source = R"(
         @vertex fn vs() -> @builtin(position) vec4f {
             return vec4f(0.0, 0.0, 0.0, 1.0);
         }
@@ -100,7 +100,7 @@ TEST(SsirToMsl, VertexShaderSimple) {
 }
 
 TEST(SsirToMsl, VertexShaderWithVertexIndex) {
-    const char* source = R"(
+    const char *source = R"(
         @vertex fn vs(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4f {
             let x = f32(vid);
             return vec4f(x, 0.0, 0.0, 1.0);
@@ -116,7 +116,7 @@ TEST(SsirToMsl, VertexShaderWithVertexIndex) {
 }
 
 TEST(SsirToMsl, VertexShaderWithInstanceIndex) {
-    const char* source = R"(
+    const char *source = R"(
         @vertex fn vs(@builtin(instance_index) iid: u32) -> @builtin(position) vec4f {
             let x = f32(iid);
             return vec4f(x, 0.0, 0.0, 1.0);
@@ -134,7 +134,7 @@ TEST(SsirToMsl, VertexShaderWithInstanceIndex) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, FragmentShaderSimple) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             return vec4f(1.0, 0.0, 0.0, 1.0);
         }
@@ -149,7 +149,7 @@ TEST(SsirToMsl, FragmentShaderSimple) {
 }
 
 TEST(SsirToMsl, FragmentShaderUniforms) {
-    const char* source = R"(
+    const char *source = R"(
         struct UBO { color: vec4f };
         @group(0) @binding(0) var<uniform> u: UBO;
         @fragment fn fs() -> @location(0) vec4f {
@@ -169,7 +169,7 @@ TEST(SsirToMsl, FragmentShaderUniforms) {
 TEST(SsirToMsl, FragmentShaderMultipleOutputs) {
     // When returning a struct with multiple @location outputs, the lowerer
     // keeps them as struct fields. Verify the struct and fragment qualifier.
-    const char* source = R"(
+    const char *source = R"(
         struct FragOut {
             @location(0) color: vec4f,
             @location(1) normal: vec4f,
@@ -194,7 +194,7 @@ TEST(SsirToMsl, FragmentShaderMultipleOutputs) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, ComputeShaderBasic) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buf { data: array<f32, 64> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(64) fn cs(@builtin(global_invocation_id) gid: vec3u) {
@@ -213,7 +213,7 @@ TEST(SsirToMsl, ComputeShaderBasic) {
 }
 
 TEST(SsirToMsl, ComputeShaderLocalInvocation) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buf { data: array<f32, 64> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(64) fn cs(@builtin(local_invocation_id) lid: vec3u) {
@@ -228,7 +228,7 @@ TEST(SsirToMsl, ComputeShaderLocalInvocation) {
 }
 
 TEST(SsirToMsl, ComputeShaderWorkgroupId) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buf { data: array<f32, 64> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(64) fn cs(@builtin(workgroup_id) wid: vec3u) {
@@ -243,7 +243,7 @@ TEST(SsirToMsl, ComputeShaderWorkgroupId) {
 }
 
 TEST(SsirToMsl, ComputeShaderLocalInvocationIndex) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buf { data: array<f32, 64> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(64) fn cs(@builtin(local_invocation_index) idx: u32) {
@@ -262,7 +262,7 @@ TEST(SsirToMsl, ComputeShaderLocalInvocationIndex) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, VertexFragmentVaryings) {
-    const char* source = R"(
+    const char *source = R"(
         struct VertOut {
             @builtin(position) pos: vec4f,
             @location(0) color: vec3f,
@@ -303,7 +303,7 @@ TEST(SsirToMsl, VertexFragmentVaryings) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, StorageBufferReadWrite) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buf { values: array<u32, 256> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) gid: vec3u) {
@@ -320,7 +320,7 @@ TEST(SsirToMsl, StorageBufferReadWrite) {
 }
 
 TEST(SsirToMsl, UniformBuffer) {
-    const char* source = R"(
+    const char *source = R"(
         struct Params {
             scale: f32,
             offset: f32,
@@ -339,7 +339,7 @@ TEST(SsirToMsl, UniformBuffer) {
 }
 
 TEST(SsirToMsl, MultipleBindings) {
-    const char* source = R"(
+    const char *source = R"(
         struct UBO { val: f32 };
         struct Buf { data: array<f32, 64> };
         @group(0) @binding(0) var<uniform> ubo: UBO;
@@ -362,7 +362,7 @@ TEST(SsirToMsl, MultipleBindings) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, TrigIntrinsics) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = sin(1.0);
             let b = cos(1.0);
@@ -379,7 +379,7 @@ TEST(SsirToMsl, TrigIntrinsics) {
 }
 
 TEST(SsirToMsl, MathIntrinsics) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = max(1.0, 2.0);
             let b = min(1.0, 2.0);
@@ -398,7 +398,7 @@ TEST(SsirToMsl, MathIntrinsics) {
 }
 
 TEST(SsirToMsl, VectorMathIntrinsics) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let v1 = vec3f(1.0, 0.0, 0.0);
             let v2 = vec3f(0.0, 1.0, 0.0);
@@ -419,7 +419,7 @@ TEST(SsirToMsl, VectorMathIntrinsics) {
 }
 
 TEST(SsirToMsl, ExpLogIntrinsics) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = exp(1.0);
             let b = log(1.0);
@@ -438,7 +438,7 @@ TEST(SsirToMsl, ExpLogIntrinsics) {
 }
 
 TEST(SsirToMsl, RoundingIntrinsics) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = floor(1.5);
             let b = ceil(1.5);
@@ -457,7 +457,7 @@ TEST(SsirToMsl, RoundingIntrinsics) {
 }
 
 TEST(SsirToMsl, InverseSqrt) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = inverseSqrt(4.0);
             let b = sqrt(4.0);
@@ -473,7 +473,7 @@ TEST(SsirToMsl, InverseSqrt) {
 }
 
 TEST(SsirToMsl, MixStepSmoothstep) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = mix(0.0, 1.0, 0.5);
             let b = step(0.5, 0.7);
@@ -496,7 +496,7 @@ TEST(SsirToMsl, MixStepSmoothstep) {
 TEST(SsirToMsl, TextureSampling) {
     // Texture operations through the direct SSIR path have limited support.
     // Verify the pipeline doesn't crash and produces valid MSL structure.
-    const char* source = R"(
+    const char *source = R"(
         @group(0) @binding(0) var t: texture_2d<f32>;
         @group(0) @binding(1) var s: sampler;
         @fragment fn fs() -> @location(0) vec4f {
@@ -513,7 +513,7 @@ TEST(SsirToMsl, TextureSampling) {
 TEST(SsirToMsl, StorageTexture) {
     // Storage texture operations through the direct SSIR path have limited support.
     // Verify the pipeline doesn't crash and produces valid MSL structure.
-    const char* source = R"(
+    const char *source = R"(
         @group(0) @binding(0) var tex: texture_storage_2d<rgba8unorm, write>;
         @compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) gid: vec3u) {
             textureStore(tex, vec2u(gid.x, gid.y), vec4f(1.0, 0.0, 0.0, 1.0));
@@ -530,7 +530,7 @@ TEST(SsirToMsl, StorageTexture) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, ScalarTypes) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var a: f32 = 1.0;
             var b: i32 = 1;
@@ -551,7 +551,7 @@ TEST(SsirToMsl, ScalarTypes) {
 }
 
 TEST(SsirToMsl, VectorTypes) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let v2 = vec2f(1.0, 2.0);
             let v3 = vec3f(1.0, 2.0, 3.0);
@@ -571,7 +571,7 @@ TEST(SsirToMsl, VectorTypes) {
 }
 
 TEST(SsirToMsl, MatrixTypes) {
-    const char* source = R"(
+    const char *source = R"(
         struct UBO { mvp: mat4x4f };
         @group(0) @binding(0) var<uniform> u: UBO;
         @vertex fn vs() -> @builtin(position) vec4f {
@@ -587,7 +587,7 @@ TEST(SsirToMsl, MatrixTypes) {
 }
 
 TEST(SsirToMsl, ArrayType) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buf { data: array<f32, 16> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) gid: vec3u) {
@@ -606,7 +606,7 @@ TEST(SsirToMsl, ArrayType) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, ArithmeticOperators) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = 1.0 + 2.0;
             let b = 3.0 - 1.0;
@@ -622,7 +622,7 @@ TEST(SsirToMsl, ArithmeticOperators) {
 }
 
 TEST(SsirToMsl, BitwiseOperators) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = 0xFFu & 0x0Fu;
             let b = 0xF0u | 0x0Fu;
@@ -638,7 +638,7 @@ TEST(SsirToMsl, BitwiseOperators) {
 }
 
 TEST(SsirToMsl, ComparisonOperators) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let a = 1.0;
             let b = 2.0;
@@ -662,7 +662,7 @@ TEST(SsirToMsl, ComparisonOperators) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, IfElse) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var color = vec4f(0.0);
             let x = 1.0;
@@ -683,7 +683,7 @@ TEST(SsirToMsl, IfElse) {
 }
 
 TEST(SsirToMsl, ForLoop) {
-    const char* source = R"(
+    const char *source = R"(
         struct Buf { data: array<f32, 64> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(1) fn cs() {
@@ -703,7 +703,7 @@ TEST(SsirToMsl, ForLoop) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, TypeConversion) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             let i: i32 = 42;
             let f: f32 = f32(i);
@@ -721,7 +721,7 @@ TEST(SsirToMsl, TypeConversion) {
 TEST(SsirToMsl, Bitcast) {
     // The direct lowering path aggressively eliminates intermediate operations.
     // Verify at least that the shader with bitcast compiles and produces MSL.
-    const char* source = R"(
+    const char *source = R"(
         struct UBO { bits: u32 };
         @group(0) @binding(0) var<uniform> u: UBO;
         @fragment fn fs() -> @location(0) vec4f {
@@ -742,7 +742,7 @@ TEST(SsirToMsl, Bitcast) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, StructDefinition) {
-    const char* source = R"(
+    const char *source = R"(
         struct Light {
             position: vec3f,
             color: vec3f,
@@ -767,7 +767,7 @@ TEST(SsirToMsl, StructDefinition) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, WorkgroupMemory) {
-    const char* source = R"(
+    const char *source = R"(
         var<workgroup> shared_data: array<f32, 64>;
         @compute @workgroup_size(64) fn cs(@builtin(local_invocation_index) lid: u32) {
             shared_data[lid] = f32(lid);
@@ -785,7 +785,7 @@ TEST(SsirToMsl, WorkgroupMemory) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, MetalHeaderPresent) {
-    const char* source = R"(
+    const char *source = R"(
         @compute @workgroup_size(1) fn cs() {}
     )";
     auto res = WgslToMsl(source);
@@ -800,7 +800,7 @@ TEST(SsirToMsl, MetalHeaderPresent) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, MainEntryPointMangling) {
-    const char* source = R"(
+    const char *source = R"(
         @compute @workgroup_size(1) fn main() {}
     )";
     auto res = WgslToMsl(source);
@@ -815,7 +815,7 @@ TEST(SsirToMsl, MainEntryPointMangling) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, MatrixVectorMultiply) {
-    const char* source = R"(
+    const char *source = R"(
         struct UBO {
             matrix: mat3x3f,
             vector: vec3f,
@@ -842,7 +842,7 @@ TEST(SsirToMsl, MatrixVectorMultiply) {
 TEST(SsirToMsl, UserDefinedFunction) {
     // The direct lowering path may inline or eliminate simple function calls.
     // Use a more complex function body that's harder to inline completely.
-    const char* source = R"(
+    const char *source = R"(
         struct UBO { val: f32 };
         @group(0) @binding(0) var<uniform> u: UBO;
         fn helper(x: f32) -> f32 {
@@ -872,8 +872,8 @@ TEST(SsirToMsl, UserDefinedFunction) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, NullModuleReturnsError) {
-    char* msl = nullptr;
-    char* err = nullptr;
+    char *msl = nullptr;
+    char *err = nullptr;
     SsirToMslOptions opts = {};
 
     SsirToMslResult result = ssir_to_msl(nullptr, &opts, &msl, &err);
@@ -884,8 +884,8 @@ TEST(SsirToMsl, NullModuleReturnsError) {
 }
 
 TEST(SsirToMsl, NullOutputReturnsError) {
-    SsirModule* mod = ssir_module_create();
-    char* err = nullptr;
+    SsirModule *mod = ssir_module_create();
+    char *err = nullptr;
     SsirToMslOptions opts = {};
 
     SsirToMslResult result = ssir_to_msl(mod, &opts, nullptr, &err);
@@ -908,9 +908,9 @@ TEST(SsirToMsl, ResultStringConversion) {
 // ---------------------------------------------------------------------------
 
 TEST(SsirToMsl, EmptyModule) {
-    SsirModule* mod = ssir_module_create();
-    char* msl = nullptr;
-    char* err = nullptr;
+    SsirModule *mod = ssir_module_create();
+    char *msl = nullptr;
+    char *err = nullptr;
     SsirToMslOptions opts = {};
 
     SsirToMslResult result = ssir_to_msl(mod, &opts, &msl, &err);

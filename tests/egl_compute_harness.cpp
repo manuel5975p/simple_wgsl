@@ -20,8 +20,7 @@ Context::Context() {
     EGLint config_attribs[] = {
         EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
         EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-        EGL_NONE
-    };
+        EGL_NONE};
     EGLConfig config;
     EGLint num_configs;
     if (!eglChooseConfig(display_, config_attribs, &config, 1, &num_configs) || num_configs == 0)
@@ -31,15 +30,14 @@ Context::Context() {
         EGL_CONTEXT_MAJOR_VERSION, 4,
         EGL_CONTEXT_MINOR_VERSION, 5,
         EGL_CONTEXT_OPENGL_PROFILE_MASK, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT,
-        EGL_NONE
-    };
+        EGL_NONE};
     context_ = eglCreateContext(display_, config, EGL_NO_CONTEXT, ctx_attribs);
     if (context_ == EGL_NO_CONTEXT)
         throw std::runtime_error("eglCreateContext failed - OpenGL 4.5 may not be supported");
 
     /* Try surfaceless first, fall back to 1x1 pbuffer */
     if (!eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, context_)) {
-        EGLint pbuf_attribs[] = { EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE };
+        EGLint pbuf_attribs[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
         surface_ = eglCreatePbufferSurface(display_, config, pbuf_attribs);
         if (surface_ == EGL_NO_SURFACE) {
             cleanup();
@@ -70,12 +68,12 @@ void Context::cleanup() {
     surface_ = EGL_NO_SURFACE;
 }
 
-ShaderCompileResult Context::compileShader(GLenum type, const std::string& glsl_source) {
+ShaderCompileResult Context::compileShader(GLenum type, const std::string &glsl_source) {
     ShaderCompileResult result;
     result.success = false;
 
     GLuint shader = glCreateShader(type);
-    const char* src = glsl_source.c_str();
+    const char *src = glsl_source.c_str();
     glShaderSource(shader, 1, &src, nullptr);
     glCompileShader(shader);
 
@@ -96,17 +94,17 @@ ShaderCompileResult Context::compileShader(GLenum type, const std::string& glsl_
     return result;
 }
 
-ShaderCompileResult Context::compileComputeShader(const std::string& glsl_source) {
+ShaderCompileResult Context::compileComputeShader(const std::string &glsl_source) {
     return compileShader(GL_COMPUTE_SHADER, glsl_source);
 }
 
-ShaderCompileResult Context::linkProgram(const std::string& vert_source,
-                                          const std::string& frag_source) {
+ShaderCompileResult Context::linkProgram(const std::string &vert_source,
+    const std::string &frag_source) {
     ShaderCompileResult result;
     result.success = false;
 
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-    const char* vs_src = vert_source.c_str();
+    const char *vs_src = vert_source.c_str();
     glShaderSource(vs, 1, &vs_src, nullptr);
     glCompileShader(vs);
 
@@ -125,7 +123,7 @@ ShaderCompileResult Context::linkProgram(const std::string& vert_source,
     }
 
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-    const char* fs_src = frag_source.c_str();
+    const char *fs_src = frag_source.c_str();
     glShaderSource(fs, 1, &fs_src, nullptr);
     glCompileShader(fs);
 
@@ -171,9 +169,9 @@ ShaderCompileResult Context::linkProgram(const std::string& vert_source,
     return result;
 }
 
-RenderResult Context::renderToPixels(const std::string& vert_glsl,
-                                      const std::string& frag_glsl,
-                                      int width, int height) {
+RenderResult Context::renderToPixels(const std::string &vert_glsl,
+    const std::string &frag_glsl,
+    int width, int height) {
     RenderResult result;
     result.success = false;
     result.width = width;
@@ -181,13 +179,14 @@ RenderResult Context::renderToPixels(const std::string& vert_glsl,
 
     /* Compile and link program */
     GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-    const char* vs_src = vert_glsl.c_str();
+    const char *vs_src = vert_glsl.c_str();
     glShaderSource(vs, 1, &vs_src, nullptr);
     glCompileShader(vs);
     GLint vs_status;
     glGetShaderiv(vs, GL_COMPILE_STATUS, &vs_status);
     if (vs_status != GL_TRUE) {
-        GLint len; glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &len);
+        GLint len;
+        glGetShaderiv(vs, GL_INFO_LOG_LENGTH, &len);
         result.error.resize(len);
         glGetShaderInfoLog(vs, len, nullptr, &result.error[0]);
         result.error = "vertex compile: " + result.error;
@@ -196,13 +195,14 @@ RenderResult Context::renderToPixels(const std::string& vert_glsl,
     }
 
     GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-    const char* fs_src = frag_glsl.c_str();
+    const char *fs_src = frag_glsl.c_str();
     glShaderSource(fs, 1, &fs_src, nullptr);
     glCompileShader(fs);
     GLint fs_status;
     glGetShaderiv(fs, GL_COMPILE_STATUS, &fs_status);
     if (fs_status != GL_TRUE) {
-        GLint len; glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &len);
+        GLint len;
+        glGetShaderiv(fs, GL_INFO_LOG_LENGTH, &len);
         result.error.resize(len);
         glGetShaderInfoLog(fs, len, nullptr, &result.error[0]);
         result.error = "fragment compile: " + result.error;
@@ -218,7 +218,8 @@ RenderResult Context::renderToPixels(const std::string& vert_glsl,
     GLint link_status;
     glGetProgramiv(prog, GL_LINK_STATUS, &link_status);
     if (link_status != GL_TRUE) {
-        GLint len; glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
+        GLint len;
+        glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
         result.error.resize(len);
         glGetProgramInfoLog(prog, len, nullptr, &result.error[0]);
         result.error = "link: " + result.error;
@@ -238,7 +239,7 @@ RenderResult Context::renderToPixels(const std::string& vert_glsl,
     glBindRenderbuffer(GL_RENDERBUFFER, rbo);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, width, height);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                              GL_RENDERBUFFER, rbo);
+        GL_RENDERBUFFER, rbo);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
         result.error = "Framebuffer incomplete";
@@ -249,7 +250,7 @@ RenderResult Context::renderToPixels(const std::string& vert_glsl,
     }
 
     /* Fullscreen triangle: (-1,-1), (3,-1), (-1,3) covers all of clip space */
-    float tri[] = { -1.f, -1.f,  3.f, -1.f,  -1.f, 3.f };
+    float tri[] = {-1.f, -1.f, 3.f, -1.f, -1.f, 3.f};
     GLuint vao, vbo;
     glGenVertexArrays(1, &vao);
     glBindVertexArray(vao);
@@ -275,8 +276,8 @@ RenderResult Context::renderToPixels(const std::string& vert_glsl,
     /* Flip to top-down for PNG */
     std::vector<uint8_t> row(row_bytes);
     for (int y = 0; y < height / 2; y++) {
-        uint8_t* top = result.pixels.data() + y * row_bytes;
-        uint8_t* bot = result.pixels.data() + (height - 1 - y) * row_bytes;
+        uint8_t *top = result.pixels.data() + y * row_bytes;
+        uint8_t *bot = result.pixels.data() + (height - 1 - y) * row_bytes;
         memcpy(row.data(), top, row_bytes);
         memcpy(top, bot, row_bytes);
         memcpy(bot, row.data(), row_bytes);
@@ -295,7 +296,7 @@ RenderResult Context::renderToPixels(const std::string& vert_glsl,
 }
 
 std::string Context::glVersionString() const {
-    const char* v = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const char *v = reinterpret_cast<const char *>(glGetString(GL_VERSION));
     return v ? v : "(null)";
 }
 

@@ -2,14 +2,14 @@
 #include "test_utils.h"
 
 TEST(LowerTest, EmitMinimalSpirv) {
-    const char* source = "fn main() {}";
+    const char *source = "fn main() {}";
     wgsl_test::AstGuard ast(wgsl_parse(source));
     ASSERT_NE(ast.get(), nullptr);
 
     wgsl_test::ResolverGuard resolver(wgsl_resolver_build(ast.get()));
     ASSERT_NE(resolver.get(), nullptr);
 
-    uint32_t* spirv = nullptr;
+    uint32_t *spirv = nullptr;
     size_t spirv_size = 0;
     WgslLowerOptions opts = {};
     opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
@@ -24,13 +24,13 @@ TEST(LowerTest, EmitMinimalSpirv) {
 }
 
 TEST(LowerTest, ValidateMinimalSpirvModule) {
-    const char* source = "fn main() {}";
+    const char *source = "fn main() {}";
     auto result = wgsl_test::CompileWgsl(source);
     EXPECT_TRUE(result.success) << "Validation error: " << result.error;
 }
 
 TEST(LowerTest, ValidateFragmentShader) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
     )";
     auto result = wgsl_test::CompileWgsl(source);
@@ -38,7 +38,7 @@ TEST(LowerTest, ValidateFragmentShader) {
 }
 
 TEST(LowerTest, ValidateVertexShader) {
-    const char* source = R"(
+    const char *source = R"(
         @vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }
     )";
     auto result = wgsl_test::CompileWgsl(source);
@@ -46,7 +46,7 @@ TEST(LowerTest, ValidateVertexShader) {
 }
 
 TEST(LowerTest, ValidateComputeShader) {
-    const char* source = R"(
+    const char *source = R"(
         @compute @workgroup_size(1) fn cs() {}
     )";
     auto result = wgsl_test::CompileWgsl(source);
@@ -54,7 +54,7 @@ TEST(LowerTest, ValidateComputeShader) {
 }
 
 TEST(LowerTest, ValidateBindingVariable) {
-    const char* source = R"(
+    const char *source = R"(
         @group(0) @binding(0) var tex: texture_2d<f32>;
         @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
     )";
@@ -63,7 +63,7 @@ TEST(LowerTest, ValidateBindingVariable) {
 }
 
 TEST(LowerTest, ValidateSampler) {
-    const char* source = R"(
+    const char *source = R"(
         @group(0) @binding(0) var s: sampler;
         @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
     )";
@@ -74,7 +74,7 @@ TEST(LowerTest, ValidateSampler) {
 TEST(LowerTest, TypeCachingWorks) {
     // This test verifies that type caching works correctly
     // by compiling a shader that uses the same types multiple times
-    const char* source = R"(
+    const char *source = R"(
         fn main() {}
     )";
 
@@ -92,13 +92,13 @@ TEST(LowerTest, TypeCachingWorks) {
 
     // Check that entrypoints are created
     int count = 0;
-    const WgslLowerEntrypointInfo* eps = wgsl_lower_entrypoints(lower.get(), &count);
+    const WgslLowerEntrypointInfo *eps = wgsl_lower_entrypoints(lower.get(), &count);
     EXPECT_GE(count, 1);
     EXPECT_NE(eps, nullptr);
 }
 
 TEST(LowerTest, MultipleEntrypoints) {
-    const char* source = R"(
+    const char *source = R"(
         @vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }
         @fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
     )";
@@ -116,7 +116,7 @@ TEST(LowerTest, MultipleEntrypoints) {
     ASSERT_NE(lower.get(), nullptr);
 
     int count = 0;
-    const WgslLowerEntrypointInfo* eps = wgsl_lower_entrypoints(lower.get(), &count);
+    const WgslLowerEntrypointInfo *eps = wgsl_lower_entrypoints(lower.get(), &count);
     EXPECT_EQ(count, 2);
 
     // Verify both entrypoints have function IDs
@@ -126,7 +126,7 @@ TEST(LowerTest, MultipleEntrypoints) {
 }
 
 TEST(LowerTest, ModuleFeatures) {
-    const char* source = "fn main() {}";
+    const char *source = "fn main() {}";
 
     wgsl_test::AstGuard ast(wgsl_parse(source));
     ASSERT_NE(ast.get(), nullptr);
@@ -140,7 +140,7 @@ TEST(LowerTest, ModuleFeatures) {
     wgsl_test::LowerGuard lower(wgsl_lower_create(ast.get(), resolver.get(), &opts));
     ASSERT_NE(lower.get(), nullptr);
 
-    const WgslLowerModuleFeatures* features = wgsl_lower_module_features(lower.get());
+    const WgslLowerModuleFeatures *features = wgsl_lower_module_features(lower.get());
     ASSERT_NE(features, nullptr);
 
     // Should have at least Shader capability
@@ -150,7 +150,7 @@ TEST(LowerTest, ModuleFeatures) {
 // ==================== Expression Lowering Tests ====================
 
 TEST(LowerTest, ArithmeticExpressions) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var x = 1.0 + 2.0;
             var y = 3.0 - 1.0;
@@ -164,7 +164,7 @@ TEST(LowerTest, ArithmeticExpressions) {
 }
 
 TEST(LowerTest, ComparisonOperators) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var a = 1.0;
             var b = 2.0;
@@ -183,7 +183,7 @@ TEST(LowerTest, ComparisonOperators) {
 
 TEST(LowerTest, BitwiseOperators) {
     // Basic integer operations (shift operators need parser support)
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var a: i32 = 5;
             var b: i32 = 3;
@@ -197,7 +197,7 @@ TEST(LowerTest, BitwiseOperators) {
 }
 
 TEST(LowerTest, UnaryOperators) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var a: f32 = 5.0;
             var neg: f32 = -a;
@@ -209,7 +209,7 @@ TEST(LowerTest, UnaryOperators) {
 }
 
 TEST(LowerTest, VectorConstruction) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var v2 = vec2f(1.0, 2.0);
             var v3 = vec3f(1.0, 2.0, 3.0);
@@ -222,7 +222,7 @@ TEST(LowerTest, VectorConstruction) {
 }
 
 TEST(LowerTest, VectorSwizzle) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var v = vec4f(1.0, 2.0, 3.0, 4.0);
             var x = v.x;
@@ -239,7 +239,7 @@ TEST(LowerTest, VectorSwizzle) {
 // ==================== Built-in Function Tests ====================
 
 TEST(LowerTest, MathFunctions) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var a = 2.0;
             var s = sqrt(a);
@@ -255,7 +255,7 @@ TEST(LowerTest, MathFunctions) {
 }
 
 TEST(LowerTest, TrigFunctions) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var angle = 1.0;
             var s = sin(angle);
@@ -269,7 +269,7 @@ TEST(LowerTest, TrigFunctions) {
 }
 
 TEST(LowerTest, MinMaxClamp) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var a = 1.0;
             var b = 2.0;
@@ -284,7 +284,7 @@ TEST(LowerTest, MinMaxClamp) {
 }
 
 TEST(LowerTest, VectorBuiltins) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var v1 = vec3f(1.0, 0.0, 0.0);
             var v2 = vec3f(0.0, 1.0, 0.0);
@@ -300,7 +300,7 @@ TEST(LowerTest, VectorBuiltins) {
 }
 
 TEST(LowerTest, MixSmoothstep) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var a = 0.0;
             var b = 1.0;
@@ -317,7 +317,7 @@ TEST(LowerTest, MixSmoothstep) {
 // ==================== Control Flow Tests ====================
 
 TEST(LowerTest, IfStatement) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var x = 1.0;
             if (x > 0.5) {
@@ -333,7 +333,7 @@ TEST(LowerTest, IfStatement) {
 }
 
 TEST(LowerTest, IfWithoutElse) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var x = 1.0;
             if (x > 0.5) {
@@ -347,7 +347,7 @@ TEST(LowerTest, IfWithoutElse) {
 }
 
 TEST(LowerTest, WhileLoop) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var i = 0;
             var sum = 0.0;
@@ -363,7 +363,7 @@ TEST(LowerTest, WhileLoop) {
 }
 
 TEST(LowerTest, ForLoop) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var sum = 0.0;
             for (var i = 0; i < 10; i = i + 1) {
@@ -377,7 +377,7 @@ TEST(LowerTest, ForLoop) {
 }
 
 TEST(LowerTest, NestedControlFlow) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var result = 0.0;
             for (var i = 0; i < 5; i = i + 1) {
@@ -397,7 +397,7 @@ TEST(LowerTest, NestedControlFlow) {
 // ==================== Variable Tests ====================
 
 TEST(LowerTest, LocalVariables) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var a = 1.0;
             var b = 2.0;
@@ -411,7 +411,7 @@ TEST(LowerTest, LocalVariables) {
 }
 
 TEST(LowerTest, IntegerVariables) {
-    const char* source = R"(
+    const char *source = R"(
         @fragment fn fs() -> @location(0) vec4f {
             var i = 10;
             var u = 20u;

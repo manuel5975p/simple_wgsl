@@ -8,24 +8,27 @@ extern "C" {
 namespace {
 
 class SsirModuleGuard {
-public:
-    explicit SsirModuleGuard(SsirModule* m) : m_(m) {}
-    ~SsirModuleGuard() { if (m_) ssir_module_destroy(m_); }
-    SsirModule* get() { return m_; }
-private:
-    SsirModule* m_;
+  public:
+    explicit SsirModuleGuard(SsirModule *m) : m_(m) {}
+    ~SsirModuleGuard() {
+        if (m_) ssir_module_destroy(m_);
+    }
+    SsirModule *get() { return m_; }
+
+  private:
+    SsirModule *m_;
 };
 
 struct ParseResult {
     bool success;
     std::string error;
-    SsirModule* mod; // Caller owns via SsirModuleGuard
+    SsirModule *mod; // Caller owns via SsirModuleGuard
 };
 
-ParseResult ParseMsl(const std::string& msl) {
+ParseResult ParseMsl(const std::string &msl) {
     ParseResult res = {false, "", nullptr};
 
-    char* err = nullptr;
+    char *err = nullptr;
     MslToSsirOptions opts = {};
     opts.preserve_names = 1;
 
@@ -51,19 +54,26 @@ struct RoundtripResult {
 
 // WGSL -> AST -> Lower -> SSIR -> MSL -> parse MSL -> SSIR -> MSL
 // Uses the direct SSIR path (no SPIR-V round-trip) for best fidelity.
-RoundtripResult WgslToMslRoundtrip(const std::string& wgsl) {
+RoundtripResult WgslToMslRoundtrip(const std::string &wgsl) {
     RoundtripResult res = {false, "", "", ""};
 
     // 1. WGSL -> AST -> Lower -> SSIR
-    WgslAstNode* ast = wgsl_parse(wgsl.c_str());
-    if (!ast) { res.error = "WGSL parse failed"; return res; }
+    WgslAstNode *ast = wgsl_parse(wgsl.c_str());
+    if (!ast) {
+        res.error = "WGSL parse failed";
+        return res;
+    }
 
-    WgslResolver* resolver = wgsl_resolver_build(ast);
-    if (!resolver) { wgsl_free_ast(ast); res.error = "Resolve failed"; return res; }
+    WgslResolver *resolver = wgsl_resolver_build(ast);
+    if (!resolver) {
+        wgsl_free_ast(ast);
+        res.error = "Resolve failed";
+        return res;
+    }
 
     WgslLowerOptions lower_opts = {};
     lower_opts.enable_debug_names = 1;
-    WgslLower* lower = wgsl_lower_create(ast, resolver, &lower_opts);
+    WgslLower *lower = wgsl_lower_create(ast, resolver, &lower_opts);
     if (!lower) {
         wgsl_resolver_free(resolver);
         wgsl_free_ast(ast);
@@ -71,11 +81,11 @@ RoundtripResult WgslToMslRoundtrip(const std::string& wgsl) {
         return res;
     }
 
-    const SsirModule* ssir = wgsl_lower_get_ssir(lower);
+    const SsirModule *ssir = wgsl_lower_get_ssir(lower);
 
     // 2. SSIR -> MSL (first pass)
-    char* msl1 = nullptr;
-    char* err = nullptr;
+    char *msl1 = nullptr;
+    char *err = nullptr;
     SsirToMslOptions msl_opts = {};
     msl_opts.preserve_names = 1;
 
@@ -95,7 +105,7 @@ RoundtripResult WgslToMslRoundtrip(const std::string& wgsl) {
     wgsl_free_ast(ast);
 
     // 3. Parse MSL -> SSIR
-    SsirModule* mod2 = nullptr;
+    SsirModule *mod2 = nullptr;
     MslToSsirOptions parse_opts = {};
     parse_opts.preserve_names = 1;
 
@@ -108,7 +118,7 @@ RoundtripResult WgslToMslRoundtrip(const std::string& wgsl) {
     SsirModuleGuard guard2(mod2);
 
     // 4. SSIR -> MSL (second pass)
-    char* msl2 = nullptr;
+    char *msl2 = nullptr;
     if (ssir_to_msl(mod2, &msl_opts, &msl2, &err) != SSIR_TO_MSL_OK) {
         res.error = "SSIR -> MSL (pass 2) failed: " + std::string(err ? err : "unknown");
         ssir_to_msl_free(err);
@@ -128,7 +138,7 @@ RoundtripResult WgslToMslRoundtrip(const std::string& wgsl) {
 // ---------------------------------------------------------------------------
 
 TEST(MslParser, ParseComputeKernel) {
-    const char* msl = R"(
+    const char *msl = R"(
         #include <metal_stdlib>
         using namespace metal;
 
@@ -149,7 +159,7 @@ TEST(MslParser, ParseComputeKernel) {
 }
 
 TEST(MslParser, ParseVertexShader) {
-    const char* msl = R"(
+    const char *msl = R"(
         #include <metal_stdlib>
         using namespace metal;
 
@@ -175,7 +185,7 @@ TEST(MslParser, ParseVertexShader) {
 }
 
 TEST(MslParser, ParseFragmentShader) {
-    const char* msl = R"(
+    const char *msl = R"(
         #include <metal_stdlib>
         using namespace metal;
 
@@ -199,7 +209,7 @@ TEST(MslParser, ParseFragmentShader) {
 }
 
 TEST(MslParser, ParseComputeWithUniformBuffer) {
-    const char* msl = R"(
+    const char *msl = R"(
         #include <metal_stdlib>
         using namespace metal;
 
@@ -225,7 +235,7 @@ TEST(MslParser, ParseComputeWithUniformBuffer) {
 }
 
 TEST(MslParser, ParseVertexWithAttributes) {
-    const char* msl = R"(
+    const char *msl = R"(
         #include <metal_stdlib>
         using namespace metal;
 
@@ -253,7 +263,7 @@ TEST(MslParser, ParseVertexWithAttributes) {
 }
 
 TEST(MslParser, ParseFragmentWithStageIn) {
-    const char* msl = R"(
+    const char *msl = R"(
         #include <metal_stdlib>
         using namespace metal;
 
@@ -287,7 +297,7 @@ TEST(MslParser, ParseFragmentWithStageIn) {
 // ---------------------------------------------------------------------------
 
 TEST(MslParser, ParseAndReemit) {
-    const char* msl = R"(
+    const char *msl = R"(
         #include <metal_stdlib>
         using namespace metal;
 
@@ -304,8 +314,8 @@ TEST(MslParser, ParseAndReemit) {
     SsirModuleGuard guard(res.mod);
 
     // Re-emit to MSL
-    char* msl2 = nullptr;
-    char* err = nullptr;
+    char *msl2 = nullptr;
+    char *err = nullptr;
     SsirToMslOptions opts = {};
     opts.preserve_names = 1;
 
@@ -327,7 +337,7 @@ TEST(MslParser, ParseAndReemit) {
 // ---------------------------------------------------------------------------
 
 TEST(MslRoundtrip, ComputeShader) {
-    const char* wgsl = R"(
+    const char *wgsl = R"(
         struct Buf { data: array<f32, 64> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(64) fn cs(@builtin(global_invocation_id) gid: vec3u) {
@@ -349,7 +359,7 @@ TEST(MslRoundtrip, ComputeShader) {
 }
 
 TEST(MslRoundtrip, VertexShader) {
-    const char* wgsl = R"(
+    const char *wgsl = R"(
         @vertex fn vs(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4f {
             let x = f32(vid);
             return vec4f(x, 0.0, 0.0, 1.0);
@@ -370,7 +380,7 @@ TEST(MslRoundtrip, VertexShader) {
 }
 
 TEST(MslRoundtrip, FragmentShader) {
-    const char* wgsl = R"(
+    const char *wgsl = R"(
         @fragment fn fs() -> @location(0) vec4f {
             return vec4f(1.0, 0.0, 0.0, 1.0);
         }
@@ -387,7 +397,7 @@ TEST(MslRoundtrip, FragmentShader) {
 }
 
 TEST(MslRoundtrip, UniformBuffer) {
-    const char* wgsl = R"(
+    const char *wgsl = R"(
         struct UBO { val: f32 };
         @group(0) @binding(0) var<uniform> u: UBO;
         @fragment fn fs() -> @location(0) vec4f {
@@ -408,7 +418,7 @@ TEST(MslRoundtrip, UniformBuffer) {
 TEST(MslRoundtrip, ComputeWithArithmetic) {
     // Use arithmetic operations (not builtin functions) since the MSL parser
     // doesn't yet recognize all metal:: builtin function calls.
-    const char* wgsl = R"(
+    const char *wgsl = R"(
         struct Buf { data: array<f32, 64> };
         @group(0) @binding(0) var<storage, read_write> buf: Buf;
         @compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) gid: vec3u) {
@@ -433,10 +443,10 @@ TEST(MslRoundtrip, ComputeWithArithmetic) {
 TEST(MslParser, InvalidMslDoesNotCrash) {
     // The MSL parser is lenient with unrecognized tokens/constructs.
     // This test ensures it doesn't crash on garbage input.
-    const char* bad_msl = "this is not valid MSL at all {{{";
+    const char *bad_msl = "this is not valid MSL at all {{{";
 
-    SsirModule* mod = nullptr;
-    char* err = nullptr;
+    SsirModule *mod = nullptr;
+    char *err = nullptr;
     MslToSsirOptions opts = {};
 
     MslToSsirResult result = msl_to_ssir(bad_msl, &opts, &mod, &err);
@@ -448,8 +458,8 @@ TEST(MslParser, InvalidMslDoesNotCrash) {
 }
 
 TEST(MslParser, EmptyInputDoesNotCrash) {
-    SsirModule* mod = nullptr;
-    char* err = nullptr;
+    SsirModule *mod = nullptr;
+    char *err = nullptr;
     MslToSsirOptions opts = {};
 
     MslToSsirResult result = msl_to_ssir("", &opts, &mod, &err);
@@ -460,8 +470,8 @@ TEST(MslParser, EmptyInputDoesNotCrash) {
 }
 
 TEST(MslParser, NullInputReturnsError) {
-    SsirModule* mod = nullptr;
-    char* err = nullptr;
+    SsirModule *mod = nullptr;
+    char *err = nullptr;
     MslToSsirOptions opts = {};
 
     MslToSsirResult result = msl_to_ssir(nullptr, &opts, &mod, &err);

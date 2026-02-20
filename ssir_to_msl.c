@@ -168,8 +168,7 @@ static int is_msl_reserved(const char *n) {
         "true", "false", "if", "else", "for", "while", "do",
         "switch", "case", "default", "break", "continue", "return",
         "discard_fragment", "as_type", "static_cast",
-        NULL
-    };
+        NULL};
     for (const char **p = kw; *p; p++)
         if (strcmp(n, *p) == 0) return 1;
     return 0;
@@ -212,31 +211,31 @@ static const MslInterfaceField *find_input_field(MslCtx *c, uint32_t global_id) 
 
 static const char *builtin_to_msl_attr(SsirBuiltinVar bv, bool is_output) {
     switch (bv) {
-    case SSIR_BUILTIN_VERTEX_INDEX:           return "vertex_id";
-    case SSIR_BUILTIN_INSTANCE_INDEX:         return "instance_id";
-    case SSIR_BUILTIN_POSITION:               return "position";
-    case SSIR_BUILTIN_FRONT_FACING:           return "front_facing";
-    case SSIR_BUILTIN_FRAG_DEPTH:             return "depth(any)";
-    case SSIR_BUILTIN_SAMPLE_INDEX:           return "sample_id";
-    case SSIR_BUILTIN_SAMPLE_MASK:            return "sample_mask";
-    case SSIR_BUILTIN_LOCAL_INVOCATION_ID:    return "thread_position_in_threadgroup";
-    case SSIR_BUILTIN_LOCAL_INVOCATION_INDEX: return "thread_index_in_threadgroup";
-    case SSIR_BUILTIN_GLOBAL_INVOCATION_ID:   return "thread_position_in_grid";
-    case SSIR_BUILTIN_WORKGROUP_ID:           return "threadgroup_position_in_grid";
-    case SSIR_BUILTIN_NUM_WORKGROUPS:         return "threadgroups_per_grid";
-    case SSIR_BUILTIN_POINT_SIZE:             return "point_size";
-    case SSIR_BUILTIN_CLIP_DISTANCE:          return "clip_distance";
-    case SSIR_BUILTIN_LAYER:                  return "render_target_array_index";
-    case SSIR_BUILTIN_VIEWPORT_INDEX:         return "viewport_array_index";
-    case SSIR_BUILTIN_FRAG_COORD:             return "position";
-    case SSIR_BUILTIN_HELPER_INVOCATION:      return "helper_invocation";
-    case SSIR_BUILTIN_BASE_VERTEX:            return "base_vertex";
-    case SSIR_BUILTIN_BASE_INSTANCE:          return "base_instance";
-    case SSIR_BUILTIN_SUBGROUP_SIZE:          return "thread_execution_width";
-    case SSIR_BUILTIN_SUBGROUP_INVOCATION_ID: return "thread_index_in_simdgroup";
-    case SSIR_BUILTIN_SUBGROUP_ID:            return "simdgroup_index_in_threadgroup";
-    case SSIR_BUILTIN_NUM_SUBGROUPS:          return "simdgroups_per_threadgroup";
-    default: return NULL;
+        case SSIR_BUILTIN_VERTEX_INDEX: return "vertex_id";
+        case SSIR_BUILTIN_INSTANCE_INDEX: return "instance_id";
+        case SSIR_BUILTIN_POSITION: return "position";
+        case SSIR_BUILTIN_FRONT_FACING: return "front_facing";
+        case SSIR_BUILTIN_FRAG_DEPTH: return "depth(any)";
+        case SSIR_BUILTIN_SAMPLE_INDEX: return "sample_id";
+        case SSIR_BUILTIN_SAMPLE_MASK: return "sample_mask";
+        case SSIR_BUILTIN_LOCAL_INVOCATION_ID: return "thread_position_in_threadgroup";
+        case SSIR_BUILTIN_LOCAL_INVOCATION_INDEX: return "thread_index_in_threadgroup";
+        case SSIR_BUILTIN_GLOBAL_INVOCATION_ID: return "thread_position_in_grid";
+        case SSIR_BUILTIN_WORKGROUP_ID: return "threadgroup_position_in_grid";
+        case SSIR_BUILTIN_NUM_WORKGROUPS: return "threadgroups_per_grid";
+        case SSIR_BUILTIN_POINT_SIZE: return "point_size";
+        case SSIR_BUILTIN_CLIP_DISTANCE: return "clip_distance";
+        case SSIR_BUILTIN_LAYER: return "render_target_array_index";
+        case SSIR_BUILTIN_VIEWPORT_INDEX: return "viewport_array_index";
+        case SSIR_BUILTIN_FRAG_COORD: return "position";
+        case SSIR_BUILTIN_HELPER_INVOCATION: return "helper_invocation";
+        case SSIR_BUILTIN_BASE_VERTEX: return "base_vertex";
+        case SSIR_BUILTIN_BASE_INSTANCE: return "base_instance";
+        case SSIR_BUILTIN_SUBGROUP_SIZE: return "thread_execution_width";
+        case SSIR_BUILTIN_SUBGROUP_INVOCATION_ID: return "thread_index_in_simdgroup";
+        case SSIR_BUILTIN_SUBGROUP_ID: return "simdgroup_index_in_threadgroup";
+        case SSIR_BUILTIN_NUM_SUBGROUPS: return "simdgroups_per_threadgroup";
+        default: return NULL;
     }
 }
 
@@ -246,94 +245,94 @@ static const char *builtin_to_msl_attr(SsirBuiltinVar bv, bool is_output) {
 
 static const char *bfunc_to_msl(SsirBuiltinId id) {
     switch (id) {
-    case SSIR_BUILTIN_SIN:           return "sin";
-    case SSIR_BUILTIN_COS:           return "cos";
-    case SSIR_BUILTIN_TAN:           return "tan";
-    case SSIR_BUILTIN_ASIN:          return "asin";
-    case SSIR_BUILTIN_ACOS:          return "acos";
-    case SSIR_BUILTIN_ATAN:          return "atan";
-    case SSIR_BUILTIN_ATAN2:         return "atan2";
-    case SSIR_BUILTIN_SINH:          return "sinh";
-    case SSIR_BUILTIN_COSH:          return "cosh";
-    case SSIR_BUILTIN_TANH:          return "tanh";
-    case SSIR_BUILTIN_ASINH:         return "asinh";
-    case SSIR_BUILTIN_ACOSH:         return "acosh";
-    case SSIR_BUILTIN_ATANH:         return "atanh";
-    case SSIR_BUILTIN_EXP:           return "exp";
-    case SSIR_BUILTIN_EXP2:          return "exp2";
-    case SSIR_BUILTIN_LOG:           return "log";
-    case SSIR_BUILTIN_LOG2:          return "log2";
-    case SSIR_BUILTIN_POW:           return "pow";
-    case SSIR_BUILTIN_SQRT:          return "sqrt";
-    case SSIR_BUILTIN_INVERSESQRT:   return "rsqrt";
-    case SSIR_BUILTIN_ABS:           return "abs";
-    case SSIR_BUILTIN_SIGN:          return "sign";
-    case SSIR_BUILTIN_FLOOR:         return "floor";
-    case SSIR_BUILTIN_CEIL:          return "ceil";
-    case SSIR_BUILTIN_ROUND:         return "round";
-    case SSIR_BUILTIN_TRUNC:         return "trunc";
-    case SSIR_BUILTIN_FRACT:         return "fract";
-    case SSIR_BUILTIN_MIN:           return "min";
-    case SSIR_BUILTIN_MAX:           return "max";
-    case SSIR_BUILTIN_CLAMP:         return "clamp";
-    case SSIR_BUILTIN_SATURATE:      return "saturate";
-    case SSIR_BUILTIN_MIX:           return "mix";
-    case SSIR_BUILTIN_STEP:          return "step";
-    case SSIR_BUILTIN_SMOOTHSTEP:    return "smoothstep";
-    case SSIR_BUILTIN_DOT:           return "dot";
-    case SSIR_BUILTIN_CROSS:         return "cross";
-    case SSIR_BUILTIN_LENGTH:        return "length";
-    case SSIR_BUILTIN_DISTANCE:      return "distance";
-    case SSIR_BUILTIN_NORMALIZE:     return "normalize";
-    case SSIR_BUILTIN_FACEFORWARD:   return "faceforward";
-    case SSIR_BUILTIN_REFLECT:       return "reflect";
-    case SSIR_BUILTIN_REFRACT:       return "refract";
-    case SSIR_BUILTIN_ALL:           return "all";
-    case SSIR_BUILTIN_ANY:           return "any";
-    case SSIR_BUILTIN_SELECT:        return "select";
-    case SSIR_BUILTIN_COUNTBITS:     return "popcount";
-    case SSIR_BUILTIN_REVERSEBITS:   return "reverse_bits";
-    case SSIR_BUILTIN_FIRSTLEADINGBIT: return "clz";
-    case SSIR_BUILTIN_FIRSTTRAILINGBIT: return "ctz";
-    case SSIR_BUILTIN_EXTRACTBITS:   return "extract_bits";
-    case SSIR_BUILTIN_INSERTBITS:    return "insert_bits";
-    case SSIR_BUILTIN_DPDX:          return "dfdx";
-    case SSIR_BUILTIN_DPDY:          return "dfdy";
-    case SSIR_BUILTIN_FWIDTH:        return "fwidth";
-    case SSIR_BUILTIN_DPDX_COARSE:   return "dfdx";
-    case SSIR_BUILTIN_DPDY_COARSE:   return "dfdy";
-    case SSIR_BUILTIN_DPDX_FINE:     return "dfdx";
-    case SSIR_BUILTIN_DPDY_FINE:     return "dfdy";
-    case SSIR_BUILTIN_FMA:           return "fma";
-    case SSIR_BUILTIN_ISINF:         return "isinf";
-    case SSIR_BUILTIN_ISNAN:         return "isnan";
-    case SSIR_BUILTIN_DEGREES:       return NULL; /* special: x * 57.2957795131f */
-    case SSIR_BUILTIN_RADIANS:       return NULL; /* special: x * 0.0174532925199f */
-    case SSIR_BUILTIN_MODF:          return "modf";
-    case SSIR_BUILTIN_FREXP:         return "frexp";
-    case SSIR_BUILTIN_LDEXP:         return "ldexp";
-    case SSIR_BUILTIN_DETERMINANT:   return "determinant";
-    case SSIR_BUILTIN_TRANSPOSE:     return "transpose";
-    case SSIR_BUILTIN_PACK4X8SNORM:  return NULL; /* special */
-    case SSIR_BUILTIN_PACK4X8UNORM:  return NULL;
-    case SSIR_BUILTIN_PACK2X16SNORM: return NULL;
-    case SSIR_BUILTIN_PACK2X16UNORM: return NULL;
-    case SSIR_BUILTIN_PACK2X16FLOAT: return NULL;
-    case SSIR_BUILTIN_UNPACK4X8SNORM:  return NULL;
-    case SSIR_BUILTIN_UNPACK4X8UNORM:  return NULL;
-    case SSIR_BUILTIN_UNPACK2X16SNORM: return NULL;
-    case SSIR_BUILTIN_UNPACK2X16UNORM: return NULL;
-    case SSIR_BUILTIN_UNPACK2X16FLOAT: return NULL;
-    case SSIR_BUILTIN_SUBGROUP_BALLOT: return "simd_ballot";
-    case SSIR_BUILTIN_SUBGROUP_BROADCAST: return "simd_broadcast";
-    case SSIR_BUILTIN_SUBGROUP_ADD: return "simd_sum";
-    case SSIR_BUILTIN_SUBGROUP_MIN: return "simd_min";
-    case SSIR_BUILTIN_SUBGROUP_MAX: return "simd_max";
-    case SSIR_BUILTIN_SUBGROUP_ALL: return "simd_all";
-    case SSIR_BUILTIN_SUBGROUP_ANY: return "simd_any";
-    case SSIR_BUILTIN_SUBGROUP_SHUFFLE: return "simd_shuffle";
-    case SSIR_BUILTIN_SUBGROUP_PREFIX_ADD: return "simd_prefix_exclusive_sum";
-    default: return "unknown_builtin";
+        case SSIR_BUILTIN_SIN: return "sin";
+        case SSIR_BUILTIN_COS: return "cos";
+        case SSIR_BUILTIN_TAN: return "tan";
+        case SSIR_BUILTIN_ASIN: return "asin";
+        case SSIR_BUILTIN_ACOS: return "acos";
+        case SSIR_BUILTIN_ATAN: return "atan";
+        case SSIR_BUILTIN_ATAN2: return "atan2";
+        case SSIR_BUILTIN_SINH: return "sinh";
+        case SSIR_BUILTIN_COSH: return "cosh";
+        case SSIR_BUILTIN_TANH: return "tanh";
+        case SSIR_BUILTIN_ASINH: return "asinh";
+        case SSIR_BUILTIN_ACOSH: return "acosh";
+        case SSIR_BUILTIN_ATANH: return "atanh";
+        case SSIR_BUILTIN_EXP: return "exp";
+        case SSIR_BUILTIN_EXP2: return "exp2";
+        case SSIR_BUILTIN_LOG: return "log";
+        case SSIR_BUILTIN_LOG2: return "log2";
+        case SSIR_BUILTIN_POW: return "pow";
+        case SSIR_BUILTIN_SQRT: return "sqrt";
+        case SSIR_BUILTIN_INVERSESQRT: return "rsqrt";
+        case SSIR_BUILTIN_ABS: return "abs";
+        case SSIR_BUILTIN_SIGN: return "sign";
+        case SSIR_BUILTIN_FLOOR: return "floor";
+        case SSIR_BUILTIN_CEIL: return "ceil";
+        case SSIR_BUILTIN_ROUND: return "round";
+        case SSIR_BUILTIN_TRUNC: return "trunc";
+        case SSIR_BUILTIN_FRACT: return "fract";
+        case SSIR_BUILTIN_MIN: return "min";
+        case SSIR_BUILTIN_MAX: return "max";
+        case SSIR_BUILTIN_CLAMP: return "clamp";
+        case SSIR_BUILTIN_SATURATE: return "saturate";
+        case SSIR_BUILTIN_MIX: return "mix";
+        case SSIR_BUILTIN_STEP: return "step";
+        case SSIR_BUILTIN_SMOOTHSTEP: return "smoothstep";
+        case SSIR_BUILTIN_DOT: return "dot";
+        case SSIR_BUILTIN_CROSS: return "cross";
+        case SSIR_BUILTIN_LENGTH: return "length";
+        case SSIR_BUILTIN_DISTANCE: return "distance";
+        case SSIR_BUILTIN_NORMALIZE: return "normalize";
+        case SSIR_BUILTIN_FACEFORWARD: return "faceforward";
+        case SSIR_BUILTIN_REFLECT: return "reflect";
+        case SSIR_BUILTIN_REFRACT: return "refract";
+        case SSIR_BUILTIN_ALL: return "all";
+        case SSIR_BUILTIN_ANY: return "any";
+        case SSIR_BUILTIN_SELECT: return "select";
+        case SSIR_BUILTIN_COUNTBITS: return "popcount";
+        case SSIR_BUILTIN_REVERSEBITS: return "reverse_bits";
+        case SSIR_BUILTIN_FIRSTLEADINGBIT: return "clz";
+        case SSIR_BUILTIN_FIRSTTRAILINGBIT: return "ctz";
+        case SSIR_BUILTIN_EXTRACTBITS: return "extract_bits";
+        case SSIR_BUILTIN_INSERTBITS: return "insert_bits";
+        case SSIR_BUILTIN_DPDX: return "dfdx";
+        case SSIR_BUILTIN_DPDY: return "dfdy";
+        case SSIR_BUILTIN_FWIDTH: return "fwidth";
+        case SSIR_BUILTIN_DPDX_COARSE: return "dfdx";
+        case SSIR_BUILTIN_DPDY_COARSE: return "dfdy";
+        case SSIR_BUILTIN_DPDX_FINE: return "dfdx";
+        case SSIR_BUILTIN_DPDY_FINE: return "dfdy";
+        case SSIR_BUILTIN_FMA: return "fma";
+        case SSIR_BUILTIN_ISINF: return "isinf";
+        case SSIR_BUILTIN_ISNAN: return "isnan";
+        case SSIR_BUILTIN_DEGREES: return NULL; /* special: x * 57.2957795131f */
+        case SSIR_BUILTIN_RADIANS: return NULL; /* special: x * 0.0174532925199f */
+        case SSIR_BUILTIN_MODF: return "modf";
+        case SSIR_BUILTIN_FREXP: return "frexp";
+        case SSIR_BUILTIN_LDEXP: return "ldexp";
+        case SSIR_BUILTIN_DETERMINANT: return "determinant";
+        case SSIR_BUILTIN_TRANSPOSE: return "transpose";
+        case SSIR_BUILTIN_PACK4X8SNORM: return NULL; /* special */
+        case SSIR_BUILTIN_PACK4X8UNORM: return NULL;
+        case SSIR_BUILTIN_PACK2X16SNORM: return NULL;
+        case SSIR_BUILTIN_PACK2X16UNORM: return NULL;
+        case SSIR_BUILTIN_PACK2X16FLOAT: return NULL;
+        case SSIR_BUILTIN_UNPACK4X8SNORM: return NULL;
+        case SSIR_BUILTIN_UNPACK4X8UNORM: return NULL;
+        case SSIR_BUILTIN_UNPACK2X16SNORM: return NULL;
+        case SSIR_BUILTIN_UNPACK2X16UNORM: return NULL;
+        case SSIR_BUILTIN_UNPACK2X16FLOAT: return NULL;
+        case SSIR_BUILTIN_SUBGROUP_BALLOT: return "simd_ballot";
+        case SSIR_BUILTIN_SUBGROUP_BROADCAST: return "simd_broadcast";
+        case SSIR_BUILTIN_SUBGROUP_ADD: return "simd_sum";
+        case SSIR_BUILTIN_SUBGROUP_MIN: return "simd_min";
+        case SSIR_BUILTIN_SUBGROUP_MAX: return "simd_max";
+        case SSIR_BUILTIN_SUBGROUP_ALL: return "simd_all";
+        case SSIR_BUILTIN_SUBGROUP_ANY: return "simd_any";
+        case SSIR_BUILTIN_SUBGROUP_SHUFFLE: return "simd_shuffle";
+        case SSIR_BUILTIN_SUBGROUP_PREFIX_ADD: return "simd_prefix_exclusive_sum";
+        default: return "unknown_builtin";
     }
 }
 
@@ -345,130 +344,133 @@ static void emit_type(MslCtx *c, uint32_t tid, MslBuf *b);
 
 static void emit_type(MslCtx *c, uint32_t tid, MslBuf *b) {
     SsirType *t = ssir_get_type((SsirModule *)c->mod, tid);
-    if (!t) { mb_appendf(b, "_type%u", tid); return; }
+    if (!t) {
+        mb_appendf(b, "_type%u", tid);
+        return;
+    }
 
     switch (t->kind) {
-    case SSIR_TYPE_VOID: mb_append(b, "void"); break;
-    case SSIR_TYPE_BOOL: mb_append(b, "bool"); break;
-    case SSIR_TYPE_I32:  mb_append(b, "int"); break;
-    case SSIR_TYPE_U32:  mb_append(b, "uint"); break;
-    case SSIR_TYPE_F32:  mb_append(b, "float"); break;
-    case SSIR_TYPE_F16:  mb_append(b, "half"); break;
-    case SSIR_TYPE_F64:  mb_append(b, "double"); break;
-    case SSIR_TYPE_I8:   mb_append(b, "char"); break;
-    case SSIR_TYPE_U8:   mb_append(b, "uchar"); break;
-    case SSIR_TYPE_I16:  mb_append(b, "short"); break;
-    case SSIR_TYPE_U16:  mb_append(b, "ushort"); break;
-    case SSIR_TYPE_I64:  mb_append(b, "long"); break;
-    case SSIR_TYPE_U64:  mb_append(b, "ulong"); break;
+        case SSIR_TYPE_VOID: mb_append(b, "void"); break;
+        case SSIR_TYPE_BOOL: mb_append(b, "bool"); break;
+        case SSIR_TYPE_I32: mb_append(b, "int"); break;
+        case SSIR_TYPE_U32: mb_append(b, "uint"); break;
+        case SSIR_TYPE_F32: mb_append(b, "float"); break;
+        case SSIR_TYPE_F16: mb_append(b, "half"); break;
+        case SSIR_TYPE_F64: mb_append(b, "double"); break;
+        case SSIR_TYPE_I8: mb_append(b, "char"); break;
+        case SSIR_TYPE_U8: mb_append(b, "uchar"); break;
+        case SSIR_TYPE_I16: mb_append(b, "short"); break;
+        case SSIR_TYPE_U16: mb_append(b, "ushort"); break;
+        case SSIR_TYPE_I64: mb_append(b, "long"); break;
+        case SSIR_TYPE_U64: mb_append(b, "ulong"); break;
 
-    case SSIR_TYPE_VEC: {
-        SsirType *el = ssir_get_type((SsirModule *)c->mod, t->vec.elem);
-        const char *prefix = "float";
-        if (el) {
-            switch (el->kind) {
-            case SSIR_TYPE_I32:  prefix = "int"; break;
-            case SSIR_TYPE_U32:  prefix = "uint"; break;
-            case SSIR_TYPE_BOOL: prefix = "bool"; break;
-            case SSIR_TYPE_F16:  prefix = "half"; break;
-            default: break;
+        case SSIR_TYPE_VEC: {
+            SsirType *el = ssir_get_type((SsirModule *)c->mod, t->vec.elem);
+            const char *prefix = "float";
+            if (el) {
+                switch (el->kind) {
+                    case SSIR_TYPE_I32: prefix = "int"; break;
+                    case SSIR_TYPE_U32: prefix = "uint"; break;
+                    case SSIR_TYPE_BOOL: prefix = "bool"; break;
+                    case SSIR_TYPE_F16: prefix = "half"; break;
+                    default: break;
+                }
             }
+            mb_appendf(b, "%s%u", prefix, t->vec.size);
+            break;
         }
-        mb_appendf(b, "%s%u", prefix, t->vec.size);
-        break;
-    }
 
-    case SSIR_TYPE_MAT: {
-        SsirType *col_t = ssir_get_type((SsirModule *)c->mod, t->mat.elem);
-        const char *prefix = "float";
-        if (col_t && col_t->kind == SSIR_TYPE_VEC) {
-            SsirType *el = ssir_get_type((SsirModule *)c->mod, col_t->vec.elem);
-            if (el && el->kind == SSIR_TYPE_F16) prefix = "half";
+        case SSIR_TYPE_MAT: {
+            SsirType *col_t = ssir_get_type((SsirModule *)c->mod, t->mat.elem);
+            const char *prefix = "float";
+            if (col_t && col_t->kind == SSIR_TYPE_VEC) {
+                SsirType *el = ssir_get_type((SsirModule *)c->mod, col_t->vec.elem);
+                if (el && el->kind == SSIR_TYPE_F16) prefix = "half";
+            }
+            mb_appendf(b, "%s%ux%u", prefix, t->mat.cols, t->mat.rows);
+            break;
         }
-        mb_appendf(b, "%s%ux%u", prefix, t->mat.cols, t->mat.rows);
-        break;
-    }
 
-    case SSIR_TYPE_ARRAY:
-        mb_append(b, "array<");
-        emit_type(c, t->array.elem, b);
-        mb_appendf(b, ", %u>", t->array.length);
-        break;
+        case SSIR_TYPE_ARRAY:
+            mb_append(b, "array<");
+            emit_type(c, t->array.elem, b);
+            mb_appendf(b, ", %u>", t->array.length);
+            break;
 
-    case SSIR_TYPE_RUNTIME_ARRAY:
-        /* Runtime arrays in MSL are handled via pointer parameters */
-        emit_type(c, t->runtime_array.elem, b);
-        break;
+        case SSIR_TYPE_RUNTIME_ARRAY:
+            /* Runtime arrays in MSL are handled via pointer parameters */
+            emit_type(c, t->runtime_array.elem, b);
+            break;
 
-    case SSIR_TYPE_STRUCT:
-        mb_append(b, t->struc.name ? t->struc.name : "_Struct");
-        break;
+        case SSIR_TYPE_STRUCT:
+            mb_append(b, t->struc.name ? t->struc.name : "_Struct");
+            break;
 
-    case SSIR_TYPE_PTR:
-        emit_type(c, t->ptr.pointee, b);
-        break;
+        case SSIR_TYPE_PTR:
+            emit_type(c, t->ptr.pointee, b);
+            break;
 
-    case SSIR_TYPE_SAMPLER:
-        mb_append(b, "sampler");
-        break;
+        case SSIR_TYPE_SAMPLER:
+            mb_append(b, "sampler");
+            break;
 
-    case SSIR_TYPE_SAMPLER_COMPARISON:
-        mb_append(b, "sampler");
-        break;
+        case SSIR_TYPE_SAMPLER_COMPARISON:
+            mb_append(b, "sampler");
+            break;
 
-    case SSIR_TYPE_TEXTURE: {
-        SsirType *st = ssir_get_type((SsirModule *)c->mod, t->texture.sampled_type);
-        const char *elem = "float";
-        if (st) {
-            if (st->kind == SSIR_TYPE_I32) elem = "int";
-            else if (st->kind == SSIR_TYPE_U32) elem = "uint";
-            else if (st->kind == SSIR_TYPE_F16) elem = "half";
+        case SSIR_TYPE_TEXTURE: {
+            SsirType *st = ssir_get_type((SsirModule *)c->mod, t->texture.sampled_type);
+            const char *elem = "float";
+            if (st) {
+                if (st->kind == SSIR_TYPE_I32) elem = "int";
+                else if (st->kind == SSIR_TYPE_U32) elem = "uint";
+                else if (st->kind == SSIR_TYPE_F16) elem = "half";
+            }
+            switch (t->texture.dim) {
+                case SSIR_TEX_1D: mb_appendf(b, "texture1d<%s>", elem); break;
+                case SSIR_TEX_2D: mb_appendf(b, "texture2d<%s>", elem); break;
+                case SSIR_TEX_3D: mb_appendf(b, "texture3d<%s>", elem); break;
+                case SSIR_TEX_CUBE: mb_appendf(b, "texturecube<%s>", elem); break;
+                case SSIR_TEX_2D_ARRAY: mb_appendf(b, "texture2d_array<%s>", elem); break;
+                case SSIR_TEX_CUBE_ARRAY: mb_appendf(b, "texturecube_array<%s>", elem); break;
+                case SSIR_TEX_MULTISAMPLED_2D: mb_appendf(b, "texture2d_ms<%s>", elem); break;
+                case SSIR_TEX_1D_ARRAY: mb_appendf(b, "texture1d_array<%s>", elem); break;
+                case SSIR_TEX_BUFFER: mb_appendf(b, "texture_buffer<%s>", elem); break;
+                case SSIR_TEX_MULTISAMPLED_2D_ARRAY: mb_appendf(b, "texture2d_ms_array<%s>", elem); break;
+                default: mb_appendf(b, "texture2d<%s>", elem); break;
+            }
+            break;
         }
-        switch (t->texture.dim) {
-        case SSIR_TEX_1D:              mb_appendf(b, "texture1d<%s>", elem); break;
-        case SSIR_TEX_2D:              mb_appendf(b, "texture2d<%s>", elem); break;
-        case SSIR_TEX_3D:              mb_appendf(b, "texture3d<%s>", elem); break;
-        case SSIR_TEX_CUBE:            mb_appendf(b, "texturecube<%s>", elem); break;
-        case SSIR_TEX_2D_ARRAY:        mb_appendf(b, "texture2d_array<%s>", elem); break;
-        case SSIR_TEX_CUBE_ARRAY:      mb_appendf(b, "texturecube_array<%s>", elem); break;
-        case SSIR_TEX_MULTISAMPLED_2D: mb_appendf(b, "texture2d_ms<%s>", elem); break;
-        case SSIR_TEX_1D_ARRAY:        mb_appendf(b, "texture1d_array<%s>", elem); break;
-        case SSIR_TEX_BUFFER:          mb_appendf(b, "texture_buffer<%s>", elem); break;
-        case SSIR_TEX_MULTISAMPLED_2D_ARRAY: mb_appendf(b, "texture2d_ms_array<%s>", elem); break;
-        default:                       mb_appendf(b, "texture2d<%s>", elem); break;
-        }
-        break;
-    }
 
-    case SSIR_TYPE_TEXTURE_STORAGE: {
-        const char *access = "access::write";
-        switch (t->texture_storage.access) {
-        case SSIR_ACCESS_READ:       access = "access::read"; break;
-        case SSIR_ACCESS_WRITE:      access = "access::write"; break;
-        case SSIR_ACCESS_READ_WRITE: access = "access::read_write"; break;
+        case SSIR_TYPE_TEXTURE_STORAGE: {
+            const char *access = "access::write";
+            switch (t->texture_storage.access) {
+                case SSIR_ACCESS_READ: access = "access::read"; break;
+                case SSIR_ACCESS_WRITE: access = "access::write"; break;
+                case SSIR_ACCESS_READ_WRITE: access = "access::read_write"; break;
+            }
+            switch (t->texture_storage.dim) {
+                case SSIR_TEX_1D: mb_appendf(b, "texture1d<float, %s>", access); break;
+                case SSIR_TEX_2D: mb_appendf(b, "texture2d<float, %s>", access); break;
+                case SSIR_TEX_3D: mb_appendf(b, "texture3d<float, %s>", access); break;
+                default: mb_appendf(b, "texture2d<float, %s>", access); break;
+            }
+            break;
         }
-        switch (t->texture_storage.dim) {
-        case SSIR_TEX_1D: mb_appendf(b, "texture1d<float, %s>", access); break;
-        case SSIR_TEX_2D: mb_appendf(b, "texture2d<float, %s>", access); break;
-        case SSIR_TEX_3D: mb_appendf(b, "texture3d<float, %s>", access); break;
-        default:          mb_appendf(b, "texture2d<float, %s>", access); break;
-        }
-        break;
-    }
 
-    case SSIR_TYPE_TEXTURE_DEPTH: {
-        switch (t->texture_depth.dim) {
-        case SSIR_TEX_2D:       mb_append(b, "depth2d<float>"); break;
-        case SSIR_TEX_CUBE:     mb_append(b, "depthcube<float>"); break;
-        case SSIR_TEX_2D_ARRAY: mb_append(b, "depth2d_array<float>"); break;
-        default:                mb_append(b, "depth2d<float>"); break;
+        case SSIR_TYPE_TEXTURE_DEPTH: {
+            switch (t->texture_depth.dim) {
+                case SSIR_TEX_2D: mb_append(b, "depth2d<float>"); break;
+                case SSIR_TEX_CUBE: mb_append(b, "depthcube<float>"); break;
+                case SSIR_TEX_2D_ARRAY: mb_append(b, "depth2d_array<float>"); break;
+                default: mb_append(b, "depth2d<float>"); break;
+            }
+            break;
         }
-        break;
-    }
 
-    default:
-        mb_appendf(b, "_type%u", tid);
-        break;
+        default:
+            mb_appendf(b, "_type%u", tid);
+            break;
     }
 }
 
@@ -493,76 +495,76 @@ static void emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b);
 
 static void emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b) {
     switch (k->kind) {
-    case SSIR_CONST_BOOL:
-        mb_append(b, k->bool_val ? "true" : "false");
-        break;
-    case SSIR_CONST_I32:
-        mb_appendf(b, "%d", k->i32_val);
-        break;
-    case SSIR_CONST_U32:
-        mb_appendf(b, "%uu", k->u32_val);
-        break;
-    case SSIR_CONST_F32: {
-        float f = k->f32_val;
-        if (floorf(f) == f && fabsf(f) < 1e6f)
-            mb_appendf(b, "%.1f", (double)f);
-        else
-            mb_appendf(b, "%g", (double)f);
-        break;
-    }
-    case SSIR_CONST_F16: {
-        float fv = ssir_f16_to_f32(k->f16_val);
-        if (floorf(fv) == fv && fabsf(fv) < 1e6f)
-            mb_appendf(b, "half(%.1f)", (double)fv);
-        else
-            mb_appendf(b, "half(%g)", (double)fv);
-        break;
-    }
-    case SSIR_CONST_F64: {
-        double d = k->f64_val;
-        if (floor(d) == d && fabs(d) < 1e15)
-            mb_appendf(b, "%.1f", d);
-        else
-            mb_appendf(b, "%g", d);
-        break;
-    }
-    case SSIR_CONST_I8:
-        mb_appendf(b, "%d", (int)k->i8_val);
-        break;
-    case SSIR_CONST_U8:
-        mb_appendf(b, "%uu", (unsigned)k->u8_val);
-        break;
-    case SSIR_CONST_I16:
-        mb_appendf(b, "%d", (int)k->i16_val);
-        break;
-    case SSIR_CONST_U16:
-        mb_appendf(b, "%uu", (unsigned)k->u16_val);
-        break;
-    case SSIR_CONST_I64:
-        mb_appendf(b, "%lldL", (long long)k->i64_val);
-        break;
-    case SSIR_CONST_U64:
-        mb_appendf(b, "%lluUL", (unsigned long long)k->u64_val);
-        break;
-    case SSIR_CONST_COMPOSITE: {
-        emit_type(c, k->type, b);
-        mb_append(b, "(");
-        for (uint32_t i = 0; i < k->composite.count; i++) {
-            if (i > 0) mb_append(b, ", ");
-            SsirConstant *elem = ssir_get_constant((SsirModule *)c->mod, k->composite.components[i]);
-            if (elem) emit_constant(c, elem, b);
-            else mb_appendf(b, "_const%u", k->composite.components[i]);
+        case SSIR_CONST_BOOL:
+            mb_append(b, k->bool_val ? "true" : "false");
+            break;
+        case SSIR_CONST_I32:
+            mb_appendf(b, "%d", k->i32_val);
+            break;
+        case SSIR_CONST_U32:
+            mb_appendf(b, "%uu", k->u32_val);
+            break;
+        case SSIR_CONST_F32: {
+            float f = k->f32_val;
+            if (floorf(f) == f && fabsf(f) < 1e6f)
+                mb_appendf(b, "%.1f", (double)f);
+            else
+                mb_appendf(b, "%g", (double)f);
+            break;
         }
-        mb_append(b, ")");
-        break;
-    }
-    case SSIR_CONST_NULL:
-        emit_type(c, k->type, b);
-        mb_append(b, "(0)");
-        break;
-    default:
-        mb_appendf(b, "_const%u", k->id);
-        break;
+        case SSIR_CONST_F16: {
+            float fv = ssir_f16_to_f32(k->f16_val);
+            if (floorf(fv) == fv && fabsf(fv) < 1e6f)
+                mb_appendf(b, "half(%.1f)", (double)fv);
+            else
+                mb_appendf(b, "half(%g)", (double)fv);
+            break;
+        }
+        case SSIR_CONST_F64: {
+            double d = k->f64_val;
+            if (floor(d) == d && fabs(d) < 1e15)
+                mb_appendf(b, "%.1f", d);
+            else
+                mb_appendf(b, "%g", d);
+            break;
+        }
+        case SSIR_CONST_I8:
+            mb_appendf(b, "%d", (int)k->i8_val);
+            break;
+        case SSIR_CONST_U8:
+            mb_appendf(b, "%uu", (unsigned)k->u8_val);
+            break;
+        case SSIR_CONST_I16:
+            mb_appendf(b, "%d", (int)k->i16_val);
+            break;
+        case SSIR_CONST_U16:
+            mb_appendf(b, "%uu", (unsigned)k->u16_val);
+            break;
+        case SSIR_CONST_I64:
+            mb_appendf(b, "%lldL", (long long)k->i64_val);
+            break;
+        case SSIR_CONST_U64:
+            mb_appendf(b, "%lluUL", (unsigned long long)k->u64_val);
+            break;
+        case SSIR_CONST_COMPOSITE: {
+            emit_type(c, k->type, b);
+            mb_append(b, "(");
+            for (uint32_t i = 0; i < k->composite.count; i++) {
+                if (i > 0) mb_append(b, ", ");
+                SsirConstant *elem = ssir_get_constant((SsirModule *)c->mod, k->composite.components[i]);
+                if (elem) emit_constant(c, elem, b);
+                else mb_appendf(b, "_const%u", k->composite.components[i]);
+            }
+            mb_append(b, ")");
+            break;
+        }
+        case SSIR_CONST_NULL:
+            emit_type(c, k->type, b);
+            mb_append(b, "(0)");
+            break;
+        default:
+            mb_appendf(b, "_const%u", k->id);
+            break;
     }
 }
 
@@ -643,7 +645,10 @@ static void emit_unop(MslCtx *c, SsirInst *inst, const char *op, MslBuf *b) {
 static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
     /* Constant? */
     SsirConstant *k = ssir_get_constant((SsirModule *)c->mod, id);
-    if (k) { emit_constant(c, k, b); return; }
+    if (k) {
+        emit_constant(c, k, b);
+        return;
+    }
 
     /* Global? */
     SsirGlobalVar *g = ssir_get_global((SsirModule *)c->mod, id);
@@ -669,14 +674,23 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
     }
 
     /* Param? */
-    if (find_param(c, id)) { mb_append(b, get_name(c, id)); return; }
+    if (find_param(c, id)) {
+        mb_append(b, get_name(c, id));
+        return;
+    }
 
     /* Local? */
-    if (find_local(c, id)) { mb_append(b, get_name(c, id)); return; }
+    if (find_local(c, id)) {
+        mb_append(b, get_name(c, id));
+        return;
+    }
 
     /* Instruction? */
     SsirInst *inst = find_inst(c, id);
-    if (!inst) { mb_append(b, get_name(c, id)); return; }
+    if (!inst) {
+        mb_append(b, get_name(c, id));
+        return;
+    }
 
     /* If materialized as a temporary (multi-use), emit the name */
     if (id < c->id_names_cap && c->id_names[id]) {
@@ -685,591 +699,604 @@ static void emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
     }
 
     switch (inst->op) {
-    /* Arithmetic */
-    case SSIR_OP_ADD: emit_binop(c, inst, " + ", b); break;
-    case SSIR_OP_SUB: emit_binop(c, inst, " - ", b); break;
-    case SSIR_OP_MUL: emit_binop(c, inst, " * ", b); break;
-    case SSIR_OP_DIV: emit_binop(c, inst, " / ", b); break;
-    case SSIR_OP_MOD: emit_binop(c, inst, " % ", b); break;
-    case SSIR_OP_REM: {
-        /* C-style remainder: fmod for float, % for int */
-        SsirType *rem_t = ssir_get_type((SsirModule *)c->mod, inst->type);
-        if (rem_t && ssir_type_is_float(rem_t)) {
-            mb_append(b, "fmod(");
-            emit_expr(c, inst->operands[0], b);
-            mb_append(b, ", ");
-            emit_expr(c, inst->operands[1], b);
-            mb_append(b, ")");
-        } else {
-            emit_binop(c, inst, " % ", b);
-        }
-        break;
-    }
-    case SSIR_OP_NEG: emit_unop(c, inst, "-", b); break;
-
-    /* Matrix */
-    case SSIR_OP_MAT_MUL: emit_binop(c, inst, " * ", b); break;
-    case SSIR_OP_MAT_TRANSPOSE:
-        mb_append(b, "transpose(");
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ")");
-        break;
-
-    /* Bitwise */
-    case SSIR_OP_BIT_AND: emit_binop(c, inst, " & ", b); break;
-    case SSIR_OP_BIT_OR:  emit_binop(c, inst, " | ", b); break;
-    case SSIR_OP_BIT_XOR: emit_binop(c, inst, " ^ ", b); break;
-    case SSIR_OP_BIT_NOT: emit_unop(c, inst, "~", b); break;
-    case SSIR_OP_SHL:     emit_binop(c, inst, " << ", b); break;
-    case SSIR_OP_SHR:    emit_binop(c, inst, " >> ", b); break;
-    case SSIR_OP_SHR_LOGICAL: {
-        /* Logical shift right: must cast signed types to unsigned */
-        SsirType *shr_type = ssir_get_type((SsirModule *)c->mod, inst->type);
-        bool shr_signed = shr_type && (ssir_type_is_signed(shr_type) ||
-            (shr_type->kind == SSIR_TYPE_VEC &&
-             ssir_type_is_signed(ssir_get_type((SsirModule *)c->mod, shr_type->vec.elem))));
-        if (shr_signed) {
-            mb_append(b, "static_cast<");
-            emit_type(c, inst->type, b);
-            mb_append(b, ">(static_cast<");
-            /* emit unsigned equivalent */
-            if (shr_type->kind == SSIR_TYPE_VEC) {
-                uint32_t uvec = ssir_type_vec((SsirModule *)c->mod,
-                    ssir_type_u32((SsirModule *)c->mod), shr_type->vec.size);
-                emit_type(c, uvec, b);
-            } else {
-                mb_append(b, "uint");
-            }
-            mb_append(b, ">(");
-            emit_expr(c, inst->operands[0], b);
-            mb_append(b, ") >> ");
-            emit_expr(c, inst->operands[1], b);
-            mb_append(b, ")");
-        } else {
-            emit_binop(c, inst, " >> ", b);
-        }
-        break;
-    }
-
-    /* Comparison */
-    case SSIR_OP_EQ: emit_binop(c, inst, " == ", b); break;
-    case SSIR_OP_NE: emit_binop(c, inst, " != ", b); break;
-    case SSIR_OP_LT: emit_binop(c, inst, " < ", b); break;
-    case SSIR_OP_LE: emit_binop(c, inst, " <= ", b); break;
-    case SSIR_OP_GT: emit_binop(c, inst, " > ", b); break;
-    case SSIR_OP_GE: emit_binop(c, inst, " >= ", b); break;
-
-    /* Logical */
-    case SSIR_OP_AND: emit_binop(c, inst, " && ", b); break;
-    case SSIR_OP_OR:  emit_binop(c, inst, " || ", b); break;
-    case SSIR_OP_NOT: emit_unop(c, inst, "!", b); break;
-
-    /* Composite */
-    case SSIR_OP_CONSTRUCT: {
-        emit_type(c, inst->type, b);
-        mb_append(b, "(");
-        uint32_t cnt = inst->operand_count;
-        const uint32_t *comps = inst->operands;
-        if (inst->extra_count > 0) { cnt = inst->extra_count; comps = inst->extra; }
-        for (uint32_t i = 0; i < cnt; i++) {
-            if (i > 0) mb_append(b, ", ");
-            emit_expr(c, comps[i], b);
-        }
-        mb_append(b, ")");
-        break;
-    }
-
-    case SSIR_OP_EXTRACT: {
-        emit_expr(c, inst->operands[0], b);
-        uint32_t idx = inst->operands[1];
-        if (idx < 4) {
-            const char sw[] = "xyzw";
-            mb_appendf(b, ".%c", sw[idx]);
-        } else {
-            mb_appendf(b, "[%u]", idx);
-        }
-        break;
-    }
-
-    case SSIR_OP_INSERT:
-    case SSIR_OP_INSERT_DYN:
-        mb_append(b, get_name(c, id));
-        break;
-
-    case SSIR_OP_SHUFFLE: {
-        emit_type(c, inst->type, b);
-        mb_append(b, "(");
-        for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) mb_append(b, ", ");
-            uint32_t si = inst->extra[i];
-            uint32_t v1_sz = 4;
-            if (si < v1_sz) {
+        /* Arithmetic */
+        case SSIR_OP_ADD: emit_binop(c, inst, " + ", b); break;
+        case SSIR_OP_SUB: emit_binop(c, inst, " - ", b); break;
+        case SSIR_OP_MUL: emit_binop(c, inst, " * ", b); break;
+        case SSIR_OP_DIV: emit_binop(c, inst, " / ", b); break;
+        case SSIR_OP_MOD: emit_binop(c, inst, " % ", b); break;
+        case SSIR_OP_REM: {
+            /* C-style remainder: fmod for float, % for int */
+            SsirType *rem_t = ssir_get_type((SsirModule *)c->mod, inst->type);
+            if (rem_t && ssir_type_is_float(rem_t)) {
+                mb_append(b, "fmod(");
                 emit_expr(c, inst->operands[0], b);
-            } else {
+                mb_append(b, ", ");
                 emit_expr(c, inst->operands[1], b);
-                si -= v1_sz;
+                mb_append(b, ")");
+            } else {
+                emit_binop(c, inst, " % ", b);
             }
-            if (si < 4) {
-                const char sw[] = "xyzw";
-                mb_appendf(b, ".%c", sw[si]);
-            }
+            break;
         }
-        mb_append(b, ")");
-        break;
-    }
+        case SSIR_OP_NEG: emit_unop(c, inst, "-", b); break;
 
-    case SSIR_OP_SPLAT:
-        emit_type(c, inst->type, b);
-        mb_append(b, "(");
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ")");
-        break;
+        /* Matrix */
+        case SSIR_OP_MAT_MUL: emit_binop(c, inst, " * ", b); break;
+        case SSIR_OP_MAT_TRANSPOSE:
+            mb_append(b, "transpose(");
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ")");
+            break;
 
-    case SSIR_OP_EXTRACT_DYN:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, "[");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, "]");
-        break;
-
-    /* Memory */
-    case SSIR_OP_LOAD:
-        emit_expr(c, inst->operands[0], b);
-        break;
-
-    case SSIR_OP_ACCESS: {
-        SsirModule *amod = (SsirModule *)c->mod;
-        emit_expr(c, inst->operands[0], b);
-        /* Trace the struct type through the access chain for member names */
-        uint32_t cur_type_id = 0;
-        {
-            SsirGlobalVar *ag = ssir_get_global(amod, inst->operands[0]);
-            if (ag) {
-                SsirType *pt = ssir_get_type(amod, ag->type);
-                if (pt && pt->kind == SSIR_TYPE_PTR)
-                    cur_type_id = pt->ptr.pointee;
+        /* Bitwise */
+        case SSIR_OP_BIT_AND: emit_binop(c, inst, " & ", b); break;
+        case SSIR_OP_BIT_OR: emit_binop(c, inst, " | ", b); break;
+        case SSIR_OP_BIT_XOR: emit_binop(c, inst, " ^ ", b); break;
+        case SSIR_OP_BIT_NOT: emit_unop(c, inst, "~", b); break;
+        case SSIR_OP_SHL: emit_binop(c, inst, " << ", b); break;
+        case SSIR_OP_SHR: emit_binop(c, inst, " >> ", b); break;
+        case SSIR_OP_SHR_LOGICAL: {
+            /* Logical shift right: must cast signed types to unsigned */
+            SsirType *shr_type = ssir_get_type((SsirModule *)c->mod, inst->type);
+            bool shr_signed = shr_type && (ssir_type_is_signed(shr_type) ||
+                                              (shr_type->kind == SSIR_TYPE_VEC &&
+                                                  ssir_type_is_signed(ssir_get_type((SsirModule *)c->mod, shr_type->vec.elem))));
+            if (shr_signed) {
+                mb_append(b, "static_cast<");
+                emit_type(c, inst->type, b);
+                mb_append(b, ">(static_cast<");
+                /* emit unsigned equivalent */
+                if (shr_type->kind == SSIR_TYPE_VEC) {
+                    uint32_t uvec = ssir_type_vec((SsirModule *)c->mod,
+                        ssir_type_u32((SsirModule *)c->mod), shr_type->vec.size);
+                    emit_type(c, uvec, b);
+                } else {
+                    mb_append(b, "uint");
+                }
+                mb_append(b, ">(");
+                emit_expr(c, inst->operands[0], b);
+                mb_append(b, ") >> ");
+                emit_expr(c, inst->operands[1], b);
+                mb_append(b, ")");
+            } else {
+                emit_binop(c, inst, " >> ", b);
             }
-            if (!cur_type_id) {
-                SsirInst *ai = find_inst(c, inst->operands[0]);
-                if (ai && ai->op == SSIR_OP_LOAD) {
-                    SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
-                    if (lg) {
-                        SsirType *pt = ssir_get_type(amod, lg->type);
-                        if (pt && pt->kind == SSIR_TYPE_PTR)
-                            cur_type_id = pt->ptr.pointee;
+            break;
+        }
+
+        /* Comparison */
+        case SSIR_OP_EQ: emit_binop(c, inst, " == ", b); break;
+        case SSIR_OP_NE: emit_binop(c, inst, " != ", b); break;
+        case SSIR_OP_LT: emit_binop(c, inst, " < ", b); break;
+        case SSIR_OP_LE: emit_binop(c, inst, " <= ", b); break;
+        case SSIR_OP_GT: emit_binop(c, inst, " > ", b); break;
+        case SSIR_OP_GE: emit_binop(c, inst, " >= ", b); break;
+
+        /* Logical */
+        case SSIR_OP_AND: emit_binop(c, inst, " && ", b); break;
+        case SSIR_OP_OR: emit_binop(c, inst, " || ", b); break;
+        case SSIR_OP_NOT: emit_unop(c, inst, "!", b); break;
+
+        /* Composite */
+        case SSIR_OP_CONSTRUCT: {
+            emit_type(c, inst->type, b);
+            mb_append(b, "(");
+            uint32_t cnt = inst->operand_count;
+            const uint32_t *comps = inst->operands;
+            if (inst->extra_count > 0) {
+                cnt = inst->extra_count;
+                comps = inst->extra;
+            }
+            for (uint32_t i = 0; i < cnt; i++) {
+                if (i > 0) mb_append(b, ", ");
+                emit_expr(c, comps[i], b);
+            }
+            mb_append(b, ")");
+            break;
+        }
+
+        case SSIR_OP_EXTRACT: {
+            emit_expr(c, inst->operands[0], b);
+            uint32_t idx = inst->operands[1];
+            if (idx < 4) {
+                const char sw[] = "xyzw";
+                mb_appendf(b, ".%c", sw[idx]);
+            } else {
+                mb_appendf(b, "[%u]", idx);
+            }
+            break;
+        }
+
+        case SSIR_OP_INSERT:
+        case SSIR_OP_INSERT_DYN:
+            mb_append(b, get_name(c, id));
+            break;
+
+        case SSIR_OP_SHUFFLE: {
+            emit_type(c, inst->type, b);
+            mb_append(b, "(");
+            for (uint16_t i = 0; i < inst->extra_count; i++) {
+                if (i > 0) mb_append(b, ", ");
+                uint32_t si = inst->extra[i];
+                uint32_t v1_sz = 4;
+                if (si < v1_sz) {
+                    emit_expr(c, inst->operands[0], b);
+                } else {
+                    emit_expr(c, inst->operands[1], b);
+                    si -= v1_sz;
+                }
+                if (si < 4) {
+                    const char sw[] = "xyzw";
+                    mb_appendf(b, ".%c", sw[si]);
+                }
+            }
+            mb_append(b, ")");
+            break;
+        }
+
+        case SSIR_OP_SPLAT:
+            emit_type(c, inst->type, b);
+            mb_append(b, "(");
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_EXTRACT_DYN:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, "[");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, "]");
+            break;
+
+        /* Memory */
+        case SSIR_OP_LOAD:
+            emit_expr(c, inst->operands[0], b);
+            break;
+
+        case SSIR_OP_ACCESS: {
+            SsirModule *amod = (SsirModule *)c->mod;
+            emit_expr(c, inst->operands[0], b);
+            /* Trace the struct type through the access chain for member names */
+            uint32_t cur_type_id = 0;
+            {
+                SsirGlobalVar *ag = ssir_get_global(amod, inst->operands[0]);
+                if (ag) {
+                    SsirType *pt = ssir_get_type(amod, ag->type);
+                    if (pt && pt->kind == SSIR_TYPE_PTR)
+                        cur_type_id = pt->ptr.pointee;
+                }
+                if (!cur_type_id) {
+                    SsirInst *ai = find_inst(c, inst->operands[0]);
+                    if (ai && ai->op == SSIR_OP_LOAD) {
+                        SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
+                        if (lg) {
+                            SsirType *pt = ssir_get_type(amod, lg->type);
+                            if (pt && pt->kind == SSIR_TYPE_PTR)
+                                cur_type_id = pt->ptr.pointee;
+                        }
                     }
                 }
             }
-        }
-        for (uint16_t i = 0; i < inst->extra_count; i++) {
-            uint32_t idx = inst->extra[i];
-            SsirConstant *ic = ssir_get_constant(amod, idx);
-            SsirType *cur_st = cur_type_id ? ssir_get_type(amod, cur_type_id) : NULL;
-            if (ic && (ic->kind == SSIR_CONST_U32 || ic->kind == SSIR_CONST_I32)) {
-                uint32_t midx = (ic->kind == SSIR_CONST_U32) ? ic->u32_val : (uint32_t)ic->i32_val;
-                const char *mname = NULL;
-                if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
-                    cur_st->struc.member_names && midx < cur_st->struc.member_count)
-                    mname = cur_st->struc.member_names[midx];
-                if (mname)
-                    mb_appendf(b, ".%s", mname);
-                else
-                    mb_appendf(b, ".member%u", midx);
-                /* Advance type through struct member */
-                if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
-                    cur_type_id = cur_st->struc.members[midx];
-                else
-                    cur_type_id = 0;
-            } else {
-                mb_append(b, "[");
-                emit_expr(c, idx, b);
-                mb_append(b, "]");
-                /* Advance type through array element */
-                if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
-                    cur_type_id = cur_st->array.elem;
-                else
-                    cur_type_id = 0;
+            for (uint16_t i = 0; i < inst->extra_count; i++) {
+                uint32_t idx = inst->extra[i];
+                SsirConstant *ic = ssir_get_constant(amod, idx);
+                SsirType *cur_st = cur_type_id ? ssir_get_type(amod, cur_type_id) : NULL;
+                if (ic && (ic->kind == SSIR_CONST_U32 || ic->kind == SSIR_CONST_I32)) {
+                    uint32_t midx = (ic->kind == SSIR_CONST_U32) ? ic->u32_val : (uint32_t)ic->i32_val;
+                    const char *mname = NULL;
+                    if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
+                        cur_st->struc.member_names && midx < cur_st->struc.member_count)
+                        mname = cur_st->struc.member_names[midx];
+                    if (mname)
+                        mb_appendf(b, ".%s", mname);
+                    else
+                        mb_appendf(b, ".member%u", midx);
+                    /* Advance type through struct member */
+                    if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
+                        cur_type_id = cur_st->struc.members[midx];
+                    else
+                        cur_type_id = 0;
+                } else {
+                    mb_append(b, "[");
+                    emit_expr(c, idx, b);
+                    mb_append(b, "]");
+                    /* Advance type through array element */
+                    if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
+                        cur_type_id = cur_st->array.elem;
+                    else
+                        cur_type_id = 0;
+                }
             }
+            break;
         }
-        break;
-    }
 
-    case SSIR_OP_ARRAY_LEN:
-        /* MSL doesn't have runtime array length; use buffer size / element size */
-        mb_append(b, "/* arrayLength unsupported in MSL */0u");
-        break;
+        case SSIR_OP_ARRAY_LEN:
+            /* MSL doesn't have runtime array length; use buffer size / element size */
+            mb_append(b, "/* arrayLength unsupported in MSL */0u");
+            break;
 
-    /* Call */
-    case SSIR_OP_CALL: {
-        uint32_t callee_id = inst->operands[0];
-        SsirFunction *callee = ssir_get_function((SsirModule *)c->mod, callee_id);
-        if (callee && callee->name)
-            mb_append(b, callee->name);
-        else
-            mb_append(b, get_name(c, callee_id));
-        mb_append(b, "(");
-        for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) mb_append(b, ", ");
-            emit_expr(c, inst->extra[i], b);
+        /* Call */
+        case SSIR_OP_CALL: {
+            uint32_t callee_id = inst->operands[0];
+            SsirFunction *callee = ssir_get_function((SsirModule *)c->mod, callee_id);
+            if (callee && callee->name)
+                mb_append(b, callee->name);
+            else
+                mb_append(b, get_name(c, callee_id));
+            mb_append(b, "(");
+            for (uint16_t i = 0; i < inst->extra_count; i++) {
+                if (i > 0) mb_append(b, ", ");
+                emit_expr(c, inst->extra[i], b);
+            }
+            mb_append(b, ")");
+            break;
         }
-        mb_append(b, ")");
-        break;
-    }
 
-    case SSIR_OP_BUILTIN: {
-        SsirBuiltinId bid = (SsirBuiltinId)inst->operands[0];
+        case SSIR_OP_BUILTIN: {
+            SsirBuiltinId bid = (SsirBuiltinId)inst->operands[0];
 
-        /* firstLeadingBit needs special handling: WGSL returns the bit index
-         * of the most significant differing bit, while MSL clz() returns the
-         * count of leading zeros. Relationship: firstLeadingBit(x) = 31 - clz(x)
-         * for unsigned. For signed, operate on the absolute or inverted value. */
-        if (bid == SSIR_BUILTIN_FIRSTLEADINGBIT && inst->extra_count > 0) {
-            SsirType *rt = ssir_get_type((SsirModule *)c->mod, inst->type);
-            bool is_signed = rt && (rt->kind == SSIR_TYPE_I32 ||
-                (rt->kind == SSIR_TYPE_VEC && ssir_type_is_signed(
-                    ssir_get_type((SsirModule *)c->mod, rt->vec.elem))));
-            if (is_signed) {
-                mb_append(b, "int(31u - clz(");
+            /* firstLeadingBit needs special handling: WGSL returns the bit index
+             * of the most significant differing bit, while MSL clz() returns the
+             * count of leading zeros. Relationship: firstLeadingBit(x) = 31 - clz(x)
+             * for unsigned. For signed, operate on the absolute or inverted value. */
+            if (bid == SSIR_BUILTIN_FIRSTLEADINGBIT && inst->extra_count > 0) {
+                SsirType *rt = ssir_get_type((SsirModule *)c->mod, inst->type);
+                bool is_signed = rt && (rt->kind == SSIR_TYPE_I32 ||
+                                           (rt->kind == SSIR_TYPE_VEC && ssir_type_is_signed(
+                                                                             ssir_get_type((SsirModule *)c->mod, rt->vec.elem))));
+                if (is_signed) {
+                    mb_append(b, "int(31u - clz(");
+                    emit_expr(c, inst->extra[0], b);
+                    mb_append(b, " >= 0 ? uint(");
+                    emit_expr(c, inst->extra[0], b);
+                    mb_append(b, ") : uint(~(");
+                    emit_expr(c, inst->extra[0], b);
+                    mb_append(b, "))))");
+                } else {
+                    mb_append(b, "(31u - clz(");
+                    emit_expr(c, inst->extra[0], b);
+                    mb_append(b, "))");
+                }
+                break;
+            }
+
+            /* degrees/radians: MSL doesn't have these, use multiplication */
+            if (bid == SSIR_BUILTIN_DEGREES && inst->extra_count > 0) {
+                mb_append(b, "(");
                 emit_expr(c, inst->extra[0], b);
-                mb_append(b, " >= 0 ? uint(");
+                mb_append(b, " * 57.2957795131f)");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_RADIANS && inst->extra_count > 0) {
+                mb_append(b, "(");
                 emit_expr(c, inst->extra[0], b);
-                mb_append(b, ") : uint(~(");
+                mb_append(b, " * 0.0174532925199f)");
+                break;
+            }
+            /* Pack/unpack builtins */
+            if (bid == SSIR_BUILTIN_PACK4X8SNORM && inst->extra_count > 0) {
+                mb_append(b, "pack_float_to_snorm4x8(");
                 emit_expr(c, inst->extra[0], b);
-                mb_append(b, "))))");
-            } else {
-                mb_append(b, "(31u - clz(");
+                mb_append(b, ")");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_PACK4X8UNORM && inst->extra_count > 0) {
+                mb_append(b, "pack_float_to_unorm4x8(");
+                emit_expr(c, inst->extra[0], b);
+                mb_append(b, ")");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_PACK2X16SNORM && inst->extra_count > 0) {
+                mb_append(b, "pack_float_to_snorm2x16(");
+                emit_expr(c, inst->extra[0], b);
+                mb_append(b, ")");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_PACK2X16UNORM && inst->extra_count > 0) {
+                mb_append(b, "pack_float_to_unorm2x16(");
+                emit_expr(c, inst->extra[0], b);
+                mb_append(b, ")");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_PACK2X16FLOAT && inst->extra_count > 0) {
+                mb_append(b, "as_type<uint>(half2(");
                 emit_expr(c, inst->extra[0], b);
                 mb_append(b, "))");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_UNPACK4X8SNORM && inst->extra_count > 0) {
+                mb_append(b, "unpack_snorm4x8_to_float(");
+                emit_expr(c, inst->extra[0], b);
+                mb_append(b, ")");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_UNPACK4X8UNORM && inst->extra_count > 0) {
+                mb_append(b, "unpack_unorm4x8_to_float(");
+                emit_expr(c, inst->extra[0], b);
+                mb_append(b, ")");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_UNPACK2X16SNORM && inst->extra_count > 0) {
+                mb_append(b, "unpack_snorm2x16_to_float(");
+                emit_expr(c, inst->extra[0], b);
+                mb_append(b, ")");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_UNPACK2X16UNORM && inst->extra_count > 0) {
+                mb_append(b, "unpack_unorm2x16_to_float(");
+                emit_expr(c, inst->extra[0], b);
+                mb_append(b, ")");
+                break;
+            }
+            if (bid == SSIR_BUILTIN_UNPACK2X16FLOAT && inst->extra_count > 0) {
+                mb_append(b, "float2(as_type<half2>(");
+                emit_expr(c, inst->extra[0], b);
+                mb_append(b, "))");
+                break;
+            }
+
+            const char *name = bfunc_to_msl(bid);
+            mb_append(b, name ? name : "unknown_builtin");
+            mb_append(b, "(");
+            for (uint16_t i = 0; i < inst->extra_count; i++) {
+                if (i > 0) mb_append(b, ", ");
+                emit_expr(c, inst->extra[i], b);
+            }
+            mb_append(b, ")");
+            break;
+        }
+
+        /* Conversion */
+        case SSIR_OP_CONVERT:
+            mb_append(b, "static_cast<");
+            emit_type(c, inst->type, b);
+            mb_append(b, ">(");
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_BITCAST:
+            mb_append(b, "as_type<");
+            emit_type(c, inst->type, b);
+            mb_append(b, ">(");
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ")");
+            break;
+
+        /* Texture - MSL uses member function syntax */
+        case SSIR_OP_TEX_SAMPLE:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_BIAS:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", bias(");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, "))");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_LEVEL:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", level(");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, "))");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_GRAD:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", gradient2d(");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[4], b);
+            mb_append(b, "))");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_CMP:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample_compare(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample_compare(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ", level(");
+            emit_expr(c, inst->operands[4], b);
+            mb_append(b, "))");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_OFFSET:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", bias(");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, "), ");
+            emit_expr(c, inst->operands[4], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", level(");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, "), ");
+            emit_expr(c, inst->operands[4], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", gradient2d(");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[4], b);
+            mb_append(b, "), ");
+            emit_expr(c, inst->operands[5], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".sample_compare(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[4], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_GATHER:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".gather(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", component::");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_GATHER_CMP:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".gather_compare(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_GATHER_OFFSET:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".gather(");
+            emit_expr(c, inst->operands[1], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[2], b);
+            mb_append(b, ", ");
+            emit_expr(c, inst->operands[4], b);
+            mb_append(b, ", component::");
+            emit_expr(c, inst->operands[3], b);
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_LOAD:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".read(");
+            emit_expr(c, inst->operands[1], b);
+            if (inst->operands[2] != 0) {
+                mb_append(b, ", ");
+                emit_expr(c, inst->operands[2], b);
+            }
+            mb_append(b, ")");
+            break;
+
+        case SSIR_OP_TEX_SIZE: {
+            SsirTextureDim dim = resolve_texture_dim(c, inst->operands[0]);
+            switch (dim) {
+                case SSIR_TEX_1D:
+                    emit_expr(c, inst->operands[0], b);
+                    mb_append(b, ".get_width()");
+                    break;
+                case SSIR_TEX_3D:
+                    mb_append(b, "uint3(");
+                    emit_expr(c, inst->operands[0], b);
+                    mb_append(b, ".get_width(), ");
+                    emit_expr(c, inst->operands[0], b);
+                    mb_append(b, ".get_height(), ");
+                    emit_expr(c, inst->operands[0], b);
+                    mb_append(b, ".get_depth())");
+                    break;
+                default: /* 2D, cube, 2D array, cube array, MS 2D */
+                    mb_append(b, "uint2(");
+                    emit_expr(c, inst->operands[0], b);
+                    mb_append(b, ".get_width(), ");
+                    emit_expr(c, inst->operands[0], b);
+                    mb_append(b, ".get_height())");
+                    break;
             }
             break;
         }
 
-        /* degrees/radians: MSL doesn't have these, use multiplication */
-        if (bid == SSIR_BUILTIN_DEGREES && inst->extra_count > 0) {
-            mb_append(b, "(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, " * 57.2957795131f)");
-            break;
-        }
-        if (bid == SSIR_BUILTIN_RADIANS && inst->extra_count > 0) {
-            mb_append(b, "(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, " * 0.0174532925199f)");
-            break;
-        }
-        /* Pack/unpack builtins */
-        if (bid == SSIR_BUILTIN_PACK4X8SNORM && inst->extra_count > 0) {
-            mb_append(b, "pack_float_to_snorm4x8(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, ")"); break;
-        }
-        if (bid == SSIR_BUILTIN_PACK4X8UNORM && inst->extra_count > 0) {
-            mb_append(b, "pack_float_to_unorm4x8(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, ")"); break;
-        }
-        if (bid == SSIR_BUILTIN_PACK2X16SNORM && inst->extra_count > 0) {
-            mb_append(b, "pack_float_to_snorm2x16(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, ")"); break;
-        }
-        if (bid == SSIR_BUILTIN_PACK2X16UNORM && inst->extra_count > 0) {
-            mb_append(b, "pack_float_to_unorm2x16(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, ")"); break;
-        }
-        if (bid == SSIR_BUILTIN_PACK2X16FLOAT && inst->extra_count > 0) {
-            mb_append(b, "as_type<uint>(half2(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, "))"); break;
-        }
-        if (bid == SSIR_BUILTIN_UNPACK4X8SNORM && inst->extra_count > 0) {
-            mb_append(b, "unpack_snorm4x8_to_float(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, ")"); break;
-        }
-        if (bid == SSIR_BUILTIN_UNPACK4X8UNORM && inst->extra_count > 0) {
-            mb_append(b, "unpack_unorm4x8_to_float(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, ")"); break;
-        }
-        if (bid == SSIR_BUILTIN_UNPACK2X16SNORM && inst->extra_count > 0) {
-            mb_append(b, "unpack_snorm2x16_to_float(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, ")"); break;
-        }
-        if (bid == SSIR_BUILTIN_UNPACK2X16UNORM && inst->extra_count > 0) {
-            mb_append(b, "unpack_unorm2x16_to_float(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, ")"); break;
-        }
-        if (bid == SSIR_BUILTIN_UNPACK2X16FLOAT && inst->extra_count > 0) {
-            mb_append(b, "float2(as_type<half2>(");
-            emit_expr(c, inst->extra[0], b);
-            mb_append(b, "))"); break;
-        }
-
-        const char *name = bfunc_to_msl(bid);
-        mb_append(b, name ? name : "unknown_builtin");
-        mb_append(b, "(");
-        for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) mb_append(b, ", ");
-            emit_expr(c, inst->extra[i], b);
-        }
-        mb_append(b, ")");
-        break;
-    }
-
-    /* Conversion */
-    case SSIR_OP_CONVERT:
-        mb_append(b, "static_cast<");
-        emit_type(c, inst->type, b);
-        mb_append(b, ">(");
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_BITCAST:
-        mb_append(b, "as_type<");
-        emit_type(c, inst->type, b);
-        mb_append(b, ">(");
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ")");
-        break;
-
-    /* Texture - MSL uses member function syntax */
-    case SSIR_OP_TEX_SAMPLE:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_BIAS:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", bias(");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, "))");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_LEVEL:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", level(");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, "))");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_GRAD:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", gradient2d(");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[4], b);
-        mb_append(b, "))");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_CMP:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample_compare(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample_compare(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ", level(");
-        emit_expr(c, inst->operands[4], b);
-        mb_append(b, "))");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_OFFSET:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", bias(");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, "), ");
-        emit_expr(c, inst->operands[4], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", level(");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, "), ");
-        emit_expr(c, inst->operands[4], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", gradient2d(");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[4], b);
-        mb_append(b, "), ");
-        emit_expr(c, inst->operands[5], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".sample_compare(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[4], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_GATHER:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".gather(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", component::");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_GATHER_CMP:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".gather_compare(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_GATHER_OFFSET:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".gather(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[4], b);
-        mb_append(b, ", component::");
-        emit_expr(c, inst->operands[3], b);
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_LOAD:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".read(");
-        emit_expr(c, inst->operands[1], b);
-        if (inst->operands[2] != 0) {
+        case SSIR_OP_TEX_QUERY_LOD:
+            emit_expr(c, inst->operands[0], b);
+            mb_append(b, ".calculate_clamped_lod(");
+            emit_expr(c, inst->operands[1], b);
             mb_append(b, ", ");
             emit_expr(c, inst->operands[2], b);
-        }
-        mb_append(b, ")");
-        break;
-
-    case SSIR_OP_TEX_SIZE: {
-        SsirTextureDim dim = resolve_texture_dim(c, inst->operands[0]);
-        switch (dim) {
-        case SSIR_TEX_1D:
-            emit_expr(c, inst->operands[0], b);
-            mb_append(b, ".get_width()");
+            mb_append(b, ")");
             break;
-        case SSIR_TEX_3D:
-            mb_append(b, "uint3(");
+
+        case SSIR_OP_TEX_QUERY_LEVELS:
             emit_expr(c, inst->operands[0], b);
-            mb_append(b, ".get_width(), ");
-            emit_expr(c, inst->operands[0], b);
-            mb_append(b, ".get_height(), ");
-            emit_expr(c, inst->operands[0], b);
-            mb_append(b, ".get_depth())");
+            mb_append(b, ".get_num_mip_levels()");
             break;
-        default: /* 2D, cube, 2D array, cube array, MS 2D */
-            mb_append(b, "uint2(");
+
+        case SSIR_OP_TEX_QUERY_SAMPLES:
             emit_expr(c, inst->operands[0], b);
-            mb_append(b, ".get_width(), ");
-            emit_expr(c, inst->operands[0], b);
-            mb_append(b, ".get_height())");
+            mb_append(b, ".get_num_samples()");
             break;
-        }
-        break;
-    }
 
-    case SSIR_OP_TEX_QUERY_LOD:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".calculate_clamped_lod(");
-        emit_expr(c, inst->operands[1], b);
-        mb_append(b, ", ");
-        emit_expr(c, inst->operands[2], b);
-        mb_append(b, ")");
-        break;
+        case SSIR_OP_PHI:
+            mb_append(b, get_name(c, id));
+            break;
 
-    case SSIR_OP_TEX_QUERY_LEVELS:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".get_num_mip_levels()");
-        break;
-
-    case SSIR_OP_TEX_QUERY_SAMPLES:
-        emit_expr(c, inst->operands[0], b);
-        mb_append(b, ".get_num_samples()");
-        break;
-
-    case SSIR_OP_PHI:
-        mb_append(b, get_name(c, id));
-        break;
-
-    default:
-        mb_append(b, get_name(c, id));
-        break;
+        default:
+            mb_append(b, get_name(c, id));
+            break;
     }
 }
 
@@ -1285,175 +1312,176 @@ typedef struct {
 static void emit_block(MslCtx *c, SsirBlock *blk, SsirFunction *fn, BlkState *bs);
 
 static void emit_stmt(MslCtx *c, SsirInst *inst, SsirBlock *blk,
-                       SsirFunction *fn, BlkState *bs) {
+    SsirFunction *fn, BlkState *bs) {
     switch (inst->op) {
-    case SSIR_OP_STORE:
-        mb_indent(&c->sb);
-        emit_expr(c, inst->operands[0], &c->sb);
-        mb_append(&c->sb, " = ");
-        emit_expr(c, inst->operands[1], &c->sb);
-        mb_append(&c->sb, ";\n");
-        break;
-
-    case SSIR_OP_TEX_STORE:
-        mb_indent(&c->sb);
-        emit_expr(c, inst->operands[0], &c->sb);
-        mb_append(&c->sb, ".write(");
-        emit_expr(c, inst->operands[2], &c->sb);
-        mb_append(&c->sb, ", ");
-        emit_expr(c, inst->operands[1], &c->sb);
-        mb_append(&c->sb, ");\n");
-        break;
-
-    case SSIR_OP_RETURN_VOID:
-        mb_indent(&c->sb);
-        if (c->in_entry_point && c->output_field_count > 0)
-            mb_append(&c->sb, "return _out;\n");
-        else
-            mb_append(&c->sb, "return;\n");
-        break;
-
-    case SSIR_OP_RETURN:
-        mb_indent(&c->sb);
-        if (c->in_entry_point && c->output_field_count > 0) {
-            mb_append(&c->sb, "return _out;\n");
-        } else {
-            mb_append(&c->sb, "return ");
+        case SSIR_OP_STORE:
+            mb_indent(&c->sb);
             emit_expr(c, inst->operands[0], &c->sb);
+            mb_append(&c->sb, " = ");
+            emit_expr(c, inst->operands[1], &c->sb);
             mb_append(&c->sb, ";\n");
-        }
-        break;
+            break;
 
-    case SSIR_OP_BRANCH: {
-        uint32_t target = inst->operands[0];
-        for (uint32_t i = 0; i < fn->block_count; i++) {
-            if (fn->blocks[i].id == target && !bs->emitted[i]) {
-                emit_block(c, &fn->blocks[i], fn, bs);
-                break;
+        case SSIR_OP_TEX_STORE:
+            mb_indent(&c->sb);
+            emit_expr(c, inst->operands[0], &c->sb);
+            mb_append(&c->sb, ".write(");
+            emit_expr(c, inst->operands[2], &c->sb);
+            mb_append(&c->sb, ", ");
+            emit_expr(c, inst->operands[1], &c->sb);
+            mb_append(&c->sb, ");\n");
+            break;
+
+        case SSIR_OP_RETURN_VOID:
+            mb_indent(&c->sb);
+            if (c->in_entry_point && c->output_field_count > 0)
+                mb_append(&c->sb, "return _out;\n");
+            else
+                mb_append(&c->sb, "return;\n");
+            break;
+
+        case SSIR_OP_RETURN:
+            mb_indent(&c->sb);
+            if (c->in_entry_point && c->output_field_count > 0) {
+                mb_append(&c->sb, "return _out;\n");
+            } else {
+                mb_append(&c->sb, "return ");
+                emit_expr(c, inst->operands[0], &c->sb);
+                mb_append(&c->sb, ";\n");
             }
-        }
-        break;
-    }
+            break;
 
-    case SSIR_OP_BRANCH_COND: {
-        uint32_t cond = inst->operands[0];
-        uint32_t true_blk = inst->operands[1];
-        uint32_t false_blk = inst->operands[2];
-        uint32_t merge_blk = (inst->operand_count > 3) ? inst->operands[3] : 0;
-
-        /* Temporarily mark the merge block as emitted so it doesn't get
-           pulled in recursively via branch instructions inside the if body. */
-        int merge_idx = -1;
-        if (merge_blk) {
+        case SSIR_OP_BRANCH: {
+            uint32_t target = inst->operands[0];
             for (uint32_t i = 0; i < fn->block_count; i++) {
-                if (fn->blocks[i].id == merge_blk && !bs->emitted[i]) {
-                    merge_idx = (int)i;
-                    bs->emitted[i] = true;
+                if (fn->blocks[i].id == target && !bs->emitted[i]) {
+                    emit_block(c, &fn->blocks[i], fn, bs);
                     break;
                 }
             }
+            break;
         }
 
-        mb_indent(&c->sb);
-        mb_append(&c->sb, "if (");
-        emit_expr(c, cond, &c->sb);
-        mb_append(&c->sb, ") {\n");
-        c->sb.indent++;
+        case SSIR_OP_BRANCH_COND: {
+            uint32_t cond = inst->operands[0];
+            uint32_t true_blk = inst->operands[1];
+            uint32_t false_blk = inst->operands[2];
+            uint32_t merge_blk = (inst->operand_count > 3) ? inst->operands[3] : 0;
 
-        for (uint32_t i = 0; i < fn->block_count; i++) {
-            if (fn->blocks[i].id == true_blk && !bs->emitted[i]) {
-                emit_block(c, &fn->blocks[i], fn, bs);
-                break;
+            /* Temporarily mark the merge block as emitted so it doesn't get
+               pulled in recursively via branch instructions inside the if body. */
+            int merge_idx = -1;
+            if (merge_blk) {
+                for (uint32_t i = 0; i < fn->block_count; i++) {
+                    if (fn->blocks[i].id == merge_blk && !bs->emitted[i]) {
+                        merge_idx = (int)i;
+                        bs->emitted[i] = true;
+                        break;
+                    }
+                }
             }
-        }
 
-        c->sb.indent--;
-
-        /* Only emit else clause if false block differs from merge block */
-        if (false_blk != merge_blk || merge_blk == 0) {
             mb_indent(&c->sb);
-            mb_append(&c->sb, "} else {\n");
+            mb_append(&c->sb, "if (");
+            emit_expr(c, cond, &c->sb);
+            mb_append(&c->sb, ") {\n");
             c->sb.indent++;
 
             for (uint32_t i = 0; i < fn->block_count; i++) {
-                if (fn->blocks[i].id == false_blk && !bs->emitted[i]) {
+                if (fn->blocks[i].id == true_blk && !bs->emitted[i]) {
                     emit_block(c, &fn->blocks[i], fn, bs);
                     break;
                 }
             }
 
             c->sb.indent--;
-        }
 
-        mb_indent(&c->sb);
-        mb_append(&c->sb, "}\n");
-
-        /* Now emit the merge block after the if-else */
-        if (merge_idx >= 0) {
-            bs->emitted[merge_idx] = false;  /* Un-mark so we can emit it */
-            emit_block(c, &fn->blocks[merge_idx], fn, bs);
-        }
-        break;
-    }
-
-    case SSIR_OP_BARRIER:
-        mb_indent(&c->sb);
-        switch ((SsirBarrierScope)inst->operands[0]) {
-        case SSIR_BARRIER_WORKGROUP: mb_append(&c->sb, "threadgroup_barrier(mem_flags::mem_threadgroup);\n"); break;
-        case SSIR_BARRIER_STORAGE:   mb_append(&c->sb, "threadgroup_barrier(mem_flags::mem_device);\n"); break;
-        case SSIR_BARRIER_SUBGROUP:  mb_append(&c->sb, "simdgroup_barrier(mem_flags::mem_threadgroup);\n"); break;
-        case SSIR_BARRIER_IMAGE:     mb_append(&c->sb, "threadgroup_barrier(mem_flags::mem_texture);\n"); break;
-        }
-        break;
-
-    case SSIR_OP_DISCARD:
-        mb_indent(&c->sb);
-        mb_append(&c->sb, "discard_fragment();\n");
-        break;
-
-    case SSIR_OP_INSERT_DYN:
-        mb_indent(&c->sb);
-        emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
-        mb_append(&c->sb, " = ");
-        emit_expr(c, inst->operands[0], &c->sb);
-        mb_append(&c->sb, ";\n");
-        mb_indent(&c->sb);
-        mb_append(&c->sb, get_name(c, inst->result));
-        mb_append(&c->sb, "[");
-        emit_expr(c, inst->operands[2], &c->sb);
-        mb_append(&c->sb, "] = ");
-        emit_expr(c, inst->operands[1], &c->sb);
-        mb_append(&c->sb, ";\n");
-        break;
-
-    case SSIR_OP_LOOP_MERGE:
-    case SSIR_OP_SELECTION_MERGE:
-    case SSIR_OP_UNREACHABLE:
-        break;
-
-    default:
-        if (inst->result != 0) {
-            SsirType *rt = ssir_get_type((SsirModule *)c->mod, inst->type);
-            bool is_void = (rt && rt->kind == SSIR_TYPE_VOID);
-            bool has_side_effects = (inst->op == SSIR_OP_CALL ||
-                                     inst->op == SSIR_OP_ATOMIC);
-            bool must_materialize = (inst->op == SSIR_OP_PHI || has_side_effects);
-            uint32_t uses = (c->use_counts && inst->result < c->mod->next_id)
-                            ? c->use_counts[inst->result] : 2;
-            if (is_void && !has_side_effects) break;
-            if (must_materialize || uses > 1) {
+            /* Only emit else clause if false block differs from merge block */
+            if (false_blk != merge_blk || merge_blk == 0) {
                 mb_indent(&c->sb);
-                if (!is_void) {
-                    emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
-                    mb_append(&c->sb, " = ");
+                mb_append(&c->sb, "} else {\n");
+                c->sb.indent++;
+
+                for (uint32_t i = 0; i < fn->block_count; i++) {
+                    if (fn->blocks[i].id == false_blk && !bs->emitted[i]) {
+                        emit_block(c, &fn->blocks[i], fn, bs);
+                        break;
+                    }
                 }
-                emit_expr(c, inst->result, &c->sb);
-                mb_append(&c->sb, ";\n");
-                if (!is_void)
-                    set_name(c, inst->result, get_name(c, inst->result));
+
+                c->sb.indent--;
             }
+
+            mb_indent(&c->sb);
+            mb_append(&c->sb, "}\n");
+
+            /* Now emit the merge block after the if-else */
+            if (merge_idx >= 0) {
+                bs->emitted[merge_idx] = false; /* Un-mark so we can emit it */
+                emit_block(c, &fn->blocks[merge_idx], fn, bs);
+            }
+            break;
         }
-        break;
+
+        case SSIR_OP_BARRIER:
+            mb_indent(&c->sb);
+            switch ((SsirBarrierScope)inst->operands[0]) {
+                case SSIR_BARRIER_WORKGROUP: mb_append(&c->sb, "threadgroup_barrier(mem_flags::mem_threadgroup);\n"); break;
+                case SSIR_BARRIER_STORAGE: mb_append(&c->sb, "threadgroup_barrier(mem_flags::mem_device);\n"); break;
+                case SSIR_BARRIER_SUBGROUP: mb_append(&c->sb, "simdgroup_barrier(mem_flags::mem_threadgroup);\n"); break;
+                case SSIR_BARRIER_IMAGE: mb_append(&c->sb, "threadgroup_barrier(mem_flags::mem_texture);\n"); break;
+            }
+            break;
+
+        case SSIR_OP_DISCARD:
+            mb_indent(&c->sb);
+            mb_append(&c->sb, "discard_fragment();\n");
+            break;
+
+        case SSIR_OP_INSERT_DYN:
+            mb_indent(&c->sb);
+            emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+            mb_append(&c->sb, " = ");
+            emit_expr(c, inst->operands[0], &c->sb);
+            mb_append(&c->sb, ";\n");
+            mb_indent(&c->sb);
+            mb_append(&c->sb, get_name(c, inst->result));
+            mb_append(&c->sb, "[");
+            emit_expr(c, inst->operands[2], &c->sb);
+            mb_append(&c->sb, "] = ");
+            emit_expr(c, inst->operands[1], &c->sb);
+            mb_append(&c->sb, ";\n");
+            break;
+
+        case SSIR_OP_LOOP_MERGE:
+        case SSIR_OP_SELECTION_MERGE:
+        case SSIR_OP_UNREACHABLE:
+            break;
+
+        default:
+            if (inst->result != 0) {
+                SsirType *rt = ssir_get_type((SsirModule *)c->mod, inst->type);
+                bool is_void = (rt && rt->kind == SSIR_TYPE_VOID);
+                bool has_side_effects = (inst->op == SSIR_OP_CALL ||
+                                         inst->op == SSIR_OP_ATOMIC);
+                bool must_materialize = (inst->op == SSIR_OP_PHI || has_side_effects);
+                uint32_t uses = (c->use_counts && inst->result < c->mod->next_id)
+                                    ? c->use_counts[inst->result]
+                                    : 2;
+                if (is_void && !has_side_effects) break;
+                if (must_materialize || uses > 1) {
+                    mb_indent(&c->sb);
+                    if (!is_void) {
+                        emit_decl(c, inst->type, get_name(c, inst->result), &c->sb);
+                        mb_append(&c->sb, " = ");
+                    }
+                    emit_expr(c, inst->result, &c->sb);
+                    mb_append(&c->sb, ";\n");
+                    if (!is_void)
+                        set_name(c, inst->result, get_name(c, inst->result));
+                }
+            }
+            break;
     }
 }
 
@@ -1495,8 +1523,12 @@ static void emit_struct_def(MslCtx *c, SsirType *t) {
         mb_append(&c->sb, "    ");
         char mname_buf[32];
         const char *mname = (t->struc.member_names && t->struc.member_names[i])
-            ? t->struc.member_names[i] : NULL;
-        if (!mname) { snprintf(mname_buf, sizeof(mname_buf), "member%u", i); mname = mname_buf; }
+                                ? t->struc.member_names[i]
+                                : NULL;
+        if (!mname) {
+            snprintf(mname_buf, sizeof(mname_buf), "member%u", i);
+            mname = mname_buf;
+        }
         SsirType *mt = ssir_get_type((SsirModule *)c->mod, t->struc.members[i]);
         if (mt && mt->kind == SSIR_TYPE_RUNTIME_ARRAY) {
             /* Flexible array member */
@@ -1557,19 +1589,19 @@ static bool is_vertex_output(const SsirModule *mod, uint32_t global_id) {
 static bool valid_input_for_stage(SsirStage stage, SsirBuiltinVar bv) {
     if (bv == SSIR_BUILTIN_NONE) return true;
     switch (stage) {
-    case SSIR_STAGE_VERTEX:
-        return bv == SSIR_BUILTIN_VERTEX_INDEX || bv == SSIR_BUILTIN_INSTANCE_INDEX;
-    case SSIR_STAGE_FRAGMENT:
-        return bv == SSIR_BUILTIN_POSITION || bv == SSIR_BUILTIN_FRONT_FACING ||
-               bv == SSIR_BUILTIN_SAMPLE_INDEX || bv == SSIR_BUILTIN_SAMPLE_MASK;
-    case SSIR_STAGE_COMPUTE:
-        return bv == SSIR_BUILTIN_LOCAL_INVOCATION_ID || bv == SSIR_BUILTIN_LOCAL_INVOCATION_INDEX ||
-               bv == SSIR_BUILTIN_GLOBAL_INVOCATION_ID || bv == SSIR_BUILTIN_WORKGROUP_ID ||
-               bv == SSIR_BUILTIN_NUM_WORKGROUPS;
-    case SSIR_STAGE_GEOMETRY:
-    case SSIR_STAGE_TESS_CONTROL:
-    case SSIR_STAGE_TESS_EVAL:
-        return false;
+        case SSIR_STAGE_VERTEX:
+            return bv == SSIR_BUILTIN_VERTEX_INDEX || bv == SSIR_BUILTIN_INSTANCE_INDEX;
+        case SSIR_STAGE_FRAGMENT:
+            return bv == SSIR_BUILTIN_POSITION || bv == SSIR_BUILTIN_FRONT_FACING ||
+                   bv == SSIR_BUILTIN_SAMPLE_INDEX || bv == SSIR_BUILTIN_SAMPLE_MASK;
+        case SSIR_STAGE_COMPUTE:
+            return bv == SSIR_BUILTIN_LOCAL_INVOCATION_ID || bv == SSIR_BUILTIN_LOCAL_INVOCATION_INDEX ||
+                   bv == SSIR_BUILTIN_GLOBAL_INVOCATION_ID || bv == SSIR_BUILTIN_WORKGROUP_ID ||
+                   bv == SSIR_BUILTIN_NUM_WORKGROUPS;
+        case SSIR_STAGE_GEOMETRY:
+        case SSIR_STAGE_TESS_CONTROL:
+        case SSIR_STAGE_TESS_EVAL:
+            return false;
     }
     return false;
 }
@@ -1577,22 +1609,22 @@ static bool valid_input_for_stage(SsirStage stage, SsirBuiltinVar bv) {
 /* Filter: is this output builtin/global valid for the given stage? */
 static bool valid_output_for_stage(SsirStage stage, SsirBuiltinVar bv, const SsirModule *mod, uint32_t global_id) {
     switch (stage) {
-    case SSIR_STAGE_VERTEX:
-        return true; /* vertex can output position, varyings */
-    case SSIR_STAGE_FRAGMENT:
-        if (bv == SSIR_BUILTIN_POSITION) return false; /* position is vertex-only output */
-        if (bv == SSIR_BUILTIN_FRAG_DEPTH || bv == SSIR_BUILTIN_SAMPLE_MASK) return true;
-        if (bv == SSIR_BUILTIN_NONE) {
-            /* Location-based: skip if this is actually a vertex varying */
-            return !is_vertex_output(mod, global_id);
-        }
-        return false;
-    case SSIR_STAGE_COMPUTE:
-        return false; /* compute has no outputs */
-    case SSIR_STAGE_GEOMETRY:
-    case SSIR_STAGE_TESS_CONTROL:
-    case SSIR_STAGE_TESS_EVAL:
-        return false;
+        case SSIR_STAGE_VERTEX:
+            return true; /* vertex can output position, varyings */
+        case SSIR_STAGE_FRAGMENT:
+            if (bv == SSIR_BUILTIN_POSITION) return false; /* position is vertex-only output */
+            if (bv == SSIR_BUILTIN_FRAG_DEPTH || bv == SSIR_BUILTIN_SAMPLE_MASK) return true;
+            if (bv == SSIR_BUILTIN_NONE) {
+                /* Location-based: skip if this is actually a vertex varying */
+                return !is_vertex_output(mod, global_id);
+            }
+            return false;
+        case SSIR_STAGE_COMPUTE:
+            return false; /* compute has no outputs */
+        case SSIR_STAGE_GEOMETRY:
+        case SSIR_STAGE_TESS_CONTROL:
+        case SSIR_STAGE_TESS_EVAL:
+            return false;
     }
     return false;
 }
@@ -1764,12 +1796,12 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
 
         /* Entry point qualifier */
         switch (ep->stage) {
-        case SSIR_STAGE_VERTEX:  mb_append(&c->sb, "vertex "); break;
-        case SSIR_STAGE_FRAGMENT: mb_append(&c->sb, "fragment "); break;
-        case SSIR_STAGE_COMPUTE: mb_append(&c->sb, "kernel "); break;
-        case SSIR_STAGE_GEOMETRY: mb_append(&c->sb, "kernel "); break;
-        case SSIR_STAGE_TESS_CONTROL: mb_append(&c->sb, "kernel "); break;
-        case SSIR_STAGE_TESS_EVAL: mb_append(&c->sb, "vertex "); break;
+            case SSIR_STAGE_VERTEX: mb_append(&c->sb, "vertex "); break;
+            case SSIR_STAGE_FRAGMENT: mb_append(&c->sb, "fragment "); break;
+            case SSIR_STAGE_COMPUTE: mb_append(&c->sb, "kernel "); break;
+            case SSIR_STAGE_GEOMETRY: mb_append(&c->sb, "kernel "); break;
+            case SSIR_STAGE_TESS_CONTROL: mb_append(&c->sb, "kernel "); break;
+            case SSIR_STAGE_TESS_EVAL: mb_append(&c->sb, "vertex "); break;
         }
 
         /* Return type */
@@ -1804,58 +1836,58 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
             mb_append(&c->sb, "    ");
 
             switch (space) {
-            case SSIR_ADDR_UNIFORM:
-                mb_append(&c->sb, "constant ");
-                if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
-                    emit_type(c, pointee_id, &c->sb);
-                    mb_appendf(&c->sb, "& %s", get_name(c, g->id));
-                } else {
-                    emit_type(c, pointee_id, &c->sb);
-                    mb_appendf(&c->sb, "& %s", get_name(c, g->id));
-                }
-                mb_appendf(&c->sb, " [[buffer(%u)]]", g->has_binding ? g->binding : 0);
-                break;
+                case SSIR_ADDR_UNIFORM:
+                    mb_append(&c->sb, "constant ");
+                    if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
+                        emit_type(c, pointee_id, &c->sb);
+                        mb_appendf(&c->sb, "& %s", get_name(c, g->id));
+                    } else {
+                        emit_type(c, pointee_id, &c->sb);
+                        mb_appendf(&c->sb, "& %s", get_name(c, g->id));
+                    }
+                    mb_appendf(&c->sb, " [[buffer(%u)]]", g->has_binding ? g->binding : 0);
+                    break;
 
-            case SSIR_ADDR_STORAGE:
-                mb_appendf(&c->sb, "%sdevice ", g->non_writable ? "const " : "");
-                if (pointee && pointee->kind == SSIR_TYPE_RUNTIME_ARRAY) {
-                    emit_type(c, pointee->runtime_array.elem, &c->sb);
+                case SSIR_ADDR_STORAGE:
+                    mb_appendf(&c->sb, "%sdevice ", g->non_writable ? "const " : "");
+                    if (pointee && pointee->kind == SSIR_TYPE_RUNTIME_ARRAY) {
+                        emit_type(c, pointee->runtime_array.elem, &c->sb);
+                        mb_appendf(&c->sb, "* %s", get_name(c, g->id));
+                    } else if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
+                        emit_type(c, pointee_id, &c->sb);
+                        mb_appendf(&c->sb, "& %s", get_name(c, g->id));
+                    } else {
+                        emit_type(c, pointee_id, &c->sb);
+                        mb_appendf(&c->sb, "& %s", get_name(c, g->id));
+                    }
+                    mb_appendf(&c->sb, " [[buffer(%u)]]", g->has_binding ? g->binding : 0);
+                    break;
+
+                case SSIR_ADDR_UNIFORM_CONSTANT:
+                    /* Textures and samplers */
+                    emit_type(c, pointee_id, &c->sb);
+                    mb_appendf(&c->sb, " %s", get_name(c, g->id));
+                    if (pointee && (pointee->kind == SSIR_TYPE_TEXTURE ||
+                                       pointee->kind == SSIR_TYPE_TEXTURE_STORAGE ||
+                                       pointee->kind == SSIR_TYPE_TEXTURE_DEPTH)) {
+                        mb_appendf(&c->sb, " [[texture(%u)]]", g->has_binding ? g->binding : 0);
+                    } else if (pointee && (pointee->kind == SSIR_TYPE_SAMPLER ||
+                                              pointee->kind == SSIR_TYPE_SAMPLER_COMPARISON)) {
+                        mb_appendf(&c->sb, " [[sampler(%u)]]", g->has_binding ? g->binding : 0);
+                    }
+                    break;
+
+                case SSIR_ADDR_WORKGROUP:
+                    /* Threadgroup parameters */
+                    mb_append(&c->sb, "threadgroup ");
+                    emit_type(c, pointee_id, &c->sb);
                     mb_appendf(&c->sb, "* %s", get_name(c, g->id));
-                } else if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
+                    break;
+
+                default:
                     emit_type(c, pointee_id, &c->sb);
-                    mb_appendf(&c->sb, "& %s", get_name(c, g->id));
-                } else {
-                    emit_type(c, pointee_id, &c->sb);
-                    mb_appendf(&c->sb, "& %s", get_name(c, g->id));
-                }
-                mb_appendf(&c->sb, " [[buffer(%u)]]", g->has_binding ? g->binding : 0);
-                break;
-
-            case SSIR_ADDR_UNIFORM_CONSTANT:
-                /* Textures and samplers */
-                emit_type(c, pointee_id, &c->sb);
-                mb_appendf(&c->sb, " %s", get_name(c, g->id));
-                if (pointee && (pointee->kind == SSIR_TYPE_TEXTURE ||
-                                pointee->kind == SSIR_TYPE_TEXTURE_STORAGE ||
-                                pointee->kind == SSIR_TYPE_TEXTURE_DEPTH)) {
-                    mb_appendf(&c->sb, " [[texture(%u)]]", g->has_binding ? g->binding : 0);
-                } else if (pointee && (pointee->kind == SSIR_TYPE_SAMPLER ||
-                                       pointee->kind == SSIR_TYPE_SAMPLER_COMPARISON)) {
-                    mb_appendf(&c->sb, " [[sampler(%u)]]", g->has_binding ? g->binding : 0);
-                }
-                break;
-
-            case SSIR_ADDR_WORKGROUP:
-                /* Threadgroup parameters */
-                mb_append(&c->sb, "threadgroup ");
-                emit_type(c, pointee_id, &c->sb);
-                mb_appendf(&c->sb, "* %s", get_name(c, g->id));
-                break;
-
-            default:
-                emit_type(c, pointee_id, &c->sb);
-                mb_appendf(&c->sb, " %s", get_name(c, g->id));
-                break;
+                    mb_appendf(&c->sb, " %s", get_name(c, g->id));
+                    break;
             }
         }
 
@@ -1939,7 +1971,7 @@ static void emit_function(MslCtx *c, SsirFunction *fn) {
     if (is_entry && c->output_field_count > 0) {
         mb_indent(&c->sb);
         mb_appendf(&c->sb, "%s_out _out = {};\n",
-                   msl_entry_name(ep->name ? ep->name : "entry"));
+            msl_entry_name(ep->name ? ep->name : "entry"));
     }
 
     /* Local variables */
@@ -2055,9 +2087,9 @@ static void assign_names(MslCtx *c) {
  * ============================================================================ */
 
 SsirToMslResult ssir_to_msl(const SsirModule *mod,
-                              const SsirToMslOptions *opts,
-                              char **out_msl,
-                              char **out_error) {
+    const SsirToMslOptions *opts,
+    char **out_msl,
+    char **out_error) {
     if (!mod || !out_msl) {
         if (out_error) *out_error = strdup("Invalid input: null module or output pointer");
         return SSIR_TO_MSL_ERR_INVALID_INPUT;
@@ -2121,11 +2153,11 @@ void ssir_to_msl_free(void *p) {
 
 const char *ssir_to_msl_result_string(SsirToMslResult result) {
     switch (result) {
-    case SSIR_TO_MSL_OK:                return "Success";
-    case SSIR_TO_MSL_ERR_INVALID_INPUT: return "Invalid input";
-    case SSIR_TO_MSL_ERR_UNSUPPORTED:   return "Unsupported feature";
-    case SSIR_TO_MSL_ERR_INTERNAL:      return "Internal error";
-    case SSIR_TO_MSL_ERR_OOM:           return "Out of memory";
-    default:                            return "Unknown error";
+        case SSIR_TO_MSL_OK: return "Success";
+        case SSIR_TO_MSL_ERR_INVALID_INPUT: return "Invalid input";
+        case SSIR_TO_MSL_ERR_UNSUPPORTED: return "Unsupported feature";
+        case SSIR_TO_MSL_ERR_INTERNAL: return "Internal error";
+        case SSIR_TO_MSL_ERR_OOM: return "Out of memory";
+        default: return "Unknown error";
     }
 }

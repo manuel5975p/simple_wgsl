@@ -16,11 +16,11 @@ extern "C" {
 // ============================================================================
 
 class VulkanGraphicsSceneTest : public ::testing::Test {
-protected:
+  protected:
     static void SetUpTestSuite() {
         try {
             ctx_ = std::make_unique<vk_graphics::GraphicsContext>();
-        } catch (const std::exception& e) {
+        } catch (const std::exception &e) {
             GTEST_SKIP() << "Vulkan graphics not available: " << e.what();
         }
     }
@@ -50,11 +50,11 @@ struct Pos2D {
 
 static const std::vector<Pos2D> kFullScreenTri = {
     {-1.0f, -1.0f},
-    { 3.0f, -1.0f},
-    {-1.0f,  3.0f},
+    {3.0f, -1.0f},
+    {-1.0f, 3.0f},
 };
 
-inline void unpackRGBA(uint32_t pixel, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a) {
+inline void unpackRGBA(uint32_t pixel, uint8_t &r, uint8_t &g, uint8_t &b, uint8_t &a) {
     r = (pixel >> 0) & 0xFF;
     g = (pixel >> 8) & 0xFF;
     b = (pixel >> 16) & 0xFF;
@@ -66,7 +66,7 @@ inline void unpackRGBA(uint32_t pixel, uint8_t& r, uint8_t& g, uint8_t& b, uint8
 // ============================================================================
 
 TEST_F(VulkanGraphicsSceneTest, Outdoor3DSceneWithBloom) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -86,7 +86,7 @@ TEST_F(VulkanGraphicsSceneTest, Outdoor3DSceneWithBloom) {
     //  - Green terrain (y=0 plane, z in [0,50])
     //  - Blue sea (y=0 plane, z>50) with glossy sun reflection
     //  - 3 trees (cylinder trunk + sphere canopy), inlined intersections
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         @fragment fn main(@location(0) uv: vec2f) -> @location(0) vec4f {
             // Camera ray
             let ndx = (uv.x - 0.5) * 2.0;
@@ -415,7 +415,7 @@ TEST_F(VulkanGraphicsSceneTest, Outdoor3DSceneWithBloom) {
 
 TEST_F(VulkanGraphicsSceneTest, FragmentStructParam_PassthroughColor) {
     // Vertex shader outputs color via a struct (VsOut) with @location(0)
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -431,7 +431,7 @@ TEST_F(VulkanGraphicsSceneTest, FragmentStructParam_PassthroughColor) {
     )";
 
     // Fragment shader receives color via a struct parameter (FsIn) with @location(0)
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         struct FsIn {
             @location(0) col: vec4f,
         };
@@ -474,7 +474,7 @@ TEST_F(VulkanGraphicsSceneTest, FragmentStructParam_PassthroughColor) {
 
 // Fragment struct with multiple location fields
 TEST_F(VulkanGraphicsSceneTest, FragmentStructParam_MultipleLocations) {
-    const char* vs_source = R"(
+    const char *vs_source = R"(
         struct VIn { @location(0) pos: vec2f };
         struct VOut {
             @builtin(position) pos: vec4f,
@@ -491,7 +491,7 @@ TEST_F(VulkanGraphicsSceneTest, FragmentStructParam_MultipleLocations) {
     )";
 
     // Fragment uses the uv field to modulate color
-    const char* fs_source = R"(
+    const char *fs_source = R"(
         struct FsIn {
             @location(0) col: vec4f,
             @location(1) uv: vec2f,

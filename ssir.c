@@ -11,8 +11,8 @@
  * Internal Helpers
  * ============================================================================ */
 
-//data nonnull
-//capacity nonnull
+// data nonnull
+// capacity nonnull
 static int ssir_grow_array(void **data, uint32_t *capacity, uint32_t elem_size, uint32_t needed) {
     wgsl_compiler_assert(data != NULL, "ssir_grow_array: data is NULL");
     wgsl_compiler_assert(capacity != NULL, "ssir_grow_array: capacity is NULL");
@@ -26,7 +26,7 @@ static int ssir_grow_array(void **data, uint32_t *capacity, uint32_t elem_size, 
     return 1;
 }
 
-//s allowed to be NULL
+// s allowed to be NULL
 static char *ssir_strdup(const char *s) {
     if (!s) return NULL;
     size_t len = strlen(s) + 1;
@@ -39,29 +39,29 @@ static char *ssir_strdup(const char *s) {
  * ID Lookup Cache (forward declarations for use in getters)
  * ============================================================================ */
 
-#define STAG_TYPE    1
-#define STAG_CONST   2
-#define STAG_GLOBAL  3
-#define STAG_FUNC    4
-#define STAG_MASK    7u
+#define STAG_TYPE 1
+#define STAG_CONST 2
+#define STAG_GLOBAL 3
+#define STAG_FUNC 4
+#define STAG_MASK 7u
 
 typedef struct {
     uintptr_t *entries; /* Tagged pointers: (ptr | tag) */
     uint32_t cap;
 } SsirLookupCache;
 
-//ptr allowed to be NULL
+// ptr allowed to be NULL
 static uintptr_t stag_encode(void *ptr, int tag) {
     return (uintptr_t)ptr | (uintptr_t)tag;
 }
 
-//entry is not a pointer parameter
+// entry is not a pointer parameter
 static void *stag_decode(uintptr_t entry, int expected_tag) {
     if ((entry & STAG_MASK) != (uintptr_t)expected_tag) return NULL;
     return (void *)(entry & ~(uintptr_t)STAG_MASK);
 }
 
-//mod nonnull
+// mod nonnull
 static void ssir_module_free_lookup(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_module_free_lookup: mod is NULL");
     if (mod->_lookup_cache) {
@@ -84,7 +84,7 @@ SsirModule *ssir_module_create(void) {
     return mod;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 static void ssir_free_type(SsirType *t) {
     if (!t) return;
     if (t->kind == SSIR_TYPE_STRUCT) {
@@ -101,7 +101,7 @@ static void ssir_free_type(SsirType *t) {
     }
 }
 
-//c allowed to be NULL
+// c allowed to be NULL
 static void ssir_free_constant(SsirConstant *c) {
     if (!c) return;
     if (c->kind == SSIR_CONST_COMPOSITE) {
@@ -109,13 +109,13 @@ static void ssir_free_constant(SsirConstant *c) {
     }
 }
 
-//g allowed to be NULL
+// g allowed to be NULL
 static void ssir_free_global(SsirGlobalVar *g) {
     if (!g) return;
     SSIR_FREE((void *)g->name);
 }
 
-//b allowed to be NULL
+// b allowed to be NULL
 static void ssir_free_block(SsirBlock *b) {
     if (!b) return;
     SSIR_FREE((void *)b->name);
@@ -125,7 +125,7 @@ static void ssir_free_block(SsirBlock *b) {
     SSIR_FREE(b->insts);
 }
 
-//f allowed to be NULL
+// f allowed to be NULL
 static void ssir_free_function(SsirFunction *f) {
     if (!f) return;
     SSIR_FREE((void *)f->name);
@@ -143,14 +143,14 @@ static void ssir_free_function(SsirFunction *f) {
     SSIR_FREE(f->blocks);
 }
 
-//ep allowed to be NULL
+// ep allowed to be NULL
 static void ssir_free_entry_point(SsirEntryPoint *ep) {
     if (!ep) return;
     SSIR_FREE((void *)ep->name);
     SSIR_FREE(ep->interface);
 }
 
-//mod allowed to be NULL
+// mod allowed to be NULL
 void ssir_module_destroy(SsirModule *mod) {
     if (!mod) return;
 
@@ -189,14 +189,14 @@ void ssir_module_destroy(SsirModule *mod) {
     SSIR_FREE(mod);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_module_alloc_id(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_module_alloc_id: mod is NULL");
     return mod->next_id++;
 }
 
-//mod allowed to be NULL
-//name allowed to be NULL
+// mod allowed to be NULL
+// name allowed to be NULL
 void ssir_set_name(SsirModule *mod, uint32_t id, const char *name) {
     if (!mod || !name || !*name) return;
     if (mod->name_count >= mod->name_capacity) {
@@ -211,7 +211,7 @@ void ssir_set_name(SsirModule *mod, uint32_t id, const char *name) {
     mod->name_count++;
 }
 
-//mod allowed to be NULL
+// mod allowed to be NULL
 void ssir_module_set_clip_space(SsirModule *mod, SsirClipSpaceConvention convention) {
     if (mod) mod->clip_space = convention;
 }
@@ -220,13 +220,13 @@ void ssir_module_set_clip_space(SsirModule *mod, SsirClipSpaceConvention convent
  * Type API - Internal
  * ============================================================================ */
 
-//mod nonnull
-//t nonnull
+// mod nonnull
+// t nonnull
 static uint32_t ssir_add_type(SsirModule *mod, SsirType *t) {
     wgsl_compiler_assert(mod != NULL, "ssir_add_type: mod is NULL");
     wgsl_compiler_assert(t != NULL, "ssir_add_type: t is NULL");
     if (!ssir_grow_array((void **)&mod->types, &mod->type_capacity,
-                         sizeof(SsirType), mod->type_count + 1)) {
+            sizeof(SsirType), mod->type_count + 1)) {
         return 0;
     }
     uint32_t id = ssir_module_alloc_id(mod);
@@ -236,7 +236,7 @@ static uint32_t ssir_add_type(SsirModule *mod, SsirType *t) {
 }
 
 /* Find existing type that matches - returns type ID (not array index) */
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_type(SsirModule *mod, SsirTypeKind kind) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
@@ -245,7 +245,7 @@ static uint32_t ssir_find_type(SsirModule *mod, SsirTypeKind kind) {
     return UINT32_MAX;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_vec_type(SsirModule *mod, uint32_t elem, uint8_t size) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_vec_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
@@ -258,7 +258,7 @@ static uint32_t ssir_find_vec_type(SsirModule *mod, uint32_t elem, uint8_t size)
     return UINT32_MAX;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_mat_type(SsirModule *mod, uint32_t elem, uint8_t cols, uint8_t rows) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_mat_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
@@ -272,7 +272,7 @@ static uint32_t ssir_find_mat_type(SsirModule *mod, uint32_t elem, uint8_t cols,
     return UINT32_MAX;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_array_type(SsirModule *mod, uint32_t elem, uint32_t length) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_array_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
@@ -285,7 +285,7 @@ static uint32_t ssir_find_array_type(SsirModule *mod, uint32_t elem, uint32_t le
     return UINT32_MAX;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_runtime_array_type(SsirModule *mod, uint32_t elem) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_runtime_array_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
@@ -297,7 +297,7 @@ static uint32_t ssir_find_runtime_array_type(SsirModule *mod, uint32_t elem) {
     return UINT32_MAX;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_ptr_type(SsirModule *mod, uint32_t pointee, SsirAddressSpace space) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_ptr_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
@@ -310,7 +310,7 @@ static uint32_t ssir_find_ptr_type(SsirModule *mod, uint32_t pointee, SsirAddres
     return UINT32_MAX;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_texture_type(SsirModule *mod, SsirTextureDim dim, uint32_t sampled_type) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_texture_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
@@ -323,9 +323,9 @@ static uint32_t ssir_find_texture_type(SsirModule *mod, SsirTextureDim dim, uint
     return UINT32_MAX;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_texture_storage_type(SsirModule *mod, SsirTextureDim dim,
-                                               uint32_t format, SsirAccessMode access) {
+    uint32_t format, SsirAccessMode access) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_texture_storage_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
         if (mod->types[i].kind == SSIR_TYPE_TEXTURE_STORAGE &&
@@ -338,7 +338,7 @@ static uint32_t ssir_find_texture_storage_type(SsirModule *mod, SsirTextureDim d
     return UINT32_MAX;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_find_texture_depth_type(SsirModule *mod, SsirTextureDim dim) {
     wgsl_compiler_assert(mod != NULL, "ssir_find_texture_depth_type: mod is NULL");
     for (uint32_t i = 0; i < mod->type_count; i++) {
@@ -354,189 +354,189 @@ static uint32_t ssir_find_texture_depth_type(SsirModule *mod, SsirTextureDim dim
  * Type API - Public
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_void(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_void: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_VOID);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_VOID };
+    SsirType t = {.kind = SSIR_TYPE_VOID};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_bool(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_bool: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_BOOL);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_BOOL };
+    SsirType t = {.kind = SSIR_TYPE_BOOL};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_i32(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_i32: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_I32);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_I32 };
+    SsirType t = {.kind = SSIR_TYPE_I32};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_u32(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_u32: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_U32);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_U32 };
+    SsirType t = {.kind = SSIR_TYPE_U32};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_f32(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_f32: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_F32);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_F32 };
+    SsirType t = {.kind = SSIR_TYPE_F32};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_f16(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_f16: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_F16);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_F16 };
+    SsirType t = {.kind = SSIR_TYPE_F16};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_f64(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_f64: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_F64);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_F64 };
+    SsirType t = {.kind = SSIR_TYPE_F64};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_i8(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_i8: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_I8);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_I8 };
+    SsirType t = {.kind = SSIR_TYPE_I8};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_u8(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_u8: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_U8);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_U8 };
+    SsirType t = {.kind = SSIR_TYPE_U8};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_i16(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_i16: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_I16);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_I16 };
+    SsirType t = {.kind = SSIR_TYPE_I16};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_u16(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_u16: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_U16);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_U16 };
+    SsirType t = {.kind = SSIR_TYPE_U16};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_i64(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_i64: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_I64);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_I64 };
+    SsirType t = {.kind = SSIR_TYPE_I64};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_u64(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_u64: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_U64);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_U64 };
+    SsirType t = {.kind = SSIR_TYPE_U64};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_vec(SsirModule *mod, uint32_t elem_type, uint8_t size) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_vec: mod is NULL");
     uint32_t id = ssir_find_vec_type(mod, elem_type, size);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_VEC };
+    SsirType t = {.kind = SSIR_TYPE_VEC};
     t.vec.elem = elem_type;
     t.vec.size = size;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_mat(SsirModule *mod, uint32_t col_type, uint8_t cols, uint8_t rows) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_mat: mod is NULL");
     uint32_t id = ssir_find_mat_type(mod, col_type, cols, rows);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_MAT };
+    SsirType t = {.kind = SSIR_TYPE_MAT};
     t.mat.elem = col_type;
     t.mat.cols = cols;
     t.mat.rows = rows;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_array(SsirModule *mod, uint32_t elem_type, uint32_t length) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_array: mod is NULL");
     uint32_t id = ssir_find_array_type(mod, elem_type, length);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_ARRAY };
+    SsirType t = {.kind = SSIR_TYPE_ARRAY};
     t.array.elem = elem_type;
     t.array.length = length;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_array_stride(SsirModule *mod, uint32_t elem_type, uint32_t length, uint32_t stride) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_array_stride: mod is NULL");
-    SsirType t = { .kind = SSIR_TYPE_ARRAY };
+    SsirType t = {.kind = SSIR_TYPE_ARRAY};
     t.array.elem = elem_type;
     t.array.length = length;
     t.array.stride = stride;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_runtime_array(SsirModule *mod, uint32_t elem_type) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_runtime_array: mod is NULL");
     uint32_t id = ssir_find_runtime_array_type(mod, elem_type);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_RUNTIME_ARRAY };
+    SsirType t = {.kind = SSIR_TYPE_RUNTIME_ARRAY};
     t.runtime_array.elem = elem_type;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
-//name allowed to be NULL
-//members allowed to be NULL (if member_count is 0)
-//offsets allowed to be NULL
-//member_names allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
+// members allowed to be NULL (if member_count is 0)
+// offsets allowed to be NULL
+// member_names allowed to be NULL
 uint32_t ssir_type_struct_named(SsirModule *mod, const char *name,
-                                const uint32_t *members, uint32_t member_count,
-                                const uint32_t *offsets,
-                                const char *const *member_names) {
+    const uint32_t *members, uint32_t member_count,
+    const uint32_t *offsets,
+    const char *const *member_names) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_struct_named: mod is NULL");
     /* Structs are not deduplicated (they can have the same layout but different names) */
-    SsirType t = { .kind = SSIR_TYPE_STRUCT };
+    SsirType t = {.kind = SSIR_TYPE_STRUCT};
     t.struc.name = ssir_strdup(name);
     t.struc.member_names = NULL;
     if (member_count > 0) {
@@ -565,81 +565,81 @@ uint32_t ssir_type_struct_named(SsirModule *mod, const char *name,
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
-//name allowed to be NULL
-//members allowed to be NULL (if member_count is 0)
-//offsets allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
+// members allowed to be NULL (if member_count is 0)
+// offsets allowed to be NULL
 uint32_t ssir_type_struct(SsirModule *mod, const char *name,
-                          const uint32_t *members, uint32_t member_count,
-                          const uint32_t *offsets) {
+    const uint32_t *members, uint32_t member_count,
+    const uint32_t *offsets) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_struct: mod is NULL");
     return ssir_type_struct_named(mod, name, members, member_count, offsets, NULL);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_ptr(SsirModule *mod, uint32_t pointee_type, SsirAddressSpace space) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_ptr: mod is NULL");
     uint32_t id = ssir_find_ptr_type(mod, pointee_type, space);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_PTR };
+    SsirType t = {.kind = SSIR_TYPE_PTR};
     t.ptr.pointee = pointee_type;
     t.ptr.space = space;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_sampler(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_sampler: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_SAMPLER);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_SAMPLER };
+    SsirType t = {.kind = SSIR_TYPE_SAMPLER};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_sampler_comparison(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_sampler_comparison: mod is NULL");
     uint32_t id = ssir_find_type(mod, SSIR_TYPE_SAMPLER_COMPARISON);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_SAMPLER_COMPARISON };
+    SsirType t = {.kind = SSIR_TYPE_SAMPLER_COMPARISON};
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_texture(SsirModule *mod, SsirTextureDim dim, uint32_t sampled_type) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_texture: mod is NULL");
     uint32_t id = ssir_find_texture_type(mod, dim, sampled_type);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_TEXTURE };
+    SsirType t = {.kind = SSIR_TYPE_TEXTURE};
     t.texture.dim = dim;
     t.texture.sampled_type = sampled_type;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_texture_storage(SsirModule *mod, SsirTextureDim dim,
-                                   uint32_t format, SsirAccessMode access) {
+    uint32_t format, SsirAccessMode access) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_texture_storage: mod is NULL");
     uint32_t id = ssir_find_texture_storage_type(mod, dim, format, access);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_TEXTURE_STORAGE };
+    SsirType t = {.kind = SSIR_TYPE_TEXTURE_STORAGE};
     t.texture_storage.dim = dim;
     t.texture_storage.format = format;
     t.texture_storage.access = access;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_texture_depth(SsirModule *mod, SsirTextureDim dim) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_texture_depth: mod is NULL");
     uint32_t id = ssir_find_texture_depth_type(mod, dim);
     if (id != UINT32_MAX) return id;
-    SsirType t = { .kind = SSIR_TYPE_TEXTURE_DEPTH };
+    SsirType t = {.kind = SSIR_TYPE_TEXTURE_DEPTH};
     t.texture_depth.dim = dim;
     return ssir_add_type(mod, &t);
 }
 
-//mod nonnull
+// mod nonnull
 SsirType *ssir_get_type(SsirModule *mod, uint32_t type_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_get_type: mod is NULL");
     if (mod->_lookup_cache) {
@@ -660,7 +660,7 @@ SsirType *ssir_get_type(SsirModule *mod, uint32_t type_id) {
  * Type Classification Helpers
  * ============================================================================ */
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_scalar(const SsirType *t) {
     if (!t) return false;
     return t->kind == SSIR_TYPE_BOOL ||
@@ -670,7 +670,7 @@ bool ssir_type_is_scalar(const SsirType *t) {
            t->kind == SSIR_TYPE_F16;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_integer(const SsirType *t) {
     if (!t) return false;
     return t->kind == SSIR_TYPE_I32 || t->kind == SSIR_TYPE_U32 ||
@@ -679,51 +679,51 @@ bool ssir_type_is_integer(const SsirType *t) {
            t->kind == SSIR_TYPE_I64 || t->kind == SSIR_TYPE_U64;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_signed(const SsirType *t) {
     if (!t) return false;
     return t->kind == SSIR_TYPE_I32 || t->kind == SSIR_TYPE_I8 ||
            t->kind == SSIR_TYPE_I16 || t->kind == SSIR_TYPE_I64;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_unsigned(const SsirType *t) {
     if (!t) return false;
     return t->kind == SSIR_TYPE_U32 || t->kind == SSIR_TYPE_U8 ||
            t->kind == SSIR_TYPE_U16 || t->kind == SSIR_TYPE_U64;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_float(const SsirType *t) {
     if (!t) return false;
     return t->kind == SSIR_TYPE_F32 || t->kind == SSIR_TYPE_F16 || t->kind == SSIR_TYPE_F64;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_bool(const SsirType *t) {
     if (!t) return false;
     return t->kind == SSIR_TYPE_BOOL;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_vector(const SsirType *t) {
     if (!t) return false;
     return t->kind == SSIR_TYPE_VEC;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_matrix(const SsirType *t) {
     if (!t) return false;
     return t->kind == SSIR_TYPE_MAT;
 }
 
-//t allowed to be NULL
+// t allowed to be NULL
 bool ssir_type_is_numeric(const SsirType *t) {
     if (!t) return false;
     return ssir_type_is_integer(t) || ssir_type_is_float(t);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_type_scalar_of(SsirModule *mod, uint32_t type_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_scalar_of: mod is NULL");
     SsirType *t = ssir_get_type(mod, type_id);
@@ -745,13 +745,13 @@ uint32_t ssir_type_scalar_of(SsirModule *mod, uint32_t type_id) {
  * Constant API
  * ============================================================================ */
 
-//mod nonnull
-//c nonnull
+// mod nonnull
+// c nonnull
 static uint32_t ssir_add_constant(SsirModule *mod, SsirConstant *c) {
     wgsl_compiler_assert(mod != NULL, "ssir_add_constant: mod is NULL");
     wgsl_compiler_assert(c != NULL, "ssir_add_constant: c is NULL");
     if (!ssir_grow_array((void **)&mod->constants, &mod->constant_capacity,
-                         sizeof(SsirConstant), mod->constant_count + 1)) {
+            sizeof(SsirConstant), mod->constant_count + 1)) {
         return 0;
     }
     c->id = ssir_module_alloc_id(mod);
@@ -759,7 +759,7 @@ static uint32_t ssir_add_constant(SsirModule *mod, SsirConstant *c) {
     return c->id;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_bool(SsirModule *mod, bool val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_bool: mod is NULL");
     /* Check for existing constant */
@@ -773,12 +773,11 @@ uint32_t ssir_const_bool(SsirModule *mod, bool val) {
     SsirConstant c = {
         .type = bool_type,
         .kind = SSIR_CONST_BOOL,
-        .bool_val = val
-    };
+        .bool_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_i32(SsirModule *mod, int32_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_i32: mod is NULL");
     uint32_t i32_type = ssir_type_i32(mod);
@@ -791,12 +790,11 @@ uint32_t ssir_const_i32(SsirModule *mod, int32_t val) {
     SsirConstant c = {
         .type = i32_type,
         .kind = SSIR_CONST_I32,
-        .i32_val = val
-    };
+        .i32_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_u32(SsirModule *mod, uint32_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_u32: mod is NULL");
     uint32_t u32_type = ssir_type_u32(mod);
@@ -809,12 +807,11 @@ uint32_t ssir_const_u32(SsirModule *mod, uint32_t val) {
     SsirConstant c = {
         .type = u32_type,
         .kind = SSIR_CONST_U32,
-        .u32_val = val
-    };
+        .u32_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_f32(SsirModule *mod, float val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_f32: mod is NULL");
     uint32_t f32_type = ssir_type_f32(mod);
@@ -828,12 +825,11 @@ uint32_t ssir_const_f32(SsirModule *mod, float val) {
     SsirConstant c = {
         .type = f32_type,
         .kind = SSIR_CONST_F32,
-        .f32_val = val
-    };
+        .f32_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_f16(SsirModule *mod, uint16_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_f16: mod is NULL");
     uint32_t f16_type = ssir_type_f16(mod);
@@ -846,12 +842,11 @@ uint32_t ssir_const_f16(SsirModule *mod, uint16_t val) {
     SsirConstant c = {
         .type = f16_type,
         .kind = SSIR_CONST_F16,
-        .f16_val = val
-    };
+        .f16_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_f64(SsirModule *mod, double val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_f64: mod is NULL");
     uint32_t f64_type = ssir_type_f64(mod);
@@ -864,12 +859,11 @@ uint32_t ssir_const_f64(SsirModule *mod, double val) {
     SsirConstant c = {
         .type = f64_type,
         .kind = SSIR_CONST_F64,
-        .f64_val = val
-    };
+        .f64_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_i8(SsirModule *mod, int8_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_i8: mod is NULL");
     uint32_t i8_type = ssir_type_i8(mod);
@@ -882,12 +876,11 @@ uint32_t ssir_const_i8(SsirModule *mod, int8_t val) {
     SsirConstant c = {
         .type = i8_type,
         .kind = SSIR_CONST_I8,
-        .i8_val = val
-    };
+        .i8_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_u8(SsirModule *mod, uint8_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_u8: mod is NULL");
     uint32_t u8_type = ssir_type_u8(mod);
@@ -900,12 +893,11 @@ uint32_t ssir_const_u8(SsirModule *mod, uint8_t val) {
     SsirConstant c = {
         .type = u8_type,
         .kind = SSIR_CONST_U8,
-        .u8_val = val
-    };
+        .u8_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_i16(SsirModule *mod, int16_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_i16: mod is NULL");
     uint32_t i16_type = ssir_type_i16(mod);
@@ -918,12 +910,11 @@ uint32_t ssir_const_i16(SsirModule *mod, int16_t val) {
     SsirConstant c = {
         .type = i16_type,
         .kind = SSIR_CONST_I16,
-        .i16_val = val
-    };
+        .i16_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_u16(SsirModule *mod, uint16_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_u16: mod is NULL");
     uint32_t u16_type = ssir_type_u16(mod);
@@ -936,12 +927,11 @@ uint32_t ssir_const_u16(SsirModule *mod, uint16_t val) {
     SsirConstant c = {
         .type = u16_type,
         .kind = SSIR_CONST_U16,
-        .u16_val = val
-    };
+        .u16_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_i64(SsirModule *mod, int64_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_i64: mod is NULL");
     uint32_t i64_type = ssir_type_i64(mod);
@@ -954,12 +944,11 @@ uint32_t ssir_const_i64(SsirModule *mod, int64_t val) {
     SsirConstant c = {
         .type = i64_type,
         .kind = SSIR_CONST_I64,
-        .i64_val = val
-    };
+        .i64_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_u64(SsirModule *mod, uint64_t val) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_u64: mod is NULL");
     uint32_t u64_type = ssir_type_u64(mod);
@@ -972,15 +961,14 @@ uint32_t ssir_const_u64(SsirModule *mod, uint64_t val) {
     SsirConstant c = {
         .type = u64_type,
         .kind = SSIR_CONST_U64,
-        .u64_val = val
-    };
+        .u64_val = val};
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
-//components allowed to be NULL (if count is 0)
+// mod nonnull
+// components allowed to be NULL (if count is 0)
 uint32_t ssir_const_composite(SsirModule *mod, uint32_t type_id,
-                              const uint32_t *components, uint32_t count) {
+    const uint32_t *components, uint32_t count) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_composite: mod is NULL");
     SsirConstant c = {
         .type = type_id,
@@ -995,7 +983,7 @@ uint32_t ssir_const_composite(SsirModule *mod, uint32_t type_id,
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_null(SsirModule *mod, uint32_t type_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_null: mod is NULL");
     SsirConstant c = {
@@ -1005,7 +993,7 @@ uint32_t ssir_const_null(SsirModule *mod, uint32_t type_id) {
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_spec_bool(SsirModule *mod, bool default_val, uint32_t spec_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_spec_bool: mod is NULL");
     SsirConstant c = {
@@ -1018,7 +1006,7 @@ uint32_t ssir_const_spec_bool(SsirModule *mod, bool default_val, uint32_t spec_i
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_spec_i32(SsirModule *mod, int32_t default_val, uint32_t spec_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_spec_i32: mod is NULL");
     SsirConstant c = {
@@ -1031,7 +1019,7 @@ uint32_t ssir_const_spec_i32(SsirModule *mod, int32_t default_val, uint32_t spec
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_spec_u32(SsirModule *mod, uint32_t default_val, uint32_t spec_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_spec_u32: mod is NULL");
     SsirConstant c = {
@@ -1044,7 +1032,7 @@ uint32_t ssir_const_spec_u32(SsirModule *mod, uint32_t default_val, uint32_t spe
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_const_spec_f32(SsirModule *mod, float default_val, uint32_t spec_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_const_spec_f32: mod is NULL");
     SsirConstant c = {
@@ -1057,7 +1045,7 @@ uint32_t ssir_const_spec_f32(SsirModule *mod, float default_val, uint32_t spec_i
     return ssir_add_constant(mod, &c);
 }
 
-//mod nonnull
+// mod nonnull
 SsirConstant *ssir_get_constant(SsirModule *mod, uint32_t const_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_get_constant: mod is NULL");
     if (mod->_lookup_cache) {
@@ -1078,12 +1066,12 @@ SsirConstant *ssir_get_constant(SsirModule *mod, uint32_t const_id) {
  * Global Variable API
  * ============================================================================ */
 
-//mod nonnull
-//name allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
 uint32_t ssir_global_var(SsirModule *mod, const char *name, uint32_t ptr_type) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_var: mod is NULL");
     if (!ssir_grow_array((void **)&mod->globals, &mod->global_capacity,
-                         sizeof(SsirGlobalVar), mod->global_count + 1)) {
+            sizeof(SsirGlobalVar), mod->global_count + 1)) {
         return 0;
     }
     SsirGlobalVar *g = &mod->globals[mod->global_count++];
@@ -1094,7 +1082,7 @@ uint32_t ssir_global_var(SsirModule *mod, const char *name, uint32_t ptr_type) {
     return g->id;
 }
 
-//mod nonnull
+// mod nonnull
 SsirGlobalVar *ssir_get_global(SsirModule *mod, uint32_t global_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_get_global: mod is NULL");
     if (mod->_lookup_cache) {
@@ -1111,7 +1099,7 @@ SsirGlobalVar *ssir_get_global(SsirModule *mod, uint32_t global_id) {
     return NULL;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_group(SsirModule *mod, uint32_t global_id, uint32_t group) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_group: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1121,7 +1109,7 @@ void ssir_global_set_group(SsirModule *mod, uint32_t global_id, uint32_t group) 
     }
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_binding(SsirModule *mod, uint32_t global_id, uint32_t binding) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_binding: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1131,7 +1119,7 @@ void ssir_global_set_binding(SsirModule *mod, uint32_t global_id, uint32_t bindi
     }
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_location(SsirModule *mod, uint32_t global_id, uint32_t location) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_location: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1141,7 +1129,7 @@ void ssir_global_set_location(SsirModule *mod, uint32_t global_id, uint32_t loca
     }
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_builtin(SsirModule *mod, uint32_t global_id, SsirBuiltinVar builtin) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_builtin: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1150,7 +1138,7 @@ void ssir_global_set_builtin(SsirModule *mod, uint32_t global_id, SsirBuiltinVar
     }
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_interpolation(SsirModule *mod, uint32_t global_id, SsirInterpolation interp) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_interpolation: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1159,7 +1147,7 @@ void ssir_global_set_interpolation(SsirModule *mod, uint32_t global_id, SsirInte
     }
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_interp_sampling(SsirModule *mod, uint32_t global_id, SsirInterpolationSampling sampling) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_interp_sampling: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1168,7 +1156,7 @@ void ssir_global_set_interp_sampling(SsirModule *mod, uint32_t global_id, SsirIn
     }
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_non_writable(SsirModule *mod, uint32_t global_id, bool non_writable) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_non_writable: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1177,7 +1165,7 @@ void ssir_global_set_non_writable(SsirModule *mod, uint32_t global_id, bool non_
     }
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_invariant(SsirModule *mod, uint32_t global_id, bool invariant) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_invariant: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1186,7 +1174,7 @@ void ssir_global_set_invariant(SsirModule *mod, uint32_t global_id, bool invaria
     }
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_global_set_initializer(SsirModule *mod, uint32_t global_id, uint32_t const_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_initializer: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);
@@ -1200,12 +1188,12 @@ void ssir_global_set_initializer(SsirModule *mod, uint32_t global_id, uint32_t c
  * Function API
  * ============================================================================ */
 
-//mod nonnull
-//name allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
 uint32_t ssir_function_create(SsirModule *mod, const char *name, uint32_t return_type) {
     wgsl_compiler_assert(mod != NULL, "ssir_function_create: mod is NULL");
     if (!ssir_grow_array((void **)&mod->functions, &mod->function_capacity,
-                         sizeof(SsirFunction), mod->function_count + 1)) {
+            sizeof(SsirFunction), mod->function_count + 1)) {
         return 0;
     }
     SsirFunction *f = &mod->functions[mod->function_count++];
@@ -1216,7 +1204,7 @@ uint32_t ssir_function_create(SsirModule *mod, const char *name, uint32_t return
     return f->id;
 }
 
-//mod nonnull
+// mod nonnull
 SsirFunction *ssir_get_function(SsirModule *mod, uint32_t func_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_get_function: mod is NULL");
     if (mod->_lookup_cache) {
@@ -1233,10 +1221,10 @@ SsirFunction *ssir_get_function(SsirModule *mod, uint32_t func_id) {
     return NULL;
 }
 
-//mod nonnull
-//name allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
 uint32_t ssir_function_add_param(SsirModule *mod, uint32_t func_id,
-                                 const char *name, uint32_t type) {
+    const char *name, uint32_t type) {
     wgsl_compiler_assert(mod != NULL, "ssir_function_add_param: mod is NULL");
     SsirFunction *f = ssir_get_function(mod, func_id);
     if (!f) return 0;
@@ -1254,16 +1242,16 @@ uint32_t ssir_function_add_param(SsirModule *mod, uint32_t func_id,
     return p->id;
 }
 
-//mod nonnull
-//name allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
 uint32_t ssir_function_add_local(SsirModule *mod, uint32_t func_id,
-                                 const char *name, uint32_t ptr_type) {
+    const char *name, uint32_t ptr_type) {
     wgsl_compiler_assert(mod != NULL, "ssir_function_add_local: mod is NULL");
     SsirFunction *f = ssir_get_function(mod, func_id);
     if (!f) return 0;
 
     if (!ssir_grow_array((void **)&f->locals, &f->local_capacity,
-                         sizeof(SsirLocalVar), f->local_count + 1)) {
+            sizeof(SsirLocalVar), f->local_count + 1)) {
         return 0;
     }
 
@@ -1279,15 +1267,15 @@ uint32_t ssir_function_add_local(SsirModule *mod, uint32_t func_id,
  * Block API
  * ============================================================================ */
 
-//mod nonnull
-//name allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
 uint32_t ssir_block_create(SsirModule *mod, uint32_t func_id, const char *name) {
     wgsl_compiler_assert(mod != NULL, "ssir_block_create: mod is NULL");
     SsirFunction *f = ssir_get_function(mod, func_id);
     if (!f) return 0;
 
     if (!ssir_grow_array((void **)&f->blocks, &f->block_capacity,
-                         sizeof(SsirBlock), f->block_count + 1)) {
+            sizeof(SsirBlock), f->block_count + 1)) {
         return 0;
     }
 
@@ -1298,15 +1286,15 @@ uint32_t ssir_block_create(SsirModule *mod, uint32_t func_id, const char *name) 
     return b->id;
 }
 
-//mod nonnull
-//name allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
 uint32_t ssir_block_create_with_id(SsirModule *mod, uint32_t func_id, uint32_t block_id, const char *name) {
     wgsl_compiler_assert(mod != NULL, "ssir_block_create_with_id: mod is NULL");
     SsirFunction *f = ssir_get_function(mod, func_id);
     if (!f) return 0;
 
     if (!ssir_grow_array((void **)&f->blocks, &f->block_capacity,
-                         sizeof(SsirBlock), f->block_count + 1)) {
+            sizeof(SsirBlock), f->block_count + 1)) {
         return 0;
     }
 
@@ -1317,7 +1305,7 @@ uint32_t ssir_block_create_with_id(SsirModule *mod, uint32_t func_id, uint32_t b
     return b->id;
 }
 
-//mod nonnull
+// mod nonnull
 SsirBlock *ssir_get_block(SsirModule *mod, uint32_t func_id, uint32_t block_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_get_block: mod is NULL");
     SsirFunction *f = ssir_get_function(mod, func_id);
@@ -1335,14 +1323,14 @@ SsirBlock *ssir_get_block(SsirModule *mod, uint32_t func_id, uint32_t block_id) 
  * Instruction Builder - Internal
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 static SsirInst *ssir_add_inst(SsirModule *mod, uint32_t func_id, uint32_t block_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_add_inst: mod is NULL");
     SsirBlock *b = ssir_get_block(mod, func_id, block_id);
     if (!b) return NULL;
 
     if (!ssir_grow_array((void **)&b->insts, &b->inst_capacity,
-                         sizeof(SsirInst), b->inst_count + 1)) {
+            sizeof(SsirInst), b->inst_count + 1)) {
         return NULL;
     }
 
@@ -1351,9 +1339,9 @@ static SsirInst *ssir_add_inst(SsirModule *mod, uint32_t func_id, uint32_t block
     return inst;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_emit_binary(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                 SsirOpcode op, uint32_t type, uint32_t a, uint32_t b) {
+    SsirOpcode op, uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_emit_binary: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1366,9 +1354,9 @@ static uint32_t ssir_emit_binary(SsirModule *mod, uint32_t func_id, uint32_t blo
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 static uint32_t ssir_emit_unary(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                SsirOpcode op, uint32_t type, uint32_t a) {
+    SsirOpcode op, uint32_t type, uint32_t a) {
     wgsl_compiler_assert(mod != NULL, "ssir_emit_unary: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1384,44 +1372,44 @@ static uint32_t ssir_emit_unary(SsirModule *mod, uint32_t func_id, uint32_t bloc
  * Instruction Builder - Arithmetic
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_add(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_add: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_ADD, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_sub(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_sub: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_SUB, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_mul(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_mul: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_MUL, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_div(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_div: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_DIV, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_mod(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_mod: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_MOD, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_neg(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a) {
+    uint32_t type, uint32_t a) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_neg: mod is NULL");
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_NEG, type, a);
 }
@@ -1430,16 +1418,16 @@ uint32_t ssir_build_neg(SsirModule *mod, uint32_t func_id, uint32_t block_id,
  * Instruction Builder - Matrix
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_mat_mul(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_mat_mul: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_MAT_MUL, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_mat_transpose(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                  uint32_t type, uint32_t m) {
+    uint32_t type, uint32_t m) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_mat_transpose: mod is NULL");
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_MAT_TRANSPOSE, type, m);
 }
@@ -1448,51 +1436,51 @@ uint32_t ssir_build_mat_transpose(SsirModule *mod, uint32_t func_id, uint32_t bl
  * Instruction Builder - Bitwise
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_bit_and(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_bit_and: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_BIT_AND, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_bit_or(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_bit_or: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_BIT_OR, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_bit_xor(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_bit_xor: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_BIT_XOR, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_bit_not(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t a) {
+    uint32_t type, uint32_t a) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_bit_not: mod is NULL");
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_BIT_NOT, type, a);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_shl(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_shl: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_SHL, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_shr(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_shr: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_SHR, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_shr_logical(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_shr_logical: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_SHR_LOGICAL, type, a, b);
 }
@@ -1501,44 +1489,44 @@ uint32_t ssir_build_shr_logical(SsirModule *mod, uint32_t func_id, uint32_t bloc
  * Instruction Builder - Comparison
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_eq(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_eq: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_EQ, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_ne(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_ne: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_NE, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_lt(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_lt: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_LT, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_le(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_le: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_LE, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_gt(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_gt: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_GT, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_ge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_ge: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_GE, type, a, b);
 }
@@ -1547,23 +1535,23 @@ uint32_t ssir_build_ge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
  * Instruction Builder - Logical
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_and(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_and: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_AND, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_or(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_or: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_OR, type, a, b);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_not(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a) {
+    uint32_t type, uint32_t a) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_not: mod is NULL");
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_NOT, type, a);
 }
@@ -1572,10 +1560,10 @@ uint32_t ssir_build_not(SsirModule *mod, uint32_t func_id, uint32_t block_id,
  * Instruction Builder - Composite
  * ============================================================================ */
 
-//mod nonnull
-//components allowed to be NULL (if count is 0)
+// mod nonnull
+// components allowed to be NULL (if count is 0)
 uint32_t ssir_build_construct(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                              uint32_t type, const uint32_t *components, uint32_t count) {
+    uint32_t type, const uint32_t *components, uint32_t count) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_construct: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1597,9 +1585,9 @@ uint32_t ssir_build_construct(SsirModule *mod, uint32_t func_id, uint32_t block_
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_extract(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t composite, uint32_t index) {
+    uint32_t type, uint32_t composite, uint32_t index) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_extract: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1612,9 +1600,9 @@ uint32_t ssir_build_extract(SsirModule *mod, uint32_t func_id, uint32_t block_id
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_insert(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t type, uint32_t composite, uint32_t value, uint32_t index) {
+    uint32_t type, uint32_t composite, uint32_t value, uint32_t index) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_insert: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1628,11 +1616,11 @@ uint32_t ssir_build_insert(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     return inst->result;
 }
 
-//mod nonnull
-//indices allowed to be NULL (if index_count is 0)
+// mod nonnull
+// indices allowed to be NULL (if index_count is 0)
 uint32_t ssir_build_shuffle(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t v1, uint32_t v2,
-                            const uint32_t *indices, uint32_t index_count) {
+    uint32_t type, uint32_t v1, uint32_t v2,
+    const uint32_t *indices, uint32_t index_count) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_shuffle: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1652,23 +1640,23 @@ uint32_t ssir_build_shuffle(SsirModule *mod, uint32_t func_id, uint32_t block_id
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_splat(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                          uint32_t type, uint32_t scalar) {
+    uint32_t type, uint32_t scalar) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_splat: mod is NULL");
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_SPLAT, type, scalar);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_extract_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                uint32_t type, uint32_t composite, uint32_t index) {
+    uint32_t type, uint32_t composite, uint32_t index) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_extract_dyn: mod is NULL");
     return ssir_emit_binary(mod, func_id, block_id, SSIR_OP_EXTRACT_DYN, type, composite, index);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_insert_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                               uint32_t type, uint32_t vector, uint32_t value, uint32_t index) {
+    uint32_t type, uint32_t vector, uint32_t value, uint32_t index) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_insert_dyn: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1686,16 +1674,16 @@ uint32_t ssir_build_insert_dyn(SsirModule *mod, uint32_t func_id, uint32_t block
  * Instruction Builder - Memory
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_load(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                         uint32_t type, uint32_t ptr) {
+    uint32_t type, uint32_t ptr) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_load: mod is NULL");
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_LOAD, type, ptr);
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_store(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                      uint32_t ptr, uint32_t value) {
+    uint32_t ptr, uint32_t value) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_store: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -1707,11 +1695,11 @@ void ssir_build_store(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     inst->operand_count = 2;
 }
 
-//mod nonnull
-//indices allowed to be NULL (if index_count is 0)
+// mod nonnull
+// indices allowed to be NULL (if index_count is 0)
 uint32_t ssir_build_access(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t type, uint32_t base,
-                           const uint32_t *indices, uint32_t index_count) {
+    uint32_t type, uint32_t base,
+    const uint32_t *indices, uint32_t index_count) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_access: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1730,9 +1718,9 @@ uint32_t ssir_build_access(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_array_len(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                              uint32_t ptr) {
+    uint32_t ptr) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_array_len: mod is NULL");
     uint32_t u32_type = ssir_type_u32(mod);
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_ARRAY_LEN, u32_type, ptr);
@@ -1742,9 +1730,9 @@ uint32_t ssir_build_array_len(SsirModule *mod, uint32_t func_id, uint32_t block_
  * Instruction Builder - Control Flow
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 void ssir_build_branch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t target_block) {
+    uint32_t target_block) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_branch: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -1755,10 +1743,10 @@ void ssir_build_branch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     inst->operand_count = 1;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_branch_cond_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                  uint32_t cond, uint32_t true_block, uint32_t false_block,
-                                  uint32_t merge_block) {
+    uint32_t cond, uint32_t true_block, uint32_t false_block,
+    uint32_t merge_block) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_branch_cond_merge: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -1768,20 +1756,20 @@ void ssir_build_branch_cond_merge(SsirModule *mod, uint32_t func_id, uint32_t bl
     inst->operands[0] = cond;
     inst->operands[1] = true_block;
     inst->operands[2] = false_block;
-    inst->operands[3] = merge_block;  // 0 = no merge (for unstructured), non-0 = merge block ID
+    inst->operands[3] = merge_block; // 0 = no merge (for unstructured), non-0 = merge block ID
     inst->operand_count = 4;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_branch_cond(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t cond, uint32_t true_block, uint32_t false_block) {
+    uint32_t cond, uint32_t true_block, uint32_t false_block) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_branch_cond: mod is NULL");
     ssir_build_branch_cond_merge(mod, func_id, block_id, cond, true_block, false_block, 0);
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_loop_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t merge_block, uint32_t continue_block) {
+    uint32_t merge_block, uint32_t continue_block) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_loop_merge: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -1793,9 +1781,9 @@ void ssir_build_loop_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     inst->operand_count = 2;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_selection_merge(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                uint32_t merge_block) {
+    uint32_t merge_block) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_selection_merge: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -1806,11 +1794,11 @@ void ssir_build_selection_merge(SsirModule *mod, uint32_t func_id, uint32_t bloc
     inst->operand_count = 1;
 }
 
-//mod nonnull
-//cases allowed to be NULL (if case_count is 0)
+// mod nonnull
+// cases allowed to be NULL (if case_count is 0)
 void ssir_build_switch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t selector, uint32_t default_block,
-                       const uint32_t *cases, uint32_t case_count) {
+    uint32_t selector, uint32_t default_block,
+    const uint32_t *cases, uint32_t case_count) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_switch: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -1832,10 +1820,10 @@ void ssir_build_switch(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     }
 }
 
-//mod nonnull
-//incoming allowed to be NULL (if count is 0)
+// mod nonnull
+// incoming allowed to be NULL (if count is 0)
 uint32_t ssir_build_phi(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, const uint32_t *incoming, uint32_t count) {
+    uint32_t type, const uint32_t *incoming, uint32_t count) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_phi: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1856,9 +1844,9 @@ uint32_t ssir_build_phi(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_return(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                       uint32_t value) {
+    uint32_t value) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_return: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -1869,7 +1857,7 @@ void ssir_build_return(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     inst->operand_count = 1;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_return_void(SsirModule *mod, uint32_t func_id, uint32_t block_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_return_void: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
@@ -1880,7 +1868,7 @@ void ssir_build_return_void(SsirModule *mod, uint32_t func_id, uint32_t block_id
     inst->operand_count = 0;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_unreachable(SsirModule *mod, uint32_t func_id, uint32_t block_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_unreachable: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
@@ -1895,11 +1883,11 @@ void ssir_build_unreachable(SsirModule *mod, uint32_t func_id, uint32_t block_id
  * Instruction Builder - Call
  * ============================================================================ */
 
-//mod nonnull
-//args allowed to be NULL (if arg_count is 0)
+// mod nonnull
+// args allowed to be NULL (if arg_count is 0)
 uint32_t ssir_build_call(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                         uint32_t type, uint32_t callee,
-                         const uint32_t *args, uint32_t arg_count) {
+    uint32_t type, uint32_t callee,
+    const uint32_t *args, uint32_t arg_count) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_call: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1918,11 +1906,11 @@ uint32_t ssir_build_call(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     return inst->result;
 }
 
-//mod nonnull
-//args allowed to be NULL (if arg_count is 0)
+// mod nonnull
+// args allowed to be NULL (if arg_count is 0)
 uint32_t ssir_build_builtin(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, SsirBuiltinId builtin,
-                            const uint32_t *args, uint32_t arg_count) {
+    uint32_t type, SsirBuiltinId builtin,
+    const uint32_t *args, uint32_t arg_count) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_builtin: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1945,16 +1933,16 @@ uint32_t ssir_build_builtin(SsirModule *mod, uint32_t func_id, uint32_t block_id
  * Instruction Builder - Conversion
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_convert(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t value) {
+    uint32_t type, uint32_t value) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_convert: mod is NULL");
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_CONVERT, type, value);
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_bitcast(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                            uint32_t type, uint32_t value) {
+    uint32_t type, uint32_t value) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_bitcast: mod is NULL");
     return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_BITCAST, type, value);
 }
@@ -1963,10 +1951,10 @@ uint32_t ssir_build_bitcast(SsirModule *mod, uint32_t func_id, uint32_t block_id
  * Instruction Builder - Texture
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                               uint32_t type, uint32_t texture, uint32_t sampler,
-                               uint32_t coord) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1980,10 +1968,10 @@ uint32_t ssir_build_tex_sample(SsirModule *mod, uint32_t func_id, uint32_t block
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_bias(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                    uint32_t type, uint32_t texture, uint32_t sampler,
-                                    uint32_t coord, uint32_t bias) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t bias) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_bias: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -1998,10 +1986,10 @@ uint32_t ssir_build_tex_sample_bias(SsirModule *mod, uint32_t func_id, uint32_t 
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_level(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                     uint32_t type, uint32_t texture, uint32_t sampler,
-                                     uint32_t coord, uint32_t lod) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t lod) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_level: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2016,10 +2004,10 @@ uint32_t ssir_build_tex_sample_level(SsirModule *mod, uint32_t func_id, uint32_t
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_grad(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                    uint32_t type, uint32_t texture, uint32_t sampler,
-                                    uint32_t coord, uint32_t ddx, uint32_t ddy) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ddx, uint32_t ddy) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_grad: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2035,10 +2023,10 @@ uint32_t ssir_build_tex_sample_grad(SsirModule *mod, uint32_t func_id, uint32_t 
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_cmp(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                   uint32_t type, uint32_t texture, uint32_t sampler,
-                                   uint32_t coord, uint32_t ref) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ref) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_cmp: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2053,10 +2041,10 @@ uint32_t ssir_build_tex_sample_cmp(SsirModule *mod, uint32_t func_id, uint32_t b
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_cmp_level(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                         uint32_t type, uint32_t texture, uint32_t sampler,
-                                         uint32_t coord, uint32_t ref, uint32_t lod) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ref, uint32_t lod) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_cmp_level: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2072,10 +2060,10 @@ uint32_t ssir_build_tex_sample_cmp_level(SsirModule *mod, uint32_t func_id, uint
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                      uint32_t type, uint32_t texture, uint32_t sampler,
-                                      uint32_t coord, uint32_t offset) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t offset) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_offset: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2090,10 +2078,10 @@ uint32_t ssir_build_tex_sample_offset(SsirModule *mod, uint32_t func_id, uint32_
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_bias_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                           uint32_t type, uint32_t texture, uint32_t sampler,
-                                           uint32_t coord, uint32_t bias, uint32_t offset) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t bias, uint32_t offset) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_bias_offset: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2109,10 +2097,10 @@ uint32_t ssir_build_tex_sample_bias_offset(SsirModule *mod, uint32_t func_id, ui
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_level_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                            uint32_t type, uint32_t texture, uint32_t sampler,
-                                            uint32_t coord, uint32_t lod, uint32_t offset) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t lod, uint32_t offset) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_level_offset: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2128,11 +2116,11 @@ uint32_t ssir_build_tex_sample_level_offset(SsirModule *mod, uint32_t func_id, u
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_grad_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                           uint32_t type, uint32_t texture, uint32_t sampler,
-                                           uint32_t coord, uint32_t ddx, uint32_t ddy,
-                                           uint32_t offset) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ddx, uint32_t ddy,
+    uint32_t offset) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_grad_offset: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2149,10 +2137,10 @@ uint32_t ssir_build_tex_sample_grad_offset(SsirModule *mod, uint32_t func_id, ui
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_sample_cmp_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                          uint32_t type, uint32_t texture, uint32_t sampler,
-                                          uint32_t coord, uint32_t ref, uint32_t offset) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ref, uint32_t offset) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_sample_cmp_offset: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2168,10 +2156,10 @@ uint32_t ssir_build_tex_sample_cmp_offset(SsirModule *mod, uint32_t func_id, uin
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_gather(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                               uint32_t type, uint32_t texture, uint32_t sampler,
-                               uint32_t coord, uint32_t component) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t component) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_gather: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2186,10 +2174,10 @@ uint32_t ssir_build_tex_gather(SsirModule *mod, uint32_t func_id, uint32_t block
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_gather_cmp(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                   uint32_t type, uint32_t texture, uint32_t sampler,
-                                   uint32_t coord, uint32_t ref) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t ref) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_gather_cmp: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2204,10 +2192,10 @@ uint32_t ssir_build_tex_gather_cmp(SsirModule *mod, uint32_t func_id, uint32_t b
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_gather_offset(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                      uint32_t type, uint32_t texture, uint32_t sampler,
-                                      uint32_t coord, uint32_t component, uint32_t offset) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord, uint32_t component, uint32_t offset) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_gather_offset: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2223,9 +2211,9 @@ uint32_t ssir_build_tex_gather_offset(SsirModule *mod, uint32_t func_id, uint32_
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_load(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                             uint32_t type, uint32_t texture, uint32_t coord, uint32_t level) {
+    uint32_t type, uint32_t texture, uint32_t coord, uint32_t level) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_load: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2239,9 +2227,9 @@ uint32_t ssir_build_tex_load(SsirModule *mod, uint32_t func_id, uint32_t block_i
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_tex_store(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                          uint32_t texture, uint32_t coord, uint32_t value) {
+    uint32_t texture, uint32_t coord, uint32_t value) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_store: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -2254,9 +2242,9 @@ void ssir_build_tex_store(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     inst->operand_count = 3;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_size(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                             uint32_t type, uint32_t texture, uint32_t level) {
+    uint32_t type, uint32_t texture, uint32_t level) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_size: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2269,10 +2257,10 @@ uint32_t ssir_build_tex_size(SsirModule *mod, uint32_t func_id, uint32_t block_i
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_query_lod(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                  uint32_t type, uint32_t texture, uint32_t sampler,
-                                  uint32_t coord) {
+    uint32_t type, uint32_t texture, uint32_t sampler,
+    uint32_t coord) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_query_lod: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2286,9 +2274,9 @@ uint32_t ssir_build_tex_query_lod(SsirModule *mod, uint32_t func_id, uint32_t bl
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_query_levels(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                     uint32_t type, uint32_t texture) {
+    uint32_t type, uint32_t texture) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_query_levels: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2300,9 +2288,9 @@ uint32_t ssir_build_tex_query_levels(SsirModule *mod, uint32_t func_id, uint32_t
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_tex_query_samples(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                                      uint32_t type, uint32_t texture) {
+    uint32_t type, uint32_t texture) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_tex_query_samples: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2318,9 +2306,9 @@ uint32_t ssir_build_tex_query_samples(SsirModule *mod, uint32_t func_id, uint32_
  * Instruction Builder - Sync
  * ============================================================================ */
 
-//mod nonnull
+// mod nonnull
 void ssir_build_barrier(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        SsirBarrierScope scope) {
+    SsirBarrierScope scope) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_barrier: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return;
@@ -2331,10 +2319,10 @@ void ssir_build_barrier(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     inst->operand_count = 1;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_atomic(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                           uint32_t type, SsirAtomicOp op, uint32_t ptr,
-                           uint32_t value, uint32_t comparator) {
+    uint32_t type, SsirAtomicOp op, uint32_t ptr,
+    uint32_t value, uint32_t comparator) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_atomic: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2349,11 +2337,11 @@ uint32_t ssir_build_atomic(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_atomic_ex(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                              uint32_t type, SsirAtomicOp op, uint32_t ptr,
-                              uint32_t value, uint32_t comparator,
-                              SsirMemoryScope scope, SsirMemorySemantics semantics) {
+    uint32_t type, SsirAtomicOp op, uint32_t ptr,
+    uint32_t value, uint32_t comparator,
+    SsirMemoryScope scope, SsirMemorySemantics semantics) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_atomic_ex: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2370,7 +2358,7 @@ uint32_t ssir_build_atomic_ex(SsirModule *mod, uint32_t func_id, uint32_t block_
     return inst->result;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_build_discard(SsirModule *mod, uint32_t func_id, uint32_t block_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_discard: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
@@ -2381,9 +2369,9 @@ void ssir_build_discard(SsirModule *mod, uint32_t func_id, uint32_t block_id) {
     inst->operand_count = 0;
 }
 
-//mod nonnull
+// mod nonnull
 uint32_t ssir_build_rem(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-                        uint32_t type, uint32_t a, uint32_t b) {
+    uint32_t type, uint32_t a, uint32_t b) {
     wgsl_compiler_assert(mod != NULL, "ssir_build_rem: mod is NULL");
     SsirInst *inst = ssir_add_inst(mod, func_id, block_id);
     if (!inst) return 0;
@@ -2400,13 +2388,13 @@ uint32_t ssir_build_rem(SsirModule *mod, uint32_t func_id, uint32_t block_id,
  * Entry Point API
  * ============================================================================ */
 
-//mod nonnull
-//name allowed to be NULL
+// mod nonnull
+// name allowed to be NULL
 uint32_t ssir_entry_point_create(SsirModule *mod, SsirStage stage,
-                                 uint32_t func_id, const char *name) {
+    uint32_t func_id, const char *name) {
     wgsl_compiler_assert(mod != NULL, "ssir_entry_point_create: mod is NULL");
     if (!ssir_grow_array((void **)&mod->entry_points, &mod->entry_point_capacity,
-                         sizeof(SsirEntryPoint), mod->entry_point_count + 1)) {
+            sizeof(SsirEntryPoint), mod->entry_point_count + 1)) {
         return UINT32_MAX;
     }
 
@@ -2422,14 +2410,14 @@ uint32_t ssir_entry_point_create(SsirModule *mod, SsirStage stage,
     return index;
 }
 
-//mod nonnull
+// mod nonnull
 SsirEntryPoint *ssir_get_entry_point(SsirModule *mod, uint32_t index) {
     wgsl_compiler_assert(mod != NULL, "ssir_get_entry_point: mod is NULL");
     if (index >= mod->entry_point_count) return NULL;
     return &mod->entry_points[index];
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_entry_point_add_interface(SsirModule *mod, uint32_t ep_index, uint32_t global_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_entry_point_add_interface: mod is NULL");
     SsirEntryPoint *ep = ssir_get_entry_point(mod, ep_index);
@@ -2443,9 +2431,9 @@ void ssir_entry_point_add_interface(SsirModule *mod, uint32_t ep_index, uint32_t
     ep->interface[ep->interface_count++] = global_id;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_entry_point_set_workgroup_size(SsirModule *mod, uint32_t ep_index,
-                                         uint32_t x, uint32_t y, uint32_t z) {
+    uint32_t x, uint32_t y, uint32_t z) {
     wgsl_compiler_assert(mod != NULL, "ssir_entry_point_set_workgroup_size: mod is NULL");
     SsirEntryPoint *ep = ssir_get_entry_point(mod, ep_index);
     if (!ep) return;
@@ -2454,21 +2442,21 @@ void ssir_entry_point_set_workgroup_size(SsirModule *mod, uint32_t ep_index,
     ep->workgroup_size[2] = z;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_entry_point_set_depth_replacing(SsirModule *mod, uint32_t ep_index, bool v) {
     wgsl_compiler_assert(mod != NULL, "ssir_entry_point_set_depth_replacing: mod is NULL");
     SsirEntryPoint *ep = ssir_get_entry_point(mod, ep_index);
     if (ep) ep->depth_replacing = v;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_entry_point_set_origin_upper_left(SsirModule *mod, uint32_t ep_index, bool v) {
     wgsl_compiler_assert(mod != NULL, "ssir_entry_point_set_origin_upper_left: mod is NULL");
     SsirEntryPoint *ep = ssir_get_entry_point(mod, ep_index);
     if (ep) ep->origin_upper_left = v;
 }
 
-//mod nonnull
+// mod nonnull
 void ssir_entry_point_set_early_fragment_tests(SsirModule *mod, uint32_t ep_index, bool v) {
     wgsl_compiler_assert(mod != NULL, "ssir_entry_point_set_early_fragment_tests: mod is NULL");
     SsirEntryPoint *ep = ssir_get_entry_point(mod, ep_index);
@@ -2479,80 +2467,83 @@ void ssir_entry_point_set_early_fragment_tests(SsirModule *mod, uint32_t ep_inde
  * Use Count Analysis
  * ============================================================================ */
 
-//f nonnull
-//use_counts nonnull
+// f nonnull
+// use_counts nonnull
 void ssir_count_uses(SsirFunction *f, uint32_t *use_counts, uint32_t max_id) {
     wgsl_compiler_assert(f != NULL, "ssir_count_uses: f is NULL");
     wgsl_compiler_assert(use_counts != NULL, "ssir_count_uses: use_counts is NULL");
-#define SSIR_COUNT_USE(id) do { if ((id) > 0 && (id) < max_id) use_counts[id]++; } while(0)
+#define SSIR_COUNT_USE(id)                               \
+    do {                                                 \
+        if ((id) > 0 && (id) < max_id) use_counts[id]++; \
+    } while (0)
     for (uint32_t bi = 0; bi < f->block_count; bi++) {
         SsirBlock *blk = &f->blocks[bi];
         for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
             SsirInst *inst = &blk->insts[ii];
             switch (inst->op) {
-            /* Control flow with no value operands */
-            case SSIR_OP_BRANCH:
-            case SSIR_OP_LOOP_MERGE:
-            case SSIR_OP_SELECTION_MERGE:
-            case SSIR_OP_UNREACHABLE:
-            case SSIR_OP_RETURN_VOID:
-            case SSIR_OP_DISCARD:
-            case SSIR_OP_BARRIER:
-                break;
-            case SSIR_OP_BRANCH_COND:
-                SSIR_COUNT_USE(inst->operands[0]);
-                break;
-            case SSIR_OP_SWITCH:
-                SSIR_COUNT_USE(inst->operands[0]);
-                break;
-            case SSIR_OP_RETURN:
-                if (inst->operand_count >= 1)
+                /* Control flow with no value operands */
+                case SSIR_OP_BRANCH:
+                case SSIR_OP_LOOP_MERGE:
+                case SSIR_OP_SELECTION_MERGE:
+                case SSIR_OP_UNREACHABLE:
+                case SSIR_OP_RETURN_VOID:
+                case SSIR_OP_DISCARD:
+                case SSIR_OP_BARRIER:
+                    break;
+                case SSIR_OP_BRANCH_COND:
                     SSIR_COUNT_USE(inst->operands[0]);
-                break;
-            case SSIR_OP_PHI:
-                /* extra = pairs of (value, block); count values only */
-                for (uint16_t pi = 0; pi < inst->extra_count; pi += 2)
-                    SSIR_COUNT_USE(inst->extra[pi]);
-                break;
-            case SSIR_OP_BUILTIN:
-            case SSIR_OP_CALL:
-                /* operands[0] = builtin/func ID; rest are value args */
-                for (uint8_t oi = 1; oi < inst->operand_count; oi++)
-                    SSIR_COUNT_USE(inst->operands[oi]);
-                break;
-            case SSIR_OP_ATOMIC:
-                /* operands[0]=op, [1]=ptr, [2]=val, [3]=cmp; [4+]=scope/sem */
-                for (uint8_t oi = 1; oi <= 3 && oi < inst->operand_count; oi++)
-                    SSIR_COUNT_USE(inst->operands[oi]);
-                break;
-            case SSIR_OP_EXTRACT:
-            case SSIR_OP_ACCESS:
-                /* operands[0] = value, rest are literal indices */
-                if (inst->operand_count >= 1)
+                    break;
+                case SSIR_OP_SWITCH:
                     SSIR_COUNT_USE(inst->operands[0]);
-                break;
-            case SSIR_OP_INSERT:
-                /* operands[0]=composite, [1]=value, [2]=index(literal) */
-                if (inst->operand_count >= 1) SSIR_COUNT_USE(inst->operands[0]);
-                if (inst->operand_count >= 2) SSIR_COUNT_USE(inst->operands[1]);
-                break;
-            case SSIR_OP_SHUFFLE:
-                /* operands[0]=a, [1]=b; extra=shuffle mask (literals) */
-                if (inst->operand_count >= 1) SSIR_COUNT_USE(inst->operands[0]);
-                if (inst->operand_count >= 2) SSIR_COUNT_USE(inst->operands[1]);
-                break;
-            default:
-                /* All operands are value references */
-                for (uint8_t oi = 0; oi < inst->operand_count; oi++)
-                    SSIR_COUNT_USE(inst->operands[oi]);
-                break;
+                    break;
+                case SSIR_OP_RETURN:
+                    if (inst->operand_count >= 1)
+                        SSIR_COUNT_USE(inst->operands[0]);
+                    break;
+                case SSIR_OP_PHI:
+                    /* extra = pairs of (value, block); count values only */
+                    for (uint16_t pi = 0; pi < inst->extra_count; pi += 2)
+                        SSIR_COUNT_USE(inst->extra[pi]);
+                    break;
+                case SSIR_OP_BUILTIN:
+                case SSIR_OP_CALL:
+                    /* operands[0] = builtin/func ID; rest are value args */
+                    for (uint8_t oi = 1; oi < inst->operand_count; oi++)
+                        SSIR_COUNT_USE(inst->operands[oi]);
+                    break;
+                case SSIR_OP_ATOMIC:
+                    /* operands[0]=op, [1]=ptr, [2]=val, [3]=cmp; [4+]=scope/sem */
+                    for (uint8_t oi = 1; oi <= 3 && oi < inst->operand_count; oi++)
+                        SSIR_COUNT_USE(inst->operands[oi]);
+                    break;
+                case SSIR_OP_EXTRACT:
+                case SSIR_OP_ACCESS:
+                    /* operands[0] = value, rest are literal indices */
+                    if (inst->operand_count >= 1)
+                        SSIR_COUNT_USE(inst->operands[0]);
+                    break;
+                case SSIR_OP_INSERT:
+                    /* operands[0]=composite, [1]=value, [2]=index(literal) */
+                    if (inst->operand_count >= 1) SSIR_COUNT_USE(inst->operands[0]);
+                    if (inst->operand_count >= 2) SSIR_COUNT_USE(inst->operands[1]);
+                    break;
+                case SSIR_OP_SHUFFLE:
+                    /* operands[0]=a, [1]=b; extra=shuffle mask (literals) */
+                    if (inst->operand_count >= 1) SSIR_COUNT_USE(inst->operands[0]);
+                    if (inst->operand_count >= 2) SSIR_COUNT_USE(inst->operands[1]);
+                    break;
+                default:
+                    /* All operands are value references */
+                    for (uint8_t oi = 0; oi < inst->operand_count; oi++)
+                        SSIR_COUNT_USE(inst->operands[oi]);
+                    break;
             }
         }
     }
 #undef SSIR_COUNT_USE
 }
 
-//mod allowed to be NULL
+// mod allowed to be NULL
 void ssir_module_build_lookup(SsirModule *mod) {
     if (!mod || mod->next_id == 0) return;
 
@@ -2568,7 +2559,10 @@ void ssir_module_build_lookup(SsirModule *mod) {
     if (!lc) return;
     lc->cap = mod->next_id;
     lc->entries = (uintptr_t *)calloc(lc->cap, sizeof(uintptr_t));
-    if (!lc->entries) { free(lc); return; }
+    if (!lc->entries) {
+        free(lc);
+        return;
+    }
 
     for (uint32_t i = 0; i < mod->type_count; i++) {
         uint32_t id = mod->types[i].id;
@@ -2594,15 +2588,15 @@ void ssir_module_build_lookup(SsirModule *mod) {
  * Validation
  * ============================================================================ */
 
-//result nonnull
-//message nonnull
+// result nonnull
+// message nonnull
 static void ssir_add_validation_error(SsirValidationResult *result,
-                                      SsirResult code, const char *message,
-                                      uint32_t func_id, uint32_t block_id, uint32_t inst_index) {
+    SsirResult code, const char *message,
+    uint32_t func_id, uint32_t block_id, uint32_t inst_index) {
     wgsl_compiler_assert(result != NULL, "ssir_add_validation_error: result is NULL");
     wgsl_compiler_assert(message != NULL, "ssir_add_validation_error: message is NULL");
     if (!ssir_grow_array((void **)&result->errors, &result->error_capacity,
-                         sizeof(SsirValidationError), result->error_count + 1)) {
+            sizeof(SsirValidationError), result->error_count + 1)) {
         return;
     }
     SsirValidationError *err = &result->errors[result->error_count++];
@@ -2623,8 +2617,8 @@ static bool ssir_is_terminator(SsirOpcode op) {
 }
 
 /* Resolve the type ID associated with a value ID within a function context */
-//mod nonnull
-//f nonnull
+// mod nonnull
+// f nonnull
 static uint32_t val_resolve_type(SsirModule *mod, SsirFunction *f, uint32_t id) {
     wgsl_compiler_assert(mod != NULL, "val_resolve_type: mod is NULL");
     wgsl_compiler_assert(f != NULL, "val_resolve_type: f is NULL");
@@ -2653,30 +2647,30 @@ static uint32_t val_resolve_type(SsirModule *mod, SsirFunction *f, uint32_t id) 
 }
 
 /* Check if block 'target_id' is a successor of block 'b' */
-//b nonnull
+// b nonnull
 static bool block_branches_to(SsirBlock *b, uint32_t target_id) {
     wgsl_compiler_assert(b != NULL, "block_branches_to: b is NULL");
     if (b->inst_count == 0) return false;
     SsirInst *term = &b->insts[b->inst_count - 1];
     switch (term->op) {
-    case SSIR_OP_BRANCH:
-        return term->operands[0] == target_id;
-    case SSIR_OP_BRANCH_COND:
-        return term->operands[1] == target_id || term->operands[2] == target_id;
-    case SSIR_OP_SWITCH:
-        /* operands[1] = default block */
-        if (term->operands[1] == target_id) return true;
-        /* extra[] = pairs of (value, block) */
-        for (uint16_t i = 1; i < term->extra_count; i += 2) {
-            if (term->extra[i] == target_id) return true;
-        }
-        return false;
-    default:
-        return false;
+        case SSIR_OP_BRANCH:
+            return term->operands[0] == target_id;
+        case SSIR_OP_BRANCH_COND:
+            return term->operands[1] == target_id || term->operands[2] == target_id;
+        case SSIR_OP_SWITCH:
+            /* operands[1] = default block */
+            if (term->operands[1] == target_id) return true;
+            /* extra[] = pairs of (value, block) */
+            for (uint16_t i = 1; i < term->extra_count; i += 2) {
+                if (term->extra[i] == target_id) return true;
+            }
+            return false;
+        default:
+            return false;
     }
 }
 
-//mod nonnull
+// mod nonnull
 SsirValidationResult *ssir_validate(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_validate: mod is NULL");
     SsirValidationResult *result = (SsirValidationResult *)SSIR_MALLOC(sizeof(SsirValidationResult));
@@ -2834,7 +2828,7 @@ SsirValidationResult *ssir_validate(SsirModule *mod) {
     return result;
 }
 
-//result allowed to be NULL
+// result allowed to be NULL
 void ssir_validation_result_free(SsirValidationResult *result) {
     if (!result) return;
     SSIR_FREE(result->errors);
@@ -3047,7 +3041,7 @@ const char *ssir_type_kind_name(SsirTypeKind kind) {
 
 float ssir_f16_to_f32(uint16_t h) {
     uint32_t sign = (h >> 15) & 0x1;
-    uint32_t exp  = (h >> 10) & 0x1F;
+    uint32_t exp = (h >> 10) & 0x1F;
     uint32_t mant = h & 0x3FF;
     uint32_t f;
     if (exp == 0) {
@@ -3055,7 +3049,10 @@ float ssir_f16_to_f32(uint16_t h) {
             f = sign << 31;
         } else {
             exp = 1;
-            while (!(mant & 0x400)) { mant <<= 1; exp--; }
+            while (!(mant & 0x400)) {
+                mant <<= 1;
+                exp--;
+            }
             mant &= 0x3FF;
             f = (sign << 31) | ((exp + 127 - 15) << 23) | (mant << 13);
         }
@@ -3079,8 +3076,8 @@ typedef struct {
     size_t cap;
 } StringBuilder;
 
-//sb nonnull
-//str nonnull
+// sb nonnull
+// str nonnull
 static void sb_append(StringBuilder *sb, const char *str) {
     wgsl_compiler_assert(sb != NULL, "sb_append: sb is NULL");
     wgsl_compiler_assert(str != NULL, "sb_append: str is NULL");
@@ -3098,8 +3095,8 @@ static void sb_append(StringBuilder *sb, const char *str) {
     sb->data[sb->len] = '\0';
 }
 
-//sb nonnull
-//fmt nonnull
+// sb nonnull
+// fmt nonnull
 static void sb_appendf(StringBuilder *sb, const char *fmt, ...) {
     wgsl_compiler_assert(sb != NULL, "sb_appendf: sb is NULL");
     wgsl_compiler_assert(fmt != NULL, "sb_appendf: fmt is NULL");
@@ -3111,8 +3108,8 @@ static void sb_appendf(StringBuilder *sb, const char *fmt, ...) {
     sb_append(sb, buf);
 }
 
-//mod nonnull
-//sb nonnull
+// mod nonnull
+// sb nonnull
 static void ssir_type_to_string(SsirModule *mod, uint32_t type_id, StringBuilder *sb) {
     wgsl_compiler_assert(mod != NULL, "ssir_type_to_string: mod is NULL");
     wgsl_compiler_assert(sb != NULL, "ssir_type_to_string: sb is NULL");
@@ -3163,8 +3160,7 @@ static void ssir_type_to_string(SsirModule *mod, uint32_t type_id, StringBuilder
         case SSIR_TYPE_PTR: {
             static const char *space_names[] = {
                 "function", "private", "workgroup", "uniform",
-                "storage", "input", "output", "push_constant"
-            };
+                "storage", "input", "output", "push_constant"};
             sb_append(sb, "ptr<");
             sb_append(sb, space_names[t->ptr.space]);
             sb_append(sb, ", ");
@@ -3190,7 +3186,7 @@ static void ssir_type_to_string(SsirModule *mod, uint32_t type_id, StringBuilder
     }
 }
 
-//mod nonnull
+// mod nonnull
 char *ssir_module_to_string(SsirModule *mod) {
     wgsl_compiler_assert(mod != NULL, "ssir_module_to_string: mod is NULL");
     StringBuilder sb = {0};
@@ -3347,14 +3343,14 @@ char *ssir_module_to_string(SsirModule *mod) {
     /* Entry points */
     if (mod->entry_point_count > 0) {
         sb_append(&sb, "; Entry points\n");
-        static const char *stage_names[] = { "vertex", "fragment", "compute" };
+        static const char *stage_names[] = {"vertex", "fragment", "compute"};
         for (uint32_t ei = 0; ei < mod->entry_point_count; ei++) {
             SsirEntryPoint *ep = &mod->entry_points[ei];
             sb_appendf(&sb, "@%s entry \"%s\" = %%%u\n",
-                      stage_names[ep->stage], ep->name ? ep->name : "", ep->function);
+                stage_names[ep->stage], ep->name ? ep->name : "", ep->function);
             if (ep->stage == SSIR_STAGE_COMPUTE) {
                 sb_appendf(&sb, "  workgroup_size(%u, %u, %u)\n",
-                          ep->workgroup_size[0], ep->workgroup_size[1], ep->workgroup_size[2]);
+                    ep->workgroup_size[0], ep->workgroup_size[1], ep->workgroup_size[2]);
             }
             if (ep->interface_count > 0) {
                 sb_append(&sb, "  interface: [");

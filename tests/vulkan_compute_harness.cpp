@@ -122,9 +122,8 @@ void VulkanContext::createCommandPool() {
 
 void VulkanContext::createDescriptorPool() {
     VkDescriptorPoolSize pool_sizes[] = {
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100 },
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100 }
-    };
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100}};
 
     VkDescriptorPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -150,8 +149,8 @@ Buffer VulkanContext::createBuffer(size_t size, BufferUsage usage) {
     return Buffer(*this, size, usage);
 }
 
-ComputePipeline VulkanContext::createPipeline(const uint32_t* spirv, size_t word_count,
-                                               const char* entry_point) {
+ComputePipeline VulkanContext::createPipeline(const uint32_t *spirv, size_t word_count,
+    const char *entry_point) {
     return ComputePipeline(*this, spirv, word_count, entry_point);
 }
 
@@ -184,11 +183,11 @@ void VulkanContext::executeCommands(std::function<void(VkCommandBuffer)> recorde
     vkFreeCommandBuffers(device_, command_pool_, 1, &cmd);
 }
 
-void VulkanContext::dispatch(ComputePipeline& pipeline,
-                              const std::vector<DescriptorBinding>& bindings,
-                              uint32_t group_count_x,
-                              uint32_t group_count_y,
-                              uint32_t group_count_z) {
+void VulkanContext::dispatch(ComputePipeline &pipeline,
+    const std::vector<DescriptorBinding> &bindings,
+    uint32_t group_count_x,
+    uint32_t group_count_y,
+    uint32_t group_count_z) {
     // Allocate descriptor set
     VkDescriptorSetAllocateInfo alloc_info = {};
     alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -222,13 +221,13 @@ void VulkanContext::dispatch(ComputePipeline& pipeline,
     }
 
     vkUpdateDescriptorSets(device_, static_cast<uint32_t>(writes.size()),
-                           writes.data(), 0, nullptr);
+        writes.data(), 0, nullptr);
 
     // Record and submit
     executeCommands([&](VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.handle());
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                pipeline.layout(), 0, 1, &desc_set, 0, nullptr);
+            pipeline.layout(), 0, 1, &desc_set, 0, nullptr);
         vkCmdDispatch(cmd, group_count_x, group_count_y, group_count_z);
     });
 
@@ -240,7 +239,7 @@ void VulkanContext::dispatch(ComputePipeline& pipeline,
 // Buffer
 // ============================================================================
 
-Buffer::Buffer(VulkanContext& ctx, size_t size, BufferUsage usage)
+Buffer::Buffer(VulkanContext &ctx, size_t size, BufferUsage usage)
     : ctx_(&ctx), size_(size), usage_(usage) {
 
     VkBufferCreateInfo buffer_info = {};
@@ -253,23 +252,23 @@ Buffer::Buffer(VulkanContext& ctx, size_t size, BufferUsage usage)
     switch (usage) {
         case BufferUsage::Storage:
             buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             mem_props = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
-                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
         case BufferUsage::Uniform:
             buffer_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
         case BufferUsage::Staging:
             buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                               VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+                                VK_BUFFER_USAGE_TRANSFER_DST_BIT;
             mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             break;
     }
 
@@ -285,11 +284,11 @@ Buffer::Buffer(VulkanContext& ctx, size_t size, BufferUsage usage)
     // Try preferred properties first, fall back to just host visible for storage
     try {
         alloc_info.memoryTypeIndex = ctx_->findMemoryType(mem_reqs.memoryTypeBits, mem_props);
-    } catch (const std::runtime_error&) {
+    } catch (const std::runtime_error &) {
         if (usage == BufferUsage::Storage) {
             // Fall back to host visible only
             mem_props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
             alloc_info.memoryTypeIndex = ctx_->findMemoryType(mem_reqs.memoryTypeBits, mem_props);
         } else {
             throw;
@@ -324,20 +323,15 @@ void Buffer::cleanup() {
     }
 }
 
-Buffer::Buffer(Buffer&& other) noexcept
-    : ctx_(other.ctx_)
-    , buffer_(other.buffer_)
-    , memory_(other.memory_)
-    , size_(other.size_)
-    , usage_(other.usage_)
-    , mapped_(other.mapped_) {
+Buffer::Buffer(Buffer &&other) noexcept
+    : ctx_(other.ctx_), buffer_(other.buffer_), memory_(other.memory_), size_(other.size_), usage_(other.usage_), mapped_(other.mapped_) {
     other.ctx_ = nullptr;
     other.buffer_ = VK_NULL_HANDLE;
     other.memory_ = VK_NULL_HANDLE;
     other.mapped_ = nullptr;
 }
 
-Buffer& Buffer::operator=(Buffer&& other) noexcept {
+Buffer &Buffer::operator=(Buffer &&other) noexcept {
     if (this != &other) {
         cleanup();
         ctx_ = other.ctx_;
@@ -354,26 +348,26 @@ Buffer& Buffer::operator=(Buffer&& other) noexcept {
     return *this;
 }
 
-void Buffer::upload(const void* data, size_t size, size_t offset) {
+void Buffer::upload(const void *data, size_t size, size_t offset) {
     if (offset + size > size_) {
         throw std::runtime_error("Buffer upload exceeds buffer size");
     }
-    std::memcpy(static_cast<char*>(mapped_) + offset, data, size);
+    std::memcpy(static_cast<char *>(mapped_) + offset, data, size);
 }
 
-void Buffer::download(void* data, size_t size, size_t offset) {
+void Buffer::download(void *data, size_t size, size_t offset) {
     if (offset + size > size_) {
         throw std::runtime_error("Buffer download exceeds buffer size");
     }
-    std::memcpy(data, static_cast<char*>(mapped_) + offset, size);
+    std::memcpy(data, static_cast<char *>(mapped_) + offset, size);
 }
 
 // ============================================================================
 // ComputePipeline
 // ============================================================================
 
-ComputePipeline::ComputePipeline(VulkanContext& ctx, const uint32_t* spirv, size_t word_count,
-                                  const char* entry_point)
+ComputePipeline::ComputePipeline(VulkanContext &ctx, const uint32_t *spirv, size_t word_count,
+    const char *entry_point)
     : ctx_(&ctx) {
 
     // Create shader module
@@ -421,7 +415,7 @@ ComputePipeline::ComputePipeline(VulkanContext& ctx, const uint32_t* spirv, size
     pipeline_info.layout = layout_;
 
     VK_CHECK(vkCreateComputePipelines(ctx_->device(), VK_NULL_HANDLE, 1, &pipeline_info,
-                                      nullptr, &pipeline_));
+        nullptr, &pipeline_));
 }
 
 ComputePipeline::~ComputePipeline() {
@@ -449,12 +443,8 @@ void ComputePipeline::cleanup() {
     }
 }
 
-ComputePipeline::ComputePipeline(ComputePipeline&& other) noexcept
-    : ctx_(other.ctx_)
-    , shader_module_(other.shader_module_)
-    , desc_set_layout_(other.desc_set_layout_)
-    , layout_(other.layout_)
-    , pipeline_(other.pipeline_) {
+ComputePipeline::ComputePipeline(ComputePipeline &&other) noexcept
+    : ctx_(other.ctx_), shader_module_(other.shader_module_), desc_set_layout_(other.desc_set_layout_), layout_(other.layout_), pipeline_(other.pipeline_) {
     other.ctx_ = nullptr;
     other.shader_module_ = VK_NULL_HANDLE;
     other.desc_set_layout_ = VK_NULL_HANDLE;
@@ -462,7 +452,7 @@ ComputePipeline::ComputePipeline(ComputePipeline&& other) noexcept
     other.pipeline_ = VK_NULL_HANDLE;
 }
 
-ComputePipeline& ComputePipeline::operator=(ComputePipeline&& other) noexcept {
+ComputePipeline &ComputePipeline::operator=(ComputePipeline &&other) noexcept {
     if (this != &other) {
         cleanup();
         ctx_ = other.ctx_;

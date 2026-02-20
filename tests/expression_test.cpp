@@ -20,12 +20,11 @@ std::vector<std::string> DiscoverExpressionTests() {
     expressions_dir = fs::path(WGSL_SOURCE_DIR) / "expressions";
 #else
     // Fall back to relative paths from common build locations
-    for (const auto& candidate : {
-        "../expressions",
-        "../../expressions",
-        "../../../expressions",
-        "expressions"
-    }) {
+    for (const auto &candidate : {
+             "../expressions",
+             "../../expressions",
+             "../../../expressions",
+             "expressions"}) {
         if (fs::exists(candidate)) {
             expressions_dir = candidate;
             break;
@@ -37,7 +36,7 @@ std::vector<std::string> DiscoverExpressionTests() {
         return tests;
     }
 
-    for (const auto& entry : fs::recursive_directory_iterator(expressions_dir)) {
+    for (const auto &entry : fs::recursive_directory_iterator(expressions_dir)) {
         if (entry.is_regular_file() && entry.path().extension() == ".wgsl") {
             // Check if expected file exists
             auto expected_path = entry.path().string() + ".expected.spvasm";
@@ -52,7 +51,7 @@ std::vector<std::string> DiscoverExpressionTests() {
 }
 
 // Disassemble SPIR-V binary to text using spirv-dis
-std::string DisassembleSpirv(const uint32_t* words, size_t word_count, std::string* out_error = nullptr) {
+std::string DisassembleSpirv(const uint32_t *words, size_t word_count, std::string *out_error = nullptr) {
     std::string spv_path = wgsl_test::MakeTempSpvPath("wgsl_dis");
     if (!wgsl_test::WriteSpirvFile(spv_path, words, word_count)) {
         if (out_error) *out_error = "Failed to write temp SPIR-V file";
@@ -73,7 +72,7 @@ std::string DisassembleSpirv(const uint32_t* words, size_t word_count, std::stri
 
 // Normalize SPIR-V assembly for comparison
 // Removes generator-specific details and normalizes whitespace
-std::string NormalizeSpvasm(const std::string& spvasm) {
+std::string NormalizeSpvasm(const std::string &spvasm) {
     std::istringstream iss(spvasm);
     std::ostringstream oss;
     std::string line;
@@ -101,7 +100,7 @@ std::string NormalizeSpvasm(const std::string& spvasm) {
 }
 
 class ExpressionTest : public testing::TestWithParam<std::string> {
-protected:
+  protected:
     void SetUp() override {
         wgsl_path_ = GetParam();
         expected_path_ = wgsl_path_ + ".expected.spvasm";
@@ -135,18 +134,20 @@ TEST_P(ExpressionTest, CompilesAndMatchesExpected) {
 
     EXPECT_EQ(actual_normalized, expected_normalized)
         << "Output mismatch for " << wgsl_path_ << "\n"
-        << "=== Expected ===\n" << expected_normalized << "\n"
-        << "=== Actual ===\n" << actual_normalized;
+        << "=== Expected ===\n"
+        << expected_normalized << "\n"
+        << "=== Actual ===\n"
+        << actual_normalized;
 }
 
 // Generate human-readable test names from file paths
-std::string TestNameGenerator(const testing::TestParamInfo<std::string>& info) {
+std::string TestNameGenerator(const testing::TestParamInfo<std::string> &info) {
     std::string name = info.param;
 
     // Extract relative path from expressions/
     auto pos = name.find("expressions/");
     if (pos != std::string::npos) {
-        name = name.substr(pos + 12);  // Skip "expressions/"
+        name = name.substr(pos + 12); // Skip "expressions/"
     }
 
     // Remove .wgsl extension
@@ -155,7 +156,7 @@ std::string TestNameGenerator(const testing::TestParamInfo<std::string>& info) {
     }
 
     // Replace invalid characters with underscores
-    for (char& c : name) {
+    for (char &c : name) {
         if (!std::isalnum(c)) {
             c = '_';
         }
@@ -180,5 +181,4 @@ INSTANTIATE_TEST_SUITE_P(
     Expressions,
     ExpressionTest,
     testing::ValuesIn(DiscoverExpressionTests()),
-    TestNameGenerator
-);
+    TestNameGenerator);

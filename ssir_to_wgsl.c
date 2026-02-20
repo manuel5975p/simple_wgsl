@@ -159,151 +159,151 @@ static void set_id_name(SsirToWgslContext *ctx, uint32_t id, const char *name) {
 
 static const char *builtin_var_to_wgsl(SsirBuiltinVar bv) {
     switch (bv) {
-    case SSIR_BUILTIN_NONE:                 return NULL;
-    case SSIR_BUILTIN_VERTEX_INDEX:         return "vertex_index";
-    case SSIR_BUILTIN_INSTANCE_INDEX:       return "instance_index";
-    case SSIR_BUILTIN_POSITION:             return "position";
-    case SSIR_BUILTIN_FRONT_FACING:         return "front_facing";
-    case SSIR_BUILTIN_FRAG_DEPTH:           return "frag_depth";
-    case SSIR_BUILTIN_SAMPLE_INDEX:         return "sample_index";
-    case SSIR_BUILTIN_SAMPLE_MASK:          return "sample_mask";
-    case SSIR_BUILTIN_LOCAL_INVOCATION_ID:  return "local_invocation_id";
-    case SSIR_BUILTIN_LOCAL_INVOCATION_INDEX: return "local_invocation_index";
-    case SSIR_BUILTIN_GLOBAL_INVOCATION_ID: return "global_invocation_id";
-    case SSIR_BUILTIN_WORKGROUP_ID:         return "workgroup_id";
-    case SSIR_BUILTIN_NUM_WORKGROUPS:       return "num_workgroups";
-    case SSIR_BUILTIN_CLIP_DISTANCE:        return "clip_distances";
-    case SSIR_BUILTIN_FRAG_COORD:           return "position";
-    case SSIR_BUILTIN_PRIMITIVE_ID:         return "primitive_index";
-    case SSIR_BUILTIN_SUBGROUP_SIZE:         return "subgroup_size";
-    case SSIR_BUILTIN_SUBGROUP_INVOCATION_ID: return "subgroup_invocation_id";
-    case SSIR_BUILTIN_SUBGROUP_ID:            return "subgroup_id";
-    case SSIR_BUILTIN_NUM_SUBGROUPS:          return "num_subgroups";
-    default: return "unknown_builtin";
+        case SSIR_BUILTIN_NONE: return NULL;
+        case SSIR_BUILTIN_VERTEX_INDEX: return "vertex_index";
+        case SSIR_BUILTIN_INSTANCE_INDEX: return "instance_index";
+        case SSIR_BUILTIN_POSITION: return "position";
+        case SSIR_BUILTIN_FRONT_FACING: return "front_facing";
+        case SSIR_BUILTIN_FRAG_DEPTH: return "frag_depth";
+        case SSIR_BUILTIN_SAMPLE_INDEX: return "sample_index";
+        case SSIR_BUILTIN_SAMPLE_MASK: return "sample_mask";
+        case SSIR_BUILTIN_LOCAL_INVOCATION_ID: return "local_invocation_id";
+        case SSIR_BUILTIN_LOCAL_INVOCATION_INDEX: return "local_invocation_index";
+        case SSIR_BUILTIN_GLOBAL_INVOCATION_ID: return "global_invocation_id";
+        case SSIR_BUILTIN_WORKGROUP_ID: return "workgroup_id";
+        case SSIR_BUILTIN_NUM_WORKGROUPS: return "num_workgroups";
+        case SSIR_BUILTIN_CLIP_DISTANCE: return "clip_distances";
+        case SSIR_BUILTIN_FRAG_COORD: return "position";
+        case SSIR_BUILTIN_PRIMITIVE_ID: return "primitive_index";
+        case SSIR_BUILTIN_SUBGROUP_SIZE: return "subgroup_size";
+        case SSIR_BUILTIN_SUBGROUP_INVOCATION_ID: return "subgroup_invocation_id";
+        case SSIR_BUILTIN_SUBGROUP_ID: return "subgroup_id";
+        case SSIR_BUILTIN_NUM_SUBGROUPS: return "num_subgroups";
+        default: return "unknown_builtin";
     }
 }
 
 static const char *builtin_func_to_wgsl(SsirBuiltinId id) {
     switch (id) {
-    case SSIR_BUILTIN_SIN:           return "sin";
-    case SSIR_BUILTIN_COS:           return "cos";
-    case SSIR_BUILTIN_TAN:           return "tan";
-    case SSIR_BUILTIN_ASIN:          return "asin";
-    case SSIR_BUILTIN_ACOS:          return "acos";
-    case SSIR_BUILTIN_ATAN:          return "atan";
-    case SSIR_BUILTIN_ATAN2:         return "atan2";
-    case SSIR_BUILTIN_SINH:          return "sinh";
-    case SSIR_BUILTIN_COSH:          return "cosh";
-    case SSIR_BUILTIN_TANH:          return "tanh";
-    case SSIR_BUILTIN_ASINH:         return "asinh";
-    case SSIR_BUILTIN_ACOSH:         return "acosh";
-    case SSIR_BUILTIN_ATANH:         return "atanh";
-    case SSIR_BUILTIN_EXP:           return "exp";
-    case SSIR_BUILTIN_EXP2:          return "exp2";
-    case SSIR_BUILTIN_LOG:           return "log";
-    case SSIR_BUILTIN_LOG2:          return "log2";
-    case SSIR_BUILTIN_POW:           return "pow";
-    case SSIR_BUILTIN_SQRT:          return "sqrt";
-    case SSIR_BUILTIN_INVERSESQRT:   return "inverseSqrt";
-    case SSIR_BUILTIN_ABS:           return "abs";
-    case SSIR_BUILTIN_SIGN:          return "sign";
-    case SSIR_BUILTIN_FLOOR:         return "floor";
-    case SSIR_BUILTIN_CEIL:          return "ceil";
-    case SSIR_BUILTIN_ROUND:         return "round";
-    case SSIR_BUILTIN_TRUNC:         return "trunc";
-    case SSIR_BUILTIN_FRACT:         return "fract";
-    case SSIR_BUILTIN_MIN:           return "min";
-    case SSIR_BUILTIN_MAX:           return "max";
-    case SSIR_BUILTIN_CLAMP:         return "clamp";
-    case SSIR_BUILTIN_SATURATE:      return "saturate";
-    case SSIR_BUILTIN_MIX:           return "mix";
-    case SSIR_BUILTIN_STEP:          return "step";
-    case SSIR_BUILTIN_SMOOTHSTEP:    return "smoothstep";
-    case SSIR_BUILTIN_DOT:           return "dot";
-    case SSIR_BUILTIN_CROSS:         return "cross";
-    case SSIR_BUILTIN_LENGTH:        return "length";
-    case SSIR_BUILTIN_DISTANCE:      return "distance";
-    case SSIR_BUILTIN_NORMALIZE:     return "normalize";
-    case SSIR_BUILTIN_FACEFORWARD:   return "faceForward";
-    case SSIR_BUILTIN_REFLECT:       return "reflect";
-    case SSIR_BUILTIN_REFRACT:       return "refract";
-    case SSIR_BUILTIN_ALL:           return "all";
-    case SSIR_BUILTIN_ANY:           return "any";
-    case SSIR_BUILTIN_SELECT:        return "select";
-    case SSIR_BUILTIN_COUNTBITS:     return "countOneBits";
-    case SSIR_BUILTIN_REVERSEBITS:   return "reverseBits";
-    case SSIR_BUILTIN_FIRSTLEADINGBIT: return "firstLeadingBit";
-    case SSIR_BUILTIN_FIRSTTRAILINGBIT: return "firstTrailingBit";
-    case SSIR_BUILTIN_EXTRACTBITS:   return "extractBits";
-    case SSIR_BUILTIN_INSERTBITS:    return "insertBits";
-    case SSIR_BUILTIN_DPDX:          return "dpdx";
-    case SSIR_BUILTIN_DPDY:          return "dpdy";
-    case SSIR_BUILTIN_FWIDTH:        return "fwidth";
-    case SSIR_BUILTIN_DPDX_COARSE:   return "dpdxCoarse";
-    case SSIR_BUILTIN_DPDY_COARSE:   return "dpdyCoarse";
-    case SSIR_BUILTIN_DPDX_FINE:     return "dpdxFine";
-    case SSIR_BUILTIN_DPDY_FINE:     return "dpdyFine";
-    case SSIR_BUILTIN_FMA:           return "fma";
-    case SSIR_BUILTIN_ISINF:         return NULL; /* special */
-    case SSIR_BUILTIN_ISNAN:         return NULL; /* special */
-    case SSIR_BUILTIN_DEGREES:       return "degrees";
-    case SSIR_BUILTIN_RADIANS:       return "radians";
-    case SSIR_BUILTIN_MODF:          return "modf";
-    case SSIR_BUILTIN_FREXP:         return "frexp";
-    case SSIR_BUILTIN_LDEXP:         return "ldexp";
-    case SSIR_BUILTIN_DETERMINANT:   return "determinant";
-    case SSIR_BUILTIN_TRANSPOSE:     return "transpose";
-    case SSIR_BUILTIN_PACK4X8SNORM:  return "pack4x8snorm";
-    case SSIR_BUILTIN_PACK4X8UNORM:  return "pack4x8unorm";
-    case SSIR_BUILTIN_PACK2X16SNORM: return "pack2x16snorm";
-    case SSIR_BUILTIN_PACK2X16UNORM: return "pack2x16unorm";
-    case SSIR_BUILTIN_PACK2X16FLOAT: return "pack2x16float";
-    case SSIR_BUILTIN_UNPACK4X8SNORM:  return "unpack4x8snorm";
-    case SSIR_BUILTIN_UNPACK4X8UNORM:  return "unpack4x8unorm";
-    case SSIR_BUILTIN_UNPACK2X16SNORM: return "unpack2x16snorm";
-    case SSIR_BUILTIN_UNPACK2X16UNORM: return "unpack2x16unorm";
-    case SSIR_BUILTIN_UNPACK2X16FLOAT: return "unpack2x16float";
-    case SSIR_BUILTIN_SUBGROUP_BALLOT: return "subgroupBallot";
-    case SSIR_BUILTIN_SUBGROUP_BROADCAST: return "subgroupBroadcast";
-    case SSIR_BUILTIN_SUBGROUP_ADD: return "subgroupAdd";
-    case SSIR_BUILTIN_SUBGROUP_MIN: return "subgroupMin";
-    case SSIR_BUILTIN_SUBGROUP_MAX: return "subgroupMax";
-    case SSIR_BUILTIN_SUBGROUP_ALL: return "subgroupAll";
-    case SSIR_BUILTIN_SUBGROUP_ANY: return "subgroupAny";
-    case SSIR_BUILTIN_SUBGROUP_SHUFFLE: return "subgroupShuffle";
-    case SSIR_BUILTIN_SUBGROUP_PREFIX_ADD: return "subgroupPrefixExclusiveAdd";
-    default: return "unknown_builtin";
+        case SSIR_BUILTIN_SIN: return "sin";
+        case SSIR_BUILTIN_COS: return "cos";
+        case SSIR_BUILTIN_TAN: return "tan";
+        case SSIR_BUILTIN_ASIN: return "asin";
+        case SSIR_BUILTIN_ACOS: return "acos";
+        case SSIR_BUILTIN_ATAN: return "atan";
+        case SSIR_BUILTIN_ATAN2: return "atan2";
+        case SSIR_BUILTIN_SINH: return "sinh";
+        case SSIR_BUILTIN_COSH: return "cosh";
+        case SSIR_BUILTIN_TANH: return "tanh";
+        case SSIR_BUILTIN_ASINH: return "asinh";
+        case SSIR_BUILTIN_ACOSH: return "acosh";
+        case SSIR_BUILTIN_ATANH: return "atanh";
+        case SSIR_BUILTIN_EXP: return "exp";
+        case SSIR_BUILTIN_EXP2: return "exp2";
+        case SSIR_BUILTIN_LOG: return "log";
+        case SSIR_BUILTIN_LOG2: return "log2";
+        case SSIR_BUILTIN_POW: return "pow";
+        case SSIR_BUILTIN_SQRT: return "sqrt";
+        case SSIR_BUILTIN_INVERSESQRT: return "inverseSqrt";
+        case SSIR_BUILTIN_ABS: return "abs";
+        case SSIR_BUILTIN_SIGN: return "sign";
+        case SSIR_BUILTIN_FLOOR: return "floor";
+        case SSIR_BUILTIN_CEIL: return "ceil";
+        case SSIR_BUILTIN_ROUND: return "round";
+        case SSIR_BUILTIN_TRUNC: return "trunc";
+        case SSIR_BUILTIN_FRACT: return "fract";
+        case SSIR_BUILTIN_MIN: return "min";
+        case SSIR_BUILTIN_MAX: return "max";
+        case SSIR_BUILTIN_CLAMP: return "clamp";
+        case SSIR_BUILTIN_SATURATE: return "saturate";
+        case SSIR_BUILTIN_MIX: return "mix";
+        case SSIR_BUILTIN_STEP: return "step";
+        case SSIR_BUILTIN_SMOOTHSTEP: return "smoothstep";
+        case SSIR_BUILTIN_DOT: return "dot";
+        case SSIR_BUILTIN_CROSS: return "cross";
+        case SSIR_BUILTIN_LENGTH: return "length";
+        case SSIR_BUILTIN_DISTANCE: return "distance";
+        case SSIR_BUILTIN_NORMALIZE: return "normalize";
+        case SSIR_BUILTIN_FACEFORWARD: return "faceForward";
+        case SSIR_BUILTIN_REFLECT: return "reflect";
+        case SSIR_BUILTIN_REFRACT: return "refract";
+        case SSIR_BUILTIN_ALL: return "all";
+        case SSIR_BUILTIN_ANY: return "any";
+        case SSIR_BUILTIN_SELECT: return "select";
+        case SSIR_BUILTIN_COUNTBITS: return "countOneBits";
+        case SSIR_BUILTIN_REVERSEBITS: return "reverseBits";
+        case SSIR_BUILTIN_FIRSTLEADINGBIT: return "firstLeadingBit";
+        case SSIR_BUILTIN_FIRSTTRAILINGBIT: return "firstTrailingBit";
+        case SSIR_BUILTIN_EXTRACTBITS: return "extractBits";
+        case SSIR_BUILTIN_INSERTBITS: return "insertBits";
+        case SSIR_BUILTIN_DPDX: return "dpdx";
+        case SSIR_BUILTIN_DPDY: return "dpdy";
+        case SSIR_BUILTIN_FWIDTH: return "fwidth";
+        case SSIR_BUILTIN_DPDX_COARSE: return "dpdxCoarse";
+        case SSIR_BUILTIN_DPDY_COARSE: return "dpdyCoarse";
+        case SSIR_BUILTIN_DPDX_FINE: return "dpdxFine";
+        case SSIR_BUILTIN_DPDY_FINE: return "dpdyFine";
+        case SSIR_BUILTIN_FMA: return "fma";
+        case SSIR_BUILTIN_ISINF: return NULL; /* special */
+        case SSIR_BUILTIN_ISNAN: return NULL; /* special */
+        case SSIR_BUILTIN_DEGREES: return "degrees";
+        case SSIR_BUILTIN_RADIANS: return "radians";
+        case SSIR_BUILTIN_MODF: return "modf";
+        case SSIR_BUILTIN_FREXP: return "frexp";
+        case SSIR_BUILTIN_LDEXP: return "ldexp";
+        case SSIR_BUILTIN_DETERMINANT: return "determinant";
+        case SSIR_BUILTIN_TRANSPOSE: return "transpose";
+        case SSIR_BUILTIN_PACK4X8SNORM: return "pack4x8snorm";
+        case SSIR_BUILTIN_PACK4X8UNORM: return "pack4x8unorm";
+        case SSIR_BUILTIN_PACK2X16SNORM: return "pack2x16snorm";
+        case SSIR_BUILTIN_PACK2X16UNORM: return "pack2x16unorm";
+        case SSIR_BUILTIN_PACK2X16FLOAT: return "pack2x16float";
+        case SSIR_BUILTIN_UNPACK4X8SNORM: return "unpack4x8snorm";
+        case SSIR_BUILTIN_UNPACK4X8UNORM: return "unpack4x8unorm";
+        case SSIR_BUILTIN_UNPACK2X16SNORM: return "unpack2x16snorm";
+        case SSIR_BUILTIN_UNPACK2X16UNORM: return "unpack2x16unorm";
+        case SSIR_BUILTIN_UNPACK2X16FLOAT: return "unpack2x16float";
+        case SSIR_BUILTIN_SUBGROUP_BALLOT: return "subgroupBallot";
+        case SSIR_BUILTIN_SUBGROUP_BROADCAST: return "subgroupBroadcast";
+        case SSIR_BUILTIN_SUBGROUP_ADD: return "subgroupAdd";
+        case SSIR_BUILTIN_SUBGROUP_MIN: return "subgroupMin";
+        case SSIR_BUILTIN_SUBGROUP_MAX: return "subgroupMax";
+        case SSIR_BUILTIN_SUBGROUP_ALL: return "subgroupAll";
+        case SSIR_BUILTIN_SUBGROUP_ANY: return "subgroupAny";
+        case SSIR_BUILTIN_SUBGROUP_SHUFFLE: return "subgroupShuffle";
+        case SSIR_BUILTIN_SUBGROUP_PREFIX_ADD: return "subgroupPrefixExclusiveAdd";
+        default: return "unknown_builtin";
     }
 }
 
 static const char *address_space_to_wgsl(SsirAddressSpace space) {
     switch (space) {
-    case SSIR_ADDR_FUNCTION:        return NULL;  /* implicit */
-    case SSIR_ADDR_PRIVATE:         return "private";
-    case SSIR_ADDR_WORKGROUP:       return "workgroup";
-    case SSIR_ADDR_UNIFORM:         return "uniform";
-    case SSIR_ADDR_UNIFORM_CONSTANT: return NULL;  /* implicit for samplers/textures */
-    case SSIR_ADDR_STORAGE:         return "storage";
-    case SSIR_ADDR_INPUT:           return NULL;  /* not a WGSL address space */
-    case SSIR_ADDR_OUTPUT:          return NULL;  /* not a WGSL address space */
-    case SSIR_ADDR_PUSH_CONSTANT:   return "push_constant";
-    default: return "unknown";
+        case SSIR_ADDR_FUNCTION: return NULL; /* implicit */
+        case SSIR_ADDR_PRIVATE: return "private";
+        case SSIR_ADDR_WORKGROUP: return "workgroup";
+        case SSIR_ADDR_UNIFORM: return "uniform";
+        case SSIR_ADDR_UNIFORM_CONSTANT: return NULL; /* implicit for samplers/textures */
+        case SSIR_ADDR_STORAGE: return "storage";
+        case SSIR_ADDR_INPUT: return NULL;  /* not a WGSL address space */
+        case SSIR_ADDR_OUTPUT: return NULL; /* not a WGSL address space */
+        case SSIR_ADDR_PUSH_CONSTANT: return "push_constant";
+        default: return "unknown";
     }
 }
 
 static const char *texture_dim_to_wgsl(SsirTextureDim dim) {
     switch (dim) {
-    case SSIR_TEX_1D:              return "1d";
-    case SSIR_TEX_2D:              return "2d";
-    case SSIR_TEX_3D:              return "3d";
-    case SSIR_TEX_CUBE:            return "cube";
-    case SSIR_TEX_2D_ARRAY:        return "2d_array";
-    case SSIR_TEX_CUBE_ARRAY:      return "cube_array";
-    case SSIR_TEX_MULTISAMPLED_2D: return "multisampled_2d";
-    case SSIR_TEX_1D_ARRAY:        return "1d_array";
-    case SSIR_TEX_BUFFER:          return "1d"; /* WGSL has no buffer textures; approximate as 1d */
-    case SSIR_TEX_MULTISAMPLED_2D_ARRAY: return "multisampled_2d"; /* WGSL has no MS array; approximate */
-    default: return "2d";
+        case SSIR_TEX_1D: return "1d";
+        case SSIR_TEX_2D: return "2d";
+        case SSIR_TEX_3D: return "3d";
+        case SSIR_TEX_CUBE: return "cube";
+        case SSIR_TEX_2D_ARRAY: return "2d_array";
+        case SSIR_TEX_CUBE_ARRAY: return "cube_array";
+        case SSIR_TEX_MULTISAMPLED_2D: return "multisampled_2d";
+        case SSIR_TEX_1D_ARRAY: return "1d_array";
+        case SSIR_TEX_BUFFER: return "1d";                             /* WGSL has no buffer textures; approximate as 1d */
+        case SSIR_TEX_MULTISAMPLED_2D_ARRAY: return "multisampled_2d"; /* WGSL has no MS array; approximate */
+        default: return "2d";
     }
 }
 
@@ -315,20 +315,20 @@ static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StwStringBuffer 
 
 static void emit_scalar_type(SsirToWgslContext *ctx, const SsirType *t, StwStringBuffer *out) {
     switch (t->kind) {
-    case SSIR_TYPE_VOID: stw_sb_append(out, "void"); break;
-    case SSIR_TYPE_BOOL: stw_sb_append(out, "bool"); break;
-    case SSIR_TYPE_I32:  stw_sb_append(out, "i32"); break;
-    case SSIR_TYPE_U32:  stw_sb_append(out, "u32"); break;
-    case SSIR_TYPE_F32:  stw_sb_append(out, "f32"); break;
-    case SSIR_TYPE_F16:  stw_sb_append(out, "f16"); break;
-    case SSIR_TYPE_F64:  stw_sb_append(out, "f64"); break;
-    case SSIR_TYPE_I8:   stw_sb_append(out, "i32"); break;
-    case SSIR_TYPE_U8:   stw_sb_append(out, "u32"); break;
-    case SSIR_TYPE_I16:  stw_sb_append(out, "i32"); break;
-    case SSIR_TYPE_U16:  stw_sb_append(out, "u32"); break;
-    case SSIR_TYPE_I64:  stw_sb_append(out, "i32"); break;
-    case SSIR_TYPE_U64:  stw_sb_append(out, "u32"); break;
-    default: stw_sb_append(out, "unknown"); break;
+        case SSIR_TYPE_VOID: stw_sb_append(out, "void"); break;
+        case SSIR_TYPE_BOOL: stw_sb_append(out, "bool"); break;
+        case SSIR_TYPE_I32: stw_sb_append(out, "i32"); break;
+        case SSIR_TYPE_U32: stw_sb_append(out, "u32"); break;
+        case SSIR_TYPE_F32: stw_sb_append(out, "f32"); break;
+        case SSIR_TYPE_F16: stw_sb_append(out, "f16"); break;
+        case SSIR_TYPE_F64: stw_sb_append(out, "f64"); break;
+        case SSIR_TYPE_I8: stw_sb_append(out, "i32"); break;
+        case SSIR_TYPE_U8: stw_sb_append(out, "u32"); break;
+        case SSIR_TYPE_I16: stw_sb_append(out, "i32"); break;
+        case SSIR_TYPE_U16: stw_sb_append(out, "u32"); break;
+        case SSIR_TYPE_I64: stw_sb_append(out, "i32"); break;
+        case SSIR_TYPE_U64: stw_sb_append(out, "u32"); break;
+        default: stw_sb_append(out, "unknown"); break;
     }
 }
 
@@ -340,99 +340,99 @@ static void emit_type(SsirToWgslContext *ctx, uint32_t type_id, StwStringBuffer 
     }
 
     switch (t->kind) {
-    case SSIR_TYPE_VOID:
-    case SSIR_TYPE_BOOL:
-    case SSIR_TYPE_I32:
-    case SSIR_TYPE_U32:
-    case SSIR_TYPE_F32:
-    case SSIR_TYPE_F16:
-    case SSIR_TYPE_F64:
-    case SSIR_TYPE_I8:
-    case SSIR_TYPE_U8:
-    case SSIR_TYPE_I16:
-    case SSIR_TYPE_U16:
-    case SSIR_TYPE_I64:
-    case SSIR_TYPE_U64:
-        emit_scalar_type(ctx, t, out);
-        break;
+        case SSIR_TYPE_VOID:
+        case SSIR_TYPE_BOOL:
+        case SSIR_TYPE_I32:
+        case SSIR_TYPE_U32:
+        case SSIR_TYPE_F32:
+        case SSIR_TYPE_F16:
+        case SSIR_TYPE_F64:
+        case SSIR_TYPE_I8:
+        case SSIR_TYPE_U8:
+        case SSIR_TYPE_I16:
+        case SSIR_TYPE_U16:
+        case SSIR_TYPE_I64:
+        case SSIR_TYPE_U64:
+            emit_scalar_type(ctx, t, out);
+            break;
 
-    case SSIR_TYPE_VEC: {
-        stw_sb_appendf(out, "vec%u<", t->vec.size);
-        emit_type(ctx, t->vec.elem, out);
-        stw_sb_append(out, ">");
-        break;
-    }
-
-    case SSIR_TYPE_MAT: {
-        stw_sb_appendf(out, "mat%ux%u<", t->mat.cols, t->mat.rows);
-        /* Get the scalar type from the column vector */
-        SsirType *col_t = ssir_get_type((SsirModule *)ctx->mod, t->mat.elem);
-        if (col_t && col_t->kind == SSIR_TYPE_VEC) {
-            emit_type(ctx, col_t->vec.elem, out);
-        } else {
-            stw_sb_append(out, "f32");
+        case SSIR_TYPE_VEC: {
+            stw_sb_appendf(out, "vec%u<", t->vec.size);
+            emit_type(ctx, t->vec.elem, out);
+            stw_sb_append(out, ">");
+            break;
         }
-        stw_sb_append(out, ">");
-        break;
-    }
 
-    case SSIR_TYPE_ARRAY:
-        stw_sb_append(out, "array<");
-        emit_type(ctx, t->array.elem, out);
-        stw_sb_appendf(out, ", %u>", t->array.length);
-        break;
-
-    case SSIR_TYPE_RUNTIME_ARRAY:
-        stw_sb_append(out, "array<");
-        emit_type(ctx, t->runtime_array.elem, out);
-        stw_sb_append(out, ">");
-        break;
-
-    case SSIR_TYPE_STRUCT:
-        stw_sb_append(out, t->struc.name ? t->struc.name : "_Struct");
-        break;
-
-    case SSIR_TYPE_PTR:
-        /* In WGSL, pointers are typically unwrapped */
-        emit_type(ctx, t->ptr.pointee, out);
-        break;
-
-    case SSIR_TYPE_SAMPLER:
-        stw_sb_append(out, "sampler");
-        break;
-
-    case SSIR_TYPE_SAMPLER_COMPARISON:
-        stw_sb_append(out, "sampler_comparison");
-        break;
-
-    case SSIR_TYPE_TEXTURE: {
-        stw_sb_appendf(out, "texture_%s<", texture_dim_to_wgsl(t->texture.dim));
-        emit_type(ctx, t->texture.sampled_type, out);
-        stw_sb_append(out, ">");
-        break;
-    }
-
-    case SSIR_TYPE_TEXTURE_STORAGE: {
-        stw_sb_appendf(out, "texture_storage_%s<", texture_dim_to_wgsl(t->texture_storage.dim));
-        /* Would need format enum to string conversion */
-        stw_sb_append(out, "rgba8unorm");
-        stw_sb_append(out, ", ");
-        switch (t->texture_storage.access) {
-        case SSIR_ACCESS_READ: stw_sb_append(out, "read"); break;
-        case SSIR_ACCESS_WRITE: stw_sb_append(out, "write"); break;
-        case SSIR_ACCESS_READ_WRITE: stw_sb_append(out, "read_write"); break;
+        case SSIR_TYPE_MAT: {
+            stw_sb_appendf(out, "mat%ux%u<", t->mat.cols, t->mat.rows);
+            /* Get the scalar type from the column vector */
+            SsirType *col_t = ssir_get_type((SsirModule *)ctx->mod, t->mat.elem);
+            if (col_t && col_t->kind == SSIR_TYPE_VEC) {
+                emit_type(ctx, col_t->vec.elem, out);
+            } else {
+                stw_sb_append(out, "f32");
+            }
+            stw_sb_append(out, ">");
+            break;
         }
-        stw_sb_append(out, ">");
-        break;
-    }
 
-    case SSIR_TYPE_TEXTURE_DEPTH:
-        stw_sb_appendf(out, "texture_depth_%s", texture_dim_to_wgsl(t->texture_depth.dim));
-        break;
+        case SSIR_TYPE_ARRAY:
+            stw_sb_append(out, "array<");
+            emit_type(ctx, t->array.elem, out);
+            stw_sb_appendf(out, ", %u>", t->array.length);
+            break;
 
-    default:
-        stw_sb_appendf(out, "_unknown_type_%u", type_id);
-        break;
+        case SSIR_TYPE_RUNTIME_ARRAY:
+            stw_sb_append(out, "array<");
+            emit_type(ctx, t->runtime_array.elem, out);
+            stw_sb_append(out, ">");
+            break;
+
+        case SSIR_TYPE_STRUCT:
+            stw_sb_append(out, t->struc.name ? t->struc.name : "_Struct");
+            break;
+
+        case SSIR_TYPE_PTR:
+            /* In WGSL, pointers are typically unwrapped */
+            emit_type(ctx, t->ptr.pointee, out);
+            break;
+
+        case SSIR_TYPE_SAMPLER:
+            stw_sb_append(out, "sampler");
+            break;
+
+        case SSIR_TYPE_SAMPLER_COMPARISON:
+            stw_sb_append(out, "sampler_comparison");
+            break;
+
+        case SSIR_TYPE_TEXTURE: {
+            stw_sb_appendf(out, "texture_%s<", texture_dim_to_wgsl(t->texture.dim));
+            emit_type(ctx, t->texture.sampled_type, out);
+            stw_sb_append(out, ">");
+            break;
+        }
+
+        case SSIR_TYPE_TEXTURE_STORAGE: {
+            stw_sb_appendf(out, "texture_storage_%s<", texture_dim_to_wgsl(t->texture_storage.dim));
+            /* Would need format enum to string conversion */
+            stw_sb_append(out, "rgba8unorm");
+            stw_sb_append(out, ", ");
+            switch (t->texture_storage.access) {
+                case SSIR_ACCESS_READ: stw_sb_append(out, "read"); break;
+                case SSIR_ACCESS_WRITE: stw_sb_append(out, "write"); break;
+                case SSIR_ACCESS_READ_WRITE: stw_sb_append(out, "read_write"); break;
+            }
+            stw_sb_append(out, ">");
+            break;
+        }
+
+        case SSIR_TYPE_TEXTURE_DEPTH:
+            stw_sb_appendf(out, "texture_depth_%s", texture_dim_to_wgsl(t->texture_depth.dim));
+            break;
+
+        default:
+            stw_sb_appendf(out, "_unknown_type_%u", type_id);
+            break;
     }
 }
 
@@ -444,86 +444,86 @@ static void stw_emit_constant(SsirToWgslContext *ctx, SsirConstant *c, StwString
 
 static void stw_emit_constant(SsirToWgslContext *ctx, SsirConstant *c, StwStringBuffer *out) {
     switch (c->kind) {
-    case SSIR_CONST_BOOL:
-        stw_sb_append(out, c->bool_val ? "true" : "false");
-        break;
+        case SSIR_CONST_BOOL:
+            stw_sb_append(out, c->bool_val ? "true" : "false");
+            break;
 
-    case SSIR_CONST_I32:
-        stw_sb_appendf(out, "%di", c->i32_val);
-        break;
+        case SSIR_CONST_I32:
+            stw_sb_appendf(out, "%di", c->i32_val);
+            break;
 
-    case SSIR_CONST_U32:
-        stw_sb_appendf(out, "%uu", c->u32_val);
-        break;
+        case SSIR_CONST_U32:
+            stw_sb_appendf(out, "%uu", c->u32_val);
+            break;
 
-    case SSIR_CONST_F32: {
-        float f = c->f32_val;
-        if (floorf(f) == f && fabsf(f) < 1e6f) {
-            stw_sb_appendf(out, "%.1f", (double)f);
-        } else {
-            stw_sb_appendf(out, "%g", (double)f);
-        }
-        break;
-    }
-
-    case SSIR_CONST_F16:
-        /* Half-precision - emit as hex for now */
-        stw_sb_appendf(out, "0x%xh", c->f16_val);
-        break;
-
-    case SSIR_CONST_F64: {
-        double d = c->f64_val;
-        if (floor(d) == d && fabs(d) < 1e15)
-            stw_sb_appendf(out, "%.1f", d);
-        else
-            stw_sb_appendf(out, "%g", d);
-        break;
-    }
-    case SSIR_CONST_I8:
-        stw_sb_appendf(out, "%di", (int)c->i8_val);
-        break;
-    case SSIR_CONST_U8:
-        stw_sb_appendf(out, "%uu", (unsigned)c->u8_val);
-        break;
-    case SSIR_CONST_I16:
-        stw_sb_appendf(out, "%di", (int)c->i16_val);
-        break;
-    case SSIR_CONST_U16:
-        stw_sb_appendf(out, "%uu", (unsigned)c->u16_val);
-        break;
-    case SSIR_CONST_I64:
-        stw_sb_appendf(out, "%lldi", (long long)c->i64_val);
-        break;
-    case SSIR_CONST_U64:
-        stw_sb_appendf(out, "%lluu", (unsigned long long)c->u64_val);
-        break;
-
-    case SSIR_CONST_COMPOSITE: {
-        /* Emit type constructor */
-        emit_type(ctx, c->type, out);
-        stw_sb_append(out, "(");
-        for (uint32_t i = 0; i < c->composite.count; i++) {
-            if (i > 0) stw_sb_append(out, ", ");
-            SsirConstant *elem = ssir_get_constant((SsirModule *)ctx->mod, c->composite.components[i]);
-            if (elem) {
-                stw_emit_constant(ctx, elem, out);
+        case SSIR_CONST_F32: {
+            float f = c->f32_val;
+            if (floorf(f) == f && fabsf(f) < 1e6f) {
+                stw_sb_appendf(out, "%.1f", (double)f);
             } else {
-                stw_sb_appendf(out, "_const%u", c->composite.components[i]);
+                stw_sb_appendf(out, "%g", (double)f);
             }
+            break;
         }
-        stw_sb_append(out, ")");
-        break;
-    }
 
-    case SSIR_CONST_NULL:
-        /* Zero value for type */
-        emit_type(ctx, c->type, out);
-        stw_sb_append(out, "()");
-        break;
+        case SSIR_CONST_F16:
+            /* Half-precision - emit as hex for now */
+            stw_sb_appendf(out, "0x%xh", c->f16_val);
+            break;
 
-    default:
-        stw_sb_appendf(out, "_const%u", c->id);
-        break;
+        case SSIR_CONST_F64: {
+            double d = c->f64_val;
+            if (floor(d) == d && fabs(d) < 1e15)
+                stw_sb_appendf(out, "%.1f", d);
+            else
+                stw_sb_appendf(out, "%g", d);
+            break;
+        }
+        case SSIR_CONST_I8:
+            stw_sb_appendf(out, "%di", (int)c->i8_val);
+            break;
+        case SSIR_CONST_U8:
+            stw_sb_appendf(out, "%uu", (unsigned)c->u8_val);
+            break;
+        case SSIR_CONST_I16:
+            stw_sb_appendf(out, "%di", (int)c->i16_val);
+            break;
+        case SSIR_CONST_U16:
+            stw_sb_appendf(out, "%uu", (unsigned)c->u16_val);
+            break;
+        case SSIR_CONST_I64:
+            stw_sb_appendf(out, "%lldi", (long long)c->i64_val);
+            break;
+        case SSIR_CONST_U64:
+            stw_sb_appendf(out, "%lluu", (unsigned long long)c->u64_val);
+            break;
+
+        case SSIR_CONST_COMPOSITE: {
+            /* Emit type constructor */
+            emit_type(ctx, c->type, out);
+            stw_sb_append(out, "(");
+            for (uint32_t i = 0; i < c->composite.count; i++) {
+                if (i > 0) stw_sb_append(out, ", ");
+                SsirConstant *elem = ssir_get_constant((SsirModule *)ctx->mod, c->composite.components[i]);
+                if (elem) {
+                    stw_emit_constant(ctx, elem, out);
+                } else {
+                    stw_sb_appendf(out, "_const%u", c->composite.components[i]);
+                }
+            }
+            stw_sb_append(out, ")");
+            break;
+        }
+
+        case SSIR_CONST_NULL:
+            /* Zero value for type */
+            emit_type(ctx, c->type, out);
+            stw_sb_append(out, "()");
+            break;
+
+        default:
+            stw_sb_appendf(out, "_const%u", c->id);
+            break;
     }
 }
 
@@ -620,525 +620,525 @@ static void stw_emit_expression(SsirToWgslContext *ctx, uint32_t id, StwStringBu
     }
 
     switch (inst->op) {
-    /* Arithmetic */
-    case SSIR_OP_ADD: stw_emit_binary_op(ctx, inst, " + ", out); break;
-    case SSIR_OP_SUB: stw_emit_binary_op(ctx, inst, " - ", out); break;
-    case SSIR_OP_MUL: stw_emit_binary_op(ctx, inst, " * ", out); break;
-    case SSIR_OP_DIV: stw_emit_binary_op(ctx, inst, " / ", out); break;
-    case SSIR_OP_MOD: stw_emit_binary_op(ctx, inst, " % ", out); break;
-    case SSIR_OP_REM: {
-        SsirModule *rmod = (SsirModule *)ctx->mod;
-        SsirType *rem_t = ssir_get_type(rmod, inst->type);
-        if (rem_t && ssir_type_is_float(rem_t)) {
+        /* Arithmetic */
+        case SSIR_OP_ADD: stw_emit_binary_op(ctx, inst, " + ", out); break;
+        case SSIR_OP_SUB: stw_emit_binary_op(ctx, inst, " - ", out); break;
+        case SSIR_OP_MUL: stw_emit_binary_op(ctx, inst, " * ", out); break;
+        case SSIR_OP_DIV: stw_emit_binary_op(ctx, inst, " / ", out); break;
+        case SSIR_OP_MOD: stw_emit_binary_op(ctx, inst, " % ", out); break;
+        case SSIR_OP_REM: {
+            SsirModule *rmod = (SsirModule *)ctx->mod;
+            SsirType *rem_t = ssir_get_type(rmod, inst->type);
+            if (rem_t && ssir_type_is_float(rem_t)) {
+                stw_sb_append(out, "(");
+                stw_emit_expression(ctx, inst->operands[0], out);
+                stw_sb_append(out, " - ");
+                stw_emit_expression(ctx, inst->operands[1], out);
+                stw_sb_append(out, " * trunc(");
+                stw_emit_expression(ctx, inst->operands[0], out);
+                stw_sb_append(out, " / ");
+                stw_emit_expression(ctx, inst->operands[1], out);
+                stw_sb_append(out, "))");
+            } else {
+                stw_emit_expression(ctx, inst->operands[0], out);
+                stw_sb_append(out, " % ");
+                stw_emit_expression(ctx, inst->operands[1], out);
+            }
+            break;
+        }
+        case SSIR_OP_NEG: stw_emit_unary_op(ctx, inst, "-", out); break;
+
+        /* Matrix */
+        case SSIR_OP_MAT_MUL: stw_emit_binary_op(ctx, inst, " * ", out); break;
+        case SSIR_OP_MAT_TRANSPOSE:
+            stw_sb_append(out, "transpose(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ")");
+            break;
+
+        /* Bitwise */
+        case SSIR_OP_BIT_AND: stw_emit_binary_op(ctx, inst, " & ", out); break;
+        case SSIR_OP_BIT_OR: stw_emit_binary_op(ctx, inst, " | ", out); break;
+        case SSIR_OP_BIT_XOR: stw_emit_binary_op(ctx, inst, " ^ ", out); break;
+        case SSIR_OP_BIT_NOT: stw_emit_unary_op(ctx, inst, "~", out); break;
+        case SSIR_OP_SHL: stw_emit_binary_op(ctx, inst, " << ", out); break;
+        case SSIR_OP_SHR: stw_emit_binary_op(ctx, inst, " >> ", out); break;
+        case SSIR_OP_SHR_LOGICAL: {
+            SsirModule *wmod = (SsirModule *)ctx->mod;
+            SsirType *shr_type = ssir_get_type(wmod, inst->type);
+            bool shr_signed = shr_type && (ssir_type_is_signed(shr_type) ||
+                                              (shr_type->kind == SSIR_TYPE_VEC &&
+                                                  ssir_type_is_signed(ssir_get_type(wmod, shr_type->vec.elem))));
+            if (shr_signed) {
+                stw_sb_append(out, "bitcast<");
+                emit_type(ctx, inst->type, out);
+                stw_sb_append(out, ">(bitcast<");
+                if (shr_type->kind == SSIR_TYPE_VEC) {
+                    uint32_t uvec = ssir_type_vec(wmod,
+                        ssir_type_u32(wmod), shr_type->vec.size);
+                    emit_type(ctx, uvec, out);
+                } else {
+                    stw_sb_append(out, "u32");
+                }
+                stw_sb_append(out, ">(");
+                stw_emit_expression(ctx, inst->operands[0], out);
+                stw_sb_append(out, ") >> ");
+                stw_emit_expression(ctx, inst->operands[1], out);
+                stw_sb_append(out, ")");
+            } else {
+                stw_emit_binary_op(ctx, inst, " >> ", out);
+            }
+            break;
+        }
+
+        /* Comparison */
+        case SSIR_OP_EQ: stw_emit_binary_op(ctx, inst, " == ", out); break;
+        case SSIR_OP_NE: stw_emit_binary_op(ctx, inst, " != ", out); break;
+        case SSIR_OP_LT: stw_emit_binary_op(ctx, inst, " < ", out); break;
+        case SSIR_OP_LE: stw_emit_binary_op(ctx, inst, " <= ", out); break;
+        case SSIR_OP_GT: stw_emit_binary_op(ctx, inst, " > ", out); break;
+        case SSIR_OP_GE: stw_emit_binary_op(ctx, inst, " >= ", out); break;
+
+        /* Logical */
+        case SSIR_OP_AND: stw_emit_binary_op(ctx, inst, " && ", out); break;
+        case SSIR_OP_OR: stw_emit_binary_op(ctx, inst, " || ", out); break;
+        case SSIR_OP_NOT: stw_emit_unary_op(ctx, inst, "!", out); break;
+
+        /* Composite */
+        case SSIR_OP_CONSTRUCT: {
+            emit_type(ctx, inst->type, out);
+            stw_sb_append(out, "(");
+            /* Components are either in operands or extra */
+            uint32_t count = inst->operand_count;
+            const uint32_t *comps = inst->operands;
+            if (inst->extra_count > 0) {
+                count = inst->extra_count;
+                comps = inst->extra;
+            }
+            for (uint32_t i = 0; i < count; i++) {
+                if (i > 0) stw_sb_append(out, ", ");
+                stw_emit_expression(ctx, comps[i], out);
+            }
+            stw_sb_append(out, ")");
+            break;
+        }
+
+        case SSIR_OP_EXTRACT: {
+            stw_emit_expression(ctx, inst->operands[0], out);
+            /* Check if extracting from vector - use swizzle */
+            SsirType *base_t = ssir_get_type((SsirModule *)ctx->mod, inst->type);
+            uint32_t idx = inst->operands[1];
+            if (idx < 4) {
+                const char swizzle[] = "xyzw";
+                stw_sb_appendf(out, ".%c", swizzle[idx]);
+            } else {
+                stw_sb_appendf(out, "[%u]", idx);
+            }
+            break;
+        }
+
+        case SSIR_OP_INSERT:
+        case SSIR_OP_INSERT_DYN:
+            stw_sb_append(out, stw_get_id_name(ctx, id));
+            break;
+
+        case SSIR_OP_SHUFFLE: {
+            emit_type(ctx, inst->type, out);
+            stw_sb_append(out, "(");
+            /* Indices in extra array */
+            for (uint16_t i = 0; i < inst->extra_count; i++) {
+                if (i > 0) stw_sb_append(out, ", ");
+                uint32_t src_idx = inst->extra[i];
+                /* First operand is v1, second is v2 */
+                uint32_t v1_size = 4; /* Assume vec4 for simplicity */
+                if (src_idx < v1_size) {
+                    stw_emit_expression(ctx, inst->operands[0], out);
+                } else {
+                    stw_emit_expression(ctx, inst->operands[1], out);
+                    src_idx -= v1_size;
+                }
+                if (src_idx < 4) {
+                    const char swizzle[] = "xyzw";
+                    stw_sb_appendf(out, ".%c", swizzle[src_idx]);
+                }
+            }
+            stw_sb_append(out, ")");
+            break;
+        }
+
+        case SSIR_OP_SPLAT: {
+            emit_type(ctx, inst->type, out);
             stw_sb_append(out, "(");
             stw_emit_expression(ctx, inst->operands[0], out);
-            stw_sb_append(out, " - ");
-            stw_emit_expression(ctx, inst->operands[1], out);
-            stw_sb_append(out, " * trunc(");
-            stw_emit_expression(ctx, inst->operands[0], out);
-            stw_sb_append(out, " / ");
-            stw_emit_expression(ctx, inst->operands[1], out);
-            stw_sb_append(out, "))");
-        } else {
-            stw_emit_expression(ctx, inst->operands[0], out);
-            stw_sb_append(out, " % ");
-            stw_emit_expression(ctx, inst->operands[1], out);
-        }
-        break;
-    }
-    case SSIR_OP_NEG: stw_emit_unary_op(ctx, inst, "-", out); break;
-
-    /* Matrix */
-    case SSIR_OP_MAT_MUL: stw_emit_binary_op(ctx, inst, " * ", out); break;
-    case SSIR_OP_MAT_TRANSPOSE:
-        stw_sb_append(out, "transpose(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ")");
-        break;
-
-    /* Bitwise */
-    case SSIR_OP_BIT_AND: stw_emit_binary_op(ctx, inst, " & ", out); break;
-    case SSIR_OP_BIT_OR:  stw_emit_binary_op(ctx, inst, " | ", out); break;
-    case SSIR_OP_BIT_XOR: stw_emit_binary_op(ctx, inst, " ^ ", out); break;
-    case SSIR_OP_BIT_NOT: stw_emit_unary_op(ctx, inst, "~", out); break;
-    case SSIR_OP_SHL:     stw_emit_binary_op(ctx, inst, " << ", out); break;
-    case SSIR_OP_SHR:    stw_emit_binary_op(ctx, inst, " >> ", out); break;
-    case SSIR_OP_SHR_LOGICAL: {
-        SsirModule *wmod = (SsirModule *)ctx->mod;
-        SsirType *shr_type = ssir_get_type(wmod, inst->type);
-        bool shr_signed = shr_type && (ssir_type_is_signed(shr_type) ||
-            (shr_type->kind == SSIR_TYPE_VEC &&
-             ssir_type_is_signed(ssir_get_type(wmod, shr_type->vec.elem))));
-        if (shr_signed) {
-            stw_sb_append(out, "bitcast<");
-            emit_type(ctx, inst->type, out);
-            stw_sb_append(out, ">(bitcast<");
-            if (shr_type->kind == SSIR_TYPE_VEC) {
-                uint32_t uvec = ssir_type_vec(wmod,
-                    ssir_type_u32(wmod), shr_type->vec.size);
-                emit_type(ctx, uvec, out);
-            } else {
-                stw_sb_append(out, "u32");
-            }
-            stw_sb_append(out, ">(");
-            stw_emit_expression(ctx, inst->operands[0], out);
-            stw_sb_append(out, ") >> ");
-            stw_emit_expression(ctx, inst->operands[1], out);
             stw_sb_append(out, ")");
-        } else {
-            stw_emit_binary_op(ctx, inst, " >> ", out);
+            break;
         }
-        break;
-    }
 
-    /* Comparison */
-    case SSIR_OP_EQ: stw_emit_binary_op(ctx, inst, " == ", out); break;
-    case SSIR_OP_NE: stw_emit_binary_op(ctx, inst, " != ", out); break;
-    case SSIR_OP_LT: stw_emit_binary_op(ctx, inst, " < ", out); break;
-    case SSIR_OP_LE: stw_emit_binary_op(ctx, inst, " <= ", out); break;
-    case SSIR_OP_GT: stw_emit_binary_op(ctx, inst, " > ", out); break;
-    case SSIR_OP_GE: stw_emit_binary_op(ctx, inst, " >= ", out); break;
+        case SSIR_OP_EXTRACT_DYN:
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, "[");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, "]");
+            break;
 
-    /* Logical */
-    case SSIR_OP_AND: stw_emit_binary_op(ctx, inst, " && ", out); break;
-    case SSIR_OP_OR:  stw_emit_binary_op(ctx, inst, " || ", out); break;
-    case SSIR_OP_NOT: stw_emit_unary_op(ctx, inst, "!", out); break;
+        /* Memory */
+        case SSIR_OP_LOAD:
+            /* Dereference pointer - in WGSL just use the variable */
+            stw_emit_expression(ctx, inst->operands[0], out);
+            break;
 
-    /* Composite */
-    case SSIR_OP_CONSTRUCT: {
-        emit_type(ctx, inst->type, out);
-        stw_sb_append(out, "(");
-        /* Components are either in operands or extra */
-        uint32_t count = inst->operand_count;
-        const uint32_t *comps = inst->operands;
-        if (inst->extra_count > 0) {
-            count = inst->extra_count;
-            comps = inst->extra;
-        }
-        for (uint32_t i = 0; i < count; i++) {
-            if (i > 0) stw_sb_append(out, ", ");
-            stw_emit_expression(ctx, comps[i], out);
-        }
-        stw_sb_append(out, ")");
-        break;
-    }
-
-    case SSIR_OP_EXTRACT: {
-        stw_emit_expression(ctx, inst->operands[0], out);
-        /* Check if extracting from vector - use swizzle */
-        SsirType *base_t = ssir_get_type((SsirModule *)ctx->mod, inst->type);
-        uint32_t idx = inst->operands[1];
-        if (idx < 4) {
-            const char swizzle[] = "xyzw";
-            stw_sb_appendf(out, ".%c", swizzle[idx]);
-        } else {
-            stw_sb_appendf(out, "[%u]", idx);
-        }
-        break;
-    }
-
-    case SSIR_OP_INSERT:
-    case SSIR_OP_INSERT_DYN:
-        stw_sb_append(out, stw_get_id_name(ctx, id));
-        break;
-
-    case SSIR_OP_SHUFFLE: {
-        emit_type(ctx, inst->type, out);
-        stw_sb_append(out, "(");
-        /* Indices in extra array */
-        for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) stw_sb_append(out, ", ");
-            uint32_t src_idx = inst->extra[i];
-            /* First operand is v1, second is v2 */
-            uint32_t v1_size = 4; /* Assume vec4 for simplicity */
-            if (src_idx < v1_size) {
-                stw_emit_expression(ctx, inst->operands[0], out);
-            } else {
-                stw_emit_expression(ctx, inst->operands[1], out);
-                src_idx -= v1_size;
-            }
-            if (src_idx < 4) {
-                const char swizzle[] = "xyzw";
-                stw_sb_appendf(out, ".%c", swizzle[src_idx]);
-            }
-        }
-        stw_sb_append(out, ")");
-        break;
-    }
-
-    case SSIR_OP_SPLAT: {
-        emit_type(ctx, inst->type, out);
-        stw_sb_append(out, "(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ")");
-        break;
-    }
-
-    case SSIR_OP_EXTRACT_DYN:
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, "[");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, "]");
-        break;
-
-    /* Memory */
-    case SSIR_OP_LOAD:
-        /* Dereference pointer - in WGSL just use the variable */
-        stw_emit_expression(ctx, inst->operands[0], out);
-        break;
-
-    case SSIR_OP_ACCESS: {
-        SsirModule *amod = (SsirModule *)ctx->mod;
-        stw_emit_expression(ctx, inst->operands[0], out);
-        /* Trace struct type through the access chain for member names */
-        uint32_t cur_type_id = 0;
-        {
-            SsirGlobalVar *ag = ssir_get_global(amod, inst->operands[0]);
-            if (ag) {
-                SsirType *pt = ssir_get_type(amod, ag->type);
-                if (pt && pt->kind == SSIR_TYPE_PTR)
-                    cur_type_id = pt->ptr.pointee;
-            }
-            if (!cur_type_id) {
-                SsirInst *ai = find_instruction(ctx, inst->operands[0]);
-                if (ai && ai->op == SSIR_OP_LOAD) {
-                    SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
-                    if (lg) {
-                        SsirType *pt = ssir_get_type(amod, lg->type);
-                        if (pt && pt->kind == SSIR_TYPE_PTR)
-                            cur_type_id = pt->ptr.pointee;
+        case SSIR_OP_ACCESS: {
+            SsirModule *amod = (SsirModule *)ctx->mod;
+            stw_emit_expression(ctx, inst->operands[0], out);
+            /* Trace struct type through the access chain for member names */
+            uint32_t cur_type_id = 0;
+            {
+                SsirGlobalVar *ag = ssir_get_global(amod, inst->operands[0]);
+                if (ag) {
+                    SsirType *pt = ssir_get_type(amod, ag->type);
+                    if (pt && pt->kind == SSIR_TYPE_PTR)
+                        cur_type_id = pt->ptr.pointee;
+                }
+                if (!cur_type_id) {
+                    SsirInst *ai = find_instruction(ctx, inst->operands[0]);
+                    if (ai && ai->op == SSIR_OP_LOAD) {
+                        SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
+                        if (lg) {
+                            SsirType *pt = ssir_get_type(amod, lg->type);
+                            if (pt && pt->kind == SSIR_TYPE_PTR)
+                                cur_type_id = pt->ptr.pointee;
+                        }
                     }
                 }
             }
-        }
-        for (uint16_t i = 0; i < inst->extra_count; i++) {
-            uint32_t idx = inst->extra[i];
-            SsirConstant *idx_c = ssir_get_constant(amod, idx);
-            SsirType *cur_st = cur_type_id ? ssir_get_type(amod, cur_type_id) : NULL;
-            if (idx_c && (idx_c->kind == SSIR_CONST_U32 || idx_c->kind == SSIR_CONST_I32)) {
-                uint32_t midx = (idx_c->kind == SSIR_CONST_U32) ? idx_c->u32_val : (uint32_t)idx_c->i32_val;
-                const char *mname = NULL;
-                if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
-                    cur_st->struc.member_names && midx < cur_st->struc.member_count)
-                    mname = cur_st->struc.member_names[midx];
-                if (mname)
-                    stw_sb_appendf(out, ".%s", mname);
-                else
-                    stw_sb_appendf(out, ".member%u", midx);
-                /* Advance type through struct member */
-                if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
-                    cur_type_id = cur_st->struc.members[midx];
-                else
-                    cur_type_id = 0;
-            } else {
-                stw_sb_append(out, "[");
-                stw_emit_expression(ctx, idx, out);
-                stw_sb_append(out, "]");
-                /* Advance type through array element */
-                if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
-                    cur_type_id = cur_st->array.elem;
-                else
-                    cur_type_id = 0;
+            for (uint16_t i = 0; i < inst->extra_count; i++) {
+                uint32_t idx = inst->extra[i];
+                SsirConstant *idx_c = ssir_get_constant(amod, idx);
+                SsirType *cur_st = cur_type_id ? ssir_get_type(amod, cur_type_id) : NULL;
+                if (idx_c && (idx_c->kind == SSIR_CONST_U32 || idx_c->kind == SSIR_CONST_I32)) {
+                    uint32_t midx = (idx_c->kind == SSIR_CONST_U32) ? idx_c->u32_val : (uint32_t)idx_c->i32_val;
+                    const char *mname = NULL;
+                    if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
+                        cur_st->struc.member_names && midx < cur_st->struc.member_count)
+                        mname = cur_st->struc.member_names[midx];
+                    if (mname)
+                        stw_sb_appendf(out, ".%s", mname);
+                    else
+                        stw_sb_appendf(out, ".member%u", midx);
+                    /* Advance type through struct member */
+                    if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
+                        cur_type_id = cur_st->struc.members[midx];
+                    else
+                        cur_type_id = 0;
+                } else {
+                    stw_sb_append(out, "[");
+                    stw_emit_expression(ctx, idx, out);
+                    stw_sb_append(out, "]");
+                    /* Advance type through array element */
+                    if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
+                        cur_type_id = cur_st->array.elem;
+                    else
+                        cur_type_id = 0;
+                }
             }
+            break;
         }
-        break;
-    }
 
-    case SSIR_OP_ARRAY_LEN:
-        stw_sb_append(out, "arrayLength(&");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ")");
-        break;
+        case SSIR_OP_ARRAY_LEN:
+            stw_sb_append(out, "arrayLength(&");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ")");
+            break;
 
-    /* Call */
-    case SSIR_OP_CALL: {
-        uint32_t callee_id = inst->operands[0];
-        SsirFunction *callee = ssir_get_function((SsirModule *)ctx->mod, callee_id);
-        if (callee && callee->name) {
-            stw_sb_append(out, callee->name);
-        } else {
-            stw_sb_append(out, stw_get_id_name(ctx, callee_id));
-        }
-        stw_sb_append(out, "(");
-        for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) stw_sb_append(out, ", ");
-            stw_emit_expression(ctx, inst->extra[i], out);
-        }
-        stw_sb_append(out, ")");
-        break;
-    }
-
-    case SSIR_OP_BUILTIN: {
-        SsirBuiltinId builtin_id = (SsirBuiltinId)inst->operands[0];
-        /* WGSL doesn't have isinf/isnan — emit inline equivalents */
-        if (builtin_id == SSIR_BUILTIN_ISNAN && inst->extra_count > 0) {
+        /* Call */
+        case SSIR_OP_CALL: {
+            uint32_t callee_id = inst->operands[0];
+            SsirFunction *callee = ssir_get_function((SsirModule *)ctx->mod, callee_id);
+            if (callee && callee->name) {
+                stw_sb_append(out, callee->name);
+            } else {
+                stw_sb_append(out, stw_get_id_name(ctx, callee_id));
+            }
             stw_sb_append(out, "(");
-            stw_emit_expression(ctx, inst->extra[0], out);
-            stw_sb_append(out, " != ");
-            stw_emit_expression(ctx, inst->extra[0], out);
+            for (uint16_t i = 0; i < inst->extra_count; i++) {
+                if (i > 0) stw_sb_append(out, ", ");
+                stw_emit_expression(ctx, inst->extra[i], out);
+            }
             stw_sb_append(out, ")");
             break;
         }
-        if (builtin_id == SSIR_BUILTIN_ISINF && inst->extra_count > 0) {
-            stw_sb_append(out, "(abs(");
-            stw_emit_expression(ctx, inst->extra[0], out);
-            stw_sb_append(out, ") == ");
-            /* Use a very large float literal representing infinity */
-            stw_sb_append(out, "0x1p+128f");
+
+        case SSIR_OP_BUILTIN: {
+            SsirBuiltinId builtin_id = (SsirBuiltinId)inst->operands[0];
+            /* WGSL doesn't have isinf/isnan — emit inline equivalents */
+            if (builtin_id == SSIR_BUILTIN_ISNAN && inst->extra_count > 0) {
+                stw_sb_append(out, "(");
+                stw_emit_expression(ctx, inst->extra[0], out);
+                stw_sb_append(out, " != ");
+                stw_emit_expression(ctx, inst->extra[0], out);
+                stw_sb_append(out, ")");
+                break;
+            }
+            if (builtin_id == SSIR_BUILTIN_ISINF && inst->extra_count > 0) {
+                stw_sb_append(out, "(abs(");
+                stw_emit_expression(ctx, inst->extra[0], out);
+                stw_sb_append(out, ") == ");
+                /* Use a very large float literal representing infinity */
+                stw_sb_append(out, "0x1p+128f");
+                stw_sb_append(out, ")");
+                break;
+            }
+            const char *wname = builtin_func_to_wgsl(builtin_id);
+            stw_sb_append(out, wname ? wname : "unknown_builtin");
+            stw_sb_append(out, "(");
+            for (uint16_t i = 0; i < inst->extra_count; i++) {
+                if (i > 0) stw_sb_append(out, ", ");
+                stw_emit_expression(ctx, inst->extra[i], out);
+            }
             stw_sb_append(out, ")");
             break;
         }
-        const char *wname = builtin_func_to_wgsl(builtin_id);
-        stw_sb_append(out, wname ? wname : "unknown_builtin");
-        stw_sb_append(out, "(");
-        for (uint16_t i = 0; i < inst->extra_count; i++) {
-            if (i > 0) stw_sb_append(out, ", ");
-            stw_emit_expression(ctx, inst->extra[i], out);
-        }
-        stw_sb_append(out, ")");
-        break;
-    }
 
-    /* Conversion */
-    case SSIR_OP_CONVERT:
-        emit_type(ctx, inst->type, out);
-        stw_sb_append(out, "(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ")");
-        break;
+        /* Conversion */
+        case SSIR_OP_CONVERT:
+            emit_type(ctx, inst->type, out);
+            stw_sb_append(out, "(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ")");
+            break;
 
-    case SSIR_OP_BITCAST:
-        stw_sb_append(out, "bitcast<");
-        emit_type(ctx, inst->type, out);
-        stw_sb_append(out, ">(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ")");
-        break;
+        case SSIR_OP_BITCAST:
+            stw_sb_append(out, "bitcast<");
+            emit_type(ctx, inst->type, out);
+            stw_sb_append(out, ">(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ")");
+            break;
 
-    /* Texture */
-    case SSIR_OP_TEX_SAMPLE:
-        stw_sb_append(out, "textureSample(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_BIAS:
-        stw_sb_append(out, "textureSampleBias(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_LEVEL:
-        stw_sb_append(out, "textureSampleLevel(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_GRAD:
-        stw_sb_append(out, "textureSampleGrad(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[4], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_CMP:
-        stw_sb_append(out, "textureSampleCompare(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
-        stw_sb_append(out, "textureSampleCompareLevel(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[4], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_OFFSET:
-        stw_sb_append(out, "textureSample(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
-        stw_sb_append(out, "textureSampleBias(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[4], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
-        stw_sb_append(out, "textureSampleLevel(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[4], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
-        stw_sb_append(out, "textureSampleGrad(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[4], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[5], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
-        stw_sb_append(out, "textureSampleCompare(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[4], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_GATHER:
-        stw_sb_append(out, "textureGather(");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_GATHER_CMP:
-        stw_sb_append(out, "textureGatherCompare(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_GATHER_OFFSET:
-        stw_sb_append(out, "textureGather(");
-        stw_emit_expression(ctx, inst->operands[3], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[4], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_QUERY_LEVELS:
-        stw_sb_append(out, "textureNumLevels(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_QUERY_SAMPLES:
-        stw_sb_append(out, "textureNumSamples(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_LOAD:
-        stw_sb_append(out, "textureLoad(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[1], out);
-        stw_sb_append(out, ", ");
-        stw_emit_expression(ctx, inst->operands[2], out);
-        stw_sb_append(out, ")");
-        break;
-
-    case SSIR_OP_TEX_SIZE:
-        stw_sb_append(out, "textureDimensions(");
-        stw_emit_expression(ctx, inst->operands[0], out);
-        if (inst->operand_count > 1 && inst->operands[1] != 0) {
+        /* Texture */
+        case SSIR_OP_TEX_SAMPLE:
+            stw_sb_append(out, "textureSample(");
+            stw_emit_expression(ctx, inst->operands[0], out);
             stw_sb_append(out, ", ");
             stw_emit_expression(ctx, inst->operands[1], out);
-        }
-        stw_sb_append(out, ")");
-        break;
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ")");
+            break;
 
-    /* Phi - not directly representable, use the name */
-    case SSIR_OP_PHI:
-        stw_sb_append(out, stw_get_id_name(ctx, id));
-        break;
+        case SSIR_OP_TEX_SAMPLE_BIAS:
+            stw_sb_append(out, "textureSampleBias(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ")");
+            break;
 
-    default:
-        /* Fallback to ID name */
-        stw_sb_append(out, stw_get_id_name(ctx, id));
-        break;
+        case SSIR_OP_TEX_SAMPLE_LEVEL:
+            stw_sb_append(out, "textureSampleLevel(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_GRAD:
+            stw_sb_append(out, "textureSampleGrad(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[4], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_CMP:
+            stw_sb_append(out, "textureSampleCompare(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_CMP_LEVEL:
+            stw_sb_append(out, "textureSampleCompareLevel(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[4], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_OFFSET:
+            stw_sb_append(out, "textureSample(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_BIAS_OFFSET:
+            stw_sb_append(out, "textureSampleBias(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[4], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_LEVEL_OFFSET:
+            stw_sb_append(out, "textureSampleLevel(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[4], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_GRAD_OFFSET:
+            stw_sb_append(out, "textureSampleGrad(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[4], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[5], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SAMPLE_CMP_OFFSET:
+            stw_sb_append(out, "textureSampleCompare(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[4], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_GATHER:
+            stw_sb_append(out, "textureGather(");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_GATHER_CMP:
+            stw_sb_append(out, "textureGatherCompare(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_GATHER_OFFSET:
+            stw_sb_append(out, "textureGather(");
+            stw_emit_expression(ctx, inst->operands[3], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[4], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_QUERY_LEVELS:
+            stw_sb_append(out, "textureNumLevels(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_QUERY_SAMPLES:
+            stw_sb_append(out, "textureNumSamples(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_LOAD:
+            stw_sb_append(out, "textureLoad(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[1], out);
+            stw_sb_append(out, ", ");
+            stw_emit_expression(ctx, inst->operands[2], out);
+            stw_sb_append(out, ")");
+            break;
+
+        case SSIR_OP_TEX_SIZE:
+            stw_sb_append(out, "textureDimensions(");
+            stw_emit_expression(ctx, inst->operands[0], out);
+            if (inst->operand_count > 1 && inst->operands[1] != 0) {
+                stw_sb_append(out, ", ");
+                stw_emit_expression(ctx, inst->operands[1], out);
+            }
+            stw_sb_append(out, ")");
+            break;
+
+        /* Phi - not directly representable, use the name */
+        case SSIR_OP_PHI:
+            stw_sb_append(out, stw_get_id_name(ctx, id));
+            break;
+
+        default:
+            /* Fallback to ID name */
+            stw_sb_append(out, stw_get_id_name(ctx, id));
+            break;
     }
 }
 
@@ -1219,143 +1219,144 @@ static void stw_emit_block(SsirToWgslContext *ctx, SsirBlock *blk, SsirFunction 
 
 static void emit_statement(SsirToWgslContext *ctx, SsirInst *inst, SsirBlock *blk, SsirFunction *fn, BlockEmitState *state) {
     switch (inst->op) {
-    case SSIR_OP_STORE:
-        stw_sb_indent(&ctx->sb);
-        stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
-        stw_sb_append(&ctx->sb, " = ");
-        stw_emit_expression(ctx, inst->operands[1], &ctx->sb);
-        stw_sb_append(&ctx->sb, ";\n");
-        break;
+        case SSIR_OP_STORE:
+            stw_sb_indent(&ctx->sb);
+            stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
+            stw_sb_append(&ctx->sb, " = ");
+            stw_emit_expression(ctx, inst->operands[1], &ctx->sb);
+            stw_sb_append(&ctx->sb, ";\n");
+            break;
 
-    case SSIR_OP_TEX_STORE:
-        stw_sb_indent(&ctx->sb);
-        stw_sb_append(&ctx->sb, "textureStore(");
-        stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
-        stw_sb_append(&ctx->sb, ", ");
-        stw_emit_expression(ctx, inst->operands[1], &ctx->sb);
-        stw_sb_append(&ctx->sb, ", ");
-        stw_emit_expression(ctx, inst->operands[2], &ctx->sb);
-        stw_sb_append(&ctx->sb, ");\n");
-        break;
+        case SSIR_OP_TEX_STORE:
+            stw_sb_indent(&ctx->sb);
+            stw_sb_append(&ctx->sb, "textureStore(");
+            stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
+            stw_sb_append(&ctx->sb, ", ");
+            stw_emit_expression(ctx, inst->operands[1], &ctx->sb);
+            stw_sb_append(&ctx->sb, ", ");
+            stw_emit_expression(ctx, inst->operands[2], &ctx->sb);
+            stw_sb_append(&ctx->sb, ");\n");
+            break;
 
-    case SSIR_OP_RETURN_VOID:
-        stw_sb_indent(&ctx->sb);
-        stw_sb_append(&ctx->sb, "return;\n");
-        break;
+        case SSIR_OP_RETURN_VOID:
+            stw_sb_indent(&ctx->sb);
+            stw_sb_append(&ctx->sb, "return;\n");
+            break;
 
-    case SSIR_OP_RETURN:
-        stw_sb_indent(&ctx->sb);
-        stw_sb_append(&ctx->sb, "return ");
-        stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
-        stw_sb_append(&ctx->sb, ";\n");
-        break;
+        case SSIR_OP_RETURN:
+            stw_sb_indent(&ctx->sb);
+            stw_sb_append(&ctx->sb, "return ");
+            stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
+            stw_sb_append(&ctx->sb, ";\n");
+            break;
 
-    case SSIR_OP_BRANCH:
-        /* Simple branch - continue to target block */
-        {
-            uint32_t target = inst->operands[0];
+        case SSIR_OP_BRANCH:
+            /* Simple branch - continue to target block */
+            {
+                uint32_t target = inst->operands[0];
+                for (uint32_t i = 0; i < fn->block_count; i++) {
+                    if (fn->blocks[i].id == target && !state->emitted[i]) {
+                        stw_emit_block(ctx, &fn->blocks[i], fn, state);
+                        break;
+                    }
+                }
+            }
+            break;
+
+        case SSIR_OP_BRANCH_COND: {
+            uint32_t cond = inst->operands[0];
+            uint32_t true_block = inst->operands[1];
+            uint32_t false_block = inst->operands[2];
+
+            stw_sb_indent(&ctx->sb);
+            stw_sb_append(&ctx->sb, "if (");
+            stw_emit_expression(ctx, cond, &ctx->sb);
+            stw_sb_append(&ctx->sb, ") {\n");
+            ctx->sb.indent++;
+
+            /* Emit true block */
             for (uint32_t i = 0; i < fn->block_count; i++) {
-                if (fn->blocks[i].id == target && !state->emitted[i]) {
+                if (fn->blocks[i].id == true_block && !state->emitted[i]) {
                     stw_emit_block(ctx, &fn->blocks[i], fn, state);
                     break;
                 }
             }
-        }
-        break;
 
-    case SSIR_OP_BRANCH_COND: {
-        uint32_t cond = inst->operands[0];
-        uint32_t true_block = inst->operands[1];
-        uint32_t false_block = inst->operands[2];
+            ctx->sb.indent--;
+            stw_sb_indent(&ctx->sb);
+            stw_sb_append(&ctx->sb, "} else {\n");
+            ctx->sb.indent++;
 
-        stw_sb_indent(&ctx->sb);
-        stw_sb_append(&ctx->sb, "if (");
-        stw_emit_expression(ctx, cond, &ctx->sb);
-        stw_sb_append(&ctx->sb, ") {\n");
-        ctx->sb.indent++;
-
-        /* Emit true block */
-        for (uint32_t i = 0; i < fn->block_count; i++) {
-            if (fn->blocks[i].id == true_block && !state->emitted[i]) {
-                stw_emit_block(ctx, &fn->blocks[i], fn, state);
-                break;
-            }
-        }
-
-        ctx->sb.indent--;
-        stw_sb_indent(&ctx->sb);
-        stw_sb_append(&ctx->sb, "} else {\n");
-        ctx->sb.indent++;
-
-        /* Emit false block */
-        for (uint32_t i = 0; i < fn->block_count; i++) {
-            if (fn->blocks[i].id == false_block && !state->emitted[i]) {
-                stw_emit_block(ctx, &fn->blocks[i], fn, state);
-                break;
-            }
-        }
-
-        ctx->sb.indent--;
-        stw_sb_indent(&ctx->sb);
-        stw_sb_append(&ctx->sb, "}\n");
-        break;
-    }
-
-    case SSIR_OP_BARRIER:
-        stw_sb_indent(&ctx->sb);
-        switch ((SsirBarrierScope)inst->operands[0]) {
-        case SSIR_BARRIER_WORKGROUP: stw_sb_append(&ctx->sb, "workgroupBarrier();\n"); break;
-        case SSIR_BARRIER_STORAGE:   stw_sb_append(&ctx->sb, "storageBarrier();\n"); break;
-        case SSIR_BARRIER_SUBGROUP:  stw_sb_append(&ctx->sb, "/* subgroup barrier */;\n"); break;
-        case SSIR_BARRIER_IMAGE:     stw_sb_append(&ctx->sb, "textureBarrier();\n"); break;
-        }
-        break;
-
-    case SSIR_OP_DISCARD:
-        stw_sb_indent(&ctx->sb);
-        stw_sb_append(&ctx->sb, "discard;\n");
-        break;
-
-    case SSIR_OP_INSERT_DYN:
-        stw_sb_indent(&ctx->sb);
-        stw_sb_appendf(&ctx->sb, "var %s = ", stw_get_id_name(ctx, inst->result));
-        stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
-        stw_sb_append(&ctx->sb, ";\n");
-        stw_sb_indent(&ctx->sb);
-        stw_sb_appendf(&ctx->sb, "%s[", stw_get_id_name(ctx, inst->result));
-        stw_emit_expression(ctx, inst->operands[2], &ctx->sb);
-        stw_sb_append(&ctx->sb, "] = ");
-        stw_emit_expression(ctx, inst->operands[1], &ctx->sb);
-        stw_sb_append(&ctx->sb, ";\n");
-        break;
-
-    case SSIR_OP_LOOP_MERGE:
-    case SSIR_OP_SELECTION_MERGE:
-    case SSIR_OP_UNREACHABLE:
-        /* Skip these - they're control flow hints */
-        break;
-
-    default:
-        /* Value-producing instruction - emit as let if needed */
-        if (inst->result != 0) {
-            bool has_side_effects = (inst->op == SSIR_OP_CALL ||
-                                     inst->op == SSIR_OP_ATOMIC);
-            bool must_materialize = (inst->op == SSIR_OP_PHI || has_side_effects);
-            uint32_t uses = (ctx->use_counts && inst->result < ctx->mod->next_id)
-                            ? ctx->use_counts[inst->result] : 2;
-            if (must_materialize || uses > 1) {
-                stw_sb_indent(&ctx->sb);
-                if (has_side_effects && uses == 0) {
-                    stw_emit_expression(ctx, inst->result, &ctx->sb);
-                } else {
-                    stw_sb_appendf(&ctx->sb, "let %s = ", stw_get_id_name(ctx, inst->result));
-                    stw_emit_expression(ctx, inst->result, &ctx->sb);
-                    set_id_name(ctx, inst->result, stw_get_id_name(ctx, inst->result));
+            /* Emit false block */
+            for (uint32_t i = 0; i < fn->block_count; i++) {
+                if (fn->blocks[i].id == false_block && !state->emitted[i]) {
+                    stw_emit_block(ctx, &fn->blocks[i], fn, state);
+                    break;
                 }
-                stw_sb_append(&ctx->sb, ";\n");
             }
+
+            ctx->sb.indent--;
+            stw_sb_indent(&ctx->sb);
+            stw_sb_append(&ctx->sb, "}\n");
+            break;
         }
-        break;
+
+        case SSIR_OP_BARRIER:
+            stw_sb_indent(&ctx->sb);
+            switch ((SsirBarrierScope)inst->operands[0]) {
+                case SSIR_BARRIER_WORKGROUP: stw_sb_append(&ctx->sb, "workgroupBarrier();\n"); break;
+                case SSIR_BARRIER_STORAGE: stw_sb_append(&ctx->sb, "storageBarrier();\n"); break;
+                case SSIR_BARRIER_SUBGROUP: stw_sb_append(&ctx->sb, "/* subgroup barrier */;\n"); break;
+                case SSIR_BARRIER_IMAGE: stw_sb_append(&ctx->sb, "textureBarrier();\n"); break;
+            }
+            break;
+
+        case SSIR_OP_DISCARD:
+            stw_sb_indent(&ctx->sb);
+            stw_sb_append(&ctx->sb, "discard;\n");
+            break;
+
+        case SSIR_OP_INSERT_DYN:
+            stw_sb_indent(&ctx->sb);
+            stw_sb_appendf(&ctx->sb, "var %s = ", stw_get_id_name(ctx, inst->result));
+            stw_emit_expression(ctx, inst->operands[0], &ctx->sb);
+            stw_sb_append(&ctx->sb, ";\n");
+            stw_sb_indent(&ctx->sb);
+            stw_sb_appendf(&ctx->sb, "%s[", stw_get_id_name(ctx, inst->result));
+            stw_emit_expression(ctx, inst->operands[2], &ctx->sb);
+            stw_sb_append(&ctx->sb, "] = ");
+            stw_emit_expression(ctx, inst->operands[1], &ctx->sb);
+            stw_sb_append(&ctx->sb, ";\n");
+            break;
+
+        case SSIR_OP_LOOP_MERGE:
+        case SSIR_OP_SELECTION_MERGE:
+        case SSIR_OP_UNREACHABLE:
+            /* Skip these - they're control flow hints */
+            break;
+
+        default:
+            /* Value-producing instruction - emit as let if needed */
+            if (inst->result != 0) {
+                bool has_side_effects = (inst->op == SSIR_OP_CALL ||
+                                         inst->op == SSIR_OP_ATOMIC);
+                bool must_materialize = (inst->op == SSIR_OP_PHI || has_side_effects);
+                uint32_t uses = (ctx->use_counts && inst->result < ctx->mod->next_id)
+                                    ? ctx->use_counts[inst->result]
+                                    : 2;
+                if (must_materialize || uses > 1) {
+                    stw_sb_indent(&ctx->sb);
+                    if (has_side_effects && uses == 0) {
+                        stw_emit_expression(ctx, inst->result, &ctx->sb);
+                    } else {
+                        stw_sb_appendf(&ctx->sb, "let %s = ", stw_get_id_name(ctx, inst->result));
+                        stw_emit_expression(ctx, inst->result, &ctx->sb);
+                        set_id_name(ctx, inst->result, stw_get_id_name(ctx, inst->result));
+                    }
+                    stw_sb_append(&ctx->sb, ";\n");
+                }
+            }
+            break;
     }
 }
 
@@ -1381,20 +1382,20 @@ static void stw_emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
     /* Entry point attributes */
     if (ep) {
         switch (ep->stage) {
-        case SSIR_STAGE_VERTEX:
-            stw_sb_append(&ctx->sb, "@vertex\n");
-            break;
-        case SSIR_STAGE_FRAGMENT:
-            stw_sb_append(&ctx->sb, "@fragment\n");
-            break;
-        case SSIR_STAGE_COMPUTE:
-            stw_sb_appendf(&ctx->sb, "@compute @workgroup_size(%u, %u, %u)\n",
-                       ep->workgroup_size[0], ep->workgroup_size[1], ep->workgroup_size[2]);
-            break;
-        case SSIR_STAGE_GEOMETRY:
-        case SSIR_STAGE_TESS_CONTROL:
-        case SSIR_STAGE_TESS_EVAL:
-            break;
+            case SSIR_STAGE_VERTEX:
+                stw_sb_append(&ctx->sb, "@vertex\n");
+                break;
+            case SSIR_STAGE_FRAGMENT:
+                stw_sb_append(&ctx->sb, "@fragment\n");
+                break;
+            case SSIR_STAGE_COMPUTE:
+                stw_sb_appendf(&ctx->sb, "@compute @workgroup_size(%u, %u, %u)\n",
+                    ep->workgroup_size[0], ep->workgroup_size[1], ep->workgroup_size[2]);
+                break;
+            case SSIR_STAGE_GEOMETRY:
+            case SSIR_STAGE_TESS_CONTROL:
+            case SSIR_STAGE_TESS_EVAL:
+                break;
         }
     }
 
@@ -1612,9 +1613,9 @@ static void assign_names(SsirToWgslContext *ctx) {
  * ============================================================================ */
 
 SsirToWgslResult ssir_to_wgsl(const SsirModule *mod,
-                              const SsirToWgslOptions *opts,
-                              char **out_wgsl,
-                              char **out_error) {
+    const SsirToWgslOptions *opts,
+    char **out_wgsl,
+    char **out_error) {
     if (!mod || !out_wgsl) {
         if (out_error) *out_error = strdup("Invalid input: null module or output pointer");
         return SSIR_TO_WGSL_ERR_INVALID_INPUT;
@@ -1679,11 +1680,11 @@ void ssir_to_wgsl_free(void *p) {
 
 const char *ssir_to_wgsl_result_string(SsirToWgslResult result) {
     switch (result) {
-    case SSIR_TO_WGSL_OK:               return "Success";
-    case SSIR_TO_WGSL_ERR_INVALID_INPUT: return "Invalid input";
-    case SSIR_TO_WGSL_ERR_UNSUPPORTED:   return "Unsupported feature";
-    case SSIR_TO_WGSL_ERR_INTERNAL:      return "Internal error";
-    case SSIR_TO_WGSL_ERR_OOM:           return "Out of memory";
-    default:                             return "Unknown error";
+        case SSIR_TO_WGSL_OK: return "Success";
+        case SSIR_TO_WGSL_ERR_INVALID_INPUT: return "Invalid input";
+        case SSIR_TO_WGSL_ERR_UNSUPPORTED: return "Unsupported feature";
+        case SSIR_TO_WGSL_ERR_INTERNAL: return "Internal error";
+        case SSIR_TO_WGSL_ERR_OOM: return "Out of memory";
+        default: return "Unknown error";
     }
 }

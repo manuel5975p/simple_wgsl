@@ -6,8 +6,7 @@
 #include <string.h>
 #include <stdbool.h>
 
-
-//s nonnull
+// s nonnull
 static char *wgsl_strndup(const char *s, size_t n) {
     wgsl_compiler_assert(s != NULL, "wgsl_strndup: s is NULL");
     char *r = (char *)NODE_MALLOC(n + 1);
@@ -17,12 +16,12 @@ static char *wgsl_strndup(const char *s, size_t n) {
     r[n] = '\0';
     return r;
 }
-//s allowed to be NULL
+// s allowed to be NULL
 static char *wgsl_strdup(const char *s) {
     return wgsl_strndup(s, s ? strlen(s) : 0);
 }
-//p allowed to be NULL
-//cap nonnull
+// p allowed to be NULL
+// cap nonnull
 static void *grow_ptr_array(void *p, int needed, int *cap, size_t elem) {
     wgsl_compiler_assert(cap != NULL, "grow_ptr_array: cap is NULL");
     if (needed <= *cap)
@@ -36,17 +35,17 @@ static void *grow_ptr_array(void *p, int needed, int *cap, size_t elem) {
     *cap = nc;
     return np;
 }
-//arr nonnull
-//count nonnull
-//cap nonnull
-//v allowed to be NULL
+// arr nonnull
+// count nonnull
+// cap nonnull
+// v allowed to be NULL
 static void vec_push_node(WgslAstNode ***arr, int *count, int *cap,
-                          WgslAstNode *v) {
+    WgslAstNode *v) {
     wgsl_compiler_assert(arr != NULL, "vec_push_node: arr is NULL");
     wgsl_compiler_assert(count != NULL, "vec_push_node: count is NULL");
     wgsl_compiler_assert(cap != NULL, "vec_push_node: cap is NULL");
     *arr = (WgslAstNode **)grow_ptr_array(*arr, *count + 1, cap,
-                                          sizeof(WgslAstNode *));
+        sizeof(WgslAstNode *));
     (*arr)[(*count)++] = v;
 }
 
@@ -136,7 +135,7 @@ typedef struct Lexer {
     int col;
 } Lexer;
 
-//L nonnull
+// L nonnull
 static bool lx_peek2(const Lexer *L, char a, char b) {
     /* PRE: src[pos] valid; pos+1 only accessed if src[pos] matches */
     wgsl_compiler_assert(L != NULL, "lx_peek2: L is NULL");
@@ -148,7 +147,7 @@ static bool lx_peek3(const Lexer *L, char a, char b, char c) {
     wgsl_compiler_assert(L->src != NULL, "lx_peek3: src is NULL");
     return (L->src[L->pos] == a && L->src[L->pos + 1] == b && L->src[L->pos + 2] == c);
 }
-//L nonnull
+// L nonnull
 static void lx_advance(Lexer *L) {
     /* PRE: src[pos] is valid (may be NUL terminator) */
     wgsl_compiler_assert(L != NULL, "lx_advance: L is NULL");
@@ -164,7 +163,7 @@ static void lx_advance(Lexer *L) {
         L->col++;
     }
 }
-//L nonnull
+// L nonnull
 static void lx_skip_ws_comments(Lexer *L) {
     /* PRE: src is null-terminated string */
     wgsl_compiler_assert(L != NULL, "lx_skip_ws_comments: L is NULL");
@@ -205,8 +204,8 @@ static bool is_ident_start(char c) {
 static bool is_ident_part(char c) {
     return isalnum((unsigned char)c) || c == '_';
 }
-//L nonnull
-//s allowed to be NULL
+// L nonnull
+// s allowed to be NULL
 static Token make_token(Lexer *L, TokenType t, const char *s, int len, bool f) {
     wgsl_compiler_assert(L != NULL, "make_token: L is NULL");
     Token tok;
@@ -222,7 +221,7 @@ static Token make_token(Lexer *L, TokenType t, const char *s, int len, bool f) {
 static int is_dec_digit_or_us(char c) { return isdigit((unsigned char)c) || c == '_'; }
 static int is_hex_digit_or_us(char c) { return isxdigit((unsigned char)c) || c == '_'; }
 
-//L nonnull
+// L nonnull
 static Token lx_next(Lexer *L) {
     wgsl_compiler_assert(L != NULL, "lx_next: L is NULL");
     lx_skip_ws_comments(L);
@@ -237,11 +236,15 @@ static Token lx_next(Lexer *L) {
     }
     /* 3-char compound assignment: <<= >>= (must precede << >> <= >=) */
     if (lx_peek3(L, '<', '<', '=')) {
-        lx_advance(L); lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_SHLEQ, s, 3, false);
     }
     if (lx_peek3(L, '>', '>', '=')) {
-        lx_advance(L); lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_SHREQ, s, 3, false);
     }
     if (lx_peek2(L, '<', '=')) {
@@ -286,35 +289,43 @@ static Token lx_next(Lexer *L) {
     }
     /* 2-char compound assignment: += -= *= /= %= &= |= ^= (must precede ++ -- + - etc.) */
     if (lx_peek2(L, '+', '=')) {
-        lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_PLUSEQ, s, 2, false);
     }
     if (lx_peek2(L, '-', '=')) {
-        lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_MINUSEQ, s, 2, false);
     }
     if (lx_peek2(L, '*', '=')) {
-        lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_STAREQ, s, 2, false);
     }
     if (lx_peek2(L, '/', '=')) {
-        lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_SLASHEQ, s, 2, false);
     }
     if (lx_peek2(L, '%', '=')) {
-        lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_PERCENTEQ, s, 2, false);
     }
     if (lx_peek2(L, '&', '=')) {
-        lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_AMPEQ, s, 2, false);
     }
     if (lx_peek2(L, '|', '=')) {
-        lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_PIPEEQ, s, 2, false);
     }
     if (lx_peek2(L, '^', '=')) {
-        lx_advance(L); lx_advance(L);
+        lx_advance(L);
+        lx_advance(L);
         return make_token(L, TOK_CARETEQ, s, 2, false);
     }
     if (lx_peek2(L, '+', '+')) {
@@ -328,83 +339,83 @@ static Token lx_next(Lexer *L) {
         return make_token(L, TOK_MINUSMINUS, s, 2, false);
     }
     switch (c) {
-    case '@':
-        lx_advance(L);
-        return make_token(L, TOK_AT, s, 1, false);
-    case ':':
-        lx_advance(L);
-        return make_token(L, TOK_COLON, s, 1, false);
-    case ';':
-        lx_advance(L);
-        return make_token(L, TOK_SEMI, s, 1, false);
-    case ',':
-        lx_advance(L);
-        return make_token(L, TOK_COMMA, s, 1, false);
-    case '{':
-        lx_advance(L);
-        return make_token(L, TOK_LBRACE, s, 1, false);
-    case '}':
-        lx_advance(L);
-        return make_token(L, TOK_RBRACE, s, 1, false);
-    case '(':
-        lx_advance(L);
-        return make_token(L, TOK_LPAREN, s, 1, false);
-    case ')':
-        lx_advance(L);
-        return make_token(L, TOK_RPAREN, s, 1, false);
-    case '<':
-        lx_advance(L);
-        return make_token(L, TOK_LT, s, 1, false);
-    case '>':
-        lx_advance(L);
-        return make_token(L, TOK_GT, s, 1, false);
-    case '[':
-        lx_advance(L);
-        return make_token(L, TOK_LBRACKET, s, 1, false);
-    case ']':
-        lx_advance(L);
-        return make_token(L, TOK_RBRACKET, s, 1, false);
-    case '.':
-        lx_advance(L);
-        return make_token(L, TOK_DOT, s, 1, false);
-    case '*':
-        lx_advance(L);
-        return make_token(L, TOK_STAR, s, 1, false);
-    case '/':
-        lx_advance(L);
-        return make_token(L, TOK_SLASH, s, 1, false);
-    case '+':
-        lx_advance(L);
-        return make_token(L, TOK_PLUS, s, 1, false);
-    case '-':
-        lx_advance(L);
-        return make_token(L, TOK_MINUS, s, 1, false);
-    case '=':
-        lx_advance(L);
-        return make_token(L, TOK_EQ, s, 1, false);
-    case '!':
-        lx_advance(L);
-        return make_token(L, TOK_BANG, s, 1, false);
-    case '~':
-        lx_advance(L);
-        return make_token(L, TOK_TILDE, s, 1, false);
-    case '?':
-        lx_advance(L);
-        return make_token(L, TOK_QMARK, s, 1, false);
-    case '&':
-        lx_advance(L);
-        return make_token(L, TOK_AND, s, 1, false);
-    case '|':
-        lx_advance(L);
-        return make_token(L, TOK_OR, s, 1, false);
-    case '^':
-        lx_advance(L);
-        return make_token(L, TOK_XOR, s, 1, false);
-    case '%':
-        lx_advance(L);
-        return make_token(L, TOK_PERCENT, s, 1, false);
-    default:
-        break;
+        case '@':
+            lx_advance(L);
+            return make_token(L, TOK_AT, s, 1, false);
+        case ':':
+            lx_advance(L);
+            return make_token(L, TOK_COLON, s, 1, false);
+        case ';':
+            lx_advance(L);
+            return make_token(L, TOK_SEMI, s, 1, false);
+        case ',':
+            lx_advance(L);
+            return make_token(L, TOK_COMMA, s, 1, false);
+        case '{':
+            lx_advance(L);
+            return make_token(L, TOK_LBRACE, s, 1, false);
+        case '}':
+            lx_advance(L);
+            return make_token(L, TOK_RBRACE, s, 1, false);
+        case '(':
+            lx_advance(L);
+            return make_token(L, TOK_LPAREN, s, 1, false);
+        case ')':
+            lx_advance(L);
+            return make_token(L, TOK_RPAREN, s, 1, false);
+        case '<':
+            lx_advance(L);
+            return make_token(L, TOK_LT, s, 1, false);
+        case '>':
+            lx_advance(L);
+            return make_token(L, TOK_GT, s, 1, false);
+        case '[':
+            lx_advance(L);
+            return make_token(L, TOK_LBRACKET, s, 1, false);
+        case ']':
+            lx_advance(L);
+            return make_token(L, TOK_RBRACKET, s, 1, false);
+        case '.':
+            lx_advance(L);
+            return make_token(L, TOK_DOT, s, 1, false);
+        case '*':
+            lx_advance(L);
+            return make_token(L, TOK_STAR, s, 1, false);
+        case '/':
+            lx_advance(L);
+            return make_token(L, TOK_SLASH, s, 1, false);
+        case '+':
+            lx_advance(L);
+            return make_token(L, TOK_PLUS, s, 1, false);
+        case '-':
+            lx_advance(L);
+            return make_token(L, TOK_MINUS, s, 1, false);
+        case '=':
+            lx_advance(L);
+            return make_token(L, TOK_EQ, s, 1, false);
+        case '!':
+            lx_advance(L);
+            return make_token(L, TOK_BANG, s, 1, false);
+        case '~':
+            lx_advance(L);
+            return make_token(L, TOK_TILDE, s, 1, false);
+        case '?':
+            lx_advance(L);
+            return make_token(L, TOK_QMARK, s, 1, false);
+        case '&':
+            lx_advance(L);
+            return make_token(L, TOK_AND, s, 1, false);
+        case '|':
+            lx_advance(L);
+            return make_token(L, TOK_OR, s, 1, false);
+        case '^':
+            lx_advance(L);
+            return make_token(L, TOK_XOR, s, 1, false);
+        case '%':
+            lx_advance(L);
+            return make_token(L, TOK_PERCENT, s, 1, false);
+        default:
+            break;
     }
     if (is_ident_start(c)) {
         size_t p = L->pos;
@@ -451,7 +462,7 @@ static Token lx_next(Lexer *L) {
             return make_token(L, TOK_LOOP, start, len, false);
         return make_token(L, TOK_IDENT, start, len, false);
     }
-        if (isdigit((unsigned char)c)) {
+    if (isdigit((unsigned char)c)) {
         size_t p = L->pos;
         bool is_float = false;
 
@@ -501,7 +512,7 @@ static Token lx_next(Lexer *L) {
             is_float = true;
             lx_advance(L);
         } else if (!is_float && (L->src[L->pos] == 'u' || L->src[L->pos] == 'U' ||
-                                  L->src[L->pos] == 'i' || L->src[L->pos] == 'I')) {
+                                    L->src[L->pos] == 'i' || L->src[L->pos] == 'I')) {
             lx_advance(L);
         }
 
@@ -520,11 +531,17 @@ typedef struct Parser {
     bool had_error;
 } Parser;
 
-//P nonnull
-static void advance(Parser *P) { wgsl_compiler_assert(P != NULL, "advance: P is NULL"); P->cur = lx_next(&P->L); }
-//P nonnull
-static bool check(Parser *P, TokenType t) { wgsl_compiler_assert(P != NULL, "check: P is NULL"); return P->cur.type == t; }
-//P nonnull
+// P nonnull
+static void advance(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "advance: P is NULL");
+    P->cur = lx_next(&P->L);
+}
+// P nonnull
+static bool check(Parser *P, TokenType t) {
+    wgsl_compiler_assert(P != NULL, "check: P is NULL");
+    return P->cur.type == t;
+}
+// P nonnull
 static bool match(Parser *P, TokenType t) {
     wgsl_compiler_assert(P != NULL, "match: P is NULL");
     if (check(P, t)) {
@@ -533,24 +550,24 @@ static bool match(Parser *P, TokenType t) {
     }
     return false;
 }
-//P nonnull
-//msg nonnull
+// P nonnull
+// msg nonnull
 static void parse_error(Parser *P, const char *msg) {
     wgsl_compiler_assert(P != NULL, "parse_error: P is NULL");
     wgsl_compiler_assert(msg != NULL, "parse_error: msg is NULL");
     fprintf(stderr, "[wgsl-parser] error at %d:%d: %s\n", P->cur.line,
-            P->cur.col, msg);
+        P->cur.col, msg);
     P->had_error = true;
 }
-//P nonnull
-//msg nonnull
+// P nonnull
+// msg nonnull
 static void expect(Parser *P, TokenType t, const char *msg) {
     wgsl_compiler_assert(P != NULL, "expect: P is NULL");
     wgsl_compiler_assert(msg != NULL, "expect: msg is NULL");
     if (!match(P, t))
         parse_error(P, msg);
 }
-//P nonnull
+// P nonnull
 static WgslAstNode *new_node(Parser *P, WgslNodeType k) {
     wgsl_compiler_assert(P != NULL, "new_node: P is NULL");
     WgslAstNode *n = NODE_ALLOC(WgslAstNode);
@@ -562,8 +579,8 @@ static WgslAstNode *new_node(Parser *P, WgslNodeType k) {
     n->col = P->cur.col;
     return n;
 }
-//P nonnull
-//t nonnull
+// P nonnull
+// t nonnull
 static WgslAstNode *new_ident(Parser *P, const Token *t) {
     wgsl_compiler_assert(P != NULL, "new_ident: P is NULL");
     wgsl_compiler_assert(t != NULL, "new_ident: t is NULL");
@@ -571,8 +588,8 @@ static WgslAstNode *new_ident(Parser *P, const Token *t) {
     n->ident.name = wgsl_strndup(t->start, (size_t)t->length);
     return n;
 }
-//P nonnull
-//t nonnull
+// P nonnull
+// t nonnull
 static WgslAstNode *new_literal(Parser *P, const Token *t) {
     wgsl_compiler_assert(P != NULL, "new_literal: P is NULL");
     wgsl_compiler_assert(t != NULL, "new_literal: t is NULL");
@@ -581,8 +598,8 @@ static WgslAstNode *new_literal(Parser *P, const Token *t) {
     n->literal.kind = t->is_float ? WGSL_LIT_FLOAT : WGSL_LIT_INT;
     return n;
 }
-//P nonnull
-//name nonnull
+// P nonnull
+// name nonnull
 static WgslAstNode *new_type(Parser *P, const char *name) {
     wgsl_compiler_assert(P != NULL, "new_type: P is NULL");
     wgsl_compiler_assert(name != NULL, "new_type: name is NULL");
@@ -594,11 +611,11 @@ static WgslAstNode *new_type(Parser *P, const char *name) {
 static WgslAstNode *parse_program(Parser *P);
 static WgslAstNode *parse_decl_or_stmt(Parser *P);
 static WgslAstNode *parse_struct(Parser *P, WgslAstNode **opt_attrs,
-                                 int attr_count);
+    int attr_count);
 static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
-                                     int attr_count);
+    int attr_count);
 static WgslAstNode *parse_function(Parser *P, WgslAstNode **attrs,
-                                   int attr_count);
+    int attr_count);
 static WgslAstNode *parse_type_node(Parser *P);
 static WgslAstNode *parse_attribute(Parser *P);
 static int parse_attribute_list(Parser *P, WgslAstNode ***out);
@@ -626,9 +643,8 @@ static WgslAstNode *parse_if_stmt(Parser *P);
 static WgslAstNode *parse_while_stmt(Parser *P);
 static WgslAstNode *parse_for_stmt(Parser *P);
 
-
-//P nonnull
-//out nonnull
+// P nonnull
+// out nonnull
 static int parse_attribute_list(Parser *P, WgslAstNode ***out) {
     wgsl_compiler_assert(P != NULL, "parse_attribute_list: P is NULL");
     wgsl_compiler_assert(out != NULL, "parse_attribute_list: out is NULL");
@@ -644,7 +660,7 @@ static int parse_attribute_list(Parser *P, WgslAstNode ***out) {
     return count;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_attribute(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_attribute: P is NULL");
     if (!check(P, TOK_IDENT)) {
@@ -675,8 +691,8 @@ static WgslAstNode *parse_attribute(Parser *P) {
     return A;
 }
 
-//P nonnull
-//name_tok nonnull
+// P nonnull
+// name_tok nonnull
 static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
     wgsl_compiler_assert(P != NULL, "parse_type_after_name: P is NULL");
     wgsl_compiler_assert(name_tok != NULL, "parse_type_after_name: name_tok is NULL");
@@ -687,8 +703,10 @@ static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
     if (!match(P, TOK_LT))
         return T;
 
-    int tcap = 0, tcount = 0; WgslAstNode **targs = NULL;
-    int ecap = 0, ecount = 0; WgslAstNode **eargs = NULL;
+    int tcap = 0, tcount = 0;
+    WgslAstNode **targs = NULL;
+    int ecap = 0, ecount = 0;
+    WgslAstNode **eargs = NULL;
 
     int first = 1;
     while (!check(P, TOK_GT) && !check(P, TOK_EOF)) {
@@ -719,7 +737,7 @@ static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
     return T;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_type_node(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_type_node: P is NULL");
     if (!check(P, TOK_IDENT)) {
@@ -731,11 +749,10 @@ static WgslAstNode *parse_type_node(Parser *P) {
     return parse_type_after_name(P, &name);
 }
 
-
-//P nonnull
-//opt_attrs allowed to be NULL
+// P nonnull
+// opt_attrs allowed to be NULL
 static WgslAstNode *parse_struct(Parser *P, WgslAstNode **opt_attrs,
-                                 int attr_count) {
+    int attr_count) {
     wgsl_compiler_assert(P != NULL, "parse_struct: P is NULL");
     expect(P, TOK_STRUCT, "expected 'struct'");
     if (!check(P, TOK_IDENT)) {
@@ -777,10 +794,10 @@ static WgslAstNode *parse_struct(Parser *P, WgslAstNode **opt_attrs,
     return S;
 }
 
-//P nonnull
-//attrs allowed to be NULL
+// P nonnull
+// attrs allowed to be NULL
 static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
-                                     int attr_count) {
+    int attr_count) {
     wgsl_compiler_assert(P != NULL, "parse_global_var: P is NULL");
     expect(P, TOK_VAR, "expected 'var'");
     char *addr_space = NULL;
@@ -803,15 +820,15 @@ static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
                             !strcmp(first, "read_write"));
         int second_access =
             second ? (!strcmp(second, "read") || !strcmp(second, "write") ||
-                      !strcmp(second, "read_write"))
+                         !strcmp(second, "read_write"))
                    : 0;
         int first_addr =
             (!strcmp(first, "uniform") || !strcmp(first, "storage") ||
-             !strcmp(first, "workgroup") || !strcmp(first, "private"));
+                !strcmp(first, "workgroup") || !strcmp(first, "private"));
         int second_addr =
             second
                 ? (!strcmp(second, "uniform") || !strcmp(second, "storage") ||
-                   !strcmp(second, "workgroup") || !strcmp(second, "private"))
+                      !strcmp(second, "workgroup") || !strcmp(second, "private"))
                 : 0;
         if (first_addr) {
             addr_space = first;
@@ -844,7 +861,7 @@ static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
     return G;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_param(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_param: P is NULL");
     WgslAstNode **attrs = NULL;
@@ -865,10 +882,10 @@ static WgslAstNode *parse_param(Parser *P) {
     return Par;
 }
 
-//P nonnull
-//attrs allowed to be NULL
+// P nonnull
+// attrs allowed to be NULL
 static WgslAstNode *parse_function(Parser *P, WgslAstNode **attrs,
-                                   int attr_count) {
+    int attr_count) {
     wgsl_compiler_assert(P != NULL, "parse_function: P is NULL");
     expect(P, TOK_FN, "expected 'fn'");
     if (!check(P, TOK_IDENT)) {
@@ -912,7 +929,7 @@ static WgslAstNode *parse_function(Parser *P, WgslAstNode **attrs,
     return F;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_block(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_block: P is NULL");
     expect(P, TOK_LBRACE, "expected '{'");
@@ -937,7 +954,7 @@ static WgslAstNode *parse_block(Parser *P) {
     return B;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_if_stmt(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_if_stmt: P is NULL");
     expect(P, TOK_IF, "expected 'if'");
@@ -959,7 +976,7 @@ static WgslAstNode *parse_if_stmt(Parser *P) {
     return I;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_while_stmt(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_while_stmt: P is NULL");
     expect(P, TOK_WHILE, "expected 'while'");
@@ -973,7 +990,7 @@ static WgslAstNode *parse_while_stmt(Parser *P) {
     return W;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_for_stmt(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_for_stmt: P is NULL");
     expect(P, TOK_FOR, "expected 'for'");
@@ -1007,7 +1024,7 @@ static WgslAstNode *parse_for_stmt(Parser *P) {
     return F;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_loop_stmt(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_loop_stmt: P is NULL");
     expect(P, TOK_LOOP, "expected 'loop'");
@@ -1021,7 +1038,7 @@ static WgslAstNode *parse_loop_stmt(Parser *P) {
     return W;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_statement(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_statement: P is NULL");
     if (check(P, TOK_IF))
@@ -1189,10 +1206,13 @@ static WgslAstNode *parse_statement(Parser *P) {
     return ES;
 }
 
-//P nonnull
-static WgslAstNode *parse_expr(Parser *P) { wgsl_compiler_assert(P != NULL, "parse_expr: P is NULL"); return parse_assignment(P); }
+// P nonnull
+static WgslAstNode *parse_expr(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "parse_expr: P is NULL");
+    return parse_assignment(P);
+}
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_assignment(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_assignment: P is NULL");
     WgslAstNode *left = parse_conditional(P);
@@ -1204,13 +1224,15 @@ static WgslAstNode *parse_assignment(Parser *P) {
         A->assign.rhs = right;
         return A;
     }
-    struct { TokenType tok; const char *op; } compounds[] = {
+    struct {
+        TokenType tok;
+        const char *op;
+    } compounds[] = {
         {TOK_PLUSEQ, "+="}, {TOK_MINUSEQ, "-="}, {TOK_STAREQ, "*="},
         {TOK_SLASHEQ, "/="}, {TOK_PERCENTEQ, "%="},
         {TOK_AMPEQ, "&="}, {TOK_PIPEEQ, "|="}, {TOK_CARETEQ, "^="},
         {TOK_SHLEQ, "<<="}, {TOK_SHREQ, ">>="},
-        {TOK_EOF, NULL}
-    };
+        {TOK_EOF, NULL}};
     for (int i = 0; compounds[i].op; i++) {
         if (match(P, compounds[i].tok)) {
             WgslAstNode *right = parse_assignment(P);
@@ -1224,7 +1246,7 @@ static WgslAstNode *parse_assignment(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_conditional(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_conditional: P is NULL");
     WgslAstNode *c = parse_logical_or(P);
@@ -1241,7 +1263,7 @@ static WgslAstNode *parse_conditional(Parser *P) {
     return c;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_logical_or(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_logical_or: P is NULL");
     WgslAstNode *left = parse_logical_and(P);
@@ -1256,7 +1278,7 @@ static WgslAstNode *parse_logical_or(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_logical_and(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_logical_and: P is NULL");
     WgslAstNode *left = parse_or_expr(P);
@@ -1271,7 +1293,7 @@ static WgslAstNode *parse_logical_and(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_or_expr(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_or_expr: P is NULL");
     WgslAstNode *left = parse_xor_expr(P);
@@ -1286,7 +1308,7 @@ static WgslAstNode *parse_or_expr(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_xor_expr(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_xor_expr: P is NULL");
     WgslAstNode *left = parse_and_expr(P);
@@ -1301,7 +1323,7 @@ static WgslAstNode *parse_xor_expr(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_and_expr(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_and_expr: P is NULL");
     WgslAstNode *left = parse_equality(P);
@@ -1316,7 +1338,7 @@ static WgslAstNode *parse_and_expr(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_equality(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_equality: P is NULL");
     WgslAstNode *left = parse_relational(P);
@@ -1344,7 +1366,7 @@ static WgslAstNode *parse_equality(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_relational(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_relational: P is NULL");
     WgslAstNode *left = parse_shift(P);
@@ -1390,7 +1412,7 @@ static WgslAstNode *parse_relational(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_shift(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_shift: P is NULL");
     WgslAstNode *left = parse_additive(P);
@@ -1418,7 +1440,7 @@ static WgslAstNode *parse_shift(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_additive(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_additive: P is NULL");
     WgslAstNode *left = parse_multiplicative(P);
@@ -1446,7 +1468,7 @@ static WgslAstNode *parse_additive(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_multiplicative(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_multiplicative: P is NULL");
     WgslAstNode *left = parse_unary(P);
@@ -1483,7 +1505,7 @@ static WgslAstNode *parse_multiplicative(Parser *P) {
     return left;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_unary(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_unary: P is NULL");
     if (match(P, TOK_PLUSPLUS)) {
@@ -1553,7 +1575,7 @@ static WgslAstNode *parse_unary(Parser *P) {
     return parse_postfix(P);
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_postfix(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_postfix: P is NULL");
     WgslAstNode *expr = parse_primary(P);
@@ -1622,7 +1644,7 @@ static WgslAstNode *parse_postfix(Parser *P) {
     return expr;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_primary(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_primary: P is NULL");
     if (check(P, TOK_IDENT)) {
@@ -1632,14 +1654,17 @@ static WgslAstNode *parse_primary(Parser *P) {
            IDENT '<' ... '>' '('  -> treat as type head for constructor */
         int is_ctor_head = 0;
         {
-            Lexer L2 = P->L;          /* safe copy */
-            Token t2 = lx_next(&L2);  /* token after IDENT */
+            Lexer L2 = P->L;         /* safe copy */
+            Token t2 = lx_next(&L2); /* token after IDENT */
             if (t2.type == TOK_LT) {
                 int depth = 1;
                 for (;;) {
                     Token t3 = lx_next(&L2);
                     if (t3.type == TOK_EOF) break;
-                    if (t3.type == TOK_LT) { depth++; continue; }
+                    if (t3.type == TOK_LT) {
+                        depth++;
+                        continue;
+                    }
                     if (t3.type == TOK_GT) {
                         depth--;
                         if (depth == 0) {
@@ -1675,11 +1700,13 @@ static WgslAstNode *parse_primary(Parser *P) {
     return new_node(P, WGSL_NODE_LITERAL);
 }
 
+// P nonnull
+static void skip_optional_comma(Parser *P) {
+    wgsl_compiler_assert(P != NULL, "skip_optional_comma: P is NULL");
+    match(P, TOK_COMMA);
+}
 
-//P nonnull
-static void skip_optional_comma(Parser *P) { wgsl_compiler_assert(P != NULL, "skip_optional_comma: P is NULL"); match(P, TOK_COMMA); }
-
-//attrs allowed to be NULL (early return if NULL)
+// attrs allowed to be NULL (early return if NULL)
 static void discard_attrs(WgslAstNode **attrs, int count) {
     if (!attrs)
         return;
@@ -1689,7 +1716,7 @@ static void discard_attrs(WgslAstNode **attrs, int count) {
     NODE_FREE(attrs);
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_const_decl(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_const_decl: P is NULL");
     expect(P, TOK_CONST, "expected 'const'");
@@ -1714,7 +1741,7 @@ static WgslAstNode *parse_const_decl(Parser *P) {
     return V;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_override_decl(Parser *P, WgslAstNode **attrs, int acount) {
     wgsl_compiler_assert(P != NULL, "parse_override_decl: P is NULL");
     expect(P, TOK_OVERRIDE, "expected 'override'");
@@ -1741,8 +1768,8 @@ static WgslAstNode *parse_override_decl(Parser *P, WgslAstNode **attrs, int acou
     return V;
 }
 
-//P nonnull
-//text nonnull
+// P nonnull
+// text nonnull
 static bool check_ident_text(Parser *P, const char *text) {
     wgsl_compiler_assert(P != NULL, "check_ident_text: P is NULL");
     wgsl_compiler_assert(text != NULL, "check_ident_text: text is NULL");
@@ -1751,7 +1778,7 @@ static bool check_ident_text(Parser *P, const char *text) {
     return P->cur.length == n && strncmp(P->cur.start, text, n) == 0;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_decl_or_stmt(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_decl_or_stmt: P is NULL");
     // Skip 'enable', 'diagnostic', 'requires' directives
@@ -1806,7 +1833,7 @@ static WgslAstNode *parse_decl_or_stmt(Parser *P) {
     return NULL;
 }
 
-//P nonnull
+// P nonnull
 static WgslAstNode *parse_program(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_program: P is NULL");
     WgslAstNode *root = new_node(P, WGSL_NODE_PROGRAM);
@@ -1830,7 +1857,7 @@ static WgslAstNode *parse_program(Parser *P) {
     return root;
 }
 
-//source allowed to be NULL
+// source allowed to be NULL
 WgslAstNode *wgsl_parse(const char *source) {
     Parser P;
     memset(&P, 0, sizeof(P));
@@ -1845,7 +1872,7 @@ WgslAstNode *wgsl_parse(const char *source) {
 
 static void free_node(WgslAstNode *n);
 
-//list allowed to be NULL (early return if NULL)
+// list allowed to be NULL (early return if NULL)
 static void free_node_list(WgslAstNode **list, int count) {
     if (!list)
         return;
@@ -1853,19 +1880,19 @@ static void free_node_list(WgslAstNode **list, int count) {
         free_node(list[i]);
     NODE_FREE(list);
 }
-//s allowed to be NULL (early return if NULL)
+// s allowed to be NULL (early return if NULL)
 static void free_string(char *s) {
     if (s)
         NODE_FREE(s);
 }
-//a nonnull
+// a nonnull
 static void free_attribute(Attribute *a) {
     /* PRE: a != NULL */
     wgsl_compiler_assert(a != NULL, "free_attribute: a is NULL");
     free_string(a->name);
     free_node_list(a->args, a->arg_count);
 }
-//t nonnull
+// t nonnull
 static void free_type(TypeNode *t) {
     /* PRE: t != NULL */
     wgsl_compiler_assert(t != NULL, "free_type: t is NULL");
@@ -1873,7 +1900,7 @@ static void free_type(TypeNode *t) {
     free_node_list(t->type_args, t->type_arg_count);
     free_node_list(t->expr_args, t->expr_arg_count);
 }
-//f nonnull
+// f nonnull
 static void free_struct_field(StructField *f) {
     /* PRE: f != NULL */
     wgsl_compiler_assert(f != NULL, "free_struct_field: f is NULL");
@@ -1881,14 +1908,14 @@ static void free_struct_field(StructField *f) {
     free_string(f->name);
     free_node(f->type);
 }
-//s nonnull
+// s nonnull
 static void free_struct_decl(StructDecl *s) {
     wgsl_compiler_assert(s != NULL, "free_struct_decl: s is NULL");
     free_node_list(s->attrs, s->attr_count);
     free_string(s->name);
     free_node_list(s->fields, s->field_count);
 }
-//g nonnull
+// g nonnull
 static void free_global_var(GlobalVar *g) {
     /* PRE: g != NULL */
     wgsl_compiler_assert(g != NULL, "free_global_var: g is NULL");
@@ -1897,27 +1924,27 @@ static void free_global_var(GlobalVar *g) {
     free_string(g->name);
     free_node(g->type);
 }
-//p nonnull
+// p nonnull
 static void free_param(Param *p) {
     wgsl_compiler_assert(p != NULL, "free_param: p is NULL");
     free_node_list(p->attrs, p->attr_count);
     free_string(p->name);
     free_node(p->type);
 }
-//b nonnull
+// b nonnull
 static void free_block(Block *b) {
     /* PRE: b != NULL */
     wgsl_compiler_assert(b != NULL, "free_block: b is NULL");
     free_node_list(b->stmts, b->stmt_count);
 }
-//v nonnull
+// v nonnull
 static void free_var_decl(VarDecl *v) {
     wgsl_compiler_assert(v != NULL, "free_var_decl: v is NULL");
     free_string(v->name);
     free_node(v->type);
     free_node(v->init);
 }
-//f nonnull
+// f nonnull
 static void free_function(Function *f) {
     /* PRE: f != NULL */
     wgsl_compiler_assert(f != NULL, "free_function: f is NULL");
@@ -1928,7 +1955,7 @@ static void free_function(Function *f) {
     free_node(f->return_type);
     free_node(f->body);
 }
-//b nonnull
+// b nonnull
 static void free_binary(Binary *b) {
     /* PRE: b != NULL */
     wgsl_compiler_assert(b != NULL, "free_binary: b is NULL");
@@ -1936,34 +1963,34 @@ static void free_binary(Binary *b) {
     free_node(b->left);
     free_node(b->right);
 }
-//c nonnull
+// c nonnull
 static void free_call(Call *c) {
     /* PRE: c != NULL */
     wgsl_compiler_assert(c != NULL, "free_call: c is NULL");
     free_node(c->callee);
     free_node_list(c->args, c->arg_count);
 }
-//m nonnull
+// m nonnull
 static void free_member(Member *m) {
     /* PRE: m != NULL */
     wgsl_compiler_assert(m != NULL, "free_member: m is NULL");
     free_node(m->object);
     free_string(m->member);
 }
-//i nonnull
+// i nonnull
 static void free_index(Index *i) {
     wgsl_compiler_assert(i != NULL, "free_index: i is NULL");
     free_node(i->object);
     free_node(i->index);
 }
-//u nonnull
+// u nonnull
 static void free_unary(Unary *u) {
     /* PRE: u != NULL */
     wgsl_compiler_assert(u != NULL, "free_unary: u is NULL");
     free_string(u->op);
     free_node(u->expr);
 }
-//t nonnull
+// t nonnull
 static void free_ternary(Ternary *t) {
     wgsl_compiler_assert(t != NULL, "free_ternary: t is NULL");
     free_node(t->cond);
@@ -1971,184 +1998,184 @@ static void free_ternary(Ternary *t) {
     free_node(t->else_expr);
 }
 
-//n allowed to be NULL (early return if NULL)
+// n allowed to be NULL (early return if NULL)
 static void free_node(WgslAstNode *n) {
     if (!n)
         return;
     switch (n->type) {
-    case WGSL_NODE_PROGRAM:
-        free_node_list(n->program.decls, n->program.decl_count);
-        break;
-    case WGSL_NODE_ATTRIBUTE:
-        free_attribute(&n->attribute);
-        break;
-    case WGSL_NODE_TYPE:
-        free_type(&n->type_node);
-        break;
-    case WGSL_NODE_STRUCT:
-        free_struct_decl(&n->struct_decl);
-        break;
-    case WGSL_NODE_STRUCT_FIELD:
-        free_struct_field(&n->struct_field);
-        break;
-    case WGSL_NODE_GLOBAL_VAR:
-        free_global_var(&n->global_var);
-        break;
-    case WGSL_NODE_FUNCTION:
-        free_function(&n->function);
-        break;
-    case WGSL_NODE_PARAM:
-        free_param(&n->param);
-        break;
-    case WGSL_NODE_BLOCK:
-        free_block(&n->block);
-        break;
-    case WGSL_NODE_VAR_DECL:
-        free_var_decl(&n->var_decl);
-        break;
-    case WGSL_NODE_RETURN:
-        free_node(n->return_stmt.expr);
-        break;
-    case WGSL_NODE_EXPR_STMT:
-        free_node(n->expr_stmt.expr);
-        break;
-    case WGSL_NODE_IDENT:
-        free_string(n->ident.name);
-        break;
-    case WGSL_NODE_LITERAL:
-        free_string(n->literal.lexeme);
-        break;
-    case WGSL_NODE_BINARY:
-        free_binary(&n->binary);
-        break;
-    case WGSL_NODE_ASSIGN:
-        free_node(n->assign.lhs);
-        free_node(n->assign.rhs);
-        break;
-    case WGSL_NODE_CALL:
-        free_call(&n->call);
-        break;
-    case WGSL_NODE_MEMBER:
-        free_member(&n->member);
-        break;
-    case WGSL_NODE_INDEX:
-        free_index(&n->index);
-        break;
-    case WGSL_NODE_IF:
-        free_node(n->if_stmt.cond);
-        free_node(n->if_stmt.then_branch);
-        free_node(n->if_stmt.else_branch);
-        break;
-    case WGSL_NODE_WHILE:
-        free_node(n->while_stmt.cond);
-        free_node(n->while_stmt.body);
-        break;
-    case WGSL_NODE_FOR:
-        free_node(n->for_stmt.init);
-        free_node(n->for_stmt.cond);
-        free_node(n->for_stmt.cont);
-        free_node(n->for_stmt.body);
-        break;
-    case WGSL_NODE_UNARY:
-        free_unary(&n->unary);
-        break;
-    case WGSL_NODE_TERNARY:
-        free_ternary(&n->ternary);
-        break;
-    case WGSL_NODE_SWITCH:
-        free_node(n->switch_stmt.expr);
-        free_node_list(n->switch_stmt.cases, n->switch_stmt.case_count);
-        break;
-    case WGSL_NODE_CASE:
-        free_node_list(n->case_clause.exprs, n->case_clause.expr_count);
-        free_node_list(n->case_clause.stmts, n->case_clause.stmt_count);
-        break;
-    default:
-        break;
+        case WGSL_NODE_PROGRAM:
+            free_node_list(n->program.decls, n->program.decl_count);
+            break;
+        case WGSL_NODE_ATTRIBUTE:
+            free_attribute(&n->attribute);
+            break;
+        case WGSL_NODE_TYPE:
+            free_type(&n->type_node);
+            break;
+        case WGSL_NODE_STRUCT:
+            free_struct_decl(&n->struct_decl);
+            break;
+        case WGSL_NODE_STRUCT_FIELD:
+            free_struct_field(&n->struct_field);
+            break;
+        case WGSL_NODE_GLOBAL_VAR:
+            free_global_var(&n->global_var);
+            break;
+        case WGSL_NODE_FUNCTION:
+            free_function(&n->function);
+            break;
+        case WGSL_NODE_PARAM:
+            free_param(&n->param);
+            break;
+        case WGSL_NODE_BLOCK:
+            free_block(&n->block);
+            break;
+        case WGSL_NODE_VAR_DECL:
+            free_var_decl(&n->var_decl);
+            break;
+        case WGSL_NODE_RETURN:
+            free_node(n->return_stmt.expr);
+            break;
+        case WGSL_NODE_EXPR_STMT:
+            free_node(n->expr_stmt.expr);
+            break;
+        case WGSL_NODE_IDENT:
+            free_string(n->ident.name);
+            break;
+        case WGSL_NODE_LITERAL:
+            free_string(n->literal.lexeme);
+            break;
+        case WGSL_NODE_BINARY:
+            free_binary(&n->binary);
+            break;
+        case WGSL_NODE_ASSIGN:
+            free_node(n->assign.lhs);
+            free_node(n->assign.rhs);
+            break;
+        case WGSL_NODE_CALL:
+            free_call(&n->call);
+            break;
+        case WGSL_NODE_MEMBER:
+            free_member(&n->member);
+            break;
+        case WGSL_NODE_INDEX:
+            free_index(&n->index);
+            break;
+        case WGSL_NODE_IF:
+            free_node(n->if_stmt.cond);
+            free_node(n->if_stmt.then_branch);
+            free_node(n->if_stmt.else_branch);
+            break;
+        case WGSL_NODE_WHILE:
+            free_node(n->while_stmt.cond);
+            free_node(n->while_stmt.body);
+            break;
+        case WGSL_NODE_FOR:
+            free_node(n->for_stmt.init);
+            free_node(n->for_stmt.cond);
+            free_node(n->for_stmt.cont);
+            free_node(n->for_stmt.body);
+            break;
+        case WGSL_NODE_UNARY:
+            free_unary(&n->unary);
+            break;
+        case WGSL_NODE_TERNARY:
+            free_ternary(&n->ternary);
+            break;
+        case WGSL_NODE_SWITCH:
+            free_node(n->switch_stmt.expr);
+            free_node_list(n->switch_stmt.cases, n->switch_stmt.case_count);
+            break;
+        case WGSL_NODE_CASE:
+            free_node_list(n->case_clause.exprs, n->case_clause.expr_count);
+            free_node_list(n->case_clause.stmts, n->case_clause.stmt_count);
+            break;
+        default:
+            break;
     }
     NODE_FREE(n);
 }
 
-//node allowed to be NULL (passed to free_node which handles NULL)
+// node allowed to be NULL (passed to free_node which handles NULL)
 void wgsl_free_ast(WgslAstNode *node) { free_node(node); }
 
 const char *wgsl_node_type_name(WgslNodeType t) {
     switch (t) {
-    case WGSL_NODE_PROGRAM:
-        return "PROGRAM";
-    case WGSL_NODE_STRUCT:
-        return "STRUCT";
-    case WGSL_NODE_STRUCT_FIELD:
-        return "STRUCT_FIELD";
-    case WGSL_NODE_GLOBAL_VAR:
-        return "GLOBAL_VAR";
-    case WGSL_NODE_FUNCTION:
-        return "FUNCTION";
-    case WGSL_NODE_PARAM:
-        return "PARAM";
-    case WGSL_NODE_TYPE:
-        return "TYPE";
-    case WGSL_NODE_ATTRIBUTE:
-        return "ATTRIBUTE";
-    case WGSL_NODE_BLOCK:
-        return "BLOCK";
-    case WGSL_NODE_VAR_DECL:
-        return "VAR_DECL";
-    case WGSL_NODE_RETURN:
-        return "RETURN";
-    case WGSL_NODE_EXPR_STMT:
-        return "EXPR_STMT";
-    case WGSL_NODE_IF:
-        return "IF";
-    case WGSL_NODE_WHILE:
-        return "WHILE";
-    case WGSL_NODE_FOR:
-        return "FOR";
-    case WGSL_NODE_IDENT:
-        return "IDENT";
-    case WGSL_NODE_LITERAL:
-        return "LITERAL";
-    case WGSL_NODE_BINARY:
-        return "BINARY";
-    case WGSL_NODE_ASSIGN:
-        return "ASSIGN";
-    case WGSL_NODE_CALL:
-        return "CALL";
-    case WGSL_NODE_MEMBER:
-        return "MEMBER";
-    case WGSL_NODE_INDEX:
-        return "INDEX";
-    case WGSL_NODE_UNARY:
-        return "UNARY";
-    case WGSL_NODE_TERNARY:
-        return "TERNARY";
-    case WGSL_NODE_DO_WHILE:
-        return "DO_WHILE";
-    case WGSL_NODE_SWITCH:
-        return "SWITCH";
-    case WGSL_NODE_CASE:
-        return "CASE";
-    case WGSL_NODE_BREAK:
-        return "BREAK";
-    case WGSL_NODE_CONTINUE:
-        return "CONTINUE";
-    case WGSL_NODE_DISCARD:
-        return "DISCARD";
-    default:
-        return "UNKNOWN";
+        case WGSL_NODE_PROGRAM:
+            return "PROGRAM";
+        case WGSL_NODE_STRUCT:
+            return "STRUCT";
+        case WGSL_NODE_STRUCT_FIELD:
+            return "STRUCT_FIELD";
+        case WGSL_NODE_GLOBAL_VAR:
+            return "GLOBAL_VAR";
+        case WGSL_NODE_FUNCTION:
+            return "FUNCTION";
+        case WGSL_NODE_PARAM:
+            return "PARAM";
+        case WGSL_NODE_TYPE:
+            return "TYPE";
+        case WGSL_NODE_ATTRIBUTE:
+            return "ATTRIBUTE";
+        case WGSL_NODE_BLOCK:
+            return "BLOCK";
+        case WGSL_NODE_VAR_DECL:
+            return "VAR_DECL";
+        case WGSL_NODE_RETURN:
+            return "RETURN";
+        case WGSL_NODE_EXPR_STMT:
+            return "EXPR_STMT";
+        case WGSL_NODE_IF:
+            return "IF";
+        case WGSL_NODE_WHILE:
+            return "WHILE";
+        case WGSL_NODE_FOR:
+            return "FOR";
+        case WGSL_NODE_IDENT:
+            return "IDENT";
+        case WGSL_NODE_LITERAL:
+            return "LITERAL";
+        case WGSL_NODE_BINARY:
+            return "BINARY";
+        case WGSL_NODE_ASSIGN:
+            return "ASSIGN";
+        case WGSL_NODE_CALL:
+            return "CALL";
+        case WGSL_NODE_MEMBER:
+            return "MEMBER";
+        case WGSL_NODE_INDEX:
+            return "INDEX";
+        case WGSL_NODE_UNARY:
+            return "UNARY";
+        case WGSL_NODE_TERNARY:
+            return "TERNARY";
+        case WGSL_NODE_DO_WHILE:
+            return "DO_WHILE";
+        case WGSL_NODE_SWITCH:
+            return "SWITCH";
+        case WGSL_NODE_CASE:
+            return "CASE";
+        case WGSL_NODE_BREAK:
+            return "BREAK";
+        case WGSL_NODE_CONTINUE:
+            return "CONTINUE";
+        case WGSL_NODE_DISCARD:
+            return "DISCARD";
+        default:
+            return "UNKNOWN";
     }
 }
 
-//no pointer params
+// no pointer params
 static void print_indent(int n) {
     for (int i = 0; i < n; i++)
         fputs("  ", stdout);
 }
 static void dbg_print_node(const WgslAstNode *n, int ind);
-//label nonnull
-//list nonnull
+// label nonnull
+// list nonnull
 static void dbg_print_list(const char *label, WgslAstNode *const *list,
-                           int count, int ind) {
+    int count, int ind) {
     wgsl_compiler_assert(label != NULL, "dbg_print_list: label is NULL");
     wgsl_compiler_assert(list != NULL, "dbg_print_list: list is NULL");
     print_indent(ind);
@@ -2156,7 +2183,7 @@ static void dbg_print_list(const char *label, WgslAstNode *const *list,
     for (int i = 0; i < count; i++)
         dbg_print_node(list[i], ind + 1);
 }
-//n allowed to be NULL (prints "(null)" if NULL)
+// n allowed to be NULL (prints "(null)" if NULL)
 static void dbg_print_node(const WgslAstNode *n, int ind) {
     if (!n) {
         print_indent(ind);
@@ -2166,220 +2193,220 @@ static void dbg_print_node(const WgslAstNode *n, int ind) {
     print_indent(ind);
     printf("%s\n", wgsl_node_type_name(n->type));
     switch (n->type) {
-    case WGSL_NODE_PROGRAM:
-        dbg_print_list("decls", n->program.decls, n->program.decl_count,
-                       ind + 1);
-        break;
-    case WGSL_NODE_STRUCT:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->struct_decl.name);
-        dbg_print_list("fields", n->struct_decl.fields,
-                       n->struct_decl.field_count, ind + 1);
-        break;
-    case WGSL_NODE_STRUCT_FIELD:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->struct_field.name);
-        print_indent(ind + 1);
-        puts("type:");
-        dbg_print_node(n->struct_field.type, ind + 2);
-        if (n->struct_field.attr_count)
-            dbg_print_list("attrs", n->struct_field.attrs,
-                           n->struct_field.attr_count, ind + 1);
-        break;
-    case WGSL_NODE_GLOBAL_VAR:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->global_var.name);
-        print_indent(ind + 1);
-        printf("address_space: %s\n", n->global_var.address_space
-                                          ? n->global_var.address_space
-                                          : "(none)");
-        print_indent(ind + 1);
-        puts("type:");
-        dbg_print_node(n->global_var.type, ind + 2);
-        if (n->global_var.attr_count)
-            dbg_print_list("attrs", n->global_var.attrs,
-                           n->global_var.attr_count, ind + 1);
-        break;
-    case WGSL_NODE_FUNCTION:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->function.name);
-        if (n->function.attr_count)
-            dbg_print_list("attrs", n->function.attrs, n->function.attr_count,
-                           ind + 1);
-        if (n->function.param_count)
-            dbg_print_list("params", n->function.params,
-                           n->function.param_count, ind + 1);
-        if (n->function.ret_attr_count)
-            dbg_print_list("ret_attrs", n->function.ret_attrs,
-                           n->function.ret_attr_count, ind + 1);
-        if (n->function.return_type) {
+        case WGSL_NODE_PROGRAM:
+            dbg_print_list("decls", n->program.decls, n->program.decl_count,
+                ind + 1);
+            break;
+        case WGSL_NODE_STRUCT:
             print_indent(ind + 1);
-            puts("return_type:");
-            dbg_print_node(n->function.return_type, ind + 2);
-        }
-        print_indent(ind + 1);
-        puts("body:");
-        dbg_print_node(n->function.body, ind + 2);
-        break;
-    case WGSL_NODE_PARAM:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->param.name);
-        if (n->param.attr_count)
-            dbg_print_list("attrs", n->param.attrs, n->param.attr_count,
-                           ind + 1);
-        print_indent(ind + 1);
-        puts("type:");
-        dbg_print_node(n->param.type, ind + 2);
-        break;
-    case WGSL_NODE_BLOCK:
-        dbg_print_list("stmts", n->block.stmts, n->block.stmt_count, ind + 1);
-        break;
-    case WGSL_NODE_VAR_DECL:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->var_decl.name);
-        if (n->var_decl.type) {
+            printf("name: %s\n", n->struct_decl.name);
+            dbg_print_list("fields", n->struct_decl.fields,
+                n->struct_decl.field_count, ind + 1);
+            break;
+        case WGSL_NODE_STRUCT_FIELD:
+            print_indent(ind + 1);
+            printf("name: %s\n", n->struct_field.name);
             print_indent(ind + 1);
             puts("type:");
-            dbg_print_node(n->var_decl.type, ind + 2);
-        }
-        if (n->var_decl.init) {
+            dbg_print_node(n->struct_field.type, ind + 2);
+            if (n->struct_field.attr_count)
+                dbg_print_list("attrs", n->struct_field.attrs,
+                    n->struct_field.attr_count, ind + 1);
+            break;
+        case WGSL_NODE_GLOBAL_VAR:
             print_indent(ind + 1);
-            puts("init:");
-            dbg_print_node(n->var_decl.init, ind + 2);
-        }
-        break;
-    case WGSL_NODE_RETURN:
-        if (n->return_stmt.expr) {
+            printf("name: %s\n", n->global_var.name);
             print_indent(ind + 1);
-            puts("expr:");
-            dbg_print_node(n->return_stmt.expr, ind + 2);
-        }
-        break;
-    case WGSL_NODE_EXPR_STMT:
-        dbg_print_node(n->expr_stmt.expr, ind + 1);
-        break;
-    case WGSL_NODE_TYPE:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->type_node.name);
-        if (n->type_node.type_arg_count)
-            dbg_print_list("type_args", n->type_node.type_args,
-                           n->type_node.type_arg_count, ind + 1);
-        if (n->type_node.expr_arg_count)
-            dbg_print_list("expr_args", n->type_node.expr_args,
-                           n->type_node.expr_arg_count, ind + 1);
-        break;
-    case WGSL_NODE_ATTRIBUTE:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->attribute.name);
-        if (n->attribute.arg_count)
-            dbg_print_list("args", n->attribute.args, n->attribute.arg_count,
-                           ind + 1);
-        break;
-    case WGSL_NODE_IDENT:
-        print_indent(ind + 1);
-        printf("name: %s\n", n->ident.name);
-        break;
-    case WGSL_NODE_LITERAL:
-        print_indent(ind + 1);
-        printf("literal: %s\n", n->literal.lexeme);
-        break;
-    case WGSL_NODE_BINARY:
-        print_indent(ind + 1);
-        printf("op: %s\n", n->binary.op);
-        dbg_print_node(n->binary.left, ind + 1);
-        dbg_print_node(n->binary.right, ind + 1);
-        break;
-    case WGSL_NODE_ASSIGN:
-        print_indent(ind + 1);
-        puts("lhs:");
-        dbg_print_node(n->assign.lhs, ind + 2);
-        print_indent(ind + 1);
-        puts("rhs:");
-        dbg_print_node(n->assign.rhs, ind + 2);
-        break;
-    case WGSL_NODE_CALL:
-        print_indent(ind + 1);
-        puts("callee:");
-        dbg_print_node(n->call.callee, ind + 2);
-        if (n->call.arg_count)
-            dbg_print_list("args", n->call.args, n->call.arg_count, ind + 1);
-        break;
-    case WGSL_NODE_MEMBER:
-        print_indent(ind + 1);
-        printf("member: %s\n", n->member.member);
-        dbg_print_node(n->member.object, ind + 1);
-        break;
-    case WGSL_NODE_INDEX:
-        print_indent(ind + 1);
-        puts("object:");
-        dbg_print_node(n->index.object, ind + 2);
-        print_indent(ind + 1);
-        puts("index:");
-        dbg_print_node(n->index.index, ind + 2);
-        break;
-    case WGSL_NODE_IF:
-        print_indent(ind + 1);
-        puts("cond:");
-        dbg_print_node(n->if_stmt.cond, ind + 2);
-        print_indent(ind + 1);
-        puts("then:");
-        dbg_print_node(n->if_stmt.then_branch, ind + 2);
-        if (n->if_stmt.else_branch) {
+            printf("address_space: %s\n", n->global_var.address_space
+                                              ? n->global_var.address_space
+                                              : "(none)");
             print_indent(ind + 1);
-            puts("else:");
-            dbg_print_node(n->if_stmt.else_branch, ind + 2);
-        }
-        break;
-    case WGSL_NODE_WHILE:
-        print_indent(ind + 1);
-        puts("cond:");
-        dbg_print_node(n->while_stmt.cond, ind + 2);
-        print_indent(ind + 1);
-        puts("body:");
-        dbg_print_node(n->while_stmt.body, ind + 2);
-        break;
-    case WGSL_NODE_FOR:
-        if (n->for_stmt.init) {
+            puts("type:");
+            dbg_print_node(n->global_var.type, ind + 2);
+            if (n->global_var.attr_count)
+                dbg_print_list("attrs", n->global_var.attrs,
+                    n->global_var.attr_count, ind + 1);
+            break;
+        case WGSL_NODE_FUNCTION:
             print_indent(ind + 1);
-            puts("init:");
-            dbg_print_node(n->for_stmt.init, ind + 2);
-        }
-        if (n->for_stmt.cond) {
+            printf("name: %s\n", n->function.name);
+            if (n->function.attr_count)
+                dbg_print_list("attrs", n->function.attrs, n->function.attr_count,
+                    ind + 1);
+            if (n->function.param_count)
+                dbg_print_list("params", n->function.params,
+                    n->function.param_count, ind + 1);
+            if (n->function.ret_attr_count)
+                dbg_print_list("ret_attrs", n->function.ret_attrs,
+                    n->function.ret_attr_count, ind + 1);
+            if (n->function.return_type) {
+                print_indent(ind + 1);
+                puts("return_type:");
+                dbg_print_node(n->function.return_type, ind + 2);
+            }
+            print_indent(ind + 1);
+            puts("body:");
+            dbg_print_node(n->function.body, ind + 2);
+            break;
+        case WGSL_NODE_PARAM:
+            print_indent(ind + 1);
+            printf("name: %s\n", n->param.name);
+            if (n->param.attr_count)
+                dbg_print_list("attrs", n->param.attrs, n->param.attr_count,
+                    ind + 1);
+            print_indent(ind + 1);
+            puts("type:");
+            dbg_print_node(n->param.type, ind + 2);
+            break;
+        case WGSL_NODE_BLOCK:
+            dbg_print_list("stmts", n->block.stmts, n->block.stmt_count, ind + 1);
+            break;
+        case WGSL_NODE_VAR_DECL:
+            print_indent(ind + 1);
+            printf("name: %s\n", n->var_decl.name);
+            if (n->var_decl.type) {
+                print_indent(ind + 1);
+                puts("type:");
+                dbg_print_node(n->var_decl.type, ind + 2);
+            }
+            if (n->var_decl.init) {
+                print_indent(ind + 1);
+                puts("init:");
+                dbg_print_node(n->var_decl.init, ind + 2);
+            }
+            break;
+        case WGSL_NODE_RETURN:
+            if (n->return_stmt.expr) {
+                print_indent(ind + 1);
+                puts("expr:");
+                dbg_print_node(n->return_stmt.expr, ind + 2);
+            }
+            break;
+        case WGSL_NODE_EXPR_STMT:
+            dbg_print_node(n->expr_stmt.expr, ind + 1);
+            break;
+        case WGSL_NODE_TYPE:
+            print_indent(ind + 1);
+            printf("name: %s\n", n->type_node.name);
+            if (n->type_node.type_arg_count)
+                dbg_print_list("type_args", n->type_node.type_args,
+                    n->type_node.type_arg_count, ind + 1);
+            if (n->type_node.expr_arg_count)
+                dbg_print_list("expr_args", n->type_node.expr_args,
+                    n->type_node.expr_arg_count, ind + 1);
+            break;
+        case WGSL_NODE_ATTRIBUTE:
+            print_indent(ind + 1);
+            printf("name: %s\n", n->attribute.name);
+            if (n->attribute.arg_count)
+                dbg_print_list("args", n->attribute.args, n->attribute.arg_count,
+                    ind + 1);
+            break;
+        case WGSL_NODE_IDENT:
+            print_indent(ind + 1);
+            printf("name: %s\n", n->ident.name);
+            break;
+        case WGSL_NODE_LITERAL:
+            print_indent(ind + 1);
+            printf("literal: %s\n", n->literal.lexeme);
+            break;
+        case WGSL_NODE_BINARY:
+            print_indent(ind + 1);
+            printf("op: %s\n", n->binary.op);
+            dbg_print_node(n->binary.left, ind + 1);
+            dbg_print_node(n->binary.right, ind + 1);
+            break;
+        case WGSL_NODE_ASSIGN:
+            print_indent(ind + 1);
+            puts("lhs:");
+            dbg_print_node(n->assign.lhs, ind + 2);
+            print_indent(ind + 1);
+            puts("rhs:");
+            dbg_print_node(n->assign.rhs, ind + 2);
+            break;
+        case WGSL_NODE_CALL:
+            print_indent(ind + 1);
+            puts("callee:");
+            dbg_print_node(n->call.callee, ind + 2);
+            if (n->call.arg_count)
+                dbg_print_list("args", n->call.args, n->call.arg_count, ind + 1);
+            break;
+        case WGSL_NODE_MEMBER:
+            print_indent(ind + 1);
+            printf("member: %s\n", n->member.member);
+            dbg_print_node(n->member.object, ind + 1);
+            break;
+        case WGSL_NODE_INDEX:
+            print_indent(ind + 1);
+            puts("object:");
+            dbg_print_node(n->index.object, ind + 2);
+            print_indent(ind + 1);
+            puts("index:");
+            dbg_print_node(n->index.index, ind + 2);
+            break;
+        case WGSL_NODE_IF:
             print_indent(ind + 1);
             puts("cond:");
-            dbg_print_node(n->for_stmt.cond, ind + 2);
-        }
-        if (n->for_stmt.cont) {
+            dbg_print_node(n->if_stmt.cond, ind + 2);
             print_indent(ind + 1);
-            puts("cont:");
-            dbg_print_node(n->for_stmt.cont, ind + 2);
-        }
-        print_indent(ind + 1);
-        puts("body:");
-        dbg_print_node(n->for_stmt.body, ind + 2);
-        break;
-    case WGSL_NODE_UNARY:
-        print_indent(ind + 1);
-        printf("op: %s%s\n", n->unary.op,
-               n->unary.is_postfix ? " (post)" : " (pre)");
-        dbg_print_node(n->unary.expr, ind + 1);
-        break;
-    case WGSL_NODE_TERNARY:
-        print_indent(ind + 1);
-        puts("cond:");
-        dbg_print_node(n->ternary.cond, ind + 2);
-        print_indent(ind + 1);
-        puts("then:");
-        dbg_print_node(n->ternary.then_expr, ind + 2);
-        print_indent(ind + 1);
-        puts("else:");
-        dbg_print_node(n->ternary.else_expr, ind + 2);
-        break;
-    default:
-        break;
+            puts("then:");
+            dbg_print_node(n->if_stmt.then_branch, ind + 2);
+            if (n->if_stmt.else_branch) {
+                print_indent(ind + 1);
+                puts("else:");
+                dbg_print_node(n->if_stmt.else_branch, ind + 2);
+            }
+            break;
+        case WGSL_NODE_WHILE:
+            print_indent(ind + 1);
+            puts("cond:");
+            dbg_print_node(n->while_stmt.cond, ind + 2);
+            print_indent(ind + 1);
+            puts("body:");
+            dbg_print_node(n->while_stmt.body, ind + 2);
+            break;
+        case WGSL_NODE_FOR:
+            if (n->for_stmt.init) {
+                print_indent(ind + 1);
+                puts("init:");
+                dbg_print_node(n->for_stmt.init, ind + 2);
+            }
+            if (n->for_stmt.cond) {
+                print_indent(ind + 1);
+                puts("cond:");
+                dbg_print_node(n->for_stmt.cond, ind + 2);
+            }
+            if (n->for_stmt.cont) {
+                print_indent(ind + 1);
+                puts("cont:");
+                dbg_print_node(n->for_stmt.cont, ind + 2);
+            }
+            print_indent(ind + 1);
+            puts("body:");
+            dbg_print_node(n->for_stmt.body, ind + 2);
+            break;
+        case WGSL_NODE_UNARY:
+            print_indent(ind + 1);
+            printf("op: %s%s\n", n->unary.op,
+                n->unary.is_postfix ? " (post)" : " (pre)");
+            dbg_print_node(n->unary.expr, ind + 1);
+            break;
+        case WGSL_NODE_TERNARY:
+            print_indent(ind + 1);
+            puts("cond:");
+            dbg_print_node(n->ternary.cond, ind + 2);
+            print_indent(ind + 1);
+            puts("then:");
+            dbg_print_node(n->ternary.then_expr, ind + 2);
+            print_indent(ind + 1);
+            puts("else:");
+            dbg_print_node(n->ternary.else_expr, ind + 2);
+            break;
+        default:
+            break;
     }
 }
-//node allowed to be NULL (passed to dbg_print_node which handles NULL)
+// node allowed to be NULL (passed to dbg_print_node which handles NULL)
 void wgsl_debug_print(const WgslAstNode *node, int indent) {
     dbg_print_node(node, indent);
 }
