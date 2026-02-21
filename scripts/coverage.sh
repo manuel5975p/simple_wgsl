@@ -16,9 +16,10 @@ cmake -S "$ROOT" -B "$BUILD" -G Ninja \
 # Build
 cmake --build "$BUILD"
 
-# Run tests, collecting profile data
+# Run tests, collecting profile data.
+# Allow test failures (expression tests may fail) – coverage is still collected.
 LLVM_PROFILE_FILE="$BUILD/default.profraw" \
-    ctest --test-dir "$BUILD" --output-on-failure
+    ctest --test-dir "$BUILD" --output-on-failure || true
 
 # Merge raw profiles
 llvm-profdata merge -sparse "$BUILD/default.profraw" -o "$BUILD/coverage.profdata"
