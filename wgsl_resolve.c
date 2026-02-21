@@ -524,7 +524,9 @@ static void walk_expr(WgslResolver *r, FnInfo *fi, const WgslAstNode *e) {
             int id = scope_get(r, e->ident.name);
             if (id >= 0) {
                 bind_ident(r, e, id);
-                if (fi && id > 0 && id <= r->sym_count && r->symbols[id - 1].kind == WGSL_SYM_GLOBAL)
+                if (fi && id > 0 && id <= r->sym_count &&
+                    (r->symbols[id - 1].kind == WGSL_SYM_GLOBAL ||
+                     r->symbols[id - 1].kind == WGSL_SYM_IMMEDIATE))
                     record_fn_ref(fi, id);
             }
         } break;
@@ -654,7 +656,8 @@ static void declare_global_from_globalvar(WgslResolver *r, const WgslAstNode *gv
     WgslSymbolInfo s;
     memset(&s, 0, sizeof(s));
     s.id = next_id(r);
-    s.kind = WGSL_SYM_GLOBAL;
+    s.kind = (gv->global_var.address_space && str_eq(gv->global_var.address_space, "immediate"))
+        ? WGSL_SYM_IMMEDIATE : WGSL_SYM_GLOBAL;
     s.name = gv->global_var.name;
     s.decl_node = gv;
 
@@ -829,7 +832,8 @@ const WgslSymbolInfo *wgsl_resolver_globals(const WgslResolver *r, int *out_coun
     }
     int *ids = NULL, cap = 0, cnt = 0;
     for (int i = 0; i < r->sym_count; i++) {
-        if (r->symbols[i].kind == WGSL_SYM_GLOBAL) {
+        if (r->symbols[i].kind == WGSL_SYM_GLOBAL ||
+            r->symbols[i].kind == WGSL_SYM_IMMEDIATE) {
             if (cnt >= cap)
                 vec_grow((void **)&ids, &cap, sizeof(int));
             ids[cnt++] = r->symbols[i].id;
@@ -1059,7 +1063,9 @@ static void dfs_collect(const WgslResolver *r, const FnInfo *fi, char *visited_f
 
     for (int i = 0; i < fi->direct_syms_count; i++) {
         int id = fi->direct_syms[i];
-        if (id > 0 && id <= r->sym_count && r->symbols[id - 1].kind == WGSL_SYM_GLOBAL)
+        if (id > 0 && id <= r->sym_count &&
+            (r->symbols[id - 1].kind == WGSL_SYM_GLOBAL ||
+             r->symbols[id - 1].kind == WGSL_SYM_IMMEDIATE))
             keep_sym[id] = 1;
     }
     for (int c = 0; c < fi->calls_count; c++) {
@@ -1088,7 +1094,7 @@ static const WgslSymbolInfo *entrypoint_syms(const WgslResolver *r, const char *
         if (!keep[id])
             continue;
         const WgslSymbolInfo *s = &r->symbols[id - 1];
-        if (s->kind != WGSL_SYM_GLOBAL)
+        if (s->kind != WGSL_SYM_GLOBAL && s->kind != WGSL_SYM_IMMEDIATE)
             continue;
         if (only_binding && !(s->has_group && s->has_binding))
             continue;
@@ -1105,6 +1111,119 @@ static const WgslSymbolInfo *entrypoint_syms(const WgslResolver *r, const char *
 }
 const WgslSymbolInfo *wgsl_resolver_entrypoint_globals(const WgslResolver *r, const char *entry_name, int *out_count) { return entrypoint_syms(r, entry_name, 0, out_count); }
 const WgslSymbolInfo *wgsl_resolver_entrypoint_binding_vars(const WgslResolver *r, const char *entry_name, int *out_count) { return entrypoint_syms(r, entry_name, 1, out_count); }
+
+/* immediate variable reflection */
+static int type_alignment_bytes(const WgslResolver *r, const WgslAstNode *t, SsirLayoutRule layout) {
+    if (!t || t->type != WGSL_NODE_TYPE)
+        return 4;
+    const char *name = t->type_node.name;
+    if (!name) return 4;
+
+    /* Scalar layout: everything is 4-byte aligned */
+    if (layout == SSIR_LAYOUT_SCALAR) return 4;
+
+    /* std430 rules */
+    int comps = 0, bytes = 0;
+    if (type_info(r, t, &comps, NULL, &bytes)) {
+        if (comps == 1) return bytes; /* scalar: align to own size */
+        if (comps == 2) return bytes; /* vec2: 2*scalar */
+        return (bytes / comps) * 4;   /* vec3/vec4: 4*scalar align */
+    }
+
+    /* matrices: column alignment */
+    if (name[0] == 'm' && name[1] == 'a' && name[2] == 't') return 16;
+
+    /* struct: align to largest member (approximate) */
+    const WgslAstNode *sd = get_struct(r, name);
+    if (sd) {
+        int max_align = 4;
+        for (int i = 0; i < sd->struct_decl.field_count; i++) {
+            const WgslAstNode *f = sd->struct_decl.fields[i];
+            if (!f || f->type != WGSL_NODE_STRUCT_FIELD || !f->struct_field.type) continue;
+            int fa = type_alignment_bytes(r, f->struct_field.type, layout);
+            if (fa > max_align) max_align = fa;
+        }
+        return max_align;
+    }
+
+    /* array: element alignment */
+    if (str_eq(name, "array") && t->type_node.type_arg_count > 0 &&
+        t->type_node.type_args && t->type_node.type_args[0])
+        return type_alignment_bytes(r, t->type_node.type_args[0], layout);
+
+    return 4;
+}
+
+static int align_up(int offset, int alignment) {
+    return (offset + alignment - 1) & ~(alignment - 1);
+}
+
+const WgslImmediateInfo *wgsl_resolver_entrypoint_immediates(
+    const WgslResolver *r,
+    const char *entry_name,
+    SsirLayoutRule layout,
+    int *out_count)
+{
+    if (out_count) *out_count = 0;
+    if (!r || !entry_name) return NULL;
+
+    const FnInfo *root = find_fninfo_by_name(r, entry_name);
+    if (!root || !root->is_entry) return NULL;
+
+    /* collect transitive symbol set */
+    char *keep = (char *)NODE_MALLOC((size_t)(r->sym_count + 1));
+    memset(keep, 0, (size_t)r->sym_count + 1);
+    char *visited = (char *)NODE_MALLOC((size_t)r->fn_info_count + 1);
+    memset(visited, 0, (size_t)r->fn_info_count + 1);
+    dfs_collect(r, root, visited, keep);
+    NODE_FREE(visited);
+
+    /* filter to immediate symbols only, in declaration order */
+    int *imm_ids = NULL, icap = 0, icnt = 0;
+    for (int id = 1; id <= r->sym_count; id++) {
+        if (!keep[id]) continue;
+        if (r->symbols[id - 1].kind != WGSL_SYM_IMMEDIATE) continue;
+        if (icnt >= icap)
+            vec_grow((void **)&imm_ids, &icap, sizeof(int));
+        if (!imm_ids) break;
+        imm_ids[icnt++] = id;
+    }
+    NODE_FREE(keep);
+
+    if (icnt == 0) {
+        NODE_FREE(imm_ids);
+        return NULL;
+    }
+
+    WgslImmediateInfo *arr = (WgslImmediateInfo *)NODE_MALLOC(sizeof(WgslImmediateInfo) * icnt);
+    int offset = 0;
+    SsirLayoutRule effective_layout = (layout == SSIR_LAYOUT_NONE) ? SSIR_LAYOUT_STD430 : layout;
+
+    for (int i = 0; i < icnt; i++) {
+        const WgslSymbolInfo *sym = &r->symbols[imm_ids[i] - 1];
+        const WgslAstNode *decl = sym->decl_node;
+        const WgslAstNode *type_node = (decl && decl->type == WGSL_NODE_GLOBAL_VAR)
+            ? decl->global_var.type : NULL;
+
+        int size = 0;
+        type_min_size_bytes(r, type_node, &size);
+        int alignment = type_alignment_bytes(r, type_node, effective_layout);
+
+        offset = align_up(offset, alignment);
+
+        arr[i].name = sym->name;
+        arr[i].type_size = size;
+        arr[i].offset = offset;
+        arr[i].alignment = alignment;
+        arr[i].decl_node = decl;
+
+        offset += size;
+    }
+
+    NODE_FREE(imm_ids);
+    if (out_count) *out_count = icnt;
+    return arr;
+}
 
 /* free helper */
 void wgsl_resolve_free(void *p) {

@@ -394,6 +394,17 @@ struct WgslLower {
     } alias_table[64];
     int alias_count;
 
+    // Immediate variable mapping (name -> push constant struct member)
+    struct {
+        const char *name;
+        uint32_t pc_var;       // push constant variable SPIR-V ID
+        uint32_t member_index; // member index in the push constant struct
+        uint32_t member_type;  // SPIR-V member type ID
+        uint32_t ssir_pc_var;  // SSIR push constant variable ID
+        uint32_t ssir_member_type; // SSIR member type ID
+    } imm_map[64];
+    int imm_map_count;
+
     // SSIR ID mapping (SPV ID -> SSIR ID)
     uint32_t *ssir_id_map;
     uint32_t ssir_id_map_cap;
@@ -1409,6 +1420,8 @@ static SpvStorageClass wgsl_address_space_to_storage_class(const char *space) {
     if (strcmp(space, "function") == 0) return SpvStorageClassFunction;
     if (strcmp(space, "in") == 0) return SpvStorageClassInput;
     if (strcmp(space, "out") == 0) return SpvStorageClassOutput;
+    if (strcmp(space, "immediate") == 0) return SpvStorageClassPushConstant;
+    if (strcmp(space, "push_constant") == 0) return SpvStorageClassPushConstant;
     return SpvStorageClassUniformConstant; // for samplers/textures
 }
 
@@ -2936,6 +2949,44 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
         }
     }
 
+    // Check immediate variables (push constant struct members)
+    for (int i = 0; i < l->imm_map_count; i++) {
+        if (l->imm_map[i].name && strcmp(l->imm_map[i].name, name) == 0) {
+            /* Generate AccessChain to the push constant struct member */
+            uint32_t idx = emit_const_u32(l, l->imm_map[i].member_index);
+            uint32_t member_ptr_type = emit_type_pointer(l, SpvStorageClassPushConstant,
+                l->imm_map[i].member_type);
+            uint32_t chain_id = fresh_id(l);
+            {
+                WordBuf *wb = &l->sections.functions;
+                emit_op(wb, SpvOpAccessChain, 5);
+                wb_push_u32(wb, member_ptr_type);
+                wb_push_u32(wb, chain_id);
+                wb_push_u32(wb, l->imm_map[i].pc_var);
+                wb_push_u32(wb, idx);
+            }
+            /* Load the value */
+            uint32_t loaded;
+            if (emit_load(l, l->imm_map[i].member_type, &loaded, chain_id)) {
+                r.id = loaded;
+                r.type_id = l->imm_map[i].member_type;
+
+                /* SSIR: emit access + load */
+                uint32_t ssir_idx = ssir_const_u32(l->ssir, l->imm_map[i].member_index);
+                uint32_t ssir_member_ptr = ssir_type_ptr(l->ssir,
+                    l->imm_map[i].ssir_member_type, SSIR_ADDR_PUSH_CONSTANT);
+                uint32_t ssir_chain = ssir_build_access(l->ssir,
+                    l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+                    ssir_member_ptr, l->imm_map[i].ssir_pc_var, &ssir_idx, 1);
+                uint32_t ssir_loaded = ssir_build_load(l->ssir,
+                    l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+                    l->imm_map[i].ssir_member_type, ssir_chain);
+                ssir_id_map_set(l, loaded, ssir_loaded);
+            }
+            return r;
+        }
+    }
+
     // Check global variables
     uint32_t var_id, elem_type_id;
     SpvStorageClass sc;
@@ -2982,6 +3033,28 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
                 r.type_id = type_id;
                 if (out_sc) *out_sc = SpvStorageClassFunction;
                 return r;
+            }
+
+            // Check immediate variables (return pointer to struct member)
+            for (int i = 0; i < l->imm_map_count; i++) {
+                if (l->imm_map[i].name && strcmp(l->imm_map[i].name, name) == 0) {
+                    uint32_t idx = emit_const_u32(l, l->imm_map[i].member_index);
+                    uint32_t member_ptr_type = emit_type_pointer(l, SpvStorageClassPushConstant,
+                        l->imm_map[i].member_type);
+                    uint32_t chain_id = fresh_id(l);
+                    {
+                        WordBuf *wb = &l->sections.functions;
+                        emit_op(wb, SpvOpAccessChain, 5);
+                        wb_push_u32(wb, member_ptr_type);
+                        wb_push_u32(wb, chain_id);
+                        wb_push_u32(wb, l->imm_map[i].pc_var);
+                        wb_push_u32(wb, idx);
+                    }
+                    r.id = chain_id;
+                    r.type_id = l->imm_map[i].member_type;
+                    if (out_sc) *out_sc = SpvStorageClassPushConstant;
+                    return r;
+                }
             }
 
             // Check global variables
@@ -7072,6 +7145,114 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
     return 1;
 }
 
+// ---------- Immediate Variable Lowering ----------
+// Creates a push constant struct for the given entry point's immediate variables
+// and adds global_map entries so that lower_ident can find them.
+static int lower_immediates_for_entry(WgslLower *l, const char *entry_name) {
+    if (!l || !entry_name) return 1; /* nothing to do */
+
+    SsirLayoutRule layout = l->opts.immediate_layout;
+    int imm_count = 0;
+    const WgslImmediateInfo *imms = wgsl_resolver_entrypoint_immediates(
+        l->resolver, entry_name, layout, &imm_count);
+    if (!imms || imm_count == 0) return 1; /* no immediates */
+
+    /* Build member type arrays for the push constant struct */
+    uint32_t *member_spv_types = (uint32_t *)WGSL_MALLOC(sizeof(uint32_t) * imm_count);
+    uint32_t *member_offsets = (uint32_t *)WGSL_MALLOC(sizeof(uint32_t) * imm_count);
+    if (!member_spv_types || !member_offsets) {
+        WGSL_FREE(member_spv_types);
+        WGSL_FREE(member_offsets);
+        wgsl_resolve_free((void *)imms);
+        return 0;
+    }
+
+    for (int i = 0; i < imm_count; i++) {
+        const WgslAstNode *decl = imms[i].decl_node;
+        const WgslAstNode *type_node = (decl && decl->type == WGSL_NODE_GLOBAL_VAR)
+            ? decl->global_var.type : NULL;
+        member_spv_types[i] = type_node ? lower_type(l, type_node) : l->id_f32;
+        member_offsets[i] = (uint32_t)imms[i].offset;
+    }
+
+    /* Create the push constant struct type */
+    uint32_t struct_type = fresh_id(l);
+    {
+        WordBuf *wb = &l->sections.types_constants;
+        emit_op(wb, SpvOpTypeStruct, 2 + imm_count);
+        wb_push_u32(wb, struct_type);
+        for (int i = 0; i < imm_count; i++)
+            wb_push_u32(wb, member_spv_types[i]);
+
+        /* Decorate struct with Block */
+        emit_decorate(l, struct_type, SpvDecorationBlock, NULL, 0);
+
+        /* Decorate each member offset */
+        for (int i = 0; i < imm_count; i++) {
+            WordBuf *wbd = &l->sections.annotations;
+            emit_op(wbd, SpvOpMemberDecorate, 5);
+            wb_push_u32(wbd, struct_type);
+            wb_push_u32(wbd, (uint32_t)i);
+            wb_push_u32(wbd, SpvDecorationOffset);
+            wb_push_u32(wbd, member_offsets[i]);
+        }
+
+        /* Debug names */
+        if (l->opts.enable_debug_names) {
+            emit_name(l, struct_type, "_PushConstants");
+            for (int i = 0; i < imm_count; i++) {
+                if (imms[i].name)
+                    emit_member_name(l, struct_type, (uint32_t)i, imms[i].name);
+            }
+        }
+    }
+
+    /* Create push constant pointer type and variable */
+    uint32_t pc_ptr_type = emit_type_pointer(l, SpvStorageClassPushConstant, struct_type);
+    uint32_t pc_var = emit_global_variable(l, pc_ptr_type, SpvStorageClassPushConstant,
+        "_push_constants", 0);
+
+    /* Create SSIR push constant global */
+    uint32_t ssir_member_types[64];
+    uint32_t ssir_member_offsets[64];
+    const char *ssir_member_names[64];
+    int ssir_count = imm_count < 64 ? imm_count : 64;
+    for (int i = 0; i < ssir_count; i++) {
+        ssir_member_types[i] = spv_type_to_ssir(l, member_spv_types[i]);
+        ssir_member_offsets[i] = member_offsets[i];
+        ssir_member_names[i] = imms[i].name;
+    }
+    uint32_t ssir_struct = ssir_type_struct_named(l->ssir, "_PushConstants",
+        ssir_member_types, ssir_count, ssir_member_offsets, ssir_member_names);
+    uint32_t ssir_pc_ptr = ssir_type_ptr(l->ssir, ssir_struct, SSIR_ADDR_PUSH_CONSTANT);
+    uint32_t ssir_pc_var = ssir_global_var(l->ssir, "_push_constants", ssir_pc_ptr);
+    ssir_id_map_set(l, pc_var, ssir_pc_var);
+
+    /* For each immediate, populate the imm_map for lower_ident to use.
+     * This maps each immediate variable name to its push constant struct
+     * member so that access chains can be generated at use-site. */
+    for (int i = 0; i < imm_count && l->imm_map_count < 64; i++) {
+        /* Create member pointer type for access chains */
+        emit_type_pointer(l, SpvStorageClassPushConstant, member_spv_types[i]);
+
+        /* Pre-emit the index constant for access chains */
+        emit_const_u32(l, (uint32_t)i);
+
+        l->imm_map[l->imm_map_count].name = imms[i].name;
+        l->imm_map[l->imm_map_count].pc_var = pc_var;
+        l->imm_map[l->imm_map_count].member_index = (uint32_t)i;
+        l->imm_map[l->imm_map_count].member_type = member_spv_types[i];
+        l->imm_map[l->imm_map_count].ssir_pc_var = ssir_pc_var;
+        l->imm_map[l->imm_map_count].ssir_member_type = spv_type_to_ssir(l, member_spv_types[i]);
+        l->imm_map_count++;
+    }
+
+    WGSL_FREE(member_spv_types);
+    WGSL_FREE(member_offsets);
+    wgsl_resolve_free((void *)imms);
+    return 1;
+}
+
 // ---------- Public API ----------
 
 // program nonnull
@@ -7246,6 +7427,24 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
     // Get entrypoints
     eps = wgsl_resolver_entrypoints(resolver, &ep_count);
 
+    // Lower immediate variables into push constant struct
+    // For per-entry-point mode, only include that entry point's immediates.
+    // For multi-entry-point mode, use the first entry point that has immediates
+    // (a proper union would be needed for production, but this covers the common case).
+    if (eps && ep_count > 0) {
+        if (l->opts.entry_point) {
+            lower_immediates_for_entry(l, l->opts.entry_point);
+        } else {
+            // Try each entry point; the first one that produces immediates wins.
+            // This works for single-entry-point shaders and for shaders where
+            // all entry points use the same set of immediates.
+            for (int ei = 0; ei < ep_count; ei++) {
+                if (l->imm_map_count == 0)
+                    lower_immediates_for_entry(l, eps[ei].name);
+            }
+        }
+    }
+
     if (ep_count <= 0 || !eps) {
         // Synthesize a default fragment entry
         l->eps = (WgslLowerEntrypointInfo *)WGSL_MALLOC(sizeof(WgslLowerEntrypointInfo));
@@ -7278,11 +7477,21 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
         l->eps[0].interface_count = 0;
         l->eps[0].interface_ids = NULL;
     } else {
-        l->eps = (WgslLowerEntrypointInfo *)WGSL_MALLOC(sizeof(WgslLowerEntrypointInfo) * (size_t)ep_count);
+        /* If entry_point filter is set, count only matching entry points */
+        int actual_ep_count = 0;
+        for (i = 0; i < ep_count; i++) {
+            if (!l->opts.entry_point || strcmp(eps[i].name, l->opts.entry_point) == 0)
+                actual_ep_count++;
+        }
+        l->eps = (WgslLowerEntrypointInfo *)WGSL_MALLOC(sizeof(WgslLowerEntrypointInfo) * (size_t)(actual_ep_count > 0 ? actual_ep_count : 1));
         if (!l->eps) goto fail;
-        l->ep_count = ep_count;
+        l->ep_count = 0;
 
         for (i = 0; i < ep_count; ++i) {
+            /* Skip entry points that don't match the filter */
+            if (l->opts.entry_point && strcmp(eps[i].name, l->opts.entry_point) != 0)
+                continue;
+
             func_id = 0;
             interface_ids = NULL;
             interface_count = 0;
@@ -7353,11 +7562,12 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
                 emit_execution_mode(l, func_id, SpvExecutionModeLocalSize, wg_size, 3);
             }
 
-            l->eps[i].name = eps[i].name;
-            l->eps[i].stage = eps[i].stage;
-            l->eps[i].function_id = func_id;
-            l->eps[i].interface_count = interface_count;
-            l->eps[i].interface_ids = interface_ids;
+            l->eps[l->ep_count].name = eps[i].name;
+            l->eps[l->ep_count].stage = eps[i].stage;
+            l->eps[l->ep_count].function_id = func_id;
+            l->eps[l->ep_count].interface_count = interface_count;
+            l->eps[l->ep_count].interface_ids = interface_ids;
+            l->ep_count++;
         }
     }
 

@@ -36,6 +36,7 @@ set(TEST_SOURCES
     atomic_test.cpp
     pack_unpack_test.cpp
     barrier_test.cpp
+    immediate_test.cpp
 )
 
 if(WGSL_BUILD_EXPRESSION_TESTS)

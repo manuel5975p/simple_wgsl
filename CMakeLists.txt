@@ -14,9 +14,18 @@ option(WGSL_USE_LSAN "Enable Leak Sanitizer (standalone, not with ASan)" OFF)
 option(WGSL_BUILD_EGL_TESTS "Build EGL/OpenGL compute shader validation tests" OFF)
 option(WGSL_BUILD_METAL_EXAMPLES "Build Metal/MSL example programs (macOS only)" OFF)
 option(WGSL_BUILD_FUZZ "Build libFuzzer fuzz targets" OFF)
+option(WGSL_COVERAGE "Enable code coverage with llvm-cov" OFF)
 
 set(SANITIZER_FLAGS "")
 set(SANITIZER_LINK_FLAGS "")
+
+if(WGSL_COVERAGE)
+    if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "WGSL_COVERAGE requires Clang (set CMAKE_C_COMPILER=clang CMAKE_CXX_COMPILER=clang++)")
+    endif()
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+    add_link_options(-fprofile-instr-generate -fcoverage-mapping)
+endif()
 
 if(WGSL_USE_ASAN)
     string(APPEND SANITIZER_FLAGS " -fsanitize=address")

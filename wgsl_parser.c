@@ -816,11 +816,13 @@ static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
         expect(P, TOK_GT, "expected '>'");
         int first_addr =
             (!strcmp(first, "uniform") || !strcmp(first, "storage") ||
-                !strcmp(first, "workgroup") || !strcmp(first, "private"));
+                !strcmp(first, "workgroup") || !strcmp(first, "private") ||
+                !strcmp(first, "immediate"));
         int second_addr =
             second
                 ? (!strcmp(second, "uniform") || !strcmp(second, "storage") ||
-                      !strcmp(second, "workgroup") || !strcmp(second, "private"))
+                      !strcmp(second, "workgroup") || !strcmp(second, "private") ||
+                      !strcmp(second, "immediate"))
                 : 0;
         if (second && second_addr && !first_addr) {
             addr_space = second;
@@ -1776,9 +1778,27 @@ static bool check_ident_text(Parser *P, const char *text) {
 // P nonnull
 static WgslAstNode *parse_decl_or_stmt(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_decl_or_stmt: P is NULL");
-    // Skip 'enable', 'diagnostic', 'requires' directives
-    if (check_ident_text(P, "enable") || check_ident_text(P, "diagnostic") ||
-        check_ident_text(P, "requires")) {
+    // Skip 'diagnostic', 'requires' directives
+    if (check_ident_text(P, "diagnostic") || check_ident_text(P, "requires")) {
+        while (!check(P, TOK_SEMI) && !check(P, TOK_EOF))
+            advance(P);
+        match(P, TOK_SEMI);
+        return new_node(P, WGSL_NODE_PROGRAM);
+    }
+    // Parse 'enable' directives — record extension flags
+    if (check_ident_text(P, "enable")) {
+        advance(P); /* skip 'enable' */
+        if (check(P, TOK_IDENT)) {
+            Token ext = P->cur;
+            advance(P);
+            /* Store extension name as an attribute node so the program can read it */
+            WgslAstNode *marker = new_node(P, WGSL_NODE_ATTRIBUTE);
+            marker->attribute.name = wgsl_strndup(ext.start, (size_t)ext.length);
+            marker->attribute.arg_count = 0;
+            marker->attribute.args = NULL;
+            expect(P, TOK_SEMI, "expected ';' after enable directive");
+            return marker;
+        }
         while (!check(P, TOK_SEMI) && !check(P, TOK_EOF))
             advance(P);
         match(P, TOK_SEMI);
@@ -1828,6 +1848,8 @@ static WgslAstNode *parse_decl_or_stmt(Parser *P) {
     return NULL;
 }
 
+static void free_node(WgslAstNode *n); /* forward decl for enable processing */
+
 // P nonnull
 static WgslAstNode *parse_program(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_program: P is NULL");
@@ -1847,8 +1869,25 @@ static WgslAstNode *parse_program(Parser *P) {
             advance(P);
         }
     }
-    root->program.decl_count = count;
+    /* Process enable directives (ATTRIBUTE marker nodes) into extension flags */
+    uint32_t extensions = 0;
+    int final_count = 0;
+    for (int i = 0; i < count; i++) {
+        if (decls[i] && decls[i]->type == WGSL_NODE_ATTRIBUTE) {
+            const char *ext_name = decls[i]->attribute.name;
+            if (ext_name && strcmp(ext_name, "immediate_address_space") == 0)
+                extensions |= WGSL_EXT_IMMEDIATE_ADDRESS_SPACE;
+            else if (ext_name && strcmp(ext_name, "immediate_arrays") == 0)
+                extensions |= WGSL_EXT_IMMEDIATE_ARRAYS | WGSL_EXT_IMMEDIATE_ADDRESS_SPACE;
+            free_node(decls[i]);
+            decls[i] = NULL;
+        } else {
+            decls[final_count++] = decls[i];
+        }
+    }
+    root->program.decl_count = final_count;
     root->program.decls = decls;
+    root->program.extensions = extensions;
     return root;
 }
 

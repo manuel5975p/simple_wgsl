@@ -1536,7 +1536,7 @@ static void convert_global_vars(VtsConverter *c) {
         uint32_t gid = ssir_global_var(c->mod, name, ptr_type);
         info->ssir_id = gid;
 
-        uint32_t group_val, binding_val, location_val, builtin_val;
+        uint32_t group_val = 0, binding_val = 0, location_val = 0, builtin_val = 0;
         if (vts_has_decoration(c, i, SpvDecorationDescriptorSet, &group_val)) {
             ssir_global_set_group(c->mod, gid, group_val);
         }

@@ -302,11 +302,16 @@ typedef struct WgslTypeAlias {
     WgslAstNode *type; /* TYPE node */
 } WgslTypeAlias;
 
+/* WGSL extension flags */
+#define WGSL_EXT_IMMEDIATE_ADDRESS_SPACE 0x1u
+#define WGSL_EXT_IMMEDIATE_ARRAYS        0x2u
+
 typedef struct Program {
     int decl_count;
     WgslAstNode **decls;
     int alias_count;
     WgslTypeAlias *aliases;
+    uint32_t extensions; /* bitmask of WGSL_EXT_* */
 } Program;
 
 struct WgslAstNode {
@@ -360,6 +365,14 @@ typedef enum WgslStage {
 /* GLSL Parser */
 WgslAstNode *glsl_parse(const char *source, WgslStage stage);
 
+/* Layout rule (used by resolver and SSIR) */
+typedef enum SsirLayoutRule {
+    SSIR_LAYOUT_NONE,
+    SSIR_LAYOUT_STD140,
+    SSIR_LAYOUT_STD430,
+    SSIR_LAYOUT_SCALAR,
+} SsirLayoutRule;
+
 /* ============================================================================
  * WGSL RESOLVER
  * ============================================================================ */
@@ -367,7 +380,8 @@ WgslAstNode *glsl_parse(const char *source, WgslStage stage);
 typedef enum {
     WGSL_SYM_GLOBAL = 1,
     WGSL_SYM_PARAM,
-    WGSL_SYM_LOCAL
+    WGSL_SYM_LOCAL,
+    WGSL_SYM_IMMEDIATE
 } WgslSymbolKind;
 
 typedef struct {
@@ -430,6 +444,21 @@ const WgslResolverEntrypoint *wgsl_resolver_entrypoints(const WgslResolver *r, i
 const WgslSymbolInfo *wgsl_resolver_entrypoint_globals(const WgslResolver *r, const char *entry_name, int *out_count);
 const WgslSymbolInfo *wgsl_resolver_entrypoint_binding_vars(const WgslResolver *r, const char *entry_name, int *out_count);
 
+/* Immediate variable reflection */
+typedef struct WgslImmediateInfo {
+    const char *name;
+    int type_size;
+    int offset;
+    int alignment;
+    const WgslAstNode *decl_node;
+} WgslImmediateInfo;
+
+const WgslImmediateInfo *wgsl_resolver_entrypoint_immediates(
+    const WgslResolver *r,
+    const char *entry_name,
+    SsirLayoutRule layout,
+    int *out_count);
+
 int wgsl_resolver_fragment_outputs(const WgslResolver *r, const char *fragment_entry_name, WgslFragmentOutput **frag_outputs);
 
 void wgsl_resolve_free(void *p);
@@ -471,6 +500,8 @@ typedef struct {
     int relax_block_layout;
     int use_khr_shader_draw_parameters;
     uint32_t id_bound_hint;
+    const char *entry_point;       /* NULL = all entry points; set to compile one */
+    SsirLayoutRule immediate_layout; /* layout for immediate packing (std430/scalar) */
 } WgslLowerOptions;
 
 typedef struct {
@@ -615,13 +646,6 @@ typedef enum SsirAddressSpace {
     SSIR_ADDR_PUSH_CONSTANT,
     SSIR_ADDR_PHYSICAL_STORAGE_BUFFER,
 } SsirAddressSpace;
-
-typedef enum SsirLayoutRule {
-    SSIR_LAYOUT_NONE,
-    SSIR_LAYOUT_STD140,
-    SSIR_LAYOUT_STD430,
-    SSIR_LAYOUT_SCALAR,
-} SsirLayoutRule;
 
 typedef enum SsirClipSpaceConvention {
     SSIR_CLIP_SPACE_VULKAN,  /* Y-down, Z [0,1] */

@@ -1806,4 +1806,494 @@ TEST_F(VulkanComputeTest, MatrixTimesVector_GeneralMultiply) {
     EXPECT_FLOAT_EQ(out[2], 24.0f);
 }
 
+// ============================================================================
+// Push Constants via var<immediate>
+// ============================================================================
+
+using vk_compute::VulkanError;
+
+// Helper: compile WGSL with per-entry-point immediate lowering
+static wgsl_test::CompileResult CompileImmediate(const char *source,
+                                                  const char *entry_point,
+                                                  SsirLayoutRule layout = SSIR_LAYOUT_STD430) {
+    wgsl_test::CompileResult result;
+    result.success = false;
+
+    WgslAstNode *ast = wgsl_parse(source);
+    if (!ast) { result.error = "Parse failed"; return result; }
+
+    WgslResolver *resolver = wgsl_resolver_build(ast);
+    if (!resolver) { wgsl_free_ast(ast); result.error = "Resolve failed"; return result; }
+
+    uint32_t *spirv = nullptr;
+    size_t spirv_size = 0;
+    WgslLowerOptions opts = {};
+    opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
+    opts.entry_point = entry_point;
+    opts.immediate_layout = layout;
+
+    WgslLowerResult lower_result =
+        wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &spirv_size);
+    wgsl_resolver_free(resolver);
+    wgsl_free_ast(ast);
+
+    if (lower_result != WGSL_LOWER_OK) { result.error = "Lower failed"; return result; }
+
+    result.spirv.assign(spirv, spirv + spirv_size);
+    wgsl_lower_free(spirv);
+
+    if (!wgsl_test::ValidateSpirv(result.spirv.data(), result.spirv.size(), &result.error))
+        return result;
+
+    result.success = true;
+    return result;
+}
+
+// Helper: create a compute pipeline with push constant range
+struct PushConstantPipeline {
+    VkShaderModule shader = VK_NULL_HANDLE;
+    VkDescriptorSetLayout desc_layout = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+
+    ~PushConstantPipeline() {
+        if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
+        if (layout) vkDestroyPipelineLayout(device, layout, nullptr);
+        if (desc_layout) vkDestroyDescriptorSetLayout(device, desc_layout, nullptr);
+        if (shader) vkDestroyShaderModule(device, shader, nullptr);
+    }
+};
+
+static PushConstantPipeline createComputePipelineWithPush(
+    vk_compute::VulkanContext &ctx,
+    const std::vector<uint32_t> &spirv,
+    uint32_t push_size,
+    const char *entry = "main")
+{
+    PushConstantPipeline p;
+    p.device = ctx.device();
+
+    VkShaderModuleCreateInfo shader_info = {};
+    shader_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader_info.codeSize = spirv.size() * sizeof(uint32_t);
+    shader_info.pCode = spirv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &shader_info, nullptr, &p.shader));
+
+    // Descriptor set layout: up to 16 storage buffers
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    for (uint32_t i = 0; i < 16; i++) {
+        VkDescriptorSetLayoutBinding b = {};
+        b.binding = i;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b.descriptorCount = 1;
+        b.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        bindings.push_back(b);
+    }
+    VkDescriptorSetLayoutCreateInfo dl_info = {};
+    dl_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dl_info.bindingCount = static_cast<uint32_t>(bindings.size());
+    dl_info.pBindings = bindings.data();
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dl_info, nullptr, &p.desc_layout));
+
+    // Push constant range
+    VkPushConstantRange push_range = {};
+    push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push_range.offset = 0;
+    push_range.size = push_size;
+
+    VkPipelineLayoutCreateInfo pl_info = {};
+    pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pl_info.setLayoutCount = 1;
+    pl_info.pSetLayouts = &p.desc_layout;
+    pl_info.pushConstantRangeCount = 1;
+    pl_info.pPushConstantRanges = &push_range;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &pl_info, nullptr, &p.layout));
+
+    VkComputePipelineCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    ci.stage.module = p.shader;
+    ci.stage.pName = entry;
+    ci.layout = p.layout;
+    VK_CHECK(vkCreateComputePipelines(ctx.device(), VK_NULL_HANDLE, 1, &ci, nullptr, &p.pipeline));
+
+    return p;
+}
+
+// Helper: dispatch with push constants, descriptors, command recording
+static void dispatchWithPush(
+    vk_compute::VulkanContext &ctx,
+    PushConstantPipeline &pipeline,
+    const std::vector<vk_compute::DescriptorBinding> &bindings,
+    const void *push_data, uint32_t push_size,
+    uint32_t groups_x, uint32_t groups_y = 1, uint32_t groups_z = 1)
+{
+    // Create temporary descriptor pool
+    VkDescriptorPoolSize pool_size = {};
+    pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pool_size.descriptorCount = 16;
+
+    VkDescriptorPoolCreateInfo pool_info = {};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+    pool_info.maxSets = 1;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+
+    VkDescriptorPool desc_pool;
+    VK_CHECK(vkCreateDescriptorPool(ctx.device(), &pool_info, nullptr, &desc_pool));
+
+    VkDescriptorSetAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    alloc_info.descriptorPool = desc_pool;
+    alloc_info.descriptorSetCount = 1;
+    alloc_info.pSetLayouts = &pipeline.desc_layout;
+
+    VkDescriptorSet desc_set;
+    VK_CHECK(vkAllocateDescriptorSets(ctx.device(), &alloc_info, &desc_set));
+
+    // Update descriptor set
+    std::vector<VkDescriptorBufferInfo> buf_infos(bindings.size());
+    std::vector<VkWriteDescriptorSet> writes(bindings.size());
+    for (size_t i = 0; i < bindings.size(); i++) {
+        buf_infos[i].buffer = bindings[i].buffer->handle();
+        buf_infos[i].offset = 0;
+        buf_infos[i].range = bindings[i].buffer->size();
+        writes[i] = {};
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = desc_set;
+        writes[i].dstBinding = bindings[i].binding;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = bindings[i].type;
+        writes[i].pBufferInfo = &buf_infos[i];
+    }
+    vkUpdateDescriptorSets(ctx.device(), static_cast<uint32_t>(writes.size()),
+        writes.data(), 0, nullptr);
+
+    ctx.executeCommands([&](VkCommandBuffer cmd) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline.pipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            pipeline.layout, 0, 1, &desc_set, 0, nullptr);
+        vkCmdPushConstants(cmd, pipeline.layout, VK_SHADER_STAGE_COMPUTE_BIT,
+            0, push_size, push_data);
+        vkCmdDispatch(cmd, groups_x, groups_y, groups_z);
+    });
+
+    vkDestroyDescriptorPool(ctx.device(), desc_pool, nullptr);
+}
+
+// --- Compute push constant tests ---
+
+TEST_F(VulkanComputeTest, Immediate_ScaleBuffer) {
+    // Push a scalar scale factor, multiply each buffer element
+    const char *source = R"(
+        enable immediate_address_space;
+        var<immediate> scale: f32;
+
+        struct Buf { data: array<f32> };
+        @group(0) @binding(0) var<storage, read> input: Buf;
+        @group(0) @binding(1) var<storage, read_write> output: Buf;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            output.data[id.x] = input.data[id.x] * scale;
+        }
+    )";
+
+    auto result = CompileImmediate(source, "main");
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> input_data = {1.0f, 2.0f, 3.0f, 4.0f};
+    auto input = ctx_->createStorageBuffer(input_data);
+    auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
+
+    float scale = 2.5f;
+    auto pipeline = createComputePipelineWithPush(*ctx_, result.spirv, sizeof(float));
+    dispatchWithPush(*ctx_, pipeline,
+        {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+         {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+        &scale, sizeof(float),
+        static_cast<uint32_t>(input_data.size()));
+
+    auto out = output.download<float>(input_data.size());
+    for (size_t i = 0; i < input_data.size(); i++) {
+        EXPECT_FLOAT_EQ(out[i], input_data[i] * 2.5f) << "Mismatch at " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, Immediate_MultipleFields) {
+    // Push multiple values: scale (f32) + offset (u32)
+    const char *source = R"(
+        enable immediate_address_space;
+        var<immediate> scale: f32;
+        var<immediate> offset: u32;
+
+        struct Buf { data: array<f32> };
+        @group(0) @binding(0) var<storage, read> input: Buf;
+        @group(0) @binding(1) var<storage, read_write> output: Buf;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            output.data[id.x] = input.data[id.x + offset] * scale;
+        }
+    )";
+
+    auto result = CompileImmediate(source, "main");
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> input_data = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f, 60.0f};
+    auto input = ctx_->createStorageBuffer(input_data);
+    auto output = ctx_->createStorageBuffer(4 * sizeof(float));
+
+    struct { float scale; uint32_t offset; } pc = {0.5f, 2};
+    auto pipeline = createComputePipelineWithPush(*ctx_, result.spirv, sizeof(pc));
+    dispatchWithPush(*ctx_, pipeline,
+        {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+         {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+        &pc, sizeof(pc),
+        4);
+
+    auto out = output.download<float>(4);
+    // output[i] = input[i+2] * 0.5
+    EXPECT_FLOAT_EQ(out[0], 15.0f);  // 30 * 0.5
+    EXPECT_FLOAT_EQ(out[1], 20.0f);  // 40 * 0.5
+    EXPECT_FLOAT_EQ(out[2], 25.0f);  // 50 * 0.5
+    EXPECT_FLOAT_EQ(out[3], 30.0f);  // 60 * 0.5
+}
+
+TEST_F(VulkanComputeTest, Immediate_Vec4Push) {
+    // Push a vec4f color, write it into the output buffer
+    const char *source = R"(
+        enable immediate_address_space;
+        var<immediate> color: vec4f;
+
+        struct Buf { data: array<vec4f> };
+        @group(0) @binding(0) var<storage, read_write> output: Buf;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            output.data[id.x] = color;
+        }
+    )";
+
+    auto result = CompileImmediate(source, "main");
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(4 * 4 * sizeof(float)); // 4 vec4s
+
+    float color[4] = {0.25f, 0.5f, 0.75f, 1.0f};
+    auto pipeline = createComputePipelineWithPush(*ctx_, result.spirv, sizeof(color));
+    dispatchWithPush(*ctx_, pipeline,
+        {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+        color, sizeof(color),
+        4);
+
+    auto out = output.download<float>(16);
+    for (int i = 0; i < 4; i++) {
+        EXPECT_FLOAT_EQ(out[i * 4 + 0], 0.25f) << "element " << i << " .x";
+        EXPECT_FLOAT_EQ(out[i * 4 + 1], 0.5f) << "element " << i << " .y";
+        EXPECT_FLOAT_EQ(out[i * 4 + 2], 0.75f) << "element " << i << " .z";
+        EXPECT_FLOAT_EQ(out[i * 4 + 3], 1.0f) << "element " << i << " .w";
+    }
+}
+
+TEST_F(VulkanComputeTest, Immediate_ScaleAndBias) {
+    // Two push constants used together: output = input * scale + bias
+    const char *source = R"(
+        enable immediate_address_space;
+        var<immediate> scale: f32;
+        var<immediate> bias: f32;
+
+        struct Buf { data: array<f32> };
+        @group(0) @binding(0) var<storage, read> input: Buf;
+        @group(0) @binding(1) var<storage, read_write> output: Buf;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            output.data[id.x] = input.data[id.x] * scale + bias;
+        }
+    )";
+
+    auto result = CompileImmediate(source, "main");
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> input_data = {2.0f, 4.0f, 6.0f, 8.0f};
+    auto input = ctx_->createStorageBuffer(input_data);
+    auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
+
+    struct { float scale; float bias; } push = {3.0f, 10.0f};
+    auto pipeline = createComputePipelineWithPush(*ctx_, result.spirv, sizeof(push));
+    dispatchWithPush(*ctx_, pipeline,
+        {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+         {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+        &push, sizeof(push),
+        static_cast<uint32_t>(input_data.size()));
+
+    auto out = output.download<float>(input_data.size());
+    // 2*3+10=16, 4*3+10=22, 6*3+10=28, 8*3+10=34
+    EXPECT_FLOAT_EQ(out[0], 16.0f);
+    EXPECT_FLOAT_EQ(out[1], 22.0f);
+    EXPECT_FLOAT_EQ(out[2], 28.0f);
+    EXPECT_FLOAT_EQ(out[3], 34.0f);
+}
+
+TEST_F(VulkanComputeTest, Immediate_PerEntrypoint) {
+    // Two entry points using different subsets of immediates
+    const char *source = R"(
+        enable immediate_address_space;
+        var<immediate> a: f32;
+        var<immediate> b: f32;
+
+        struct Buf { data: array<f32> };
+        @group(0) @binding(0) var<storage, read_write> output: Buf;
+
+        @compute @workgroup_size(1)
+        fn add_a(@builtin(global_invocation_id) id: vec3u) {
+            output.data[id.x] = output.data[id.x] + a;
+        }
+
+        @compute @workgroup_size(1)
+        fn mul_b(@builtin(global_invocation_id) id: vec3u) {
+            output.data[id.x] = output.data[id.x] * b;
+        }
+    )";
+
+    // Compile each entry point separately
+    auto r_add = CompileImmediate(source, "add_a");
+    ASSERT_TRUE(r_add.success) << "add_a: " << r_add.error;
+
+    auto r_mul = CompileImmediate(source, "mul_b");
+    ASSERT_TRUE(r_mul.success) << "mul_b: " << r_mul.error;
+
+    // Run add_a with a=10
+    {
+        std::vector<float> data = {1.0f, 2.0f, 3.0f, 4.0f};
+        auto buf = ctx_->createStorageBuffer(data);
+        float a = 10.0f;
+        auto pipeline = createComputePipelineWithPush(*ctx_, r_add.spirv, sizeof(float), "add_a");
+        dispatchWithPush(*ctx_, pipeline,
+            {{0, &buf, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+            &a, sizeof(float), 4);
+
+        auto out = buf.download<float>(4);
+        EXPECT_FLOAT_EQ(out[0], 11.0f);
+        EXPECT_FLOAT_EQ(out[1], 12.0f);
+        EXPECT_FLOAT_EQ(out[2], 13.0f);
+        EXPECT_FLOAT_EQ(out[3], 14.0f);
+    }
+
+    // Run mul_b with b=3
+    {
+        std::vector<float> data = {2.0f, 3.0f, 4.0f, 5.0f};
+        auto buf = ctx_->createStorageBuffer(data);
+        float b = 3.0f;
+        auto pipeline = createComputePipelineWithPush(*ctx_, r_mul.spirv, sizeof(float), "mul_b");
+        dispatchWithPush(*ctx_, pipeline,
+            {{0, &buf, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+            &b, sizeof(float), 4);
+
+        auto out = buf.download<float>(4);
+        EXPECT_FLOAT_EQ(out[0], 6.0f);
+        EXPECT_FLOAT_EQ(out[1], 9.0f);
+        EXPECT_FLOAT_EQ(out[2], 12.0f);
+        EXPECT_FLOAT_EQ(out[3], 15.0f);
+    }
+}
+
+TEST_F(VulkanComputeTest, Immediate_Conditional) {
+    // Push constant used in conditional logic: output = (flag > 0) ? input * scale : input
+    const char *source = R"(
+        enable immediate_address_space;
+        var<immediate> scale: f32;
+        var<immediate> flag: u32;
+
+        struct Buf { data: array<f32> };
+        @group(0) @binding(0) var<storage, read> input: Buf;
+        @group(0) @binding(1) var<storage, read_write> output: Buf;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            var v = input.data[id.x];
+            if (flag > 0u) {
+                v = v * scale;
+            }
+            output.data[id.x] = v;
+        }
+    )";
+
+    auto result = CompileImmediate(source, "main");
+    ASSERT_TRUE(result.success) << result.error;
+
+    std::vector<float> input_data = {1.0f, 2.0f, 3.0f, 4.0f};
+    auto input = ctx_->createStorageBuffer(input_data);
+    auto output = ctx_->createStorageBuffer(input_data.size() * sizeof(float));
+
+    // flag=1, scale=5: should multiply
+    struct { float scale; uint32_t flag; } push = {5.0f, 1u};
+    auto pipeline = createComputePipelineWithPush(*ctx_, result.spirv, sizeof(push));
+    dispatchWithPush(*ctx_, pipeline,
+        {{0, &input, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER},
+         {1, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+        &push, sizeof(push),
+        static_cast<uint32_t>(input_data.size()));
+
+    auto out = output.download<float>(input_data.size());
+    EXPECT_FLOAT_EQ(out[0], 5.0f);
+    EXPECT_FLOAT_EQ(out[1], 10.0f);
+    EXPECT_FLOAT_EQ(out[2], 15.0f);
+    EXPECT_FLOAT_EQ(out[3], 20.0f);
+}
+
+TEST_F(VulkanComputeTest, Immediate_DynamicUpdate) {
+    // Same pipeline, different push constant values per dispatch
+    const char *source = R"(
+        enable immediate_address_space;
+        var<immediate> multiplier: f32;
+
+        struct Buf { data: array<f32> };
+        @group(0) @binding(0) var<storage, read_write> output: Buf;
+
+        @compute @workgroup_size(1)
+        fn main(@builtin(global_invocation_id) id: vec3u) {
+            output.data[id.x] = f32(id.x) * multiplier;
+        }
+    )";
+
+    auto result = CompileImmediate(source, "main");
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(4 * sizeof(float));
+    auto pipeline = createComputePipelineWithPush(*ctx_, result.spirv, sizeof(float));
+
+    // First dispatch: multiplier = 2
+    {
+        float m = 2.0f;
+        dispatchWithPush(*ctx_, pipeline,
+            {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+            &m, sizeof(float), 4);
+
+        auto out = output.download<float>(4);
+        EXPECT_FLOAT_EQ(out[0], 0.0f);
+        EXPECT_FLOAT_EQ(out[1], 2.0f);
+        EXPECT_FLOAT_EQ(out[2], 4.0f);
+        EXPECT_FLOAT_EQ(out[3], 6.0f);
+    }
+
+    // Second dispatch: multiplier = 5
+    {
+        float m = 5.0f;
+        dispatchWithPush(*ctx_, pipeline,
+            {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}},
+            &m, sizeof(float), 4);
+
+        auto out = output.download<float>(4);
+        EXPECT_FLOAT_EQ(out[0], 0.0f);
+        EXPECT_FLOAT_EQ(out[1], 5.0f);
+        EXPECT_FLOAT_EQ(out[2], 10.0f);
+        EXPECT_FLOAT_EQ(out[3], 15.0f);
+    }
+}
+
 #endif // WGSL_HAS_VULKAN

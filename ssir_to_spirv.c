@@ -1118,8 +1118,9 @@ static uint32_t sts_emit_global_var(Ctx *c, const SsirGlobalVar *g) {
         sts_emit_decorate(c, id, SpvDecorationInvariant, NULL, 0);
     }
 
-    /* Block decoration for uniform/storage buffers */
-    if (sc == SpvStorageClassUniform || sc == SpvStorageClassStorageBuffer) {
+    /* Block decoration for uniform/storage/push-constant buffers */
+    if (sc == SpvStorageClassUniform || sc == SpvStorageClassStorageBuffer ||
+        sc == SpvStorageClassPushConstant) {
         if (ptr_type && ptr_type->kind == SSIR_TYPE_PTR) {
             SsirType *pointee = ssir_get_type((SsirModule *)c->mod, ptr_type->ptr.pointee);
             if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {

@@ -931,4 +931,434 @@ TEST_F(VulkanGraphicsTest, GlslVertexTransform) {
     EXPECT_LE(b, 5) << "Corner blue should be ~0 (clear)";
 }
 
+// ============================================================================
+// Push Constants via var<immediate> — Graphics Pipeline
+// ============================================================================
+
+using vk_graphics::VulkanError;
+
+// Helper: compile WGSL with per-entry-point immediate lowering
+static wgsl_test::CompileResult CompileImmediate(const char *source,
+                                                  const char *entry_point,
+                                                  SsirLayoutRule layout = SSIR_LAYOUT_STD430) {
+    wgsl_test::CompileResult result;
+    result.success = false;
+
+    WgslAstNode *ast = wgsl_parse(source);
+    if (!ast) { result.error = "Parse failed"; return result; }
+
+    WgslResolver *resolver = wgsl_resolver_build(ast);
+    if (!resolver) { wgsl_free_ast(ast); result.error = "Resolve failed"; return result; }
+
+    uint32_t *spirv = nullptr;
+    size_t spirv_size = 0;
+    WgslLowerOptions opts = {};
+    opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
+    opts.entry_point = entry_point;
+    opts.immediate_layout = layout;
+
+    WgslLowerResult lower_result =
+        wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &spirv_size);
+    wgsl_resolver_free(resolver);
+    wgsl_free_ast(ast);
+
+    if (lower_result != WGSL_LOWER_OK) { result.error = "Lower failed"; return result; }
+
+    result.spirv.assign(spirv, spirv + spirv_size);
+    wgsl_lower_free(spirv);
+
+    if (!wgsl_test::ValidateSpirv(result.spirv.data(), result.spirv.size(), &result.error))
+        return result;
+
+    result.success = true;
+    return result;
+}
+
+// Helper: create a graphics pipeline with push constant range
+struct GfxPushPipeline {
+    VkShaderModule vs_module = VK_NULL_HANDLE;
+    VkShaderModule fs_module = VK_NULL_HANDLE;
+    VkDescriptorSetLayout desc_layout = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+
+    ~GfxPushPipeline() {
+        if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
+        if (layout) vkDestroyPipelineLayout(device, layout, nullptr);
+        if (desc_layout) vkDestroyDescriptorSetLayout(device, desc_layout, nullptr);
+        if (vs_module) vkDestroyShaderModule(device, vs_module, nullptr);
+        if (fs_module) vkDestroyShaderModule(device, fs_module, nullptr);
+    }
+};
+
+static GfxPushPipeline createGfxPipelineWithPush(
+    vk_graphics::GraphicsContext &ctx,
+    const std::vector<uint32_t> &vs_spirv, const char *vs_entry,
+    const std::vector<uint32_t> &fs_spirv, const char *fs_entry,
+    uint32_t push_size, VkShaderStageFlags push_stages,
+    uint32_t vertex_stride,
+    const std::vector<vk_graphics::VertexAttribute> &vertex_attrs,
+    VkFormat color_format = VK_FORMAT_R8G8B8A8_UNORM)
+{
+    GfxPushPipeline p;
+    p.device = ctx.device();
+
+    // Shader modules
+    VkShaderModuleCreateInfo vs_ci = {};
+    vs_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vs_ci.codeSize = vs_spirv.size() * sizeof(uint32_t);
+    vs_ci.pCode = vs_spirv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &vs_ci, nullptr, &p.vs_module));
+
+    VkShaderModuleCreateInfo fs_ci = {};
+    fs_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fs_ci.codeSize = fs_spirv.size() * sizeof(uint32_t);
+    fs_ci.pCode = fs_spirv.data();
+    VK_CHECK(vkCreateShaderModule(ctx.device(), &fs_ci, nullptr, &p.fs_module));
+
+    // Shader stages
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = p.vs_module;
+    stages[0].pName = vs_entry;
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = p.fs_module;
+    stages[1].pName = fs_entry;
+
+    // Empty descriptor set layout
+    VkDescriptorSetLayoutCreateInfo dl_info = {};
+    dl_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    VK_CHECK(vkCreateDescriptorSetLayout(ctx.device(), &dl_info, nullptr, &p.desc_layout));
+
+    // Push constant range
+    VkPushConstantRange push_range = {};
+    push_range.stageFlags = push_stages;
+    push_range.offset = 0;
+    push_range.size = push_size;
+
+    VkPipelineLayoutCreateInfo pl_info = {};
+    pl_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pl_info.setLayoutCount = 0;
+    pl_info.pushConstantRangeCount = 1;
+    pl_info.pPushConstantRanges = &push_range;
+    VK_CHECK(vkCreatePipelineLayout(ctx.device(), &pl_info, nullptr, &p.layout));
+
+    // Vertex input
+    VkVertexInputBindingDescription binding_desc = {};
+    binding_desc.binding = 0;
+    binding_desc.stride = vertex_stride;
+    binding_desc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    std::vector<VkVertexInputAttributeDescription> attr_descs;
+    for (const auto &a : vertex_attrs) {
+        VkVertexInputAttributeDescription d = {};
+        d.location = a.location;
+        d.binding = 0;
+        d.format = a.format;
+        d.offset = a.offset;
+        attr_descs.push_back(d);
+    }
+
+    VkPipelineVertexInputStateCreateInfo vertex_input = {};
+    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    if (vertex_stride > 0 && !attr_descs.empty()) {
+        vertex_input.vertexBindingDescriptionCount = 1;
+        vertex_input.pVertexBindingDescriptions = &binding_desc;
+        vertex_input.vertexAttributeDescriptionCount = static_cast<uint32_t>(attr_descs.size());
+        vertex_input.pVertexAttributeDescriptions = attr_descs.data();
+    }
+
+    VkPipelineInputAssemblyStateCreateInfo ia = {};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vp = {};
+    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1;
+    vp.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rs = {};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo ms_state = {};
+    ms_state.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms_state.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo ds = {};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+    VkPipelineColorBlendAttachmentState blend_att = {};
+    blend_att.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo cb = {};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1;
+    cb.pAttachments = &blend_att;
+
+    VkDynamicState dyn_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn = {};
+    dyn.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn.dynamicStateCount = 2;
+    dyn.pDynamicStates = dyn_states;
+
+    VkPipelineRenderingCreateInfo rendering = {};
+    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &color_format;
+
+    VkGraphicsPipelineCreateInfo gfx_ci = {};
+    gfx_ci.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gfx_ci.pNext = &rendering;
+    gfx_ci.stageCount = 2;
+    gfx_ci.pStages = stages;
+    gfx_ci.pVertexInputState = &vertex_input;
+    gfx_ci.pInputAssemblyState = &ia;
+    gfx_ci.pViewportState = &vp;
+    gfx_ci.pRasterizationState = &rs;
+    gfx_ci.pMultisampleState = &ms_state;
+    gfx_ci.pDepthStencilState = &ds;
+    gfx_ci.pColorBlendState = &cb;
+    gfx_ci.pDynamicState = &dyn;
+    gfx_ci.layout = p.layout;
+
+    VK_CHECK(vkCreateGraphicsPipelines(ctx.device(), VK_NULL_HANDLE, 1, &gfx_ci, nullptr, &p.pipeline));
+    return p;
+}
+
+// Helper: draw a full-screen triangle with push constants
+static void drawWithPush(
+    vk_graphics::GraphicsContext &ctx,
+    GfxPushPipeline &pipeline,
+    vk_graphics::Image &target,
+    vk_graphics::Buffer *vb,
+    uint32_t vertex_count,
+    const void *push_data, uint32_t push_size, VkShaderStageFlags push_stages,
+    vk_graphics::ClearColor clear = {})
+{
+    ctx.executeCommands([&](VkCommandBuffer cmd) {
+        ctx.transitionImageLayout(cmd, target.handle(),
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+        VkRenderingAttachmentInfo color_att = {};
+        color_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_att.imageView = target.view();
+        color_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_att.clearValue.color = {{clear.r, clear.g, clear.b, clear.a}};
+
+        VkRenderingInfo ri = {};
+        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.renderArea = {{0, 0}, {target.width(), target.height()}};
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &color_att;
+
+        vkCmdBeginRendering(cmd, &ri);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline.pipeline);
+
+        VkViewport viewport = {0, 0,
+            static_cast<float>(target.width()),
+            static_cast<float>(target.height()),
+            0.0f, 1.0f};
+        vkCmdSetViewport(cmd, 0, 1, &viewport);
+
+        VkRect2D scissor = {{0, 0}, {target.width(), target.height()}};
+        vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+        vkCmdPushConstants(cmd, pipeline.layout, push_stages,
+            0, push_size, push_data);
+
+        if (vb) {
+            VkBuffer buf = vb->handle();
+            VkDeviceSize offset = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
+        }
+
+        vkCmdDraw(cmd, vertex_count, 1, 0, 0);
+        vkCmdEndRendering(cmd);
+
+        ctx.transitionImageLayout(cmd, target.handle(),
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    });
+}
+
+// --- Graphics push constant tests ---
+
+TEST_F(VulkanGraphicsTest, Immediate_FragmentColor) {
+    // Push a color via immediate to fragment shader, fill entire screen
+    const char *vs_source = R"(
+        struct VertexInput { @location(0) position: vec2f };
+
+        @vertex fn main(in: VertexInput) -> @builtin(position) vec4f {
+            return vec4f(in.position, 0.0, 1.0);
+        }
+    )";
+
+    const char *fs_source = R"(
+        enable immediate_address_space;
+        var<immediate> color: vec4f;
+
+        @fragment fn main() -> @location(0) vec4f {
+            return color;
+        }
+    )";
+
+    auto vs = wgsl_test::CompileWgsl(vs_source);
+    ASSERT_TRUE(vs.success) << vs.error;
+
+    auto fs = CompileImmediate(fs_source, "main");
+    ASSERT_TRUE(fs.success) << fs.error;
+
+    auto vb = ctx_->createVertexBuffer(kFullScreenTriangle);
+    const uint32_t W = 64, H = 64;
+    auto target = ctx_->createColorTarget(W, H);
+
+    float color[4] = {0.0f, 1.0f, 0.0f, 1.0f}; // green
+    auto pipeline = createGfxPipelineWithPush(*ctx_,
+        vs.spirv, "main", fs.spirv, "main",
+        sizeof(color), VK_SHADER_STAGE_FRAGMENT_BIT,
+        sizeof(SimpleVertex),
+        {{0, VK_FORMAT_R32G32_SFLOAT, 0}});
+
+    drawWithPush(*ctx_, pipeline, target, &vb, 3,
+        color, sizeof(color), VK_SHADER_STAGE_FRAGMENT_BIT);
+
+    auto pixels = target.downloadAs<uint32_t>();
+    uint32_t center = pixels[(H / 2) * W + (W / 2)];
+    uint8_t r, g, b, a;
+    unpackRGBA(center, r, g, b, a);
+    EXPECT_LE(r, 5) << "Red should be ~0";
+    EXPECT_GE(g, 250) << "Green should be ~255";
+    EXPECT_LE(b, 5) << "Blue should be ~0";
+    EXPECT_GE(a, 250) << "Alpha should be ~255";
+}
+
+TEST_F(VulkanGraphicsTest, Immediate_FragmentColorDynamic) {
+    // Same pipeline, different push constant colors per draw
+    const char *vs_source = R"(
+        struct VertexInput { @location(0) position: vec2f };
+
+        @vertex fn main(in: VertexInput) -> @builtin(position) vec4f {
+            return vec4f(in.position, 0.0, 1.0);
+        }
+    )";
+
+    const char *fs_source = R"(
+        enable immediate_address_space;
+        var<immediate> color: vec4f;
+
+        @fragment fn main() -> @location(0) vec4f {
+            return color;
+        }
+    )";
+
+    auto vs = wgsl_test::CompileWgsl(vs_source);
+    ASSERT_TRUE(vs.success) << vs.error;
+    auto fs = CompileImmediate(fs_source, "main");
+    ASSERT_TRUE(fs.success) << fs.error;
+
+    auto vb = ctx_->createVertexBuffer(kFullScreenTriangle);
+    const uint32_t W = 32, H = 32;
+
+    auto pipeline = createGfxPipelineWithPush(*ctx_,
+        vs.spirv, "main", fs.spirv, "main",
+        16, VK_SHADER_STAGE_FRAGMENT_BIT,
+        sizeof(SimpleVertex),
+        {{0, VK_FORMAT_R32G32_SFLOAT, 0}});
+
+    // Draw red
+    {
+        auto target = ctx_->createColorTarget(W, H);
+        float color[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+        drawWithPush(*ctx_, pipeline, target, &vb, 3,
+            color, 16, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+        auto pixels = target.downloadAs<uint32_t>();
+        uint8_t r, g, b, a;
+        unpackRGBA(pixels[(H / 2) * W + (W / 2)], r, g, b, a);
+        EXPECT_GE(r, 250);
+        EXPECT_LE(g, 5);
+    }
+
+    // Draw blue
+    {
+        auto target = ctx_->createColorTarget(W, H);
+        float color[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+        drawWithPush(*ctx_, pipeline, target, &vb, 3,
+            color, 16, VK_SHADER_STAGE_FRAGMENT_BIT);
+
+        auto pixels = target.downloadAs<uint32_t>();
+        uint8_t r, g, b, a;
+        unpackRGBA(pixels[(H / 2) * W + (W / 2)], r, g, b, a);
+        EXPECT_LE(r, 5);
+        EXPECT_GE(b, 250);
+    }
+}
+
+TEST_F(VulkanGraphicsTest, Immediate_VertexScale) {
+    // Push a scale factor to the vertex shader to shrink the triangle
+    const char *vs_source = R"(
+        enable immediate_address_space;
+        var<immediate> scale: f32;
+
+        struct VertexInput { @location(0) position: vec2f };
+
+        @vertex fn main(in: VertexInput) -> @builtin(position) vec4f {
+            return vec4f(in.position * scale, 0.0, 1.0);
+        }
+    )";
+
+    const char *fs_source = R"(
+        @fragment fn main() -> @location(0) vec4f {
+            return vec4f(1.0, 1.0, 1.0, 1.0);
+        }
+    )";
+
+    auto vs = CompileImmediate(vs_source, "main");
+    ASSERT_TRUE(vs.success) << vs.error;
+    auto fs = wgsl_test::CompileWgsl(fs_source);
+    ASSERT_TRUE(fs.success) << fs.error;
+
+    auto vb = ctx_->createVertexBuffer(kFullScreenTriangle);
+    const uint32_t W = 64, H = 64;
+    auto target = ctx_->createColorTarget(W, H);
+
+    // Scale = 0.5: triangle covers less area, corners should be clear (black)
+    float scale = 0.5f;
+    auto pipeline = createGfxPipelineWithPush(*ctx_,
+        vs.spirv, "main", fs.spirv, "main",
+        sizeof(float), VK_SHADER_STAGE_VERTEX_BIT,
+        sizeof(SimpleVertex),
+        {{0, VK_FORMAT_R32G32_SFLOAT, 0}});
+
+    drawWithPush(*ctx_, pipeline, target, &vb, 3,
+        &scale, sizeof(float), VK_SHADER_STAGE_VERTEX_BIT);
+
+    auto pixels = target.downloadAs<uint32_t>();
+
+    // Center-ish should be white (inside triangle)
+    uint8_t r, g, b, a;
+    uint32_t center = pixels[(H / 4) * W + (W / 4)];
+    unpackRGBA(center, r, g, b, a);
+    EXPECT_GE(r, 200) << "Center should be lit (white triangle)";
+
+    // Far corner should be black (clear color, outside scaled triangle)
+    uint32_t corner = pixels[(H - 1) * W + (W - 1)];
+    unpackRGBA(corner, r, g, b, a);
+    EXPECT_LE(r, 5) << "Far corner should be clear (black)";
+    EXPECT_LE(g, 5);
+    EXPECT_LE(b, 5);
+}
+
 #endif // WGSL_HAS_VULKAN

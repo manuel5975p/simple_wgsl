@@ -247,7 +247,7 @@ Buffer::Buffer(VulkanContext &ctx, size_t size, BufferUsage usage)
     buffer_info.size = size;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VkMemoryPropertyFlags mem_props;
+    VkMemoryPropertyFlags mem_props = 0;
 
     switch (usage) {
         case BufferUsage::Storage:
