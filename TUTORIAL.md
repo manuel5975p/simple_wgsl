@@ -39,9 +39,18 @@ Step-by-step guides for every major use case of simple_wgsl.
   - [Printing SSIR as Text](#printing-ssir-as-text)
 - [8. Full Round-Trip: WGSL to SPIR-V to WGSL](#8-full-round-trip-wgsl-to-spirv-to-wgsl)
 - [9. Full Round-Trip: WGSL to GLSL to SPIR-V](#9-full-round-trip-wgsl-to-glsl-to-spirv)
-- [10. Custom Memory Allocators](#10-custom-memory-allocators)
-- [11. Error Handling Patterns](#11-error-handling-patterns)
-- [12. Real-World Examples](#12-real-world-examples)
+- [10. Immediates (Push Constants)](#10-immediates-push-constants)
+  - [Enabling the Extension](#enabling-the-extension)
+  - [Declaring Immediate Variables](#declaring-immediate-variables)
+  - [Compiling with Per-Entry-Point Immediates](#compiling-with-per-entry-point-immediates)
+  - [Reflecting Immediate Layout](#reflecting-immediate-layout)
+  - [Pointer Passing](#pointer-passing)
+  - [Layout Rules: std430 vs Scalar](#layout-rules-std430-vs-scalar)
+  - [Mixing Immediates with Bind Group Resources](#mixing-immediates-with-bind-group-resources)
+  - [Multi-Entry-Point Isolation](#multi-entry-point-isolation)
+- [11. Custom Memory Allocators](#11-custom-memory-allocators)
+- [12. Error Handling Patterns](#12-error-handling-patterns)
+- [13. Real-World Examples](#13-real-world-examples)
   - [Compute Shader: Double Array Values](#compute-shader-double-array-values)
   - [Vertex + Fragment Pipeline](#vertex--fragment-pipeline)
   - [Texture Sampling Shader](#texture-sampling-shader)
@@ -1012,7 +1021,276 @@ int main(void) {
 
 ---
 
-## 10. Custom Memory Allocators
+## 10. Immediates (Push Constants)
+
+WGSL has no native syntax for Vulkan push constants. The `var<immediate>` extension adds push constant support as a first-class WGSL feature. The compiler automatically packs immediate variables into a per-entry-point push constant block, computes offsets, and generates the correct SPIR-V decorations.
+
+### Enabling the Extension
+
+Add an `enable` directive at the top of your WGSL source:
+
+```c
+const char *source =
+    "enable immediate_address_space;\n"
+    "\n"
+    "var<immediate> scale: f32;\n"
+    "\n"
+    "@compute @workgroup_size(64)\n"
+    "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n"
+    "    // use scale directly\n"
+    "}\n";
+```
+
+Two extensions are available:
+
+| Extension | What it enables |
+|-----------|-----------------|
+| `immediate_address_space` | `var<immediate>` with scalar, vector, matrix, and plain struct types |
+| `immediate_arrays` | Additionally allows arrays in `var<immediate>` (implies `immediate_address_space`) |
+
+### Declaring Immediate Variables
+
+Immediate variables are module-scope declarations with the `immediate` address space. They accept scalars, vectors, matrices, and structs:
+
+```c
+const char *source =
+    "enable immediate_address_space;\n"
+    "\n"
+    "var<immediate> scale: f32;\n"
+    "var<immediate> offset: vec2f;\n"
+    "var<immediate> transform: mat4x4f;\n"
+    "\n"
+    "@vertex\n"
+    "fn vs(@builtin(vertex_index) vid: u32) -> @builtin(position) vec4f {\n"
+    "    let s = scale;\n"
+    "    let o = offset;\n"
+    "    return transform * vec4f(o.x + s, o.y + s, 0.0, 1.0);\n"
+    "}\n";
+```
+
+Immediates have no `@group` or `@binding` attributes -- they map to Vulkan push constants, not descriptor sets.
+
+### Compiling with Per-Entry-Point Immediates
+
+When using immediates, compile one entry point at a time by setting `opts.entry_point`. This ensures each entry point gets only the push constant members it actually uses:
+
+```c
+int main(void) {
+    const char *source =
+        "enable immediate_address_space;\n"
+        "var<immediate> scale: f32;\n"
+        "\n"
+        "struct Buf { data: array<f32> };\n"
+        "@group(0) @binding(0) var<storage, read_write> buf: Buf;\n"
+        "\n"
+        "@compute @workgroup_size(64)\n"
+        "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n"
+        "    buf.data[gid.x] = buf.data[gid.x] * scale;\n"
+        "}\n";
+
+    WgslAstNode *ast = wgsl_parse(source);
+    WgslResolver *resolver = wgsl_resolver_build(ast);
+
+    WgslLowerOptions opts = {0};
+    opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
+    opts.entry_point = "main";                    // compile this entry point only
+    opts.immediate_layout = SSIR_LAYOUT_STD430;   // push constant packing rule
+
+    uint32_t *spirv;
+    size_t word_count;
+    WgslLowerResult res = wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &word_count);
+
+    if (res == WGSL_LOWER_OK) {
+        printf("Generated %zu SPIR-V words with push constants\n", word_count);
+    }
+
+    wgsl_lower_free(spirv);
+    wgsl_resolver_free(resolver);
+    wgsl_free_ast(ast);
+    return 0;
+}
+```
+
+The generated SPIR-V contains a `PushConstant` storage class variable with a `Block`-decorated struct whose members match the immediates used by that entry point.
+
+### Reflecting Immediate Layout
+
+Before creating a Vulkan pipeline layout, you need to know the size and offsets of the push constant block. The resolver provides this:
+
+```c
+void print_push_constant_layout(const WgslResolver *resolver, const char *entry_name) {
+    int count = 0;
+    const WgslImmediateInfo *imms =
+        wgsl_resolver_entrypoint_immediates(resolver, entry_name,
+                                            SSIR_LAYOUT_STD430, &count);
+
+    printf("Push constants for '%s' (%d members):\n", entry_name, count);
+    int total_size = 0;
+    for (int i = 0; i < count; i++) {
+        printf("  %s: size=%d offset=%d align=%d\n",
+               imms[i].name, imms[i].type_size, imms[i].offset, imms[i].alignment);
+        int end = imms[i].offset + imms[i].type_size;
+        if (end > total_size) total_size = end;
+    }
+    printf("  Total push constant size: %d bytes\n", total_size);
+
+    // Use total_size for VkPushConstantRange.size
+    wgsl_resolve_free((void *)imms);
+}
+```
+
+Each `WgslImmediateInfo` contains:
+
+| Field | Description |
+|-------|-------------|
+| `name` | Variable name from the WGSL source |
+| `type_size` | Size of the type in bytes |
+| `offset` | Byte offset within the push constant block |
+| `alignment` | Alignment requirement in bytes |
+| `decl_node` | Pointer to the AST declaration node |
+
+### Pointer Passing
+
+You can pass pointers to immediate variables into functions. This is useful for generic helper functions:
+
+```c
+const char *source =
+    "enable immediate_address_space;\n"
+    "var<immediate> val: u32;\n"
+    "\n"
+    "fn apply(p: ptr<immediate, u32>) -> u32 {\n"
+    "    return *p;\n"
+    "}\n"
+    "\n"
+    "@compute @workgroup_size(1)\n"
+    "fn main() {\n"
+    "    let x = apply(&val);\n"
+    "}\n";
+```
+
+The `ptr<immediate, T>` type is valid in function parameters. The compiler handles the pointer-to-push-constant-member lowering automatically.
+
+### Layout Rules: std430 vs Scalar
+
+The `immediate_layout` option controls how members are aligned within the push constant block:
+
+```c
+// std430 (default) — natural alignment, vec3 aligns to 16 bytes
+opts.immediate_layout = SSIR_LAYOUT_STD430;
+
+// Scalar — 4-byte alignment for all scalars (requires VK_EXT_scalar_block_layout)
+opts.immediate_layout = SSIR_LAYOUT_SCALAR;
+```
+
+Example with `var<immediate> a: f32; var<immediate> b: vec3f;`:
+
+| Layout | `a` offset | `b` offset | Notes |
+|--------|-----------|-----------|-------|
+| std430 | 0 | 16 | vec3 aligns to 16 bytes |
+| Scalar | 0 | 4 | vec3 aligns to 4 bytes |
+
+Choose scalar layout when push constant space is tight and you have `VK_EXT_scalar_block_layout` available.
+
+### Mixing Immediates with Bind Group Resources
+
+Immediates coexist with normal `@group`/`@binding` resources. Use immediates for small, frequently-changing data (transform matrices, time values, scaling factors) and bind groups for buffers and textures:
+
+```c
+const char *source =
+    "enable immediate_address_space;\n"
+    "var<immediate> scale: f32;\n"
+    "\n"
+    "struct Buf { data: array<f32> };\n"
+    "@group(0) @binding(0) var<storage, read_write> buf: Buf;\n"
+    "\n"
+    "@compute @workgroup_size(64)\n"
+    "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n"
+    "    buf.data[gid.x] = buf.data[gid.x] * scale;\n"
+    "}\n";
+```
+
+The resolver distinguishes between them: immediate variables have `kind == WGSL_SYM_IMMEDIATE` in the symbol table, while bind group resources have `kind == WGSL_SYM_GLOBAL` with `has_group` and `has_binding` set.
+
+### Multi-Entry-Point Isolation
+
+Each entry point gets only the immediate variables it transitively uses. This keeps push constant blocks minimal:
+
+```c
+const char *source =
+    "enable immediate_address_space;\n"
+    "var<immediate> a: f32;\n"
+    "var<immediate> b: u32;\n"
+    "\n"
+    "fn foo() -> f32 { return a; }\n"
+    "fn bar() -> u32 { return b; }\n"
+    "\n"
+    "@compute @workgroup_size(1)\n"
+    "fn main1() { let x = foo(); }  // uses only 'a' (via foo)\n"
+    "\n"
+    "@compute @workgroup_size(1)\n"
+    "fn main2() { let x = foo(); let y = bar(); }  // uses both\n"
+    "\n"
+    "@compute @workgroup_size(1)\n"
+    "fn main3() { let x = bar(); }  // uses only 'b'\n"
+    "\n"
+    "@compute @workgroup_size(1)\n"
+    "fn main4() {}  // uses neither — no push constant block\n";
+```
+
+Compile each entry point separately to get its isolated push constant block:
+
+```c
+WgslAstNode *ast = wgsl_parse(source);
+WgslResolver *resolver = wgsl_resolver_build(ast);
+
+// Query each entry point's immediate layout
+const char *entry_names[] = {"main1", "main2", "main3", "main4"};
+for (int i = 0; i < 4; i++) {
+    int count = 0;
+    const WgslImmediateInfo *imms =
+        wgsl_resolver_entrypoint_immediates(resolver, entry_names[i],
+                                            SSIR_LAYOUT_STD430, &count);
+    printf("%s: %d push constant member(s)\n", entry_names[i], count);
+    for (int j = 0; j < count; j++) {
+        printf("  %s at offset %d\n", imms[j].name, imms[j].offset);
+    }
+    wgsl_resolve_free((void *)imms);
+
+    // Compile to SPIR-V
+    WgslLowerOptions opts = {0};
+    opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
+    opts.entry_point = entry_names[i];
+    opts.immediate_layout = SSIR_LAYOUT_STD430;
+
+    uint32_t *spirv;
+    size_t word_count;
+    wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &word_count);
+    printf("  -> %zu SPIR-V words\n", word_count);
+    wgsl_lower_free(spirv);
+}
+
+wgsl_resolver_free(resolver);
+wgsl_free_ast(ast);
+```
+
+This prints:
+
+```
+main1: 1 push constant member(s)
+  a at offset 0
+main2: 2 push constant member(s)
+  a at offset 0
+  b at offset 4
+main3: 1 push constant member(s)
+  b at offset 0
+main4: 0 push constant member(s)
+```
+
+Note that `main3` gets `b` at offset 0 (not offset 4), because when compiled in isolation, `b` is the only member in its push constant block.
+
+---
+
+## 11. Custom Memory Allocators
 
 To embed simple_wgsl in an environment with custom memory management (game engines, WASM, embedded), define allocator macros before including the header:
 
@@ -1047,7 +1325,7 @@ The macros must be defined before `#include "simple_wgsl.h"` in every translatio
 
 ---
 
-## 11. Error Handling Patterns
+## 12. Error Handling Patterns
 
 Every API follows a consistent pattern: call a function, check the result enum, and optionally retrieve an error message.
 
@@ -1091,7 +1369,7 @@ spirv_to_ssir_result_string(SPIRV_TO_SSIR_INVALID_SPIRV)    // "invalid SPIR-V"
 
 ---
 
-## 12. Real-World Examples
+## 13. Real-World Examples
 
 ### Compute Shader: Double Array Values
 

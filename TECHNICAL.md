@@ -48,6 +48,12 @@ Complete technical documentation for simple_wgsl: architecture, intermediate rep
   - [SSIR to HLSL](#ssir-to-hlsl)
 - [SPIR-V to SSIR Deserialization](#spirv-to-ssir-deserialization)
 - [MSL to SSIR Parser](#msl-to-ssir-parser)
+- [Immediates (Push Constants)](#immediates-push-constants)
+  - [Language Extensions](#language-extensions)
+  - [Syntax and Semantics](#syntax-and-semantics)
+  - [Resolver API](#resolver-api)
+  - [Lowering Behavior](#lowering-behavior)
+  - [Layout Rules](#layout-rules)
 - [Memory Management](#memory-management)
 - [Language Mapping Tables](#language-mapping-tables)
   - [WGSL to GLSL Mapping](#wgsl-to-glsl-mapping)
@@ -226,6 +232,9 @@ Query functions:
 | `wgsl_resolver_ident_symbol_id(r, ident_node)` | Symbol ID for a specific identifier AST node |
 | `wgsl_resolver_entrypoint_globals(r, "main", &count)` | Globals used by a specific entry point |
 | `wgsl_resolver_entrypoint_binding_vars(r, "main", &count)` | Binding vars for a specific entry point |
+| `wgsl_resolver_entrypoint_immediates(r, "main", layout, &count)` | Immediate vars with layout info for an entry point |
+
+Symbol kinds include `WGSL_SYM_GLOBAL`, `WGSL_SYM_PARAM`, `WGSL_SYM_LOCAL`, and `WGSL_SYM_IMMEDIATE` (for `var<immediate>` declarations).
 
 ### Binding Extraction
 
@@ -570,6 +579,8 @@ typedef struct {
     int relax_block_layout;              // relaxed block layout rules
     int use_khr_shader_draw_parameters;  // KHR_shader_draw_parameters extension
     uint32_t id_bound_hint;              // pre-allocate ID space
+    const char *entry_point;             // NULL = all entry points; set to compile one
+    SsirLayoutRule immediate_layout;     // layout for immediate/push constant packing
 } WgslLowerOptions;
 ```
 
@@ -764,6 +775,110 @@ MslToSsirResult msl_to_ssir(const char *msl_source,
 ```
 
 Parses Metal Shading Language source directly into an `SsirModule`, bypassing the AST. Options: `preserve_names`.
+
+---
+
+## Immediates (Push Constants)
+
+WGSL lacks native push constant support. The `var<immediate>` extension provides a WGSL-native syntax for Vulkan push constants. The compiler automatically generates per-entry-point push constant blocks with correct layout and SPIR-V decorations.
+
+### Language Extensions
+
+Enable via WGSL `enable` directives, tracked as bitflags on the program AST node:
+
+| Extension | Flag | What it enables |
+|-----------|------|-----------------|
+| `immediate_address_space` | `WGSL_EXT_IMMEDIATE_ADDRESS_SPACE` | `var<immediate>` with scalar, vector, matrix, and plain struct types |
+| `immediate_arrays` | `WGSL_EXT_IMMEDIATE_ARRAYS` | Additionally allows arrays (implies `immediate_address_space`) |
+
+### Syntax and Semantics
+
+**Declaration**: Module-scope `var<immediate>` with no `@group`/`@binding`:
+
+```wgsl
+enable immediate_address_space;
+
+var<immediate> scale: f32;
+var<immediate> offset: vec2f;
+var<immediate> transform: mat4x4f;
+```
+
+**Pointer support**: `ptr<immediate, T>` is valid in function parameters:
+
+```wgsl
+fn apply(p: ptr<immediate, f32>) -> f32 { return *p; }
+```
+
+**Semantics**:
+- Address space is `immediate` — uniform, read-only
+- No `@group`/`@binding` attributes
+- Each entry point receives only the immediates it transitively uses (through its call graph)
+- Members are packed in source declaration order
+
+### Resolver API
+
+**Symbol kind**: `var<immediate>` declarations appear as `WGSL_SYM_IMMEDIATE` in the symbol table. They show up in `wgsl_resolver_globals()` and `wgsl_resolver_entrypoint_globals()` but never in `wgsl_resolver_binding_vars()` (since they have no group/binding).
+
+**Layout reflection**:
+
+```c
+typedef struct WgslImmediateInfo {
+    const char *name;              // variable name
+    int type_size;                 // size in bytes
+    int offset;                    // byte offset in push constant block
+    int alignment;                 // alignment in bytes
+    const WgslAstNode *decl_node;  // AST declaration node
+} WgslImmediateInfo;
+
+const WgslImmediateInfo *wgsl_resolver_entrypoint_immediates(
+    const WgslResolver *r,
+    const char *entry_name,
+    SsirLayoutRule layout,
+    int *out_count);
+```
+
+The returned array contains only the immediate variables used (transitively) by the named entry point, with offsets computed according to the requested layout rule. Free with `wgsl_resolve_free()`.
+
+**Per-entry-point isolation**: Given four entry points where `main1` calls `foo()` which uses `a`, `main3` calls `bar()` which uses `b`, and `main4` uses neither:
+- `wgsl_resolver_entrypoint_immediates(r, "main1", ...)` returns `[{a, offset=0}]`
+- `wgsl_resolver_entrypoint_immediates(r, "main3", ...)` returns `[{b, offset=0}]`
+- `wgsl_resolver_entrypoint_immediates(r, "main4", ...)` returns count=0
+
+### Lowering Behavior
+
+When `opts.entry_point` is set, the lowering pass:
+
+1. Walks the entry point's transitive call graph to find all referenced `var<immediate>` symbols
+2. Creates a synthetic struct type with those members, applying the requested layout rule
+3. Decorates the struct with `Block` and each member with its computed `Offset`
+4. Emits an `OpVariable` with `PushConstant` storage class
+5. Replaces all loads from immediate variables with `OpAccessChain` into the push constant struct
+
+Entry points that use no immediates get no push constant variable at all.
+
+Generated SPIR-V for `var<immediate> a: f32; var<immediate> b: u32;`:
+
+```
+OpDecorate %_PushConstants Block
+OpMemberDecorate %_PushConstants 0 Offset 0    ; a: f32
+OpMemberDecorate %_PushConstants 1 Offset 4    ; b: u32
+%_PushConstants = OpTypeStruct %float %uint
+%pc = OpVariable %_ptr_PushConstant__PushConstants PushConstant
+```
+
+### Layout Rules
+
+| Rule | Enum | Alignment behavior | Notes |
+|------|------|--------------------|-------|
+| std430 | `SSIR_LAYOUT_STD430` | Natural alignment; vec3 aligns to 16 bytes | Default, compatible with Vulkan push constants |
+| Scalar | `SSIR_LAYOUT_SCALAR` | 4-byte alignment for all scalar components | Requires `VK_EXT_scalar_block_layout` |
+
+Example layout for `var<immediate> a: f32; var<immediate> b: vec3f;`:
+
+| Member | std430 offset | Scalar offset |
+|--------|--------------|---------------|
+| `a` (f32) | 0 | 0 |
+| `b` (vec3f) | 16 | 4 |
 
 ---
 

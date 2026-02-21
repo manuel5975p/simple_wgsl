@@ -14,7 +14,7 @@ SPIR-V ┘              ├── MSL
 
 - **Single header, zero dependencies** -- include `simple_wgsl.h` and link the static library. No runtime dependencies beyond the C standard library.
 - **Six languages, one pipeline** -- parse WGSL, GLSL, or MSL source; ingest SPIR-V binaries; emit to any of five output formats. Every conversion flows through the same intermediate representation.
-- **~30k lines of C99** -- no templates, no inheritance hierarchies, no build system complexity. Every compilation unit is a single `.c` file. Builds in under a second.
+- **~37k lines of C99** -- no templates, no inheritance hierarchies, no build system complexity. Every compilation unit is a single `.c` file. Builds in under a second.
 - **Embeddable** -- all memory allocation goes through overridable macros (`NODE_MALLOC`, `SSIR_MALLOC`, etc.), so you can plug in your own allocator for game engines, embedded systems, or WASM targets.
 - **Fuzz-hardened** -- eight libFuzzer targets with AddressSanitizer + UndefinedBehaviorSanitizer have been run continuously.
 
@@ -86,6 +86,9 @@ Build options (All testing/debugging related):
 | `WGSL_BUILD_EGL_TESTS` | `OFF` | Build EGL/OpenGL compute validation tests |
 | `WGSL_BUILD_METAL_EXAMPLES` | `OFF` | Build Metal/MSL examples (macOS only) |
 | `WGSL_USE_ASAN` | `OFF` | Enable AddressSanitizer |
+| `WGSL_USE_UBSAN` | `OFF` | Enable UndefinedBehaviorSanitizer |
+| `WGSL_USE_LSAN` | `OFF` | Enable LeakSanitizer (standalone, not with ASan) |
+| `WGSL_COVERAGE` | `OFF` | Enable code coverage with llvm-cov (requires Clang) |
 
 ### Architecture
 
@@ -121,25 +124,36 @@ SSIR (Simple Shader Intermediate Representation) sits at the center. All source 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `simple_wgsl.h` | 1624 | Unified public API header |
-| `wgsl_parser.c` | 1956 | WGSL lexer + recursive-descent parser |
-| `glsl_parser.c` | 2153 | GLSL 450 lexer + recursive-descent parser |
-| `msl_parser.c` | 2159 | MSL lexer + parser (produces SSIR directly) |
-| `wgsl_resolve.c` | 1020 | Semantic analysis and symbol resolution |
-| `wgsl_lower.c` | 5826 | AST to SSIR to SPIR-V compilation |
-| `wgsl_raise.c` | 2121 | SPIR-V to WGSL decompilation |
-| `ssir.c` | 2959 | SSIR module, type system, and builder API |
-| `ssir_to_spirv.c` | 2653 | SSIR to SPIR-V serialization |
-| `ssir_to_wgsl.c` | 1689 | SSIR to WGSL text emission |
-| `ssir_to_glsl.c` | 1728 | SSIR to GLSL 450 text emission |
-| `ssir_to_msl.c` | 2131 | SSIR to Metal Shading Language emission |
-| `ssir_to_hlsl.c` | 1367 | SSIR to HLSL emission |
-| `spirv_to_ssir.c` | 2482 | SPIR-V to SSIR deserialization |
+| `simple_wgsl.h` | 1697 | Unified public API header |
+| `wgsl_parser.c` | 2452 | WGSL lexer + recursive-descent parser |
+| `glsl_parser.c` | 2466 | GLSL 450 lexer + recursive-descent parser |
+| `msl_parser.c` | 2432 | MSL lexer + parser (produces SSIR directly) |
+| `wgsl_resolve.c` | 1234 | Semantic analysis and symbol resolution |
+| `wgsl_lower.c` | 7745 | AST to SSIR to SPIR-V compilation |
+| `wgsl_raise.c` | 2377 | SPIR-V to WGSL decompilation |
+| `ssir.c` | 3363 | SSIR module, type system, and builder API |
+| `ssir_to_spirv.c` | 2954 | SSIR to SPIR-V serialization |
+| `ssir_to_wgsl.c` | 1687 | SSIR to WGSL text emission |
+| `ssir_to_glsl.c` | 1753 | SSIR to GLSL 450 text emission |
+| `ssir_to_msl.c` | 2136 | SSIR to Metal Shading Language emission |
+| `ssir_to_hlsl.c` | 1537 | SSIR to HLSL emission |
+| `spirv_to_ssir.c` | 2795 | SPIR-V to SSIR deserialization |
+
+### Extensions
+
+simple_wgsl supports opt-in language extensions via `enable` directives:
+
+| Extension | What it enables |
+|-----------|-----------------|
+| `immediate_address_space` | `var<immediate>` for push constants with scalar, vector, matrix, and struct types |
+| `immediate_arrays` | Additionally allows arrays in `var<immediate>` (implies `immediate_address_space`) |
+
+See the [TUTORIAL.md](TUTORIAL.md) immediates section for usage details and the [TECHNICAL.md](TECHNICAL.md) for the full specification.
 
 ### Documentation
 
 - **[TECHNICAL.md](TECHNICAL.md)** -- Architecture, SSIR specification, full API reference, type system, instruction set, and internal design details.
-- **[TUTORIAL.md](TUTORIAL.md)** -- Step-by-step guides for every major use case: parsing, compiling, decompiling, cross-compiling, building the SSIR programmatically, custom allocators, and more.
+- **[TUTORIAL.md](TUTORIAL.md)** -- Step-by-step guides for every major use case: parsing, compiling, decompiling, cross-compiling, immediates (push constants), building the SSIR programmatically, custom allocators, and more.
 
 ### Dependencies
 
