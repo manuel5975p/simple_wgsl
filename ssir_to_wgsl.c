@@ -1159,7 +1159,7 @@ static void emit_struct(SsirToWgslContext *ctx, SsirType *t) {
     }
 
     ctx->sb.indent--;
-    stw_sb_append(&ctx->sb, "}\n\n");
+    stw_sb_append(&ctx->sb, "};\n\n");
 }
 
 /* ============================================================================
