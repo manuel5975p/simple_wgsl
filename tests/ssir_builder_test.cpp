@@ -581,10 +581,10 @@ TEST(SsirBuild, MatTranspose) {
 
     // Build a composite matrix constant to transpose
     uint32_t fzero = ssir_const_f32(g.get(), 0.0f);
-    uint32_t vec_c = ssir_const_composite(g.get(), col,
-                                          (uint32_t[]){fzero, fzero, fzero, fzero}, 4);
-    uint32_t mat_c = ssir_const_composite(g.get(), mat44,
-                                          (uint32_t[]){vec_c, vec_c, vec_c, vec_c}, 4);
+    uint32_t col_ids[] = {fzero, fzero, fzero, fzero};
+    uint32_t vec_c = ssir_const_composite(g.get(), col, col_ids, 4);
+    uint32_t mat_ids[] = {vec_c, vec_c, vec_c, vec_c};
+    uint32_t mat_c = ssir_const_composite(g.get(), mat44, mat_ids, 4);
 
     uint32_t r = ssir_build_mat_transpose(g.get(), func_id, blk, mat44, mat_c);
     EXPECT_NE(r, 0u);
@@ -618,8 +618,8 @@ TEST(SsirBuild, Insert) {
 
     uint32_t fzero = ssir_const_f32(g.get(), 0.0f);
     uint32_t fone  = ssir_const_f32(g.get(), 1.0f);
-    uint32_t base  = ssir_const_composite(g.get(), vec4,
-                                          (uint32_t[]){fzero, fzero, fzero, fzero}, 4);
+    uint32_t ids[] = {fzero, fzero, fzero, fzero};
+    uint32_t base  = ssir_const_composite(g.get(), vec4, ids, 4);
     uint32_t r = ssir_build_insert(g.get(), func_id, blk, vec4, base, fone, 2);
     EXPECT_NE(r, 0u);
     ssir_build_return_void(g.get(), func_id, blk);
@@ -635,8 +635,8 @@ TEST(SsirBuild, ExtractDyn) {
     uint32_t blk     = ssir_block_create(g.get(), func_id, "entry");
 
     uint32_t fzero = ssir_const_f32(g.get(), 0.0f);
-    uint32_t vec   = ssir_const_composite(g.get(), vec4,
-                                          (uint32_t[]){fzero, fzero, fzero, fzero}, 4);
+    uint32_t ids[] = {fzero, fzero, fzero, fzero};
+    uint32_t vec   = ssir_const_composite(g.get(), vec4, ids, 4);
     uint32_t idx   = ssir_const_u32(g.get(), 1u);
     uint32_t r = ssir_build_extract_dyn(g.get(), func_id, blk, f32, vec, idx);
     EXPECT_NE(r, 0u);
@@ -654,8 +654,8 @@ TEST(SsirBuild, InsertDyn) {
 
     uint32_t fzero = ssir_const_f32(g.get(), 0.0f);
     uint32_t fone  = ssir_const_f32(g.get(), 1.0f);
-    uint32_t vec   = ssir_const_composite(g.get(), vec4,
-                                          (uint32_t[]){fzero, fzero, fzero, fzero}, 4);
+    uint32_t ids[] = {fzero, fzero, fzero, fzero};
+    uint32_t vec   = ssir_const_composite(g.get(), vec4, ids, 4);
     uint32_t idx   = ssir_const_u32(g.get(), 2u);
     uint32_t r = ssir_build_insert_dyn(g.get(), func_id, blk, vec4, vec, fone, idx);
     EXPECT_NE(r, 0u);

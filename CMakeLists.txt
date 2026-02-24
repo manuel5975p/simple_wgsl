@@ -72,6 +72,7 @@ add_library(wgsl_compiler STATIC
     ssir_to_hlsl.c
     spirv_to_ssir.c
     msl_parser.c
+    ptx_parser.c
 )
 
 target_include_directories(wgsl_compiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

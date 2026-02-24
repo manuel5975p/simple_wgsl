@@ -48,6 +48,22 @@ Complete technical documentation for simple_wgsl: architecture, intermediate rep
   - [SSIR to HLSL](#ssir-to-hlsl)
 - [SPIR-V to SSIR Deserialization](#spirv-to-ssir-deserialization)
 - [MSL to SSIR Parser](#msl-to-ssir-parser)
+- [PTX to SSIR Parser](#ptx-to-ssir-parser)
+  - [Overview](#overview-1)
+  - [Why PTX Bypasses the AST](#why-ptx-bypasses-the-ast)
+  - [Supported PTX Features](#supported-ptx-features)
+  - [API](#ptx-api)
+  - [Architecture of ptx_parser.c](#architecture-of-ptx_parserc)
+  - [PTX Type System Mapping](#ptx-type-system-mapping)
+  - [Register Model](#register-model)
+  - [Kernel Parameter Convention](#kernel-parameter-convention)
+  - [Special Register Mapping](#special-register-mapping)
+  - [Control Flow Translation](#control-flow-translation)
+  - [Predicated Execution](#predicated-execution)
+  - [Memory Operations](#ptx-memory-operations)
+  - [Instruction Mapping Reference](#instruction-mapping-reference)
+  - [Usage Examples](#ptx-usage-examples)
+  - [Limitations and Future Work](#limitations-and-future-work)
 - [Immediates (Push Constants)](#immediates-push-constants)
   - [Language Extensions](#language-extensions)
   - [Syntax and Semantics](#syntax-and-semantics)
@@ -71,6 +87,7 @@ Simple WGSL is organized around a central intermediate representation called SSI
     GLSL source ──────► │  glsl_parse  │──► AST ──────────────────────────┘ │
                         └─────────────┘                                     ▼
     MSL source  ──────► msl_to_ssir ────────────────────────────────► SsirModule
+    PTX assembly ─────► ptx_to_ssir ────────────────────────────────►     │
     SPIR-V binary ───► spirv_to_ssir ──────────────────────────────►     │
                                                                          │
                         ┌────────────────────────────────────────────────┘
@@ -85,7 +102,7 @@ Simple WGSL is organized around a central intermediate representation called SSI
 Key architectural decisions:
 
 - **Shared AST for WGSL and GLSL**: Both parsers produce the same `WgslAstNode` tree, so the resolver and lowering stages are shared between both input languages.
-- **MSL bypasses the AST**: The MSL parser produces an `SsirModule` directly rather than going through the shared AST, because MSL's C++-based syntax differs too significantly from WGSL/GLSL.
+- **MSL and PTX bypass the AST**: The MSL parser and PTX parser each produce an `SsirModule` directly rather than going through the shared AST. MSL's C++-based syntax and PTX's flat assembly semantics differ too significantly from WGSL/GLSL to share their AST.
 - **SPIR-V is both input and output**: SPIR-V can be deserialized into SSIR for decompilation, and SSIR can be serialized back to SPIR-V for compilation.
 - **Pure C99 core**: The library itself uses no C++ features. Tests use C++17 for Google Test and RAII convenience.
 
@@ -128,6 +145,9 @@ WGSL ──► parse ──► resolve ──► lower ──► SSIR ──► 
 WGSL ──► parse ──► resolve ──► lower ──► SSIR ──► ssir_to_msl  ──► MSL
 WGSL ──► parse ──► resolve ──► lower ──► SSIR ──► ssir_to_hlsl ──► HLSL
 MSL  ──► msl_to_ssir ──► SSIR ──► ssir_to_spirv ──► SPIR-V
+PTX  ──► ptx_to_ssir ──► SSIR ──► ssir_to_wgsl  ──► WGSL
+PTX  ──► ptx_to_ssir ──► SSIR ──► ssir_to_spirv ──► SPIR-V
+PTX  ──► ptx_to_ssir ──► SSIR ──► ssir_to_glsl  ──► GLSL 450
 SPIR-V ──► spirv_to_ssir ──► SSIR ──► ssir_to_glsl ──► GLSL 450
 ```
 
@@ -778,6 +798,500 @@ Parses Metal Shading Language source directly into an `SsirModule`, bypassing th
 
 ---
 
+## PTX to SSIR Parser
+
+### Overview
+
+The PTX parser converts NVIDIA PTX (Parallel Thread Execution) assembly into SSIR, enabling the full pipeline:
+
+```
+PTX source → ptx_to_ssir() → SsirModule → WGSL / GLSL / MSL / HLSL / SPIR-V
+```
+
+This enables cross-compilation of CUDA compute kernels to run on non-NVIDIA GPUs via WebGPU, Vulkan, OpenGL, Metal, or DirectX.
+
+### Why PTX Bypasses the AST
+
+The shared `WgslAstNode` AST was designed for C-like shading languages (WGSL, GLSL) with structured control flow, expression trees, type declarations, and lexical scoping. PTX has none of these — it is a flat, register-based assembly language with:
+
+- **Predicated execution** instead of structured `if`/`else`
+- **No expression trees** — only single instructions with register operands
+- **No type declarations** — types are instruction suffixes (`.f32`, `.u64`)
+- **Explicit register allocation** with parameterized naming (`%r<100>`)
+- **Labels and branches** instead of structured blocks
+- **State-space annotations** on every memory operation (`.global`, `.shared`, `.param`)
+
+Forcing PTX into the WGSL AST would require either losing PTX-specific semantics or bloating the AST with assembly-only node types. The MSL parser established the precedent for direct SSIR production, and the PTX parser follows the same pattern.
+
+### Supported PTX Features
+
+**Module structure:**
+- `.version X.Y` — PTX ISA version (6.0+)
+- `.target sm_XX` — minimum GPU architecture (sm_50 through sm_100)
+- `.address_size 32|64` — pointer width
+
+**Functions and entry points:**
+- `.entry` — kernel entry points (map to `SSIR_STAGE_COMPUTE`)
+- `.func` — device functions (with optional return values)
+- `.visible` / `.extern` linkage modifiers
+- `.maxntid` / `.reqntid` — workgroup size directives
+
+**Register declarations:**
+- `.reg .type name` — named registers
+- `.reg .type name<N>` — parameterized registers (`%r0` through `%r(N-1)`)
+- `.reg .v2/.v4 .type name` — vector registers
+- All scalar types: `.pred`, `.b8`–`.b64`, `.u8`–`.u64`, `.s8`–`.s64`, `.f16`, `.f32`, `.f64`
+
+**Memory:**
+- `.global`, `.shared`, `.const`, `.local`, `.param` state spaces
+- `ld.{space}.{type}` — loads (scalar and vector `.v2`/`.v4`)
+- `st.{space}.{type}` — stores (scalar and vector)
+- `cvta.to.{space}` — address space conversion
+- Cache control modifiers (`.ca`, `.cg`, `.cs`, `.cv` — parsed but not mapped)
+
+**Arithmetic:**
+- `add`, `sub`, `mul`, `div`, `rem` — binary arithmetic
+- `mad`, `fma` — fused multiply-add
+- `neg`, `abs` — unary arithmetic
+- `min`, `max` — binary min/max
+- `.lo`/`.hi`/`.wide` modifiers, `.rn`/`.rz`/`.rm`/`.rp` rounding modes
+
+**Bitwise:**
+- `and`, `or`, `xor`, `not` — bitwise operations
+- `shl`, `shr` — shifts (arithmetic for signed types, logical for unsigned)
+- `cnot` — conditional NOT
+
+**Comparison and selection:**
+- `setp.{cmp}.{type}` — set predicate (with all comparison operators: `eq`, `ne`, `lt`, `le`, `gt`, `ge`, `lo`, `ls`, `hi`, `hs`, plus float unordered variants)
+- `setp.{cmp}.{combine}.{type} %p1|%p2, ...` — dual-predicate with combine (`and`/`or`/`xor`)
+- `selp.{type}` — select (ternary)
+- `set.{cmp}.{type}` — set (boolean result as integer)
+
+**Control flow:**
+- Labels (`LABEL_NAME:`)
+- `bra` / `bra.uni` — unconditional branch
+- `@%p bra` / `@!%p bra` — conditional branch via predicate guard
+- `ret` — return from `.func`
+- `exit` — terminate thread in `.entry`
+- `call` — function call (with optional return value)
+
+**Special registers:**
+- `%tid.x/y/z` — thread index within block
+- `%ctaid.x/y/z` — block index within grid
+- `%ntid.x/y/z` — block dimensions (workgroup size)
+- `%nctaid.x/y/z` — grid dimensions
+- `%laneid` — lane within warp (subgroup invocation ID)
+- `%warpid` — warp index (computed as `tid.x / 32`)
+
+**Type conversions:**
+- `cvt.{rnd}.{dst_type}.{src_type}` — numeric conversion
+- Rounding modes: `.rn` (nearest), `.rz` (zero), `.rm` (minus infinity), `.rp` (plus infinity)
+- `.sat` saturation modifier
+- `.ftz` flush-to-zero modifier
+
+**Math functions:**
+- `rcp` — reciprocal (emitted as `1.0 / x`)
+- `sqrt`, `rsqrt` — square root, reciprocal square root
+- `sin`, `cos` — trigonometric
+- `lg2`, `ex2` — log base 2, 2^x
+- `.approx` modifier (accepted but treated same as exact — GPU math is approximate anyway)
+
+**Atomics:**
+- `atom.{space}.{op}.{type}` — atomic operations
+- Operations: `add`, `min`, `max`, `and`, `or`, `xor`, `exch`, `cas`, `inc`, `dec`
+- Spaces: `.global`, `.shared`
+
+**Synchronization:**
+- `bar.sync N` — workgroup barrier
+- `bar.arrive`, `bar.red` — partial barrier variants
+- `membar.{scope}` — memory fence (`.cta`, `.gl`, `.sys`)
+
+### PTX API
+
+```c
+typedef enum {
+    PTX_TO_SSIR_OK = 0,
+    PTX_TO_SSIR_PARSE_ERROR,
+    PTX_TO_SSIR_UNSUPPORTED,
+} PtxToSsirResult;
+
+typedef struct {
+    int preserve_names;   // keep PTX register names as SSIR debug names
+    int strict_mode;      // reject .approx instructions
+} PtxToSsirOptions;
+
+PtxToSsirResult ptx_to_ssir(const char *ptx_source,
+                             const PtxToSsirOptions *opts,
+                             SsirModule **out_module,
+                             char **out_error);
+
+void ptx_to_ssir_free(char *str);
+
+const char *ptx_to_ssir_result_string(PtxToSsirResult r);
+```
+
+Usage follows the same pattern as all other parsers:
+
+```c
+SsirModule *mod = NULL;
+char *error = NULL;
+PtxToSsirOptions opts = { .preserve_names = 1 };
+
+PtxToSsirResult res = ptx_to_ssir(ptx_source, &opts, &mod, &error);
+if (res != PTX_TO_SSIR_OK) {
+    fprintf(stderr, "PTX error: %s\n", error);
+    ptx_to_ssir_free(error);
+    return;
+}
+
+// Use mod with any emitter:
+ssir_to_wgsl(mod, &wgsl_opts, &wgsl_out, &wgsl_err);
+ssir_to_spirv(mod, &spirv_opts, &words, &word_count);
+ssir_to_glsl(mod, SSIR_STAGE_COMPUTE, &glsl_opts, &glsl_out, &glsl_err);
+
+ssir_module_destroy(mod);
+```
+
+### Architecture of ptx_parser.c
+
+The parser is organized into clearly separated sections (~2,200 lines total):
+
+```
+┌──────────────────────────────────────────────────┐
+│  1. Lexer (~250 lines)                           │
+│     - PtxTokType enum (25 token types)           │
+│     - PtxToken struct (type, text, line, col,    │
+│       parsed int/float values)                   │
+│     - plx_next() — hand-written tokenizer        │
+│     - Handles: //, /* */, dot-tokens, %-regs,    │
+│       0fXXXXXXXX hex-float, 0x hex-int           │
+├──────────────────────────────────────────────────┤
+│  2. Parser context (~100 lines)                  │
+│     - PtxParser struct (lexer, SSIR module,      │
+│       register map, label map, function table,   │
+│       predicate state, error state)              │
+│     - PtxReg: PTX register → SSIR local var      │
+│     - PtxLabel: label name → block ID            │
+├──────────────────────────────────────────────────┤
+│  3. Register management (~80 lines)              │
+│     - pp_find_reg(), pp_add_reg()                │
+│     - pp_load_reg(), pp_store_reg()              │
+│     - Deferred SSA via load/store to locals      │
+├──────────────────────────────────────────────────┤
+│  4. Type/constant helpers (~100 lines)           │
+│     - pp_ptx_type() — parse .f32/.u64/etc.       │
+│     - pp_const_for_type() — create typed const   │
+├──────────────────────────────────────────────────┤
+│  5. Special register handling (~120 lines)       │
+│     - pp_ensure_builtin_global() — lazy creation │
+│     - pp_load_special_reg() — %tid, %ctaid, etc. │
+├──────────────────────────────────────────────────┤
+│  6. Module-level parsing (~150 lines)            │
+│     - pp_parse_version/target/address_size()     │
+│     - pp_parse_global_decl() — .global/.shared   │
+├──────────────────────────────────────────────────┤
+│  7. Register declaration parsing (~70 lines)     │
+│     - pp_parse_reg_decl() — .reg with            │
+│       parameterized naming, vector types          │
+├──────────────────────────────────────────────────┤
+│  8. Instruction handlers (~800 lines)            │
+│     - pp_parse_arith/unary_arith/minmax/mad/fma  │
+│     - pp_parse_bitwise/shift                     │
+│     - pp_parse_setp/selp                         │
+│     - pp_parse_mov/ld/st/cvta/cvt                │
+│     - pp_parse_math_unary                        │
+│     - pp_parse_atom/bar/membar                   │
+│     - pp_parse_bra/ret/exit/call                 │
+├──────────────────────────────────────────────────┤
+│  9. Instruction dispatch (~120 lines)            │
+│     - pp_parse_instruction() — predicate guard,  │
+│       label detection, opcode dispatch            │
+├──────────────────────────────────────────────────┤
+│ 10. Function/entry parsing (~250 lines)          │
+│     - pp_parse_entry() — .entry kernel           │
+│     - pp_parse_func() — .func device function    │
+│     - pp_parse_param_list()                      │
+│     - pp_parse_function_body()                   │
+├──────────────────────────────────────────────────┤
+│ 11. Top-level + public API (~100 lines)          │
+│     - pp_parse_toplevel()                        │
+│     - ptx_to_ssir(), ptx_to_ssir_free()          │
+│     - ptx_to_ssir_result_string()                │
+└──────────────────────────────────────────────────┘
+```
+
+### PTX Type System Mapping
+
+PTX types appear as dot-suffixes on instructions and register declarations. They map to SSIR types as follows:
+
+| PTX Type | Width | SSIR Type | Description |
+|----------|-------|-----------|-------------|
+| `.pred` | 1 bit | `SSIR_TYPE_BOOL` | Predicate (boolean) |
+| `.b8` | 8 bits | `SSIR_TYPE_U8` | Untyped 8-bit |
+| `.b16` | 16 bits | `SSIR_TYPE_U16` | Untyped 16-bit |
+| `.b32` | 32 bits | `SSIR_TYPE_U32` | Untyped 32-bit |
+| `.b64` | 64 bits | `SSIR_TYPE_U64` | Untyped 64-bit |
+| `.u8`–`.u64` | 8–64 bits | `SSIR_TYPE_U8`–`SSIR_TYPE_U64` | Unsigned integers |
+| `.s8`–`.s64` | 8–64 bits | `SSIR_TYPE_I8`–`SSIR_TYPE_I64` | Signed integers |
+| `.f16` | 16 bits | `SSIR_TYPE_F16` | IEEE 754 half |
+| `.f32` | 32 bits | `SSIR_TYPE_F32` | IEEE 754 single |
+| `.f64` | 64 bits | `SSIR_TYPE_F64` | IEEE 754 double |
+
+Untyped `.bN` types map to unsigned integers of the same width. The instruction context determines whether signed or unsigned semantics apply (e.g., `shr.b32` uses logical shift).
+
+Vector types (`.v2`, `.v4`) map to `SSIR_TYPE_VEC` with the appropriate element type and component count.
+
+### Register Model
+
+PTX uses virtual registers that can be freely redefined. SSIR uses SSA form where each value has a unique ID. The parser bridges this gap using **deferred SSA construction with load/store to local variables**:
+
+1. Each PTX register declaration creates an `SsirLocalVar` with `SSIR_ADDR_FUNCTION` storage
+2. Each register read emits `SSIR_OP_LOAD` from that local variable
+3. Each register write emits `SSIR_OP_STORE` to that local variable
+4. SSIR consumers (emitters) handle this load/store pattern — it's the same pattern that SPIR-V uses
+
+```
+PTX:                          SSIR:
+.reg .f32 %a, %b, %c;        %var_a = local_var(ptr<function, f32>)
+                              %var_b = local_var(ptr<function, f32>)
+                              %var_c = local_var(ptr<function, f32>)
+
+add.f32 %c, %a, %b;          %t1 = load %var_a
+                              %t2 = load %var_b
+                              %t3 = add.f32 %t1, %t2
+                              store %var_c, %t3
+
+mul.f32 %c, %c, %a;          %t4 = load %var_c    // reads new value of %c
+                              %t5 = load %var_a
+                              %t6 = mul.f32 %t4, %t5
+                              store %var_c, %t6
+```
+
+**Parameterized registers** (`%r<100>`) expand to `%r0` through `%r99`, each getting its own local variable. They are allocated lazily when first referenced.
+
+### Kernel Parameter Convention
+
+PTX kernel parameters are flat values (pointers passed as `u64`, scalars passed by value). GPU shader APIs expect typed buffer bindings with group/binding decorations. The parser uses this convention:
+
+**Pointer parameters** (`.param .u64`) become storage buffer bindings:
+```
+.param .u64 input_ptr  →  @group(0) @binding(0) var<storage> input_ptr: array<u8>
+.param .u64 output_ptr →  @group(0) @binding(1) var<storage> output_ptr: array<u8>
+```
+
+**Scalar parameters** (`.param .u32`, `.param .f32`, etc.) are passed as function parameters and accessed via `ld.param` from local variables that hold the parameter value.
+
+Binding indices are assigned sequentially starting from 0, all in descriptor set (group) 0. Each `.param .u64` gets its own storage buffer binding.
+
+### Special Register Mapping
+
+| PTX Special Register | SSIR Built-in | WGSL Equivalent |
+|---------------------|---------------|-----------------|
+| `%tid.x/y/z` | `SSIR_BUILTIN_LOCAL_INVOCATION_ID` + extract | `local_invocation_id.x/y/z` |
+| `%ctaid.x/y/z` | `SSIR_BUILTIN_WORKGROUP_ID` + extract | `workgroup_id.x/y/z` |
+| `%nctaid.x/y/z` | `SSIR_BUILTIN_NUM_WORKGROUPS` + extract | `num_workgroups.x/y/z` |
+| `%ntid.x/y/z` | Constant (if `.reqntid` set) or `NUM_WORKGROUPS` | Workgroup size constant |
+| `%laneid` | `SSIR_BUILTIN_SUBGROUP_INVOCATION_ID` | `subgroup_invocation_id` |
+| `%warpid` | Computed: `tid.x / 32` | (no direct equivalent) |
+
+Built-in globals are created lazily on first access. The `%ntid` register uses the workgroup size from `.reqntid`/`.maxntid` directives when available (emitted as constants), falling back to a built-in variable when the size is dynamic.
+
+### Control Flow Translation
+
+PTX has unstructured control flow (labels + branches). SSIR expects basic blocks with explicit terminator instructions.
+
+**Block splitting**: The parser creates new basic blocks at:
+- Label definitions (`LABEL_NAME:`) — the current block gets an implicit branch to the label's block
+- Branch instructions (`bra`, `ret`, `exit`) — terminate the current block
+- Instructions following a branch — start a new unreachable block
+
+**Branch resolution**: Labels may be forward-referenced. The parser creates blocks for unknown labels on first reference via `pp_get_or_create_label()`, which uses a label-to-block-ID map.
+
+**Structured control flow reconstruction is NOT needed**: SSIR basic blocks with `SSIR_OP_BRANCH` and `SSIR_OP_BRANCH_COND` terminators are sufficient. The downstream emitters (`ssir_to_wgsl`, `ssir_to_glsl`, etc.) already reconstruct structured loops and selections from unstructured CFGs.
+
+### Predicated Execution
+
+Any PTX instruction can be guarded by a predicate: `@%p inst ...` or `@!%p inst ...`.
+
+**Conditional branches** (`@%p bra LABEL`) map directly to `SSIR_OP_BRANCH_COND`:
+```
+@%p1 bra TARGET;  →  branch_cond %p1 → TARGET, fallthrough_block
+```
+
+This is the most common predicated pattern and is handled with zero overhead.
+
+**Non-branch predicated instructions** are currently handled at the PTX parsing level — the predicate guard is parsed but the instruction executes unconditionally in SSIR. For most compute kernel use cases, predicated non-branch instructions are rare; the common pattern is `setp` + `@%p bra`.
+
+### PTX Memory Operations
+
+**Load instructions** (`ld.{space}.{type}`):
+
+| PTX | SSIR |
+|-----|------|
+| `ld.global.f32 %f, [%rd]` | `SSIR_OP_LOAD` with pointer in `SSIR_ADDR_STORAGE` |
+| `ld.shared.f32 %f, [smem]` | `SSIR_OP_LOAD` with pointer in `SSIR_ADDR_WORKGROUP` |
+| `ld.param.u64 %rd, [name]` | Load from local variable holding the parameter value |
+| `ld.const.f32 %f, [cst]` | `SSIR_OP_LOAD` with pointer in `SSIR_ADDR_UNIFORM` |
+
+**Store instructions** (`st.{space}.{type}`):
+
+| PTX | SSIR |
+|-----|------|
+| `st.global.f32 [%rd], %f` | `SSIR_OP_STORE` with pointer in `SSIR_ADDR_STORAGE` |
+| `st.shared.f32 [addr], %f` | `SSIR_OP_STORE` with pointer in `SSIR_ADDR_WORKGROUP` |
+
+**Vector load/store**: `ld.global.v4.f32 {%f1,%f2,%f3,%f4}, [addr]` loads a `vec4<f32>` then extracts components. `st.global.v4.f32 [addr], {%f1,...,%f4}` constructs a vector then stores.
+
+**Address arithmetic**: PTX computes effective addresses with explicit arithmetic (`mul.lo.u64 %off, %idx, 4; add.u64 %addr, %base, %off`). The parser preserves this arithmetic as-is in SSIR rather than attempting to reconstruct typed array indexing.
+
+### Instruction Mapping Reference
+
+**Arithmetic:**
+
+| PTX | SSIR |
+|-----|------|
+| `add.{type}` | `SSIR_OP_ADD` |
+| `sub.{type}` | `SSIR_OP_SUB` |
+| `mul[.lo].{type}` | `SSIR_OP_MUL` |
+| `div.{type}` | `SSIR_OP_DIV` |
+| `rem.{type}` | `SSIR_OP_REM` |
+| `neg.{type}` | `SSIR_OP_NEG` |
+| `abs.{type}` | `SSIR_OP_BUILTIN(ABS)` |
+| `min.{type}` | `SSIR_OP_BUILTIN(MIN)` |
+| `max.{type}` | `SSIR_OP_BUILTIN(MAX)` |
+| `mad[.lo].{type}` | `SSIR_OP_MUL` + `SSIR_OP_ADD` (integer) or `SSIR_OP_BUILTIN(FMA)` (float) |
+| `fma.{type}` | `SSIR_OP_BUILTIN(FMA)` |
+
+**Bitwise:**
+
+| PTX | SSIR |
+|-----|------|
+| `and.{type}` | `SSIR_OP_BIT_AND` (or `SSIR_OP_AND` for `.pred`) |
+| `or.{type}` | `SSIR_OP_BIT_OR` (or `SSIR_OP_OR` for `.pred`) |
+| `xor.{type}` | `SSIR_OP_BIT_XOR` |
+| `not.{type}` | `SSIR_OP_BIT_NOT` (or `SSIR_OP_NOT` for `.pred`) |
+| `shl.{type}` | `SSIR_OP_SHL` |
+| `shr.{signed}` | `SSIR_OP_SHR` (arithmetic) |
+| `shr.{unsigned}` | `SSIR_OP_SHR_LOGICAL` |
+
+**Comparison:**
+
+| PTX | SSIR |
+|-----|------|
+| `setp.eq` | `SSIR_OP_EQ` → store to predicate register |
+| `setp.ne` | `SSIR_OP_NE` |
+| `setp.lt` / `setp.lo` | `SSIR_OP_LT` |
+| `setp.le` / `setp.ls` | `SSIR_OP_LE` |
+| `setp.gt` / `setp.hi` | `SSIR_OP_GT` |
+| `setp.ge` / `setp.hs` | `SSIR_OP_GE` |
+| `selp.{type}` | `SSIR_OP_BUILTIN(SELECT)` |
+
+**Math:**
+
+| PTX | SSIR |
+|-----|------|
+| `rcp.{type}` | `SSIR_OP_DIV` (1.0 / x) |
+| `sqrt.{type}` | `SSIR_OP_BUILTIN(SQRT)` |
+| `rsqrt.{type}` | `SSIR_OP_BUILTIN(INVERSESQRT)` |
+| `sin.{type}` | `SSIR_OP_BUILTIN(SIN)` |
+| `cos.{type}` | `SSIR_OP_BUILTIN(COS)` |
+| `lg2.{type}` | `SSIR_OP_BUILTIN(LOG2)` |
+| `ex2.{type}` | `SSIR_OP_BUILTIN(EXP2)` |
+
+**Atomics:**
+
+| PTX | SSIR |
+|-----|------|
+| `atom.{space}.add.{type}` | `SSIR_OP_ATOMIC(SSIR_ATOMIC_ADD)` |
+| `atom.{space}.min.{type}` | `SSIR_OP_ATOMIC(SSIR_ATOMIC_MIN)` |
+| `atom.{space}.max.{type}` | `SSIR_OP_ATOMIC(SSIR_ATOMIC_MAX)` |
+| `atom.{space}.and.{type}` | `SSIR_OP_ATOMIC(SSIR_ATOMIC_AND)` |
+| `atom.{space}.or.{type}` | `SSIR_OP_ATOMIC(SSIR_ATOMIC_OR)` |
+| `atom.{space}.xor.{type}` | `SSIR_OP_ATOMIC(SSIR_ATOMIC_XOR)` |
+| `atom.{space}.exch.{type}` | `SSIR_OP_ATOMIC(SSIR_ATOMIC_EXCHANGE)` |
+| `atom.{space}.cas.{type}` | `SSIR_OP_ATOMIC(SSIR_ATOMIC_COMPARE_EXCHANGE)` |
+
+**Synchronization:**
+
+| PTX | SSIR |
+|-----|------|
+| `bar.sync N` | `SSIR_OP_BARRIER(SSIR_BARRIER_WORKGROUP)` |
+| `membar.cta` | `SSIR_OP_BARRIER(SSIR_BARRIER_WORKGROUP)` |
+| `membar.gl` | `SSIR_OP_BARRIER(SSIR_BARRIER_STORAGE)` |
+
+**Type conversion:**
+
+| PTX | SSIR |
+|-----|------|
+| `cvt.{dst}.{src}` | `SSIR_OP_CONVERT` |
+| `cvta.to.{space}` | No-op (address identity in our model) |
+
+### PTX Usage Examples
+
+**PTX → WGSL:**
+```c
+PtxToSsirOptions ptx_opts = { .preserve_names = 1 };
+SsirModule *mod = NULL;
+char *err = NULL;
+
+ptx_to_ssir(ptx_source, &ptx_opts, &mod, &err);
+
+SsirToWgslOptions wgsl_opts = { .preserve_names = 1 };
+char *wgsl = NULL;
+ssir_to_wgsl(mod, &wgsl_opts, &wgsl, &err);
+
+printf("%s\n", wgsl);
+ssir_to_wgsl_free(wgsl);
+ssir_module_destroy(mod);
+```
+
+**PTX → SPIR-V:**
+```c
+ptx_to_ssir(ptx_source, &opts, &mod, &err);
+
+SsirToSpirvOptions spirv_opts = { .enable_debug_names = 1 };
+uint32_t *words = NULL;
+size_t count = 0;
+ssir_to_spirv(mod, &spirv_opts, &words, &count);
+
+// words is now a valid SPIR-V module
+ssir_to_spirv_free(words);
+ssir_module_destroy(mod);
+```
+
+**PTX → GLSL 450:**
+```c
+ptx_to_ssir(ptx_source, &opts, &mod, &err);
+
+SsirToGlslOptions glsl_opts = { .preserve_names = 1 };
+char *glsl = NULL;
+ssir_to_glsl(mod, SSIR_STAGE_COMPUTE, &glsl_opts, &glsl, &err);
+
+printf("%s\n", glsl);
+ssir_to_glsl_free(glsl);
+ssir_module_destroy(mod);
+```
+
+### Limitations and Future Work
+
+**Current limitations:**
+- **Pointer arithmetic preserved as-is**: PTX's raw pointer arithmetic (`base + index * sizeof(T)`) is not reconstructed into typed array indexing. Output is correct but more verbose.
+- **No texture/surface instructions**: `tex`, `tld4`, `suld`, `sust` are not supported (requires SSIR texture infrastructure mapping).
+- **No tensor core / WMMA instructions**: Matrix multiply-accumulate operations are out of scope.
+- **No warp-level primitives**: `shfl`, `vote`, `match`, `redux` are not implemented.
+- **No indirect calls**: Function pointers are not supported.
+- **Predicated non-branch instructions**: Currently parsed but not wrapped in conditional blocks (the predicate guard is consumed, but the instruction executes unconditionally in SSIR).
+
+**Planned future work:**
+- **Typed array reconstruction**: Pattern-match `base + idx * sizeof(T)` → `array[idx]` for cleaner output
+- **Full predicate lowering**: Insert conditional blocks for predicated non-branch instructions
+- **Dead store elimination**: Remove redundant register stores
+- **Constant folding**: Evaluate compile-time-known expressions
+- **Warp-level primitives**: Map `shfl` to subgroup operations
+- **`ssir_to_ptx` emitter**: Enable WGSL/GLSL → PTX compilation for CUDA targets
+
+---
+
 ## Immediates (Push Constants)
 
 WGSL lacks native push constant support. The `var<immediate>` extension provides a WGSL-native syntax for Vulkan push constants. The compiler automatically generates per-entry-point push constant blocks with correct layout and SPIR-V decorations.
@@ -973,4 +1487,5 @@ ssir_to_msl_result_string(result)
 ssir_to_hlsl_result_string(result)
 spirv_to_ssir_result_string(result)
 msl_to_ssir_result_string(result)
+ptx_to_ssir_result_string(result)
 ```

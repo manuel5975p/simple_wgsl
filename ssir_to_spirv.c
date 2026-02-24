@@ -1164,7 +1164,8 @@ static int is_signed_ssir_type(Ctx *c, uint32_t type_id) {
     wgsl_compiler_assert(c != NULL, "is_signed_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     if (!t) return 0;
-    if (t->kind == SSIR_TYPE_I32) return 1;
+    if (t->kind == SSIR_TYPE_I8 || t->kind == SSIR_TYPE_I16 ||
+        t->kind == SSIR_TYPE_I32 || t->kind == SSIR_TYPE_I64) return 1;
     if (t->kind == SSIR_TYPE_VEC) {
         return is_signed_ssir_type(c, t->vec.elem);
     }
@@ -1176,7 +1177,8 @@ static int is_unsigned_ssir_type(Ctx *c, uint32_t type_id) {
     wgsl_compiler_assert(c != NULL, "is_unsigned_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     if (!t) return 0;
-    if (t->kind == SSIR_TYPE_U32) return 1;
+    if (t->kind == SSIR_TYPE_U8 || t->kind == SSIR_TYPE_U16 ||
+        t->kind == SSIR_TYPE_U32 || t->kind == SSIR_TYPE_U64) return 1;
     if (t->kind == SSIR_TYPE_VEC) {
         return is_unsigned_ssir_type(c, t->vec.elem);
     }

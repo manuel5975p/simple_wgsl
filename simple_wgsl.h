@@ -1690,6 +1690,28 @@ void msl_to_ssir_free(char *str);
 
 const char *msl_to_ssir_result_string(MslToSsirResult r);
 
+/* ============================================================================
+ * PTX → SSIR
+ * ============================================================================ */
+
+typedef enum {
+    PTX_TO_SSIR_OK = 0,
+    PTX_TO_SSIR_PARSE_ERROR,
+    PTX_TO_SSIR_UNSUPPORTED,
+} PtxToSsirResult;
+
+typedef struct {
+    int preserve_names;   /* keep PTX register names as debug names */
+    int strict_mode;      /* reject .approx instructions (exact only) */
+} PtxToSsirOptions;
+
+PtxToSsirResult ptx_to_ssir(const char *ptx_source, const PtxToSsirOptions *opts,
+    SsirModule **out_module, char **out_error);
+
+void ptx_to_ssir_free(char *str);
+
+const char *ptx_to_ssir_result_string(PtxToSsirResult r);
+
 #ifdef __cplusplus
 }
 #endif

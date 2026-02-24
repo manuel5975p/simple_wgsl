@@ -1,20 +1,20 @@
 # Simple WGSL
 
-A feature-complete shader compiler library written in pure C99. Converts between **WGSL**, **GLSL 450**, **MSL**, **HLSL**, and **SPIR-V** through a shared intermediate representation.
+A feature-complete shader compiler library written in pure C99. Converts between **WGSL**, **GLSL 450**, **MSL**, **PTX**, **HLSL**, and **SPIR-V** through a shared intermediate representation.
 
 ```
 WGSL ──┐              ┌── SPIR-V
 GLSL ──┤              ├── WGSL
 MSL  ──┼── [SSIR] ──┼── GLSL 450
-SPIR-V ┘              ├── MSL
-                       └── HLSL
+PTX  ──┤              ├── MSL
+SPIR-V ┘              └── HLSL
 ```
 
 ### Why Simple WGSL?
 
 - **Single header, zero dependencies** -- include `simple_wgsl.h` and link the static library. No runtime dependencies beyond the C standard library.
-- **Six languages, one pipeline** -- parse WGSL, GLSL, or MSL source; ingest SPIR-V binaries; emit to any of five output formats. Every conversion flows through the same intermediate representation.
-- **~37k lines of C99** -- no templates, no inheritance hierarchies, no build system complexity. Every compilation unit is a single `.c` file. Builds in under a second.
+- **Seven languages, one pipeline** -- parse WGSL, GLSL, MSL, or PTX source; ingest SPIR-V binaries; emit to any of five output formats. Every conversion flows through the same intermediate representation.
+- **~39k lines of C99** -- no templates, no inheritance hierarchies, no build system complexity. Every compilation unit is a single `.c` file. Builds in under a second.
 - **Embeddable** -- all memory allocation goes through overridable macros (`NODE_MALLOC`, `SSIR_MALLOC`, etc.), so you can plug in your own allocator for game engines, embedded systems, or WASM targets.
 - **Fuzz-hardened** -- eight libFuzzer targets with AddressSanitizer + UndefinedBehaviorSanitizer have been run continuously.
 
@@ -97,6 +97,7 @@ graph LR
     WGSL["WGSL Source"] --> P1[wgsl_parse]
     GLSL["GLSL 450 Source"] --> P2[glsl_parse]
     MSL["MSL Source"] --> P3[msl_to_ssir]
+    PTX["PTX Assembly"] --> P4[ptx_to_ssir]
     P1 --> AST[AST]
     P2 --> AST
     AST --> R[Resolver]
@@ -105,6 +106,7 @@ graph LR
     L --> SPIRV["SPIR-V Binary"]
     SPIRV --> D[spirv_to_ssir]
     P3 --> SSIR
+    P4 --> SSIR
     D --> SSIR
     SSIR --> E1[ssir_to_spirv]
     SSIR --> E2[ssir_to_wgsl]
@@ -124,10 +126,11 @@ SSIR (Simple Shader Intermediate Representation) sits at the center. All source 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `simple_wgsl.h` | 1697 | Unified public API header |
+| `simple_wgsl.h` | 1719 | Unified public API header |
 | `wgsl_parser.c` | 2452 | WGSL lexer + recursive-descent parser |
 | `glsl_parser.c` | 2466 | GLSL 450 lexer + recursive-descent parser |
 | `msl_parser.c` | 2432 | MSL lexer + parser (produces SSIR directly) |
+| `ptx_parser.c` | 2183 | PTX assembly parser (produces SSIR directly) |
 | `wgsl_resolve.c` | 1234 | Semantic analysis and symbol resolution |
 | `wgsl_lower.c` | 7745 | AST to SSIR to SPIR-V compilation |
 | `wgsl_raise.c` | 2377 | SPIR-V to WGSL decompilation |

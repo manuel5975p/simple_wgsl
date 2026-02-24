@@ -23,6 +23,8 @@ set(TEST_SOURCES
     ssir_to_hlsl_test.cpp
     ssir_to_msl_test.cpp
     msl_parser_test.cpp
+    ptx_parser_test.cpp
+    ptx_ssir_test.cpp
     spec_compliance_test.cpp
     select_test.cpp
     all_any_test.cpp
@@ -50,6 +52,7 @@ if(Vulkan_FOUND)
     list(APPEND TEST_SOURCES
         vulkan_compute_harness.cpp
         vulkan_compute_test.cpp
+        cuda_to_vulkan_test.cpp
         vulkan_graphics_harness.cpp
         vulkan_graphics_test.cpp
         vulkan_graphics_complex_test.cpp
