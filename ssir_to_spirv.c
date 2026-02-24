@@ -163,6 +163,7 @@ typedef struct {
     int has_shader_cap;
     int has_float16_cap;
     int has_image_query_cap;
+    int has_psb_cap;       /* PhysicalStorageBufferAddresses */
     int glsl_ext_emitted;
 
     /* Pre-computed function type IDs (indexed by function index) */
@@ -859,6 +860,10 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             uint32_t pointee_spv = sts_emit_type(c, t->ptr.pointee);
             SpvStorageClass sc = addr_space_to_storage_class(t->ptr.space);
             spv_id = sts_emit_type_pointer(c, sc, pointee_spv);
+            if (t->ptr.space == SSIR_ADDR_PHYSICAL_STORAGE_BUFFER && !c->has_psb_cap) {
+                sts_emit_capability(c, SpvCapabilityPhysicalStorageBufferAddresses);
+                c->has_psb_cap = 1;
+            }
             break;
         }
         case SSIR_TYPE_SAMPLER:
@@ -877,11 +882,30 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             break;
         }
         case SSIR_TYPE_TEXTURE_STORAGE: {
-            uint32_t f32_type = c->spv_f32 ? c->spv_f32 : sts_emit_type_float(c, 32);
+            /* Pick sampled type based on image format:
+             * Rgba32i/Rgba16i/etc. → int, Rgba32ui/Rgba16ui/etc. → uint,
+             * everything else (Rgba32f, Rgba16f, etc.) → float */
+            SpvImageFormat fmt = (SpvImageFormat)t->texture_storage.format;
+            uint32_t sampled_type;
+            if (fmt == SpvImageFormatRgba32i || fmt == SpvImageFormatRgba16i ||
+                fmt == SpvImageFormatRgba8i || fmt == SpvImageFormatR32i ||
+                fmt == SpvImageFormatRg32i || fmt == SpvImageFormatRg16i ||
+                fmt == SpvImageFormatRg8i || fmt == SpvImageFormatR16i ||
+                fmt == SpvImageFormatR8i) {
+                sampled_type = sts_emit_type_int(c, 32, 1);
+            } else if (fmt == SpvImageFormatRgba32ui || fmt == SpvImageFormatRgba16ui ||
+                       fmt == SpvImageFormatRgba8ui || fmt == SpvImageFormatR32ui ||
+                       fmt == SpvImageFormatRg32ui || fmt == SpvImageFormatRg16ui ||
+                       fmt == SpvImageFormatRg8ui || fmt == SpvImageFormatR16ui ||
+                       fmt == SpvImageFormatR8ui) {
+                sampled_type = sts_emit_type_int(c, 32, 0);
+            } else {
+                sampled_type = c->spv_f32 ? c->spv_f32 : sts_emit_type_float(c, 32);
+            }
             SsirTextureDim dim = t->texture_storage.dim;
             uint32_t arrayed = (dim == SSIR_TEX_2D_ARRAY || dim == SSIR_TEX_1D_ARRAY) ? 1 : 0;
             uint32_t sampled = 2; /* storage image */
-            spv_id = sts_emit_type_image(c, dim, f32_type, 0, arrayed, 0, sampled, (SpvImageFormat)t->texture_storage.format);
+            spv_id = sts_emit_type_image(c, dim, sampled_type, 0, arrayed, 0, sampled, fmt);
             break;
         }
         case SSIR_TYPE_TEXTURE_DEPTH: {
@@ -1287,6 +1311,9 @@ static uint32_t get_unsigned_ssir_type(Ctx *c, uint32_t ssir_type) {
     SsirType *t = ssir_get_type((SsirModule *)c->mod, ssir_type);
     if (!t) return 0;
     if (t->kind == SSIR_TYPE_I32) return ssir_type_u32((SsirModule *)c->mod);
+    if (t->kind == SSIR_TYPE_I64) return ssir_type_u64((SsirModule *)c->mod);
+    if (t->kind == SSIR_TYPE_I16) return ssir_type_u16((SsirModule *)c->mod);
+    if (t->kind == SSIR_TYPE_I8) return ssir_type_u8((SsirModule *)c->mod);
     if (t->kind == SSIR_TYPE_VEC) {
         uint32_t unsigned_elem = get_unsigned_ssir_type(c, t->vec.elem);
         if (unsigned_elem) return ssir_type_vec((SsirModule *)c->mod, unsigned_elem, t->vec.size);
@@ -1791,22 +1818,72 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             break;
 
         /* Memory */
-        case SSIR_OP_LOAD:
+        case SSIR_OP_LOAD: {
             /* PRE: operand_count >= 1 */
             wgsl_compiler_assert(inst->operand_count >= 1, "SSIR_OP_LOAD: operand_count < 1");
-            sts_emit_op(wb, SpvOpLoad, 4);
-            wb_push(wb, type_spv);
-            wb_push(wb, result_spv);
-            wb_push(wb, get_spv_id(c, inst->operands[0]));
+            /* Check if pointer is PhysicalStorageBuffer — requires Aligned operand */
+            uint32_t load_ptr_ssir_type = get_ssir_type(c, inst->operands[0]);
+            SsirType *load_ptr_ty = load_ptr_ssir_type ? ssir_get_type((SsirModule *)c->mod, load_ptr_ssir_type) : NULL;
+            bool load_is_psb = load_ptr_ty && load_ptr_ty->kind == SSIR_TYPE_PTR &&
+                               load_ptr_ty->ptr.space == SSIR_ADDR_PHYSICAL_STORAGE_BUFFER;
+            if (load_is_psb) {
+                /* OpLoad with Aligned memory operand */
+                SsirType *pointee = ssir_get_type((SsirModule *)c->mod, load_ptr_ty->ptr.pointee);
+                uint32_t align = 4; /* default */
+                if (pointee) {
+                    switch (pointee->kind) {
+                    case SSIR_TYPE_U8: case SSIR_TYPE_I8: align = 1; break;
+                    case SSIR_TYPE_U16: case SSIR_TYPE_I16: case SSIR_TYPE_F16: align = 2; break;
+                    case SSIR_TYPE_U64: case SSIR_TYPE_I64: case SSIR_TYPE_F64: align = 8; break;
+                    default: align = 4; break;
+                    }
+                }
+                sts_emit_op(wb, SpvOpLoad, 6);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+                wb_push(wb, SpvMemoryAccessAlignedMask);
+                wb_push(wb, align);
+            } else {
+                sts_emit_op(wb, SpvOpLoad, 4);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+            }
             break;
+        }
 
-        case SSIR_OP_STORE:
+        case SSIR_OP_STORE: {
             /* PRE: operand_count >= 2 */
             wgsl_compiler_assert(inst->operand_count >= 2, "SSIR_OP_STORE: operand_count < 2");
-            sts_emit_op(wb, SpvOpStore, 3);
-            wb_push(wb, get_spv_id(c, inst->operands[0]));
-            wb_push(wb, get_spv_id(c, inst->operands[1]));
+            /* Check if pointer is PhysicalStorageBuffer — requires Aligned operand */
+            uint32_t store_ptr_ssir_type = get_ssir_type(c, inst->operands[0]);
+            SsirType *store_ptr_ty = store_ptr_ssir_type ? ssir_get_type((SsirModule *)c->mod, store_ptr_ssir_type) : NULL;
+            bool store_is_psb = store_ptr_ty && store_ptr_ty->kind == SSIR_TYPE_PTR &&
+                                store_ptr_ty->ptr.space == SSIR_ADDR_PHYSICAL_STORAGE_BUFFER;
+            if (store_is_psb) {
+                SsirType *pointee = ssir_get_type((SsirModule *)c->mod, store_ptr_ty->ptr.pointee);
+                uint32_t align = 4;
+                if (pointee) {
+                    switch (pointee->kind) {
+                    case SSIR_TYPE_U8: case SSIR_TYPE_I8: align = 1; break;
+                    case SSIR_TYPE_U16: case SSIR_TYPE_I16: case SSIR_TYPE_F16: align = 2; break;
+                    case SSIR_TYPE_U64: case SSIR_TYPE_I64: case SSIR_TYPE_F64: align = 8; break;
+                    default: align = 4; break;
+                    }
+                }
+                sts_emit_op(wb, SpvOpStore, 5);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+                wb_push(wb, get_spv_id(c, inst->operands[1]));
+                wb_push(wb, SpvMemoryAccessAlignedMask);
+                wb_push(wb, align);
+            } else {
+                sts_emit_op(wb, SpvOpStore, 3);
+                wb_push(wb, get_spv_id(c, inst->operands[0]));
+                wb_push(wb, get_spv_id(c, inst->operands[1]));
+            }
             break;
+        }
 
         case SSIR_OP_ACCESS: {
             uint32_t idx_count = inst->extra_count;
@@ -2121,12 +2198,18 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             break;
         }
 
-        case SSIR_OP_BITCAST:
-            sts_emit_op(wb, SpvOpBitcast, 4);
+        case SSIR_OP_BITCAST: {
+            /* Check if this is u64 -> PhysicalStorageBuffer pointer conversion */
+            SsirType *result_ty = ssir_get_type((SsirModule *)c->mod, inst->type);
+            bool is_u_to_ptr = result_ty && result_ty->kind == SSIR_TYPE_PTR &&
+                               result_ty->ptr.space == SSIR_ADDR_PHYSICAL_STORAGE_BUFFER;
+            SpvOp bc_op = is_u_to_ptr ? SpvOpConvertUToPtr : SpvOpBitcast;
+            sts_emit_op(wb, bc_op, 4);
             wb_push(wb, type_spv);
             wb_push(wb, result_spv);
             wb_push(wb, get_spv_id(c, inst->operands[0]));
             break;
+        }
 
         /* Texture operations */
         case SSIR_OP_TEX_SAMPLE:
@@ -2261,7 +2344,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
                     wb_push(wb, get_spv_id(c, inst->operands[4]));
                     break;
                 case SSIR_OP_TEX_GATHER:
-                    sts_emit_op(wb, SpvOpImageGather, 7);
+                    sts_emit_op(wb, SpvOpImageGather, 6);
                     wb_push(wb, type_spv);
                     wb_push(wb, result_spv);
                     wb_push(wb, si_id);
@@ -2269,7 +2352,7 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
                     wb_push(wb, get_spv_id(c, inst->operands[3]));
                     break;
                 case SSIR_OP_TEX_GATHER_CMP:
-                    sts_emit_op(wb, SpvOpImageDrefGather, 7);
+                    sts_emit_op(wb, SpvOpImageDrefGather, 6);
                     wb_push(wb, type_spv);
                     wb_push(wb, result_spv);
                     wb_push(wb, si_id);
@@ -2673,7 +2756,10 @@ static int sts_emit_entry_point(Ctx *c, const SsirEntryPoint *ep) {
 
     uint32_t func_spv = get_spv_id(c, ep->function);
 
-    /* For SPIR-V 1.3, only Input/Output globals go in the interface */
+    /* For SPIR-V 1.3, only Input/Output globals go in the interface.
+     * For SPIR-V 1.4+, all used globals must be in the interface. */
+    uint32_t spv_ver = c->opts.spirv_version ? c->opts.spirv_version : 0x00010300;
+    bool include_all_globals = (spv_ver >= 0x00010400);
     uint32_t iface_count = 0;
     uint32_t *iface_ids = NULL;
     if (ep->interface_count > 0) {
@@ -2684,8 +2770,11 @@ static int sts_emit_entry_point(Ctx *c, const SsirEntryPoint *ep) {
             SsirGlobalVar *g = ssir_get_global((SsirModule *)c->mod, ep->interface[i]);
             if (g) {
                 SsirType *pt = ssir_get_type((SsirModule *)c->mod, g->type);
-                if (pt && pt->kind == SSIR_TYPE_PTR &&
-                    (pt->ptr.space == SSIR_ADDR_INPUT || pt->ptr.space == SSIR_ADDR_OUTPUT)) {
+                if (include_all_globals) {
+                    /* SPIR-V 1.4+: all globals in interface */
+                    iface_ids[iface_count++] = get_spv_id(c, ep->interface[i]);
+                } else if (pt && pt->kind == SSIR_TYPE_PTR &&
+                           (pt->ptr.space == SSIR_ADDR_INPUT || pt->ptr.space == SSIR_ADDR_OUTPUT)) {
                     iface_ids[iface_count++] = get_spv_id(c, ep->interface[i]);
                 }
             }
@@ -2779,15 +2868,53 @@ SsirToSpirvResult ssir_to_spirv(const SsirModule *mod,
     }
     memset(c.type_map, 0, c.type_map_size * sizeof(uint32_t));
 
+    /* Pre-scan: detect if module uses PhysicalStorageBuffer pointers */
+    {
+        for (uint32_t ti = 0; ti < mod->type_count; ti++) {
+            SsirType *t = &mod->types[ti];
+            if (t->kind == SSIR_TYPE_PTR &&
+                t->ptr.space == SSIR_ADDR_PHYSICAL_STORAGE_BUFFER) {
+                c.has_psb_cap = 1;
+                break;
+            }
+        }
+    }
+
     /* Emit capabilities */
     sts_emit_capability(&c, SpvCapabilityShader);
     c.has_shader_cap = 1;
+    if (c.has_psb_cap) {
+        sts_emit_capability(&c, SpvCapabilityPhysicalStorageBufferAddresses);
+        sts_emit_capability(&c, SpvCapabilityInt64);
+    }
+
+    /* Extensions */
+    if (c.has_psb_cap) {
+        /* SPV_KHR_physical_storage_buffer extension (required for SPIR-V < 1.5) */
+        StsWordBuf *ewb = &c.sections.extensions;
+        uint32_t *str_words = NULL;
+        size_t str_count = 0;
+        encode_string("SPV_KHR_physical_storage_buffer", &str_words, &str_count);
+        if (str_words) {
+            sts_emit_op(ewb, SpvOpExtension, 1 + (uint32_t)str_count);
+            sts_wb_push_many(ewb, str_words, str_count);
+            STS_FREE(str_words);
+        }
+    }
 
     /* GLSL.std.450 import ID allocated lazily on first use */
     c.glsl_ext_id = 0;
 
     /* Emit memory model */
-    sts_emit_memory_model(&c);
+    if (c.has_psb_cap) {
+        /* PhysicalStorageBuffer64 addressing + GLSL450 memory model */
+        StsWordBuf *wb = &c.sections.memory_model;
+        sts_emit_op(wb, SpvOpMemoryModel, 3);
+        wb_push(wb, SpvAddressingModelPhysicalStorageBuffer64);
+        wb_push(wb, SpvMemoryModelGLSL450);
+    } else {
+        sts_emit_memory_model(&c);
+    }
 
     /* Pre-emit function signature types and pre-allocate function/block IDs
      * Order: return type, function ID, param types, function type, block IDs */

@@ -25,6 +25,7 @@ set(TEST_SOURCES
     msl_parser_test.cpp
     ptx_parser_test.cpp
     ptx_ssir_test.cpp
+    ptx_texture_test.cpp
     spec_compliance_test.cpp
     select_test.cpp
     all_any_test.cpp
@@ -106,3 +107,31 @@ gtest_discover_tests(wgsl_tests
 )
 
 add_test(NAME all_tests COMMAND wgsl_tests)
+
+if(Vulkan_FOUND)
+    add_executable(cuvk_init_test cuvk_init_test.cpp)
+    target_link_libraries(cuvk_init_test gtest_main cuvk_runtime_static)
+    add_test(NAME cuvk_init_test COMMAND cuvk_init_test)
+
+    add_executable(cuvk_stream_test cuvk_stream_test.cpp)
+    target_link_libraries(cuvk_stream_test gtest_main cuvk_runtime_static)
+    add_test(NAME cuvk_stream_test COMMAND cuvk_stream_test)
+
+    add_executable(cuvk_memory_test cuvk_memory_test.cpp)
+    target_link_libraries(cuvk_memory_test gtest_main cuvk_runtime_static)
+    add_test(NAME cuvk_memory_test COMMAND cuvk_memory_test)
+
+    add_executable(cuvk_launch_test cuvk_launch_test.cpp)
+    target_link_libraries(cuvk_launch_test gtest_main cuvk_runtime_static)
+    add_test(NAME cuvk_launch_test COMMAND cuvk_launch_test)
+
+    add_executable(cuvk_bda_test cuvk_bda_test.cpp)
+    target_link_libraries(cuvk_bda_test gtest_main cuvk_runtime_static)
+    add_test(NAME cuvk_bda_test COMMAND cuvk_bda_test)
+
+    add_executable(cuvk_integration_test cuvk_integration_test.cpp)
+    target_link_libraries(cuvk_integration_test gtest_main cuvk_runtime_static)
+    add_test(NAME cuvk_integration_test COMMAND cuvk_integration_test)
+
+    add_subdirectory(e2e)
+endif()

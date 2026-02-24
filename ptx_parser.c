@@ -305,6 +305,22 @@ static void tok_to_str(const PtxToken *t, char *buf, int bufsz) {
  * Parser Context
  * ============================================================================ */
 
+/* Texture/surface reference: maps PTX .texref/.surfref name to SSIR global */
+typedef struct {
+    char name[80];
+    uint32_t global_id;    /* SSIR global var ID */
+    uint32_t type_id;      /* SSIR type ID */
+    bool is_surface;       /* true=surface (.surfref), false=texture (.texref) */
+    SsirTextureDim dim;    /* dimension (updated on first use) */
+} PtxTexRef;
+
+/* Sampler reference: maps PTX .samplerref name to SSIR global */
+typedef struct {
+    char name[80];
+    uint32_t global_id;
+    uint32_t type_id;
+} PtxSamplerRef;
+
 /* Register entry: maps PTX register name to SSIR local variable */
 typedef struct {
     char name[80];
@@ -314,6 +330,7 @@ typedef struct {
     uint32_t global_id;  /* SSIR global var ID (for kernel pointer params), 0 if none */
     uint32_t pending_binding; /* Binding index for unmaterialized buffer, UINT32_MAX = N/A */
     bool is_pred;
+    bool is_bda_ptr;     /* BDA mode: this register holds a PhysicalStorageBuffer address */
 } PtxReg;
 
 /* Label entry: maps label name to block ID */
@@ -375,6 +392,14 @@ typedef struct {
     /* Next binding index for kernel params */
     uint32_t next_binding;
 
+    /* Module-level binding count (from texref/samplerref/surfref decls) */
+    uint32_t module_binding_base;
+
+    /* BDA mode: push constants + PhysicalStorageBuffer for kernel pointers */
+    bool use_bda;
+    uint32_t bda_pc_global;  /* SSIR global var ID for push constant block, 0 if none */
+    uint32_t bda_param_count; /* number of kernel params (excludes hidden ntid members) */
+
     /* Predicate state for current instruction */
     uint32_t pred_reg_ptr;      /* pointer to predicate register's local var */
     uint32_t pred_val_type;     /* type of predicate value */
@@ -384,6 +409,14 @@ typedef struct {
     /* Device functions: name -> func_id mapping */
     struct { char name[80]; uint32_t func_id; uint32_t ret_type; } *funcs;
     int func_count, func_cap;
+
+    /* Texture/surface references (module-level, persist across functions) */
+    PtxTexRef *texrefs;
+    int texref_count, texref_cap;
+
+    /* Sampler references (module-level) */
+    PtxSamplerRef *samplers;
+    int sampler_count, sampler_cap;
 
     /* Error */
     char error[1024];
@@ -489,7 +522,24 @@ static uint32_t pp_load_reg(PtxParser *p, const char *name) {
                            r->val_type, r->ptr_id);
 }
 
-/* Store to a register (emit SSIR_OP_STORE) */
+/* Store to a register (emit SSIR_OP_STORE), inserting a bitcast if the value
+ * type doesn't match the register's declared type (e.g., i32 result stored
+ * into a u32 register from .b32 declaration). */
+static void pp_store_reg_typed(PtxParser *p, const char *name,
+                                uint32_t value, uint32_t value_type) {
+    PtxReg *r = pp_find_reg(p, name);
+    if (!r) {
+        pp_error(p, "undefined register '%s'", name);
+        return;
+    }
+    if (value_type && value_type != r->val_type) {
+        /* Bitcast to match register type (e.g., i32 -> u32, i64 -> u64) */
+        value = ssir_build_bitcast(p->mod, p->func_id, p->block_id,
+                                   r->val_type, value);
+    }
+    ssir_build_store(p->mod, p->func_id, p->block_id, r->ptr_id, value);
+}
+
 static void pp_store_reg(PtxParser *p, const char *name, uint32_t value) {
     PtxReg *r = pp_find_reg(p, name);
     if (!r) {
@@ -503,13 +553,15 @@ static void pp_add_iface(PtxParser *p, uint32_t global_id); /* forward decl */
 
 /* Propagate buffer association from source register to destination register.
  * Used for address arithmetic: if %rd_dst = %rd_src + offset, then
- * %rd_dst inherits %rd_src's buffer association (global_id + pending_binding). */
+ * %rd_dst inherits %rd_src's buffer association (global_id + pending_binding).
+ * In BDA mode, also propagates is_bda_ptr. */
 static void pp_propagate_buffer(PtxParser *p, const char *dst, const char *src) {
     PtxReg *dr = pp_find_reg(p, dst);
     PtxReg *sr = pp_find_reg(p, src);
     if (dr && sr) {
         dr->global_id = sr->global_id;
         dr->pending_binding = sr->pending_binding;
+        dr->is_bda_ptr = sr->is_bda_ptr;
     }
 }
 
@@ -617,6 +669,144 @@ static uint32_t pp_ptx_type(PtxParser *p) {
     return 0;
 }
 
+/* ============================================================================
+ * Texture/Surface/Sampler Reference Helpers
+ * ============================================================================ */
+
+static PtxTexRef *pp_find_texref(PtxParser *p, const char *name) {
+    for (int i = 0; i < p->texref_count; i++) {
+        if (strcmp(p->texrefs[i].name, name) == 0)
+            return &p->texrefs[i];
+    }
+    return NULL;
+}
+
+static PtxSamplerRef *pp_find_sampler(PtxParser *p, const char *name) {
+    for (int i = 0; i < p->sampler_count; i++) {
+        if (strcmp(p->samplers[i].name, name) == 0)
+            return &p->samplers[i];
+    }
+    return NULL;
+}
+
+static PtxTexRef *pp_add_texref(PtxParser *p, const char *name,
+                                 uint32_t global_id, uint32_t type_id,
+                                 bool is_surface, SsirTextureDim dim) {
+    if (p->texref_count >= p->texref_cap) {
+        p->texref_cap = p->texref_cap ? p->texref_cap * 2 : 16;
+        p->texrefs = (PtxTexRef *)PTX_REALLOC(p->texrefs,
+            p->texref_cap * sizeof(PtxTexRef));
+    }
+    PtxTexRef *tr = &p->texrefs[p->texref_count++];
+    memset(tr, 0, sizeof(*tr));
+    snprintf(tr->name, sizeof(tr->name), "%s", name);
+    tr->global_id = global_id;
+    tr->type_id = type_id;
+    tr->is_surface = is_surface;
+    tr->dim = dim;
+    return tr;
+}
+
+static PtxSamplerRef *pp_add_sampler(PtxParser *p, const char *name,
+                                      uint32_t global_id, uint32_t type_id) {
+    if (p->sampler_count >= p->sampler_cap) {
+        p->sampler_cap = p->sampler_cap ? p->sampler_cap * 2 : 16;
+        p->samplers = (PtxSamplerRef *)PTX_REALLOC(p->samplers,
+            p->sampler_cap * sizeof(PtxSamplerRef));
+    }
+    PtxSamplerRef *sr = &p->samplers[p->sampler_count++];
+    memset(sr, 0, sizeof(*sr));
+    snprintf(sr->name, sizeof(sr->name), "%s", name);
+    sr->global_id = global_id;
+    sr->type_id = type_id;
+    return sr;
+}
+
+/* Get or create an implicit sampler for a texture.
+ * PTX often uses hardware-bound samplers, so when a tex instruction
+ * references a texture without an explicit sampler, we create one. */
+static PtxSamplerRef *pp_get_implicit_sampler(PtxParser *p, const char *tex_name) {
+    /* Look for existing implicit sampler named _sampler_<tex_name> */
+    char sname[80];
+    snprintf(sname, sizeof(sname), "_sampler_%s", tex_name);
+    PtxSamplerRef *existing = pp_find_sampler(p, sname);
+    if (existing) return existing;
+
+    /* Create one */
+    uint32_t sampler_t = ssir_type_sampler(p->mod);
+    uint32_t ptr_t = ssir_type_ptr(p->mod, sampler_t, SSIR_ADDR_UNIFORM_CONSTANT);
+    uint32_t gid = ssir_global_var(p->mod, sname, ptr_t);
+    ssir_global_set_group(p->mod, gid, 0);
+    ssir_global_set_binding(p->mod, gid, p->next_binding++);
+    pp_add_iface(p, gid);
+    return pp_add_sampler(p, sname, gid, sampler_t);
+}
+
+/* Parse geometry suffix for tex/suld/sust instructions.
+ * Returns the SSIR texture dimension. */
+static SsirTextureDim pp_parse_tex_geometry(PtxParser *p, int *coord_count) {
+    SsirTextureDim dim = SSIR_TEX_2D;
+    int ncoords = 2;
+
+    if (pp_check_dot(p, ".1d"))       { dim = SSIR_TEX_1D;       ncoords = 1; pp_next(p); }
+    else if (pp_check_dot(p, ".2d"))  { dim = SSIR_TEX_2D;       ncoords = 2; pp_next(p); }
+    else if (pp_check_dot(p, ".3d"))  { dim = SSIR_TEX_3D;       ncoords = 3; pp_next(p); }
+    else if (pp_check_dot(p, ".a1d")) { dim = SSIR_TEX_1D_ARRAY; ncoords = 2; pp_next(p); }
+    else if (pp_check_dot(p, ".a2d")) { dim = SSIR_TEX_2D_ARRAY; ncoords = 4; pp_next(p); }
+    else if (pp_check_dot(p, ".cube")){ dim = SSIR_TEX_CUBE;     ncoords = 4; pp_next(p); }
+
+    if (coord_count) *coord_count = ncoords;
+    return dim;
+}
+
+/* Parse .texref / .samplerref / .surfref global declaration */
+static void pp_parse_texref_decl(PtxParser *p) {
+    /* We are positioned on the .texref / .samplerref / .surfref dot token */
+    bool is_texref = pp_check_dot(p, ".texref");
+    bool is_samplerref = pp_check_dot(p, ".samplerref");
+    bool is_surfref = pp_check_dot(p, ".surfref");
+    pp_next(p); /* consume the type token */
+
+    /* Name */
+    char name[80];
+    pp_read_ident(p, name, sizeof(name));
+    pp_eat(p, PTK_SEMI);
+
+    if (is_texref) {
+        /* Default to 2D texture with f32 sampled type */
+        uint32_t f32_t = ssir_type_f32(p->mod);
+        uint32_t tex_t = ssir_type_texture(p->mod, SSIR_TEX_2D, f32_t);
+        uint32_t ptr_t = ssir_type_ptr(p->mod, tex_t, SSIR_ADDR_UNIFORM_CONSTANT);
+        uint32_t gid = ssir_global_var(p->mod, name, ptr_t);
+        ssir_global_set_group(p->mod, gid, 0);
+        ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        pp_add_iface(p, gid);
+        pp_add_texref(p, name, gid, tex_t, false, SSIR_TEX_2D);
+    } else if (is_samplerref) {
+        uint32_t sampler_t = ssir_type_sampler(p->mod);
+        uint32_t ptr_t = ssir_type_ptr(p->mod, sampler_t, SSIR_ADDR_UNIFORM_CONSTANT);
+        uint32_t gid = ssir_global_var(p->mod, name, ptr_t);
+        ssir_global_set_group(p->mod, gid, 0);
+        ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        pp_add_iface(p, gid);
+        pp_add_sampler(p, name, gid, sampler_t);
+    } else if (is_surfref) {
+        /* Surface = storage texture with rgba32ui format (PTX surfaces are
+         * byte-addressed via .b8/.b16/.b32, so uint is the natural format) */
+        uint32_t surf_t = ssir_type_texture_storage(p->mod, SSIR_TEX_2D,
+            30 /* SpvImageFormatRgba32ui */, SSIR_ACCESS_READ_WRITE);
+        uint32_t ptr_t = ssir_type_ptr(p->mod, surf_t, SSIR_ADDR_UNIFORM_CONSTANT);
+        uint32_t gid = ssir_global_var(p->mod, name, ptr_t);
+        ssir_global_set_group(p->mod, gid, 0);
+        ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        pp_add_iface(p, gid);
+        pp_add_texref(p, name, gid, surf_t, true, SSIR_TEX_2D);
+    }
+
+    /* Update module-level binding base so entry points start after these */
+    p->module_binding_base = p->next_binding;
+}
+
 static bool pp_is_signed_type(uint32_t type_kind) {
     /* Check if an SSIR type is signed integer */
     return type_kind == SSIR_TYPE_I8 || type_kind == SSIR_TYPE_I16 ||
@@ -626,6 +816,16 @@ static bool pp_is_signed_type(uint32_t type_kind) {
 static bool pp_is_float_type(uint32_t type_kind) {
     return type_kind == SSIR_TYPE_F16 || type_kind == SSIR_TYPE_F32 ||
            type_kind == SSIR_TYPE_F64;
+}
+
+/* Pick SPIR-V image format matching the given element type.
+ * SpvImageFormatRgba32f=1, SpvImageFormatRgba32i=21, SpvImageFormatRgba32ui=30 */
+static uint32_t pp_surface_format_for_type(PtxParser *p, uint32_t elem_type) {
+    SsirType *ty = ssir_get_type(p->mod, elem_type);
+    if (!ty) return 1;
+    if (pp_is_signed_type(ty->kind)) return 21; /* Rgba32i */
+    if (pp_is_float_type(ty->kind))  return 1;  /* Rgba32f */
+    return 30; /* Rgba32ui — unsigned / untyped */
 }
 
 /* ============================================================================
@@ -663,6 +863,18 @@ static uint32_t pp_load_special_reg(PtxParser *p, const char *name,
 /* ============================================================================
  * Operand Parsing
  * ============================================================================ */
+
+/* Return the bit width of a scalar SSIR type, or 0 if unknown. */
+static int pp_scalar_bit_width(const SsirType *t) {
+    switch (t->kind) {
+    case SSIR_TYPE_BOOL:  return 1;
+    case SSIR_TYPE_U8:  case SSIR_TYPE_I8:  return 8;
+    case SSIR_TYPE_U16: case SSIR_TYPE_I16: case SSIR_TYPE_F16: return 16;
+    case SSIR_TYPE_U32: case SSIR_TYPE_I32: case SSIR_TYPE_F32: return 32;
+    case SSIR_TYPE_U64: case SSIR_TYPE_I64: case SSIR_TYPE_F64: return 64;
+    default: return 0;
+    }
+}
 
 /* Parse a single operand: register, immediate, or special register */
 static uint32_t pp_parse_operand(PtxParser *p, uint32_t expected_type) {
@@ -716,7 +928,22 @@ static uint32_t pp_parse_operand(PtxParser *p, uint32_t expected_type) {
         }
 
         pp_next(p);
-        return pp_load_reg(p, name);
+        uint32_t val = pp_load_reg(p, name);
+        /* PTX treats .b32/.u32/.s32 as equivalent bit patterns, but SPIR-V
+         * requires exact type matches.  Insert a bitcast when the register's
+         * declared type differs from the instruction's expected type (same
+         * bit-width, e.g., u32 ↔ i32, u64 ↔ i64). */
+        if (val && expected_type) {
+            PtxReg *r = pp_find_reg(p, name);
+            if (r && r->val_type != expected_type) {
+                SsirType *rt = ssir_get_type(p->mod, r->val_type);
+                SsirType *et = ssir_get_type(p->mod, expected_type);
+                if (rt && et && pp_scalar_bit_width(rt) == pp_scalar_bit_width(et))
+                    val = ssir_build_bitcast(p->mod, p->func_id, p->block_id,
+                                             expected_type, val);
+            }
+        }
+        return val;
     }
 
     pp_error(p, "expected operand");
@@ -773,10 +1000,25 @@ static uint32_t pp_load_special_reg(PtxParser *p, const char *name,
         comp = pp_component_index(name[8]);
         gname = "gl_NumWorkGroups";
     } else if (strncmp(name, "%ntid.", 6) == 0) {
-        /* Workgroup size - emit as constant if known, else use built-in */
+        /* Workgroup size - emit as constant if known, else load from push constant */
         comp = pp_component_index(name[6]);
         if (p->wg_size[comp] > 0) {
             uint32_t val = ssir_const_u32(p->mod, p->wg_size[comp]);
+            if (expected_type != u32_t && expected_type != 0)
+                return ssir_build_convert(p->mod, p->func_id, p->block_id,
+                                          expected_type, val);
+            return val;
+        }
+        /* Load from hidden push constant members (__ntid_x/y/z) */
+        if (p->use_bda && p->bda_pc_global) {
+            uint32_t member_idx = p->bda_param_count + (uint32_t)comp;
+            uint32_t pc_u32_ptr = ssir_type_ptr(p->mod, u32_t, SSIR_ADDR_PUSH_CONSTANT);
+            uint32_t idx_const = ssir_const_u32(p->mod, member_idx);
+            uint32_t indices[] = { idx_const };
+            uint32_t ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                pc_u32_ptr, p->bda_pc_global, indices, 1);
+            uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                           u32_t, ptr);
             if (expected_type != u32_t && expected_type != 0)
                 return ssir_build_convert(p->mod, p->func_id, p->block_id,
                                           expected_type, val);
@@ -871,6 +1113,13 @@ static void pp_parse_global_decl(PtxParser *p, const char *space_name) {
     if (pp_check_dot(p, ".align")) {
         pp_next(p);
         if (pp_check(p, PTK_INT_LIT)) { alignment = (uint32_t)p->cur.int_val; pp_next(p); }
+    }
+
+    /* Check for .texref / .samplerref / .surfref */
+    if (pp_check_dot(p, ".texref") || pp_check_dot(p, ".samplerref") ||
+        pp_check_dot(p, ".surfref")) {
+        pp_parse_texref_decl(p);
+        return;
     }
 
     /* Type */
@@ -968,22 +1217,36 @@ static void pp_parse_reg_decl(PtxParser *p) {
  * Instruction Parsing - Arithmetic
  * ============================================================================ */
 
-static void pp_skip_modifiers(PtxParser *p) {
-    /* Skip rounding, saturation, approx, ftz, lo/hi/wide modifiers */
-    while (pp_check_dot(p, ".rn") || pp_check_dot(p, ".rz") ||
-           pp_check_dot(p, ".rm") || pp_check_dot(p, ".rp") ||
-           pp_check_dot(p, ".rni") || pp_check_dot(p, ".rzi") ||
-           pp_check_dot(p, ".rmi") || pp_check_dot(p, ".rpi") ||
-           pp_check_dot(p, ".sat") || pp_check_dot(p, ".approx") ||
-           pp_check_dot(p, ".ftz") || pp_check_dot(p, ".lo") ||
-           pp_check_dot(p, ".hi") || pp_check_dot(p, ".wide")) {
-        pp_next(p);
+/* Skip rounding, saturation, approx, ftz, lo/hi/wide modifiers.
+ * If out_wide is non-NULL, sets *out_wide to true when .wide is present. */
+static void pp_skip_modifiers_ex(PtxParser *p, bool *out_wide) {
+    if (out_wide) *out_wide = false;
+    for (;;) {
+        if (pp_check_dot(p, ".wide")) {
+            if (out_wide) *out_wide = true;
+            pp_next(p);
+        } else if (pp_check_dot(p, ".rn") || pp_check_dot(p, ".rz") ||
+                   pp_check_dot(p, ".rm") || pp_check_dot(p, ".rp") ||
+                   pp_check_dot(p, ".rni") || pp_check_dot(p, ".rzi") ||
+                   pp_check_dot(p, ".rmi") || pp_check_dot(p, ".rpi") ||
+                   pp_check_dot(p, ".sat") || pp_check_dot(p, ".approx") ||
+                   pp_check_dot(p, ".ftz") || pp_check_dot(p, ".lo") ||
+                   pp_check_dot(p, ".hi")) {
+            pp_next(p);
+        } else {
+            break;
+        }
     }
+}
+
+static void pp_skip_modifiers(PtxParser *p) {
+    pp_skip_modifiers_ex(p, NULL);
 }
 
 static void pp_parse_arith(PtxParser *p, const char *opname) {
     /* opcode[.modifiers].type dst, src1, src2 */
-    pp_skip_modifiers(p);
+    bool is_wide = false;
+    pp_skip_modifiers_ex(p, &is_wide);
     uint32_t type = pp_ptx_type(p);
     if (!type) { pp_error(p, "expected type for %s", opname); return; }
 
@@ -1003,24 +1266,42 @@ static void pp_parse_arith(PtxParser *p, const char *opname) {
 
     if (p->had_error) return;
 
+    /* For mul.wide, widen operands to 64-bit and compute in 64-bit.
+     * e.g., mul.wide.s32 widens s32 operands to s64 and multiplies. */
+    uint32_t result_type = type;
+    if (is_wide && strcmp(opname, "mul") == 0) {
+        SsirType *ty = ssir_get_type(p->mod, type);
+        if (ty && (ty->kind == SSIR_TYPE_I32 || ty->kind == SSIR_TYPE_U32)) {
+            result_type = (ty->kind == SSIR_TYPE_I32)
+                ? ssir_type_i64(p->mod) : ssir_type_u64(p->mod);
+            a = ssir_build_convert(p->mod, p->func_id, p->block_id, result_type, a);
+            b = ssir_build_convert(p->mod, p->func_id, p->block_id, result_type, b);
+        } else if (ty && (ty->kind == SSIR_TYPE_I16 || ty->kind == SSIR_TYPE_U16)) {
+            result_type = (ty->kind == SSIR_TYPE_I16)
+                ? ssir_type_i32(p->mod) : ssir_type_u32(p->mod);
+            a = ssir_build_convert(p->mod, p->func_id, p->block_id, result_type, a);
+            b = ssir_build_convert(p->mod, p->func_id, p->block_id, result_type, b);
+        }
+    }
+
     uint32_t result = 0;
     if (strcmp(opname, "add") == 0)
-        result = ssir_build_add(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_add(p->mod, p->func_id, p->block_id, result_type, a, b);
     else if (strcmp(opname, "sub") == 0)
-        result = ssir_build_sub(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_sub(p->mod, p->func_id, p->block_id, result_type, a, b);
     else if (strcmp(opname, "mul") == 0)
-        result = ssir_build_mul(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_mul(p->mod, p->func_id, p->block_id, result_type, a, b);
     else if (strcmp(opname, "div") == 0)
-        result = ssir_build_div(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_div(p->mod, p->func_id, p->block_id, result_type, a, b);
     else if (strcmp(opname, "rem") == 0)
-        result = ssir_build_rem(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_rem(p->mod, p->func_id, p->block_id, result_type, a, b);
 
     if (result) {
-        pp_store_reg(p, dst, result);
+        pp_store_reg_typed(p, dst, result, result_type);
         /* For address arithmetic (add/sub with u64/s64), propagate buffer
          * association from the base pointer operand to the result. */
         if (src1_name[0] && (strcmp(opname, "add") == 0 || strcmp(opname, "sub") == 0)) {
-            SsirType *t = ssir_get_type(p->mod, type);
+            SsirType *t = ssir_get_type(p->mod, result_type);
             if (t && (t->kind == SSIR_TYPE_U64 || t->kind == SSIR_TYPE_I64))
                 pp_propagate_buffer(p, dst, src1_name);
         }
@@ -1065,7 +1346,7 @@ static void pp_parse_unary_arith(PtxParser *p, const char *opname) {
                                     type, SSIR_BUILTIN_SELECT, args, 3);
     }
 
-    if (result) pp_store_reg(p, dst, result);
+    if (result) pp_store_reg_typed(p, dst, result, type);
 }
 
 static void pp_parse_minmax(PtxParser *p, const char *opname) {
@@ -1088,7 +1369,7 @@ static void pp_parse_minmax(PtxParser *p, const char *opname) {
     uint32_t args[] = { a, b };
     uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
                                          type, bid, args, 2);
-    pp_store_reg(p, dst, result);
+    pp_store_reg_typed(p, dst, result, type);
 }
 
 static void pp_parse_mad(PtxParser *p) {
@@ -1115,12 +1396,12 @@ static void pp_parse_mad(PtxParser *p) {
         uint32_t args[] = { a, b, c };
         uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
                                              type, SSIR_BUILTIN_FMA, args, 3);
-        pp_store_reg(p, dst, result);
+        pp_store_reg_typed(p, dst, result, type);
     } else {
         /* mul + add for integer */
         uint32_t mul = ssir_build_mul(p->mod, p->func_id, p->block_id, type, a, b);
         uint32_t result = ssir_build_add(p->mod, p->func_id, p->block_id, type, mul, c);
-        pp_store_reg(p, dst, result);
+        pp_store_reg_typed(p, dst, result, type);
     }
 }
 
@@ -1180,7 +1461,7 @@ static void pp_parse_bitwise(PtxParser *p, const char *opname) {
     else if (strcmp(opname, "xor") == 0)
         result = ssir_build_bit_xor(p->mod, p->func_id, p->block_id, type, a, b);
 
-    if (result) pp_store_reg(p, dst, result);
+    if (result) pp_store_reg_typed(p, dst, result, type);
 }
 
 static void pp_parse_shift(PtxParser *p, const char *opname) {
@@ -1207,7 +1488,7 @@ static void pp_parse_shift(PtxParser *p, const char *opname) {
     else
         result = ssir_build_shr_logical(p->mod, p->func_id, p->block_id, type, a, b);
 
-    pp_store_reg(p, dst, result);
+    pp_store_reg_typed(p, dst, result, type);
 }
 
 /* ============================================================================
@@ -1467,7 +1748,19 @@ static void pp_parse_ld(PtxParser *p) {
             if (p->had_error) return;
 
             PtxReg *base_reg = base_name[0] ? pp_find_reg(p, base_name) : NULL;
-            if (base_reg && (base_reg->pending_binding != UINT32_MAX || base_reg->global_id != 0)) {
+
+            /* BDA mode: use PhysicalStorageBuffer pointers */
+            if (base_reg && base_reg->is_bda_ptr && p->use_bda) {
+                /* byte_offset is the u64 address (base + offset computed by
+                 * pp_parse_address_ex).  Convert to a typed PSB pointer and load. */
+                uint32_t psb_ptr_type = ssir_type_ptr(p->mod, type,
+                    SSIR_ADDR_PHYSICAL_STORAGE_BUFFER);
+                uint32_t typed_ptr = ssir_build_bitcast(p->mod, p->func_id,
+                    p->block_id, psb_ptr_type, byte_offset);
+                uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                    type, typed_ptr);
+                pp_store_reg(p, dst, val);
+            } else if (base_reg && (base_reg->pending_binding != UINT32_MAX || base_reg->global_id != 0)) {
                 /* Buffer-aware access chain path */
                 uint32_t buf_global = pp_materialize_buffer(p, base_reg, type);
                 uint32_t u64_t = ssir_type_u64(p->mod);
@@ -1547,7 +1840,15 @@ static void pp_parse_st(PtxParser *p) {
             if (p->had_error) return;
 
             PtxReg *base_reg = base_name[0] ? pp_find_reg(p, base_name) : NULL;
-            if (base_reg && (base_reg->pending_binding != UINT32_MAX || base_reg->global_id != 0)) {
+
+            /* BDA mode: use PhysicalStorageBuffer pointers */
+            if (base_reg && base_reg->is_bda_ptr && p->use_bda) {
+                uint32_t psb_ptr_type = ssir_type_ptr(p->mod, type,
+                    SSIR_ADDR_PHYSICAL_STORAGE_BUFFER);
+                uint32_t typed_ptr = ssir_build_bitcast(p->mod, p->func_id,
+                    p->block_id, psb_ptr_type, byte_offset);
+                ssir_build_store(p->mod, p->func_id, p->block_id, typed_ptr, val);
+            } else if (base_reg && (base_reg->pending_binding != UINT32_MAX || base_reg->global_id != 0)) {
                 /* Buffer-aware access chain path */
                 uint32_t buf_global = pp_materialize_buffer(p, base_reg, type);
                 uint32_t u64_t = ssir_type_u64(p->mod);
@@ -1804,8 +2105,8 @@ static void pp_parse_bra(PtxParser *p) {
                                       ssir_type_bool(p->mod), pred_val);
         }
         uint32_t fallthrough = ssir_block_create(p->mod, p->func_id, NULL);
-        ssir_build_branch_cond(p->mod, p->func_id, p->block_id,
-                               pred_val, target, fallthrough);
+        ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
+                               pred_val, target, fallthrough, target);
         p->block_id = fallthrough;
         p->has_pred = false;
     } else {
@@ -1880,6 +2181,638 @@ static void pp_parse_call(PtxParser *p) {
 
     if (ret_reg[0] && result) {
         pp_store_reg(p, ret_reg, result);
+    }
+}
+
+/* ============================================================================
+ * Instruction Parsing - Texture/Surface Operations
+ * ============================================================================ */
+
+static void pp_parse_tex(PtxParser *p) {
+    /* tex[.mipmode].geom.v4.dtype.ctype {d0,d1,d2,d3}, [texname, {coords}]; */
+
+    /* Parse optional mip mode (comes before geometry in PTX ISA) */
+    enum { MIP_NONE, MIP_LEVEL, MIP_GRAD } mip_mode = MIP_NONE;
+    if (pp_check_dot(p, ".level")) { mip_mode = MIP_LEVEL; pp_next(p); }
+    else if (pp_check_dot(p, ".grad")) { mip_mode = MIP_GRAD; pp_next(p); }
+
+    /* Parse geometry suffix */
+    int coord_count = 2;
+    SsirTextureDim dim = pp_parse_tex_geometry(p, &coord_count);
+
+    /* Parse vector width (.v4) */
+    int vec_width = 4;
+    if (pp_check_dot(p, ".v4")) { vec_width = 4; pp_next(p); }
+    else if (pp_check_dot(p, ".v2")) { vec_width = 2; pp_next(p); }
+
+    /* Parse destination type (.f32, .s32, .u32) */
+    uint32_t dst_type = pp_ptx_type(p);
+    if (!dst_type) { pp_error(p, "expected dest type for tex"); return; }
+
+    /* Parse coordinate type (.f32, .s32) */
+    uint32_t coord_type = pp_ptx_type(p);
+    if (!coord_type) { pp_error(p, "expected coord type for tex"); return; }
+
+    /* Parse destination registers: {%f0, %f1, %f2, %f3} */
+    pp_expect(p, PTK_LBRACE, "{");
+    char dsts[4][80];
+    int ndst = 0;
+    while (ndst < vec_width && !pp_check(p, PTK_RBRACE) && !pp_check(p, PTK_EOF)) {
+        if (ndst > 0) pp_expect(p, PTK_COMMA, ",");
+        pp_read_ident(p, dsts[ndst], sizeof(dsts[ndst]));
+        ndst++;
+    }
+    pp_expect(p, PTK_RBRACE, "}");
+    pp_expect(p, PTK_COMMA, ",");
+
+    /* Parse [texname, {coord0, coord1, ...}] */
+    pp_expect(p, PTK_LBRACKET, "[");
+    char tex_name[80];
+    pp_read_ident(p, tex_name, sizeof(tex_name));
+    pp_expect(p, PTK_COMMA, ",");
+
+    /* Parse coordinate registers in braces.
+     * For tex.level, the LOD is the last element in the coord braces.
+     * For tex.grad, the gradients (ddx, ddy per component) trail the coords. */
+    pp_expect(p, PTK_LBRACE, "{");
+    uint32_t all_coords[16] = {0};
+    int nall = 0;
+    while (nall < 16 && !pp_check(p, PTK_RBRACE) && !pp_check(p, PTK_EOF)) {
+        if (nall > 0) pp_expect(p, PTK_COMMA, ",");
+        all_coords[nall] = pp_parse_operand(p, coord_type);
+        nall++;
+    }
+    pp_expect(p, PTK_RBRACE, "}");
+
+    /* Split coordinates from LOD/gradient values based on geometry */
+    int base_coords = coord_count; /* number of spatial coords for this geometry */
+    uint32_t coords[4] = {0};
+    int ncoords = base_coords < nall ? base_coords : nall;
+    for (int i = 0; i < ncoords; i++) coords[i] = all_coords[i];
+
+    uint32_t lod_val = 0;
+    uint32_t ddx_val = 0, ddy_val = 0;
+    if (mip_mode == MIP_LEVEL && nall > base_coords) {
+        /* Last element after spatial coords is the LOD */
+        lod_val = all_coords[base_coords];
+    } else if (mip_mode == MIP_GRAD && nall > base_coords) {
+        /* After spatial coords: ddx components then ddy components.
+         * For 2D: coords[0..1]=uv, coords[2..3]=ddx, coords[4..5]=ddy */
+        int grad_start = base_coords;
+        int grad_dim = base_coords; /* gradient has same dimensionality as coords */
+        uint32_t f32_t2 = ssir_type_f32(p->mod);
+        if (grad_dim == 1) {
+            ddx_val = (grad_start < nall) ? all_coords[grad_start] : ssir_const_f32(p->mod, 0.0f);
+            ddy_val = (grad_start + 1 < nall) ? all_coords[grad_start + 1] : ssir_const_f32(p->mod, 0.0f);
+        } else {
+            /* Build vec2/vec3 for ddx and ddy */
+            uint32_t ddx_comps[4] = {0}, ddy_comps[4] = {0};
+            for (int i = 0; i < grad_dim && i < 4; i++) {
+                ddx_comps[i] = (grad_start + i < nall) ? all_coords[grad_start + i] : ssir_const_f32(p->mod, 0.0f);
+                ddy_comps[i] = (grad_start + grad_dim + i < nall) ? all_coords[grad_start + grad_dim + i] : ssir_const_f32(p->mod, 0.0f);
+            }
+            uint32_t gvec_t = ssir_type_vec(p->mod, f32_t2, grad_dim);
+            ddx_val = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                            gvec_t, ddx_comps, grad_dim);
+            ddy_val = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                            gvec_t, ddy_comps, grad_dim);
+        }
+    }
+
+    pp_expect(p, PTK_RBRACKET, "]");
+    pp_eat(p, PTK_SEMI);
+
+    if (p->had_error) return;
+
+    /* Find or create texture reference */
+    PtxTexRef *tref = pp_find_texref(p, tex_name);
+    if (!tref) {
+        /* Auto-create a texref if not declared (some PTX omits declarations) */
+        uint32_t f32_t = ssir_type_f32(p->mod);
+        uint32_t tex_t = ssir_type_texture(p->mod, dim, f32_t);
+        uint32_t ptr_t = ssir_type_ptr(p->mod, tex_t, SSIR_ADDR_UNIFORM_CONSTANT);
+        uint32_t gid = ssir_global_var(p->mod, tex_name, ptr_t);
+        ssir_global_set_group(p->mod, gid, 0);
+        ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        pp_add_iface(p, gid);
+        tref = pp_add_texref(p, tex_name, gid, tex_t, false, dim);
+    }
+
+    /* Get or create implicit sampler */
+    PtxSamplerRef *sref = pp_get_implicit_sampler(p, tex_name);
+
+    /* Load texture and sampler from globals */
+    uint32_t tex_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                        tref->type_id, tref->global_id);
+    uint32_t sampler_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                            sref->type_id, sref->global_id);
+
+    /* Build coordinate vector.
+     * For array textures (a1d, a2d), the first coordinate is the array index
+     * which PTX provides as an integer. We need to assemble the proper coord vec.
+     * For non-array dims: build vec of the right size. */
+    uint32_t f32_t = ssir_type_f32(p->mod);
+    int ssir_coord_count = 0; /* number of coords for SSIR */
+    switch (dim) {
+        case SSIR_TEX_1D:       ssir_coord_count = 1; break;
+        case SSIR_TEX_2D:       ssir_coord_count = 2; break;
+        case SSIR_TEX_3D:       ssir_coord_count = 3; break;
+        case SSIR_TEX_CUBE:     ssir_coord_count = 3; break;
+        case SSIR_TEX_1D_ARRAY: ssir_coord_count = 2; break;
+        case SSIR_TEX_2D_ARRAY: ssir_coord_count = 3; break;
+        default:                ssir_coord_count = 2; break;
+    }
+
+    /* Convert coordinates to f32 if needed */
+    uint32_t f32_coords[4];
+    for (int i = 0; i < ncoords && i < 4; i++) {
+        SsirType *ct = ssir_get_type(p->mod, coord_type);
+        if (ct && ct->kind != SSIR_TYPE_F32) {
+            f32_coords[i] = ssir_build_convert(p->mod, p->func_id, p->block_id,
+                                                f32_t, coords[i]);
+        } else {
+            f32_coords[i] = coords[i];
+        }
+    }
+
+    /* Construct coordinate vector */
+    uint32_t coord_vec;
+    if (ssir_coord_count == 1) {
+        coord_vec = f32_coords[0];
+    } else {
+        uint32_t vec_t = ssir_type_vec(p->mod, f32_t, ssir_coord_count);
+        /* For array textures, the first PTX coord is array index, remaining are spatial.
+         * For a2d: {array_idx, u, v, _} -> vec3(u, v, array_idx)
+         * For a1d: {array_idx, u} -> vec2(u, array_idx) */
+        if (dim == SSIR_TEX_2D_ARRAY && ncoords >= 3) {
+            uint32_t comps[3] = { f32_coords[1], f32_coords[2], f32_coords[0] };
+            coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                             vec_t, comps, 3);
+        } else if (dim == SSIR_TEX_1D_ARRAY && ncoords >= 2) {
+            uint32_t comps[2] = { f32_coords[1], f32_coords[0] };
+            coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                             vec_t, comps, 2);
+        } else {
+            coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                             vec_t, f32_coords, ssir_coord_count);
+        }
+    }
+
+    /* Build the sample operation */
+    uint32_t vec4_t = ssir_type_vec(p->mod, dst_type, 4);
+    uint32_t result = 0;
+    switch (mip_mode) {
+        case MIP_LEVEL:
+            result = ssir_build_tex_sample_level(p->mod, p->func_id, p->block_id,
+                                                  vec4_t, tex_val, sampler_val,
+                                                  coord_vec, lod_val);
+            break;
+        case MIP_GRAD:
+            result = ssir_build_tex_sample_grad(p->mod, p->func_id, p->block_id,
+                                                 vec4_t, tex_val, sampler_val,
+                                                 coord_vec, ddx_val, ddy_val);
+            break;
+        default: {
+            /* PTX kernels are compute shaders — ImplicitLod is not allowed
+             * in compute. Use explicit LOD 0 instead. */
+            uint32_t lod0 = ssir_const_f32(p->mod, 0.0f);
+            result = ssir_build_tex_sample_level(p->mod, p->func_id, p->block_id,
+                                                  vec4_t, tex_val, sampler_val,
+                                                  coord_vec, lod0);
+            break;
+        }
+    }
+
+    /* Extract components to destination registers */
+    for (int i = 0; i < ndst && i < 4; i++) {
+        uint32_t comp = ssir_build_extract(p->mod, p->func_id, p->block_id,
+                                            dst_type, result, i);
+        pp_store_reg(p, dsts[i], comp);
+    }
+}
+
+static void pp_parse_tld4(PtxParser *p) {
+    /* tld4.comp.geom.v4.dtype.ctype {d0,d1,d2,d3}, [texname, {coords}]; */
+
+    /* Parse gather component (.r, .g, .b, .a) */
+    uint32_t component = 0;
+    if (pp_check_dot(p, ".r"))      { component = 0; pp_next(p); }
+    else if (pp_check_dot(p, ".g")) { component = 1; pp_next(p); }
+    else if (pp_check_dot(p, ".b")) { component = 2; pp_next(p); }
+    else if (pp_check_dot(p, ".a")) { component = 3; pp_next(p); }
+    else { pp_error(p, "expected component (.r/.g/.b/.a) for tld4"); return; }
+
+    /* Parse geometry */
+    int coord_count = 2;
+    SsirTextureDim dim = pp_parse_tex_geometry(p, &coord_count);
+
+    /* Parse vector width (.v4) */
+    if (pp_check_dot(p, ".v4")) pp_next(p);
+
+    /* Parse destination type */
+    uint32_t dst_type = pp_ptx_type(p);
+    if (!dst_type) { pp_error(p, "expected dest type for tld4"); return; }
+
+    /* Parse coordinate type */
+    uint32_t coord_type = pp_ptx_type(p);
+    if (!coord_type) { pp_error(p, "expected coord type for tld4"); return; }
+
+    /* Parse destination registers */
+    pp_expect(p, PTK_LBRACE, "{");
+    char dsts[4][80];
+    int ndst = 0;
+    while (ndst < 4 && !pp_check(p, PTK_RBRACE) && !pp_check(p, PTK_EOF)) {
+        if (ndst > 0) pp_expect(p, PTK_COMMA, ",");
+        pp_read_ident(p, dsts[ndst], sizeof(dsts[ndst]));
+        ndst++;
+    }
+    pp_expect(p, PTK_RBRACE, "}");
+    pp_expect(p, PTK_COMMA, ",");
+
+    /* Parse [texname, {coords}] */
+    pp_expect(p, PTK_LBRACKET, "[");
+    char tex_name[80];
+    pp_read_ident(p, tex_name, sizeof(tex_name));
+    pp_expect(p, PTK_COMMA, ",");
+
+    pp_expect(p, PTK_LBRACE, "{");
+    uint32_t coords[4] = {0};
+    int ncoords = 0;
+    while (ncoords < 4 && !pp_check(p, PTK_RBRACE) && !pp_check(p, PTK_EOF)) {
+        if (ncoords > 0) pp_expect(p, PTK_COMMA, ",");
+        coords[ncoords] = pp_parse_operand(p, coord_type);
+        ncoords++;
+    }
+    pp_expect(p, PTK_RBRACE, "}");
+    pp_expect(p, PTK_RBRACKET, "]");
+    pp_eat(p, PTK_SEMI);
+
+    if (p->had_error) return;
+
+    /* Find texture */
+    PtxTexRef *tref = pp_find_texref(p, tex_name);
+    if (!tref) {
+        uint32_t f32_t = ssir_type_f32(p->mod);
+        uint32_t tex_t = ssir_type_texture(p->mod, dim, f32_t);
+        uint32_t ptr_t = ssir_type_ptr(p->mod, tex_t, SSIR_ADDR_UNIFORM_CONSTANT);
+        uint32_t gid = ssir_global_var(p->mod, tex_name, ptr_t);
+        ssir_global_set_group(p->mod, gid, 0);
+        ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        pp_add_iface(p, gid);
+        tref = pp_add_texref(p, tex_name, gid, tex_t, false, dim);
+    }
+
+    PtxSamplerRef *sref = pp_get_implicit_sampler(p, tex_name);
+
+    uint32_t tex_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                        tref->type_id, tref->global_id);
+    uint32_t sampler_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                            sref->type_id, sref->global_id);
+
+    /* Build coordinate vector */
+    uint32_t f32_t = ssir_type_f32(p->mod);
+    uint32_t f32_coords[4];
+    for (int i = 0; i < ncoords && i < 4; i++) {
+        SsirType *ct = ssir_get_type(p->mod, coord_type);
+        if (ct && ct->kind != SSIR_TYPE_F32) {
+            f32_coords[i] = ssir_build_convert(p->mod, p->func_id, p->block_id,
+                                                f32_t, coords[i]);
+        } else {
+            f32_coords[i] = coords[i];
+        }
+    }
+
+    int ssir_coord_count = (dim == SSIR_TEX_2D) ? 2 : 3;
+    uint32_t coord_vec;
+    if (ssir_coord_count == 1) {
+        coord_vec = f32_coords[0];
+    } else {
+        uint32_t vec_t = ssir_type_vec(p->mod, f32_t, ssir_coord_count);
+        coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                         vec_t, f32_coords, ssir_coord_count);
+    }
+
+    /* Build gather */
+    uint32_t vec4_t = ssir_type_vec(p->mod, dst_type, 4);
+    uint32_t comp_val = ssir_const_u32(p->mod, component);
+    uint32_t result = ssir_build_tex_gather(p->mod, p->func_id, p->block_id,
+                                             vec4_t, tex_val, sampler_val,
+                                             coord_vec, comp_val);
+
+    /* Extract components */
+    for (int i = 0; i < ndst && i < 4; i++) {
+        uint32_t comp = ssir_build_extract(p->mod, p->func_id, p->block_id,
+                                            dst_type, result, i);
+        pp_store_reg(p, dsts[i], comp);
+    }
+}
+
+static void pp_parse_suld(PtxParser *p) {
+    /* suld.b.geom.v4.bN {d0,d1,d2,d3}, [surfname, {coords}]; */
+
+    /* Skip .b (byte addressing) or .p (packed) */
+    if (pp_check_dot(p, ".b") || pp_check_dot(p, ".p")) pp_next(p);
+
+    /* Parse geometry */
+    int coord_count = 2;
+    SsirTextureDim dim = pp_parse_tex_geometry(p, &coord_count);
+
+    /* Parse vector width */
+    int vec_width = 4;
+    if (pp_check_dot(p, ".v4")) { vec_width = 4; pp_next(p); }
+    else if (pp_check_dot(p, ".v2")) { vec_width = 2; pp_next(p); }
+
+    /* Parse element type (.b8, .b16, .b32, .b64) */
+    uint32_t elem_type = pp_ptx_type(p);
+    if (!elem_type) { pp_error(p, "expected type for suld"); return; }
+
+    /* Parse destination registers */
+    pp_expect(p, PTK_LBRACE, "{");
+    char dsts[4][80];
+    int ndst = 0;
+    while (ndst < vec_width && !pp_check(p, PTK_RBRACE) && !pp_check(p, PTK_EOF)) {
+        if (ndst > 0) pp_expect(p, PTK_COMMA, ",");
+        pp_read_ident(p, dsts[ndst], sizeof(dsts[ndst]));
+        ndst++;
+    }
+    pp_expect(p, PTK_RBRACE, "}");
+    pp_expect(p, PTK_COMMA, ",");
+
+    /* Parse [surfname, {coords}] */
+    pp_expect(p, PTK_LBRACKET, "[");
+    char surf_name[80];
+    pp_read_ident(p, surf_name, sizeof(surf_name));
+    pp_expect(p, PTK_COMMA, ",");
+
+    pp_expect(p, PTK_LBRACE, "{");
+    uint32_t coords[4] = {0};
+    int ncoords = 0;
+    uint32_t u32_t = ssir_type_u32(p->mod);
+    while (ncoords < 4 && !pp_check(p, PTK_RBRACE) && !pp_check(p, PTK_EOF)) {
+        if (ncoords > 0) pp_expect(p, PTK_COMMA, ",");
+        coords[ncoords] = pp_parse_operand(p, u32_t);
+        ncoords++;
+    }
+    pp_expect(p, PTK_RBRACE, "}");
+    pp_expect(p, PTK_RBRACKET, "]");
+    pp_eat(p, PTK_SEMI);
+
+    if (p->had_error) return;
+
+    /* Find surface */
+    PtxTexRef *sref = pp_find_texref(p, surf_name);
+    if (!sref) {
+        uint32_t fmt = pp_surface_format_for_type(p, elem_type);
+        uint32_t surf_t = ssir_type_texture_storage(p->mod, dim,
+            fmt, SSIR_ACCESS_READ_WRITE);
+        uint32_t ptr_t = ssir_type_ptr(p->mod, surf_t, SSIR_ADDR_UNIFORM_CONSTANT);
+        uint32_t gid = ssir_global_var(p->mod, surf_name, ptr_t);
+        ssir_global_set_group(p->mod, gid, 0);
+        ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        pp_add_iface(p, gid);
+        sref = pp_add_texref(p, surf_name, gid, surf_t, true, dim);
+    }
+
+    uint32_t surf_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                         sref->type_id, sref->global_id);
+
+    /* Build coordinate vector (surface coords are unsigned integers) */
+    int ssir_coord_count = 0;
+    switch (dim) {
+        case SSIR_TEX_1D: ssir_coord_count = 1; break;
+        case SSIR_TEX_2D: ssir_coord_count = 2; break;
+        case SSIR_TEX_3D: ssir_coord_count = 3; break;
+        default:          ssir_coord_count = 2; break;
+    }
+
+    uint32_t coord_vec;
+    if (ssir_coord_count == 1) {
+        coord_vec = coords[0];
+    } else {
+        uint32_t vec_t = ssir_type_vec(p->mod, u32_t, ssir_coord_count);
+        coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                         vec_t, coords, ssir_coord_count);
+    }
+
+    /* Surface load -> tex_load with level 0 */
+    uint32_t vec4_t = ssir_type_vec(p->mod, elem_type, 4);
+    uint32_t level0 = ssir_const_i32(p->mod, 0);
+    uint32_t result = ssir_build_tex_load(p->mod, p->func_id, p->block_id,
+                                           vec4_t, surf_val, coord_vec, level0);
+
+    /* Extract components */
+    for (int i = 0; i < ndst && i < 4; i++) {
+        uint32_t comp = ssir_build_extract(p->mod, p->func_id, p->block_id,
+                                            elem_type, result, i);
+        pp_store_reg(p, dsts[i], comp);
+    }
+}
+
+static void pp_parse_sust(PtxParser *p) {
+    /* sust.b.geom.v4.bN [surfname, {coords}], {s0,s1,s2,s3}; */
+
+    /* Skip .b (byte addressing) or .p (packed) */
+    if (pp_check_dot(p, ".b") || pp_check_dot(p, ".p")) pp_next(p);
+
+    /* Parse geometry */
+    int coord_count = 2;
+    SsirTextureDim dim = pp_parse_tex_geometry(p, &coord_count);
+
+    /* Parse vector width */
+    int vec_width = 4;
+    if (pp_check_dot(p, ".v4")) { vec_width = 4; pp_next(p); }
+    else if (pp_check_dot(p, ".v2")) { vec_width = 2; pp_next(p); }
+
+    /* Parse element type */
+    uint32_t elem_type = pp_ptx_type(p);
+    if (!elem_type) { pp_error(p, "expected type for sust"); return; }
+
+    /* Parse [surfname, {coords}] */
+    pp_expect(p, PTK_LBRACKET, "[");
+    char surf_name[80];
+    pp_read_ident(p, surf_name, sizeof(surf_name));
+    pp_expect(p, PTK_COMMA, ",");
+
+    pp_expect(p, PTK_LBRACE, "{");
+    uint32_t coords[4] = {0};
+    int ncoords = 0;
+    uint32_t u32_t_coord = ssir_type_u32(p->mod);
+    while (ncoords < 4 && !pp_check(p, PTK_RBRACE) && !pp_check(p, PTK_EOF)) {
+        if (ncoords > 0) pp_expect(p, PTK_COMMA, ",");
+        coords[ncoords] = pp_parse_operand(p, u32_t_coord);
+        ncoords++;
+    }
+    pp_expect(p, PTK_RBRACE, "}");
+    pp_expect(p, PTK_RBRACKET, "]");
+    pp_expect(p, PTK_COMMA, ",");
+
+    /* Parse source values {s0, s1, s2, s3} */
+    pp_expect(p, PTK_LBRACE, "{");
+    uint32_t src_vals[4] = {0};
+    int nsrc = 0;
+    while (nsrc < vec_width && !pp_check(p, PTK_RBRACE) && !pp_check(p, PTK_EOF)) {
+        if (nsrc > 0) pp_expect(p, PTK_COMMA, ",");
+        src_vals[nsrc] = pp_parse_operand(p, elem_type);
+        nsrc++;
+    }
+    pp_expect(p, PTK_RBRACE, "}");
+    pp_eat(p, PTK_SEMI);
+
+    if (p->had_error) return;
+
+    /* Find surface */
+    PtxTexRef *sref = pp_find_texref(p, surf_name);
+    if (!sref) {
+        uint32_t fmt = pp_surface_format_for_type(p, elem_type);
+        uint32_t surf_t = ssir_type_texture_storage(p->mod, dim,
+            fmt, SSIR_ACCESS_READ_WRITE);
+        uint32_t ptr_t = ssir_type_ptr(p->mod, surf_t, SSIR_ADDR_UNIFORM_CONSTANT);
+        uint32_t gid = ssir_global_var(p->mod, surf_name, ptr_t);
+        ssir_global_set_group(p->mod, gid, 0);
+        ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        pp_add_iface(p, gid);
+        sref = pp_add_texref(p, surf_name, gid, surf_t, true, dim);
+    }
+
+    uint32_t surf_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                         sref->type_id, sref->global_id);
+
+    /* Build coordinate vector (surface coords are unsigned integers) */
+    int ssir_coord_count = 0;
+    switch (dim) {
+        case SSIR_TEX_1D: ssir_coord_count = 1; break;
+        case SSIR_TEX_2D: ssir_coord_count = 2; break;
+        case SSIR_TEX_3D: ssir_coord_count = 3; break;
+        default:          ssir_coord_count = 2; break;
+    }
+
+    uint32_t coord_vec;
+    if (ssir_coord_count == 1) {
+        coord_vec = coords[0];
+    } else {
+        uint32_t vec_t = ssir_type_vec(p->mod, u32_t_coord, ssir_coord_count);
+        coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                         vec_t, coords, ssir_coord_count);
+    }
+
+    /* Build value vector */
+    uint32_t vec4_t = ssir_type_vec(p->mod, elem_type, 4);
+    uint32_t value_vec;
+    if (nsrc >= 4) {
+        value_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                         vec4_t, src_vals, 4);
+    } else {
+        /* Pad with zeros to vec4 */
+        uint32_t zero = pp_const_for_type(p, elem_type, 0, 0.0, false);
+        uint32_t padded[4];
+        for (int i = 0; i < 4; i++)
+            padded[i] = (i < nsrc) ? src_vals[i] : zero;
+        value_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+                                         vec4_t, padded, 4);
+    }
+
+    /* Surface store -> tex_store */
+    ssir_build_tex_store(p->mod, p->func_id, p->block_id,
+                          surf_val, coord_vec, value_vec);
+}
+
+static void pp_parse_txq(PtxParser *p) {
+    /* txq.query.type %dst, [texname];
+     * suq.query.type %dst, [surfname]; */
+
+    /* Parse query property */
+    enum { TXQ_WIDTH, TXQ_HEIGHT, TXQ_DEPTH, TXQ_NUM_MIPMAP_LEVELS } query = TXQ_WIDTH;
+    if (pp_check_dot(p, ".width"))              { query = TXQ_WIDTH; pp_next(p); }
+    else if (pp_check_dot(p, ".height"))        { query = TXQ_HEIGHT; pp_next(p); }
+    else if (pp_check_dot(p, ".depth"))         { query = TXQ_DEPTH; pp_next(p); }
+    else if (pp_check_dot(p, ".num_mipmap_levels")) { query = TXQ_NUM_MIPMAP_LEVELS; pp_next(p); }
+    else {
+        /* Skip unknown query type */
+        if (pp_check(p, PTK_DOT_TOKEN)) pp_next(p);
+    }
+
+    /* Parse result type (.b32) */
+    uint32_t res_type = pp_ptx_type(p);
+    if (!res_type) { pp_error(p, "expected type for txq/suq"); return; }
+
+    /* Parse destination register */
+    char dst[80];
+    pp_read_ident(p, dst, sizeof(dst));
+    pp_expect(p, PTK_COMMA, ",");
+
+    /* Parse [texname] */
+    pp_expect(p, PTK_LBRACKET, "[");
+    char tex_name[80];
+    pp_read_ident(p, tex_name, sizeof(tex_name));
+    pp_expect(p, PTK_RBRACKET, "]");
+    pp_eat(p, PTK_SEMI);
+
+    if (p->had_error) return;
+
+    /* Find texture/surface */
+    PtxTexRef *tref = pp_find_texref(p, tex_name);
+    if (!tref) {
+        /* Auto-create */
+        uint32_t f32_t = ssir_type_f32(p->mod);
+        uint32_t tex_t = ssir_type_texture(p->mod, SSIR_TEX_2D, f32_t);
+        uint32_t ptr_t = ssir_type_ptr(p->mod, tex_t, SSIR_ADDR_UNIFORM_CONSTANT);
+        uint32_t gid = ssir_global_var(p->mod, tex_name, ptr_t);
+        ssir_global_set_group(p->mod, gid, 0);
+        ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        pp_add_iface(p, gid);
+        tref = pp_add_texref(p, tex_name, gid, tex_t, false, SSIR_TEX_2D);
+    }
+
+    uint32_t tex_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                        tref->type_id, tref->global_id);
+
+    if (query == TXQ_NUM_MIPMAP_LEVELS) {
+        /* Query mip levels */
+        uint32_t u32_t = ssir_type_u32(p->mod);
+        uint32_t result = ssir_build_tex_query_levels(p->mod, p->func_id,
+                                                       p->block_id, u32_t, tex_val);
+        if (res_type != u32_t)
+            result = ssir_build_convert(p->mod, p->func_id, p->block_id, res_type, result);
+        pp_store_reg(p, dst, result);
+    } else {
+        /* Query size (width/height/depth) -> tex_size returns a vector */
+        uint32_t u32_t = ssir_type_u32(p->mod);
+        /* Determine vector size based on texture dimension */
+        int size_components = 1;
+        switch (tref->dim) {
+            case SSIR_TEX_1D:       size_components = 1; break;
+            case SSIR_TEX_2D:       size_components = 2; break;
+            case SSIR_TEX_3D:       size_components = 3; break;
+            case SSIR_TEX_CUBE:     size_components = 2; break;
+            case SSIR_TEX_1D_ARRAY: size_components = 2; break;
+            case SSIR_TEX_2D_ARRAY: size_components = 3; break;
+            default:                size_components = 2; break;
+        }
+
+        uint32_t level0 = ssir_const_i32(p->mod, 0);
+        uint32_t result;
+        if (size_components == 1) {
+            result = ssir_build_tex_size(p->mod, p->func_id, p->block_id,
+                                          u32_t, tex_val, level0);
+        } else {
+            uint32_t vec_t = ssir_type_vec(p->mod, u32_t, size_components);
+            uint32_t size_vec = ssir_build_tex_size(p->mod, p->func_id, p->block_id,
+                                                     vec_t, tex_val, level0);
+            /* Extract the right component */
+            int comp = 0;
+            switch (query) {
+                case TXQ_WIDTH:  comp = 0; break;
+                case TXQ_HEIGHT: comp = 1; break;
+                case TXQ_DEPTH:  comp = 2; break;
+                default: break;
+            }
+            result = ssir_build_extract(p->mod, p->func_id, p->block_id,
+                                         u32_t, size_vec, comp);
+        }
+
+        if (res_type != u32_t)
+            result = ssir_build_convert(p->mod, p->func_id, p->block_id, res_type, result);
+        pp_store_reg(p, dst, result);
     }
 }
 
@@ -1977,6 +2910,12 @@ static void pp_parse_instruction(PtxParser *p) {
         else if (strcmp(op, "cos") == 0)  { pp_parse_math_unary(p, "cos"); }
         else if (strcmp(op, "lg2") == 0)  { pp_parse_math_unary(p, "lg2"); }
         else if (strcmp(op, "ex2") == 0)  { pp_parse_math_unary(p, "ex2"); }
+        else if (strcmp(op, "tex") == 0)  { pp_parse_tex(p); }
+        else if (strcmp(op, "tld4") == 0) { pp_parse_tld4(p); }
+        else if (strcmp(op, "suld") == 0) { pp_parse_suld(p); }
+        else if (strcmp(op, "sust") == 0) { pp_parse_sust(p); }
+        else if (strcmp(op, "txq") == 0)  { pp_parse_txq(p); }
+        else if (strcmp(op, "suq") == 0)  { pp_parse_txq(p); }
         else {
             /* Unknown instruction — skip to semicolon */
             while (!pp_check(p, PTK_SEMI) && !pp_check(p, PTK_EOF) &&
@@ -2052,6 +2991,11 @@ static void pp_parse_param_list(PtxParser *p) {
     /* Parse kernel parameters: .param .type name [, ...] */
     if (!pp_eat(p, PTK_LPAREN)) return;
 
+    /* Temporary storage for BDA mode: collect params before building struct */
+    typedef struct { char name[80]; uint32_t type; bool is_ptr; } BdaParam;
+    BdaParam bda_params[64];
+    int bda_param_count = 0;
+
     while (!pp_check(p, PTK_RPAREN) && !pp_check(p, PTK_EOF)) {
         /* .param or .reg prefix for parameters */
         if (pp_check_dot(p, ".param")) { pp_next(p); }
@@ -2076,8 +3020,41 @@ static void pp_parse_param_list(PtxParser *p) {
             pp_expect(p, PTK_RBRACKET, "]");
         }
 
-        if (p->is_entry) {
-            /* Kernel param: create as local variable in function.
+        if (p->is_entry && p->use_bda) {
+            /* BDA mode: collect params, defer initialization until after
+             * the push constant struct is built. */
+            SsirType *ty = ssir_get_type(p->mod, param_type);
+            bool is_pointer = ty && (ty->kind == SSIR_TYPE_U64 || ty->kind == SSIR_TYPE_I64);
+
+            /* Create local variable for ld.param access */
+            uint32_t loc_ptr_type = ssir_type_ptr(p->mod, param_type, SSIR_ADDR_FUNCTION);
+            uint32_t loc_id = ssir_function_add_local(p->mod, p->func_id,
+                param_name, loc_ptr_type);
+
+            /* Register it (do NOT initialize yet, do NOT set pending_binding) */
+            if (p->reg_count >= p->reg_cap) {
+                p->reg_cap = p->reg_cap ? p->reg_cap * 2 : 64;
+                p->regs = (PtxReg *)PTX_REALLOC(p->regs, p->reg_cap * sizeof(PtxReg));
+            }
+            PtxReg *r = &p->regs[p->reg_count++];
+            memset(r, 0, sizeof(*r));
+            snprintf(r->name, sizeof(r->name), "%s", param_name);
+            r->val_type = param_type;
+            r->ptr_type = loc_ptr_type;
+            r->ptr_id = loc_id;
+            r->global_id = 0;
+            r->pending_binding = UINT32_MAX;
+            r->is_bda_ptr = is_pointer;
+
+            /* Record for struct building */
+            if (bda_param_count < 64) {
+                snprintf(bda_params[bda_param_count].name, 80, "%s", param_name);
+                bda_params[bda_param_count].type = param_type;
+                bda_params[bda_param_count].is_ptr = is_pointer;
+                bda_param_count++;
+            }
+        } else if (p->is_entry) {
+            /* Descriptor mode (original): create as local variable in function.
              * Entry points must NOT have function parameters (SPIR-V
              * requires void() signature for entry points).
              * For pointer params (.u64/.i64), buffer creation is DEFERRED
@@ -2119,6 +3096,79 @@ static void pp_parse_param_list(PtxParser *p) {
         if (!pp_eat(p, PTK_COMMA)) break;
     }
     pp_expect(p, PTK_RPAREN, ")");
+
+    /* BDA mode: build push constant struct and initialize locals */
+    if (p->is_entry && p->use_bda && bda_param_count > 0 && !p->had_error) {
+        /* Build struct member types and compute offsets with natural alignment */
+        uint32_t member_types[64];
+        uint32_t offsets[64];
+        const char *member_names[64];
+        uint32_t current_offset = 0;
+
+        for (int i = 0; i < bda_param_count; i++) {
+            member_types[i] = bda_params[i].type;
+            member_names[i] = bda_params[i].name;
+
+            uint32_t sz = pp_type_byte_size(p, bda_params[i].type);
+            uint32_t align = sz; /* natural alignment */
+            /* Align current_offset up to alignment */
+            current_offset = (current_offset + align - 1) & ~(align - 1);
+            offsets[i] = current_offset;
+            current_offset += sz;
+        }
+
+        /* Append hidden ntid.x/y/z members for runtime block dimensions */
+        uint32_t u32_type = ssir_type_u32(p->mod);
+        int total_members = bda_param_count + 3;
+        {
+            uint32_t sz = 4, align = 4;
+            for (int k = 0; k < 3; k++) {
+                int idx = bda_param_count + k;
+                member_types[idx] = u32_type;
+                static const char *ntid_names[] = {
+                    "__ntid_x", "__ntid_y", "__ntid_z"
+                };
+                member_names[idx] = ntid_names[k];
+                current_offset = (current_offset + align - 1) & ~(align - 1);
+                offsets[idx] = current_offset;
+                current_offset += sz;
+            }
+        }
+        p->bda_param_count = (uint32_t)bda_param_count;
+
+        /* Create the struct type */
+        uint32_t struct_type = ssir_type_struct_named(p->mod, "KernelParams",
+            member_types, (uint32_t)total_members, offsets, member_names);
+
+        /* Create ptr<push_constant, KernelParams> */
+        uint32_t pc_ptr_type = ssir_type_ptr(p->mod, struct_type, SSIR_ADDR_PUSH_CONSTANT);
+
+        /* Create global variable for push constant block */
+        uint32_t pc_global = ssir_global_var(p->mod, "kernel_params", pc_ptr_type);
+        p->bda_pc_global = pc_global;
+        pp_add_iface(p, pc_global);
+
+        /* Initialize each local variable by loading from the push constant struct */
+        for (int i = 0; i < bda_param_count; i++) {
+            PtxReg *r = pp_find_reg(p, bda_params[i].name);
+            if (!r) continue;
+
+            /* Access chain: pc_global -> member i */
+            uint32_t member_ptr_type = ssir_type_ptr(p->mod, bda_params[i].type,
+                                                      SSIR_ADDR_PUSH_CONSTANT);
+            uint32_t idx = ssir_const_u32(p->mod, (uint32_t)i);
+            uint32_t indices[] = { idx };
+            uint32_t member_ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                member_ptr_type, pc_global, indices, 1);
+
+            /* Load value from push constant */
+            uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                                           bda_params[i].type, member_ptr);
+
+            /* Store into the local variable */
+            ssir_build_store(p->mod, p->func_id, p->block_id, r->ptr_id, val);
+        }
+    }
 }
 
 static void pp_parse_entry(PtxParser *p) {
@@ -2132,9 +3182,18 @@ static void pp_parse_entry(PtxParser *p) {
     p->reg_count = 0;
     p->label_count = 0;
     p->unresolved_count = 0;
+    p->iface_count = 0;
     p->is_entry = true;
-    p->next_binding = 0;
+    p->next_binding = p->module_binding_base;
     p->wg_size[0] = p->wg_size[1] = p->wg_size[2] = 0;
+    p->bda_pc_global = 0;
+
+    /* Re-add module-level texture/sampler/surface globals to the interface
+     * so they are available in every entry point */
+    for (int i = 0; i < p->texref_count; i++)
+        pp_add_iface(p, p->texrefs[i].global_id);
+    for (int i = 0; i < p->sampler_count; i++)
+        pp_add_iface(p, p->samplers[i].global_id);
 
     uint32_t void_t = ssir_type_void(p->mod);
     p->func_id = ssir_function_create(p->mod, name, void_t);
@@ -2166,12 +3225,15 @@ static void pp_parse_entry(PtxParser *p) {
     /* Eagerly materialize any remaining unmaterialized buffer params.
      * This ensures storage buffer globals exist even if the kernel body
      * doesn't contain ld.global/st.global for every param. Default to u32
-     * element type when no typed access was observed. */
-    for (int i = 0; i < p->reg_count; i++) {
-        PtxReg *r = &p->regs[i];
-        if (r->pending_binding != UINT32_MAX && r->global_id == 0) {
-            uint32_t default_elem = ssir_type_u32(p->mod);
-            pp_materialize_buffer(p, r, default_elem);
+     * element type when no typed access was observed.
+     * In BDA mode, no buffer materialization is needed. */
+    if (!p->use_bda) {
+        for (int i = 0; i < p->reg_count; i++) {
+            PtxReg *r = &p->regs[i];
+            if (r->pending_binding != UINT32_MAX && r->global_id == 0) {
+                uint32_t default_elem = ssir_type_u32(p->mod);
+                pp_materialize_buffer(p, r, default_elem);
+            }
         }
     }
 
@@ -2250,6 +3312,10 @@ static void pp_parse_toplevel(PtxParser *p) {
             else if (pp_check_dot(p, ".global")) pp_parse_global_decl(p, ".global");
             else if (pp_check_dot(p, ".const")) pp_parse_global_decl(p, ".const");
             else if (pp_check_dot(p, ".shared")) pp_parse_global_decl(p, ".shared");
+            else if (pp_check_dot(p, ".texref") || pp_check_dot(p, ".samplerref") ||
+                     pp_check_dot(p, ".surfref")) {
+                pp_parse_texref_decl(p);
+            }
             else {
                 while (!pp_check(p, PTK_SEMI) && !pp_check(p, PTK_EOF)) pp_next(p);
                 pp_eat(p, PTK_SEMI);
@@ -2279,6 +3345,9 @@ static void pp_parse_toplevel(PtxParser *p) {
             pp_parse_global_decl(p, ".shared");
         } else if (pp_check_dot(p, ".const")) {
             pp_parse_global_decl(p, ".const");
+        } else if (pp_check_dot(p, ".texref") || pp_check_dot(p, ".samplerref") ||
+                   pp_check_dot(p, ".surfref")) {
+            pp_parse_texref_decl(p);
         } else {
             /* Skip unknown top-level tokens */
             pp_next(p);
@@ -2296,6 +3365,8 @@ static void pp_cleanup(PtxParser *p) {
     PTX_FREE(p->unresolved);
     PTX_FREE(p->iface);
     PTX_FREE(p->funcs);
+    PTX_FREE(p->texrefs);
+    PTX_FREE(p->samplers);
 }
 
 /* ============================================================================
@@ -2312,7 +3383,10 @@ PtxToSsirResult ptx_to_ssir(const char *ptx_source, const PtxToSsirOptions *opts
     PtxParser parser;
     memset(&parser, 0, sizeof(parser));
     plx_init(&parser.lex, ptx_source);
-    if (opts) parser.opts = *opts;
+    if (opts) {
+        parser.opts = *opts;
+        parser.use_bda = opts->use_bda != 0;
+    }
 
     parser.mod = ssir_module_create();
     if (!parser.mod) {

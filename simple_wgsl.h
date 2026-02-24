@@ -1703,6 +1703,7 @@ typedef enum {
 typedef struct {
     int preserve_names;   /* keep PTX register names as debug names */
     int strict_mode;      /* reject .approx instructions (exact only) */
+    int use_bda;          /* 1 = push constants + PhysicalStorageBuffer for kernel pointers */
 } PtxToSsirOptions;
 
 PtxToSsirResult ptx_to_ssir(const char *ptx_source, const PtxToSsirOptions *opts,

@@ -75,6 +75,7 @@ add_library(wgsl_compiler STATIC
     ptx_parser.c
 )
 
+set_target_properties(wgsl_compiler PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(wgsl_compiler PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 find_path(SPIRV_INCLUDE_DIR spirv/unified1/spirv.h
@@ -119,3 +120,5 @@ endif()
 if(WGSL_BUILD_FUZZ)
     add_subdirectory(fuzz)
 endif()
+
+add_subdirectory(cuvk_runtime)
