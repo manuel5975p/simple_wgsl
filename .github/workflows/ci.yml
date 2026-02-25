@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build spirv-tools libglvnd-dev libegl1-mesa-dev
+          sudo apt-get install -y ninja-build spirv-tools libglvnd-dev libegl1-mesa-dev libvulkan-dev mesa-vulkan-drivers
 
       - name: Set compiler
         run: |
@@ -46,7 +46,7 @@ jobs:
         run: cmake --build build
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure -E "Vulkan|all_tests"
+        run: ctest --test-dir build --output-on-failure -E "all_tests"
 
   build-macos:
     runs-on: macos-latest

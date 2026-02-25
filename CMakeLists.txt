@@ -121,4 +121,7 @@ if(WGSL_BUILD_FUZZ)
     add_subdirectory(fuzz)
 endif()
 
-add_subdirectory(cuvk_runtime)
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+  add_subdirectory(cuvk_runtime)
+endif()
