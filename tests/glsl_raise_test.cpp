@@ -101,7 +101,7 @@ RoundtripResult GlslRoundtrip(const char *wgsl_source, WgslStage stage, SsirStag
     r.glsl = glsl_result.glsl;
 
     /* Step 3: Parse GLSL back */
-    WgslAstNode *ast = glsl_parse(r.glsl.c_str(), stage);
+    WgslAstNode *ast = glsl_parse(r.glsl.c_str(), NULL, stage, NULL);
     if (!ast) {
         r.error = "GLSL parse failed on emitted GLSL";
         return r;

@@ -16,7 +16,7 @@ class GlslParserTest : public ::testing::Test {
     }
 
     WgslAstNode *Parse(const char *source, WgslStage stage = WGSL_STAGE_UNKNOWN) {
-        ast = glsl_parse(source, stage);
+        ast = glsl_parse(source, NULL, stage, NULL);
         return ast;
     }
 };
@@ -1257,4 +1257,168 @@ TEST_F(GlslParserTest, SwitchFallthrough) {
     ASSERT_GE(sw->switch_stmt.case_count, 3);
     /* case 0 should have no statements (fallthrough) */
     EXPECT_EQ(sw->switch_stmt.cases[0]->case_clause.stmt_count, 0);
+}
+
+/* ============================================================================
+ * #include expansion tests
+ *
+ * Uses an in-memory reader so no real files are needed.
+ * ============================================================================ */
+
+struct MemFile { const char *path; const char *source; };
+
+/* Reader callback: searches a NULL-terminated MemFile table. */
+static char *mem_read(void *ud, const char *path) {
+    const MemFile *files = (const MemFile *)ud;
+    for (int i = 0; files[i].path; i++) {
+        if (strcmp(files[i].path, path) == 0) {
+            /* Must return NODE_MALLOC'd copy. */
+            size_t n = strlen(files[i].source);
+            char *buf = (char *)malloc(n + 1);
+            memcpy(buf, files[i].source, n + 1);
+            return buf;
+        }
+    }
+    return nullptr; /* not found */
+}
+
+class GlslIncludeTest : public ::testing::Test {
+  protected:
+    WgslAstNode *ast = nullptr;
+
+    void TearDown() override {
+        if (ast) { wgsl_free_ast(ast); ast = nullptr; }
+    }
+
+    /* Parse src (located at source_path) using mem_read over `files`. */
+    WgslAstNode *Parse(const char *src, const char *source_path,
+                       const MemFile *files) {
+        GlslIncludeOptions opts = {};
+        opts.reader.read     = mem_read;
+        opts.reader.userdata = (void *)files;
+        ast = glsl_parse(src, source_path, WGSL_STAGE_UNKNOWN, &opts);
+        return ast;
+    }
+};
+
+/* Basic: #include splices in the right content. */
+TEST_F(GlslIncludeTest, BasicInclude) {
+    static const MemFile files[] = {
+        { "shaders/common.glsl", "float helper() { return 1.0; }" },
+        { nullptr, nullptr }
+    };
+    /* source_path is "shaders/main.glsl", so dirname = "shaders".
+     * The bare "common.glsl" is joined → "shaders/common.glsl". */
+    auto *node = Parse(R"(
+        #include "common.glsl"
+        void main() { helper(); }
+    )", "shaders/main.glsl", files);
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->program.decl_count, 2); /* helper + main */
+}
+
+/* Angle-bracket form should also work. */
+TEST_F(GlslIncludeTest, AngleBracketInclude) {
+    static const MemFile files[] = {
+        { "include/defs.glsl", "float pi() { return 3.14159; }" },
+        { nullptr, nullptr }
+    };
+    const char *dirs[] = { "include" };
+    GlslIncludeOptions opts = {};
+    opts.reader.read         = mem_read;
+    opts.reader.userdata     = (void *)files;
+    opts.search_dirs         = dirs;
+    opts.search_dir_count    = 1;
+    ast = glsl_parse(R"(
+        #include <defs.glsl>
+        void main() { pi(); }
+    )", nullptr, WGSL_STAGE_UNKNOWN, &opts);
+    ASSERT_NE(ast, nullptr);
+    EXPECT_EQ(ast->program.decl_count, 2);
+}
+
+/* #include inside a block comment must NOT be expanded. */
+TEST_F(GlslIncludeTest, IncludeInsideBlockComment) {
+    /* If it were expanded, mem_read would be called — we can detect that. */
+    static bool reader_called = false;
+    struct L { static char *read(void *, const char *) {
+        reader_called = true; return nullptr;
+    }};
+    reader_called = false;
+
+    GlslIncludeOptions opts = {};
+    opts.reader.read     = L::read;
+    opts.reader.userdata = nullptr;
+    ast = glsl_parse(R"(
+        /*
+         * #include "should_not_load.glsl"
+         */
+        void main() {}
+    )", nullptr, WGSL_STAGE_UNKNOWN, &opts);
+    EXPECT_FALSE(reader_called);
+    ASSERT_NE(ast, nullptr);
+    EXPECT_EQ(ast->program.decl_count, 1);
+}
+
+/* #include on a // line-comment line must NOT be expanded. */
+TEST_F(GlslIncludeTest, IncludeInsideLineComment) {
+    static bool reader_called = false;
+    struct L { static char *read(void *, const char *) {
+        reader_called = true; return nullptr;
+    }};
+    reader_called = false;
+
+    GlslIncludeOptions opts = {};
+    opts.reader.read     = L::read;
+    opts.reader.userdata = nullptr;
+    ast = glsl_parse(R"(
+        // #include "should_not_load.glsl"
+        void main() {}
+    )", nullptr, WGSL_STAGE_UNKNOWN, &opts);
+    EXPECT_FALSE(reader_called);
+    ASSERT_NE(ast, nullptr);
+    EXPECT_EQ(ast->program.decl_count, 1);
+}
+
+/* Nested includes: a.glsl includes b.glsl, resolved relative to a.glsl. */
+TEST_F(GlslIncludeTest, NestedInclude) {
+    static const MemFile files[] = {
+        /* a.glsl lives in shaders/, includes bare "b.glsl" → shaders/b.glsl */
+        { "shaders/a.glsl", "#include \"b.glsl\"\nfloat a() { return b(); }" },
+        { "shaders/b.glsl", "float b() { return 2.0; }" },
+        { nullptr, nullptr }
+    };
+    auto *node = Parse(R"(
+        #include "a.glsl"
+        void main() { a(); }
+    )", "shaders/main.glsl", files);
+    ASSERT_NE(node, nullptr);
+    /* b(), a(), main() */
+    EXPECT_EQ(node->program.decl_count, 3);
+}
+
+/* Unknown include: line is left verbatim.  The lexer skips lines starting
+ * with '#', so the rest of the file is still parsed successfully. */
+TEST_F(GlslIncludeTest, UnknownIncludePassesThrough) {
+    static const MemFile files[] = { { nullptr, nullptr } };
+    auto *node = Parse(R"(
+        #include "nonexistent.glsl"
+        void main() {}
+    )", "shaders/main.glsl", files);
+    /* The verbatim #include line is treated like any other # directive
+     * by the lexer, so parsing succeeds with just main(). */
+    ASSERT_NE(node, nullptr);
+    EXPECT_EQ(node->program.decl_count, 1);
+}
+
+/* NULL includes arg disables expansion entirely. */
+TEST_F(GlslIncludeTest, NullIncludesDisablesExpansion) {
+    /* Lexer already skips lines starting with '#', so the #include line is
+     * silently ignored and the rest of the file is parsed. */
+    ast = glsl_parse(R"(
+        #include "whatever.glsl"
+        void main() {}
+    )", nullptr, WGSL_STAGE_UNKNOWN, nullptr);
+    ASSERT_NE(ast, nullptr);
+    EXPECT_EQ(ast->program.decl_count, 1);
 }

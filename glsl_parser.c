@@ -2440,12 +2440,196 @@ static void inject_stage_attr(WgslAstNode *ast, WgslStage stage) {
     }
 }
 
+/* ============================================================================
+ * Include expansion (pre-pass before lexing)
+ * ============================================================================ */
+
+/* Simple growable string buffer. Uses NODE_MALLOC/NODE_REALLOC/NODE_FREE so that
+ * custom allocator overrides are respected throughout. */
+typedef struct {
+    char  *data;
+    size_t len;
+    size_t cap;
+} GpStrBuf;
+
+static void gp_sb_append(GpStrBuf *b, const char *s, size_t n) {
+    if (!n) return;
+    if (b->len + n + 1 > b->cap) {
+        size_t nc = b->cap ? b->cap * 2 : 4096;
+        while (nc < b->len + n + 1) nc *= 2;
+        b->data = (char *)NODE_REALLOC(b->data, nc);
+        b->cap  = nc;
+    }
+    memcpy(b->data + b->len, s, n);
+    b->len += n;
+    b->data[b->len] = '\0';
+}
+
+/* Return NODE_MALLOC'd copy of the directory part of path ('' -> "."). */
+static char *gp_path_dirname(const char *path) {
+    const char *slash = strrchr(path, '/');
+    if (!slash) return glsl_strdup(".");
+    size_t len = (size_t)(slash - path);
+    if (len == 0) return glsl_strdup("/");
+    return glsl_strndup(path, len);
+}
+
+/* Return NODE_MALLOC'd path dir + "/" + file. */
+static char *gp_path_join(const char *dir, const char *file) {
+    size_t dlen = strlen(dir), flen = strlen(file);
+    char *r = (char *)NODE_MALLOC(dlen + 1 + flen + 1);
+    if (!r) return NULL;
+    memcpy(r, dir, dlen);
+    r[dlen] = '/';
+    memcpy(r + dlen + 1, file, flen);
+    r[dlen + 1 + flen] = '\0';
+    return r;
+}
+
+#define GLSL_INCLUDE_MAX_DEPTH 32
+
+/* Default file reader: NODE_MALLOC'd buffer filled via libc fopen/fread. */
+static char *gp_read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0) { fclose(f); return NULL; }
+    char *buf = (char *)NODE_MALLOC((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t rd = fread(buf, 1, (size_t)sz, f);
+    buf[rd] = '\0';
+    fclose(f);
+    return buf;
+}
+
+/* Recursively expand #include directives.
+ *
+ * Path resolution order:
+ *   1. relative to source_path's directory  (if source_path != NULL)
+ *   2. opts->search_dirs[0..search_dir_count-1]
+ *
+ * File reading: opts->reader.read() if set, gp_read_file() otherwise.
+ * The reader must return a NODE_MALLOC'd string; simple_wgsl frees it.
+ *
+ * Returns a NODE_MALLOC'd flat source string with all #includes spliced in. */
+static char *gp_expand_includes(const char *source, const char *source_path,
+                                 const GlslIncludeOptions *opts, int depth) {
+    if (!opts || depth > GLSL_INCLUDE_MAX_DEPTH)
+        return glsl_strdup(source);
+
+    GpStrBuf out = {0};
+    const char *p = source;
+    int in_block_comment = 0; /* tracks block-comment state across lines */
+
+    while (*p) {
+        const char *line_start = p;
+
+        /* Skip optional leading whitespace to locate a '#'. */
+        const char *q = p;
+        while (*q == ' ' || *q == '\t') q++;
+
+        if (!in_block_comment && *q == '#') {
+            q++;
+            while (*q == ' ' || *q == '\t') q++;
+            if (strncmp(q, "include", 7) == 0) {
+                const char *a = q + 7;
+                while (*a == ' ' || *a == '\t') a++;
+                char close = 0;
+                if      (*a == '"') { a++; close = '"'; }
+                else if (*a == '<') { a++; close = '>'; }
+
+                if (close) {
+                    const char *path_start = a;
+                    while (*a && *a != close && *a != '\n') a++;
+                    size_t path_len = (size_t)(a - path_start);
+                    if (*a == close) a++;          /* consume closing delim */
+                    while (*a && *a != '\n') a++;  /* skip rest of line     */
+                    if (*a == '\n') a++;
+
+                    char *inc_name = glsl_strndup(path_start, path_len);
+                    char *resolved = NULL;
+                    char *inc_src  = NULL;
+
+                    /* 1. Relative to includer's directory. */
+                    if (source_path && !inc_src) {
+                        char *dir = gp_path_dirname(source_path);
+                        resolved  = gp_path_join(dir, inc_name);
+                        NODE_FREE(dir);
+                        if (opts->reader.read)
+                            inc_src = opts->reader.read(opts->reader.userdata, resolved);
+                        else
+                            inc_src = gp_read_file(resolved);
+                        if (!inc_src) { NODE_FREE(resolved); resolved = NULL; }
+                    }
+
+                    /* 2. Search directories. */
+                    if (!inc_src && opts->search_dirs) {
+                        for (int i = 0; i < opts->search_dir_count && !inc_src; i++) {
+                            resolved = gp_path_join(opts->search_dirs[i], inc_name);
+                            if (opts->reader.read)
+                                inc_src = opts->reader.read(opts->reader.userdata, resolved);
+                            else
+                                inc_src = gp_read_file(resolved);
+                            if (!inc_src) { NODE_FREE(resolved); resolved = NULL; }
+                        }
+                    }
+
+                    NODE_FREE(inc_name);
+
+                    if (inc_src) {
+                        char *inner = gp_expand_includes(inc_src, resolved, opts, depth + 1);
+                        NODE_FREE(inc_src);
+                        NODE_FREE(resolved);
+                        if (inner) {
+                            gp_sb_append(&out, inner, strlen(inner));
+                            /* Ensure a newline between included block and next. */
+                            if (out.len && out.data[out.len - 1] != '\n')
+                                gp_sb_append(&out, "\n", 1);
+                            NODE_FREE(inner);
+                        }
+                    } else {
+                        /* Not found – copy line verbatim so the parser can emit
+                         * a useful error for the unresolved symbols. */
+                        gp_sb_append(&out, line_start, (size_t)(a - line_start));
+                    }
+                    p = a;
+                    continue;
+                }
+            }
+        }
+
+        /* Copy line verbatim, updating block-comment state. */
+        while (*p && *p != '\n') {
+            if (!in_block_comment && p[0] == '/' && p[1] == '*') {
+                in_block_comment = 1; p += 2;
+            } else if (in_block_comment && p[0] == '*' && p[1] == '/') {
+                in_block_comment = 0; p += 2;
+            } else {
+                p++;
+            }
+        }
+        if (*p == '\n') p++;
+        gp_sb_append(&out, line_start, (size_t)(p - line_start));
+    }
+
+    return out.data ? out.data : glsl_strdup("");
+}
+
 // source allowed to be NULL
-WgslAstNode *glsl_parse(const char *source, WgslStage stage) {
+WgslAstNode *glsl_parse(const char *source, const char *source_path,
+                        WgslStage stage, const GlslIncludeOptions *includes) {
+    /* Expand #include directives into a flat buffer before lexing. */
+    char *expanded = NULL;
+    if (includes && source)
+        expanded = gp_expand_includes(source, source_path, includes, 0);
+    const char *effective = expanded ? expanded : (source ? source : "");
+
     GpParser P;
     memset(&P, 0, sizeof(P));
-    P.L.src = source ? source : "";
-    P.L.src_len = strlen(P.L.src) + 1; /* include null terminator */
+    P.L.src = effective;
+    P.L.src_len = strlen(effective) + 1; /* include null terminator */
     P.L.pos = 0;
     P.L.line = 1;
     P.L.col = 1;
@@ -2457,6 +2641,8 @@ WgslAstNode *glsl_parse(const char *source, WgslStage stage) {
     for (int i = 0; i < P.known_type_count; i++)
         NODE_FREE(P.known_types[i].name);
     NODE_FREE(P.known_types);
+
+    NODE_FREE(expanded);
 
     /* If there were parse errors, free the partial AST and return NULL */
     if (P.had_error) {

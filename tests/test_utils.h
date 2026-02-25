@@ -185,7 +185,7 @@ inline CompileResult CompileGlsl(const char *source, WgslStage stage) {
     CompileResult result;
     result.success = false;
 
-    WgslAstNode *ast = glsl_parse(source, stage);
+    WgslAstNode *ast = glsl_parse(source, NULL, stage, NULL);
     if (!ast) {
         result.error = "GLSL parse failed";
         return result;
