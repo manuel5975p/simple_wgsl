@@ -2453,14 +2453,20 @@ WgslAstNode *glsl_parse(const char *source, WgslStage stage) {
 
     WgslAstNode *ast = gp_parse_program(&P);
 
-    /* Inject synthetic built-in globals and stage attribute on main() */
-    inject_glsl_builtins(ast, stage);
-    inject_stage_attr(ast, stage);
-
     /* Free known type tracking */
     for (int i = 0; i < P.known_type_count; i++)
         NODE_FREE(P.known_types[i].name);
     NODE_FREE(P.known_types);
+
+    /* If there were parse errors, free the partial AST and return NULL */
+    if (P.had_error) {
+        if (ast) wgsl_free_ast(ast);
+        return NULL;
+    }
+
+    /* Inject synthetic built-in globals and stage attribute on main() */
+    inject_glsl_builtins(ast, stage);
+    inject_stage_attr(ast, stage);
 
     return ast;
 }
