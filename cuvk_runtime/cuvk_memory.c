@@ -10,6 +10,7 @@
 
 #include "cuvk_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -149,6 +150,7 @@ static uint32_t cuvk_alloc_find_insert_pos(struct CUctx_st *ctx,
 
 CUresult CUDAAPI cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize)
 {
+    CUVK_LOG("[cuvk] cuMemAlloc_v2: size=%zu\n", bytesize);
     if (!dptr || bytesize == 0)
         return CUDA_ERROR_INVALID_VALUE;
 

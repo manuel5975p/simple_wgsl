@@ -260,6 +260,17 @@ static PtxToken plx_next(PtxLexer *L) {
         return t;
     }
 
+    /* string literal - skip and treat as identifier */
+    if (c == '"') {
+        plx_advance(L);
+        while (plx_peek(L) != '"' && plx_peek(L) != '\0')
+            plx_advance(L);
+        if (plx_peek(L) == '"') plx_advance(L);
+        t.type = PTK_IDENT;
+        t.length = (int)(&L->src[L->pos] - t.start);
+        return t;
+    }
+
     /* single-char punctuation */
     plx_advance(L);
     t.length = 1;
@@ -337,6 +348,7 @@ typedef struct {
 typedef struct {
     char name[80];
     uint32_t block_id;
+    bool defined;
 } PtxLabel;
 
 /* Unresolved forward branch */
@@ -417,6 +429,17 @@ typedef struct {
     /* Sampler references (module-level) */
     PtxSamplerRef *samplers;
     int sampler_count, sampler_cap;
+
+    /* Merge block tracking: each block can only be merge target once */
+    uint32_t *merge_blocks;
+    int merge_block_count, merge_block_cap;
+
+    /* Construct nesting stack: tracks enclosing merge targets so that
+     * label transitions don't skip over structured construct exits.
+     * Each entry records the merge block of a selection/loop construct
+     * and the target label block that the merge eventually reaches. */
+    struct { uint32_t merge_block; uint32_t target_label; } *construct_stack;
+    int construct_depth, construct_cap;
 
     /* Error */
     char error[1024];
@@ -628,7 +651,44 @@ static uint32_t pp_get_or_create_label(PtxParser *p, const char *name) {
     PtxLabel *l = &p->labels[p->label_count++];
     snprintf(l->name, sizeof(l->name), "%s", name);
     l->block_id = ssir_block_create(p->mod, p->func_id, name);
+    l->defined = false;
     return l->block_id;
+}
+
+static bool pp_is_label_defined(PtxParser *p, const char *name) {
+    for (int i = 0; i < p->label_count; i++) {
+        if (strcmp(p->labels[i].name, name) == 0)
+            return p->labels[i].defined;
+    }
+    return false;
+}
+
+static bool pp_is_merge_used(PtxParser *p, uint32_t block_id) {
+    for (int i = 0; i < p->merge_block_count; i++)
+        if (p->merge_blocks[i] == block_id) return true;
+    return false;
+}
+
+static void pp_mark_merge(PtxParser *p, uint32_t block_id) {
+    if (pp_is_merge_used(p, block_id)) return;
+    if (p->merge_block_count >= p->merge_block_cap) {
+        p->merge_block_cap = p->merge_block_cap ? p->merge_block_cap * 2 : 16;
+        p->merge_blocks = (uint32_t *)PTX_REALLOC(p->merge_blocks,
+            p->merge_block_cap * sizeof(uint32_t));
+    }
+    p->merge_blocks[p->merge_block_count++] = block_id;
+}
+
+static void pp_push_construct(PtxParser *p, uint32_t merge_block,
+                               uint32_t target_label) {
+    if (p->construct_depth >= p->construct_cap) {
+        p->construct_cap = p->construct_cap ? p->construct_cap * 2 : 16;
+        p->construct_stack = PTX_REALLOC(p->construct_stack,
+            p->construct_cap * sizeof(p->construct_stack[0]));
+    }
+    p->construct_stack[p->construct_depth].merge_block = merge_block;
+    p->construct_stack[p->construct_depth].target_label = target_label;
+    p->construct_depth++;
 }
 
 /* ============================================================================
@@ -1407,7 +1467,16 @@ static void pp_parse_mad(PtxParser *p) {
 
 static void pp_parse_fma(PtxParser *p) {
     /* fma[.rn|.rz|.rm|.rp].type dst, a, b, c */
-    pp_skip_modifiers(p);
+    bool round_floor = false;
+    bool round_ceil = false;
+    for (;;) {
+        if (pp_check_dot(p, ".rm")) { round_floor = true; pp_next(p); }
+        else if (pp_check_dot(p, ".rp")) { round_ceil = true; pp_next(p); }
+        else if (pp_check_dot(p, ".rn") || pp_check_dot(p, ".rz") ||
+                 pp_check_dot(p, ".sat") || pp_check_dot(p, ".ftz")) {
+            pp_next(p);
+        } else { break; }
+    }
     uint32_t type = pp_ptx_type(p);
     if (!type) { pp_error(p, "expected type for fma"); return; }
 
@@ -1423,9 +1492,20 @@ static void pp_parse_fma(PtxParser *p) {
 
     if (p->had_error) return;
 
-    uint32_t args[] = { a, b, c };
-    uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
-                                         type, SSIR_BUILTIN_FMA, args, 3);
+    uint32_t result;
+    if (round_floor || round_ceil) {
+        uint32_t prod = ssir_build_mul(p->mod, p->func_id, p->block_id,
+                                        type, a, b);
+        SsirBuiltinId bid = round_floor ? SSIR_BUILTIN_FLOOR : SSIR_BUILTIN_CEIL;
+        uint32_t rargs[] = { prod };
+        uint32_t rprod = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+                                             type, bid, rargs, 1);
+        result = ssir_build_add(p->mod, p->func_id, p->block_id, type, rprod, c);
+    } else {
+        uint32_t args[] = { a, b, c };
+        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+                                     type, SSIR_BUILTIN_FMA, args, 3);
+    }
     pp_store_reg(p, dst, result);
 }
 
@@ -1626,11 +1706,22 @@ static void pp_parse_mov(PtxParser *p) {
     char dst[80];
     pp_read_ident(p, dst, sizeof(dst));
     pp_expect(p, PTK_COMMA, ",");
+
+    char src_name[80] = {0};
+    if (pp_check(p, PTK_IDENT))
+        tok_to_str(&p->cur, src_name, sizeof(src_name));
+
     uint32_t src = pp_parse_operand(p, type);
     pp_eat(p, PTK_SEMI);
 
     if (p->had_error) return;
-    pp_store_reg(p, dst, src);
+    pp_store_reg_typed(p, dst, src, type);
+
+    if (src_name[0]) {
+        SsirType *t = ssir_get_type(p->mod, type);
+        if (t && (t->kind == SSIR_TYPE_U64 || t->kind == SSIR_TYPE_I64))
+            pp_propagate_buffer(p, dst, src_name);
+    }
 }
 
 /* ============================================================================
@@ -1929,7 +2020,17 @@ static void pp_parse_cvta(PtxParser *p) {
 
 static void pp_parse_cvt(PtxParser *p) {
     /* cvt[.rn|.rz|.rm|.rp][.ftz][.sat].dst_type.src_type dst, src */
-    pp_skip_modifiers(p);
+    bool has_sat = false;
+    for (;;) {
+        if (pp_check_dot(p, ".sat")) { has_sat = true; pp_next(p); }
+        else if (pp_check_dot(p, ".rn") || pp_check_dot(p, ".rz") ||
+                 pp_check_dot(p, ".rm") || pp_check_dot(p, ".rp") ||
+                 pp_check_dot(p, ".rni") || pp_check_dot(p, ".rzi") ||
+                 pp_check_dot(p, ".rmi") || pp_check_dot(p, ".rpi") ||
+                 pp_check_dot(p, ".ftz") || pp_check_dot(p, ".approx")) {
+            pp_next(p);
+        } else { break; }
+    }
     uint32_t dst_type = pp_ptx_type(p);
     if (!dst_type) { pp_error(p, "expected dest type for cvt"); return; }
     uint32_t src_type = pp_ptx_type(p);
@@ -1947,16 +2048,29 @@ static void pp_parse_cvt(PtxParser *p) {
     SsirType *dt = ssir_get_type(p->mod, dst_type);
     SsirType *st = ssir_get_type(p->mod, src_type);
     if (dt && st && dt->kind != st->kind) {
-        /* Bitcast to declared src_type first. This handles cases like
-         * ld.global.u32 + cvt.f32.s32 where the register holds u32 but
-         * the conversion needs s32 interpretation for correct signedness. */
         src = ssir_build_bitcast(p->mod, p->func_id, p->block_id,
                                  src_type, src);
         result = ssir_build_convert(p->mod, p->func_id, p->block_id, dst_type, src);
     } else {
-        result = src; /* same type = nop */
+        result = src;
     }
-    pp_store_reg(p, dst, result);
+
+    if (has_sat && dt &&
+        (dt->kind == SSIR_TYPE_F32 || dt->kind == SSIR_TYPE_F64)) {
+        uint32_t zero, one;
+        if (dt->kind == SSIR_TYPE_F64) {
+            zero = ssir_const_f64(p->mod, 0.0);
+            one = ssir_const_f64(p->mod, 1.0);
+        } else {
+            zero = ssir_const_f32(p->mod, 0.0f);
+            one = ssir_const_f32(p->mod, 1.0f);
+        }
+        uint32_t args[] = { result, zero, one };
+        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+                                    dst_type, SSIR_BUILTIN_CLAMP, args, 3);
+    }
+
+    pp_store_reg_typed(p, dst, result, dst_type);
 }
 
 /* ============================================================================
@@ -2084,6 +2198,122 @@ static void pp_parse_membar(PtxParser *p) {
  * Instruction Parsing - Control Flow
  * ============================================================================ */
 
+/* Restructure a back-edge into a proper SPIR-V loop.
+ * target_block = the loop body start (existing block)
+ * continue_block = the block containing the back-edge conditional
+ * merge_block = the loop exit (fallthrough after back-edge) */
+static void pp_create_loop_structure(PtxParser *p, uint32_t target_block,
+                                      uint32_t continue_block,
+                                      uint32_t merge_block) {
+    SsirBlock *target = ssir_get_block(p->mod, p->func_id, target_block);
+    if (!target || target->inst_count == 0) return;
+
+    /* Save instructions from target before creating new block (which may
+     * reallocate the block array and invalidate the pointer) */
+    uint32_t n = target->inst_count;
+    SsirInst *saved = (SsirInst *)PTX_REALLOC(NULL, n * sizeof(SsirInst));
+    if (!saved) return;
+    memcpy(saved, target->insts, n * sizeof(SsirInst));
+
+    /* Clear target before creating new block */
+    target->inst_count = 0;
+
+    /* Insert body block right after the target (loop header) so SPIR-V block
+     * ordering is correct. ssir_block_insert_after may reallocate. */
+    uint32_t body_block = ssir_block_insert_after(p->mod, p->func_id,
+                                                   target_block, NULL);
+    SsirBlock *body = ssir_get_block(p->mod, p->func_id, body_block);
+    if (!body) { free(saved); return; }
+
+    /* Move saved instructions to body */
+    body->insts = saved;
+    body->inst_count = n;
+    body->inst_capacity = n;
+
+    /* When continue_block == target_block (self-loop: all code + back-edge
+     * in one block), we need to create a dedicated continue block.  Extract
+     * the last instruction (the back-edge branch) from the body and move it
+     * to a new continue block. */
+    uint32_t actual_continue = continue_block;
+    if (continue_block == target_block && body->inst_count > 0) {
+        SsirInst last = body->insts[body->inst_count - 1];
+        if (last.op == SSIR_OP_BRANCH_COND || last.op == SSIR_OP_BRANCH) {
+            body->inst_count--;  /* remove back-edge from body */
+
+            /* Create continue block right after body */
+            actual_continue = ssir_block_insert_after(p->mod, p->func_id,
+                                                       body_block, NULL);
+            /* Re-get body (may be invalidated) */
+            body = ssir_get_block(p->mod, p->func_id, body_block);
+
+            SsirBlock *cont = ssir_get_block(p->mod, p->func_id, actual_continue);
+            if (cont) {
+                cont->insts = (SsirInst *)PTX_REALLOC(NULL, sizeof(SsirInst));
+                if (!cont->insts) return;
+                cont->insts[0] = last;
+                cont->inst_count = 1;
+                cont->inst_capacity = 1;
+            }
+
+            /* Body needs an OpBranch to the continue block */
+            ssir_build_branch(p->mod, p->func_id, body_block, actual_continue);
+            /* Re-get body again */
+            body = ssir_get_block(p->mod, p->func_id, body_block);
+        }
+    }
+
+    /* Redirect any branches in the body that escape the loop to the merge
+     * block instead.  In structured SPIR-V, the only way to exit a loop is
+     * through the merge block. */
+    for (uint32_t i = 0; i < body->inst_count; i++) {
+        SsirInst *inst = &body->insts[i];
+        if (inst->op == SSIR_OP_BRANCH_COND) {
+            for (int j = 1; j <= 2; j++) {
+                uint32_t t = inst->operands[j];
+                if (t != target_block && t != body_block &&
+                    t != actual_continue && t != merge_block) {
+                    inst->operands[j] = merge_block;
+                }
+            }
+            /* Clear selection merge for break branches */
+            if (inst->operand_count >= 4 && inst->operands[3] != 0) {
+                uint32_t m = inst->operands[3];
+                if (m != target_block && m != body_block &&
+                    m != actual_continue && m != merge_block) {
+                    inst->operands[3] = 0;
+                }
+            }
+        }
+    }
+
+    /* Also fixup the continue block's branches */
+    SsirBlock *cont = ssir_get_block(p->mod, p->func_id, actual_continue);
+    if (cont && actual_continue != continue_block) {
+        for (uint32_t i = 0; i < cont->inst_count; i++) {
+            SsirInst *inst = &cont->insts[i];
+            if (inst->op == SSIR_OP_BRANCH_COND) {
+                for (int j = 1; j <= 2; j++) {
+                    uint32_t t = inst->operands[j];
+                    if (t != target_block && t != body_block &&
+                        t != actual_continue && t != merge_block) {
+                        inst->operands[j] = merge_block;
+                    }
+                }
+                if (inst->operand_count >= 4 && inst->operands[3] != 0)
+                    inst->operands[3] = 0;
+            }
+        }
+    }
+
+    /* Re-get target pointer (invalidated by inserts) */
+    target = ssir_get_block(p->mod, p->func_id, target_block);
+
+    /* Add OpLoopMerge + OpBranch to target (now loop header) */
+    ssir_build_loop_merge(p->mod, p->func_id, target_block,
+                          merge_block, actual_continue);
+    ssir_build_branch(p->mod, p->func_id, target_block, body_block);
+}
+
 static void pp_parse_bra(PtxParser *p) {
     /* bra[.uni] label; */
     if (pp_check_dot(p, ".uni")) pp_next(p);
@@ -2094,6 +2324,7 @@ static void pp_parse_bra(PtxParser *p) {
 
     if (p->had_error) return;
 
+    bool is_back_edge = pp_is_label_defined(p, label);
     uint32_t target = pp_get_or_create_label(p, label);
 
     if (p->has_pred) {
@@ -2105,8 +2336,37 @@ static void pp_parse_bra(PtxParser *p) {
                                       ssir_type_bool(p->mod), pred_val);
         }
         uint32_t fallthrough = ssir_block_create(p->mod, p->func_id, NULL);
-        ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
-                               pred_val, target, fallthrough, target);
+
+        if (is_back_edge) {
+            /* Back-edge detected: restructure into SPIR-V loop.
+             * Current block = continue block, fallthrough = merge (exit) */
+            ssir_build_branch_cond(p->mod, p->func_id, p->block_id,
+                                   pred_val, target, fallthrough);
+            pp_create_loop_structure(p, target, p->block_id, fallthrough);
+            pp_mark_merge(p, fallthrough);
+        } else if (!pp_is_merge_used(p, target)) {
+            /* Forward branch: merge at target since both paths reconverge
+             * there.  BranchConditional true->target, false->fallthrough.
+             * Both eventually reach target (the merge). */
+            ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
+                                   pred_val, target, fallthrough, target);
+            pp_mark_merge(p, target);
+            pp_push_construct(p, target, target);
+        } else {
+            /* Target is already a merge for another construct.  Route the
+             * skip through the merge block (=fallthrough) with an explicit
+             * branch to target.
+             *   if cond -> merge (skip, branches to target)
+             *   if !cond -> new_fallthrough (execute code, eventually -> merge)
+             * Both branches stay within the construct. */
+            uint32_t new_fallthrough = ssir_block_create(p->mod, p->func_id, NULL);
+            ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
+                                   pred_val, fallthrough, new_fallthrough, fallthrough);
+            pp_mark_merge(p, fallthrough);
+            ssir_build_branch(p->mod, p->func_id, fallthrough, target);
+            pp_push_construct(p, fallthrough, target);
+            fallthrough = new_fallthrough;
+        }
         p->block_id = fallthrough;
         p->has_pred = false;
     } else {
@@ -2853,8 +3113,37 @@ static void pp_parse_instruction(PtxParser *p) {
             pp_next(p); /* consume : */
             /* Terminate current block, switch to label's block */
             uint32_t lbl_block = pp_get_or_create_label(p, name);
-            ssir_build_branch(p->mod, p->func_id, p->block_id, lbl_block);
+
+            /* Check construct stack: if lbl_block is a target_label for
+             * an enclosing construct, branch to the merge block instead
+             * of directly to lbl_block (structured exit). */
+            uint32_t branch_target = lbl_block;
+            for (int i = p->construct_depth - 1; i >= 0; i--) {
+                if (p->construct_stack[i].target_label == lbl_block &&
+                    p->construct_stack[i].merge_block != lbl_block) {
+                    branch_target = p->construct_stack[i].merge_block;
+                    break;
+                }
+            }
+            ssir_build_branch(p->mod, p->func_id, p->block_id, branch_target);
             p->block_id = lbl_block;
+
+            /* Pop constructs reached by this label */
+            while (p->construct_depth > 0) {
+                int top = p->construct_depth - 1;
+                if (p->construct_stack[top].merge_block == lbl_block ||
+                    p->construct_stack[top].target_label == lbl_block) {
+                    p->construct_depth--;
+                } else {
+                    break;
+                }
+            }
+
+            /* Mark label as defined (we're now emitting code into it) */
+            for (int i = 0; i < p->label_count; i++) {
+                if (p->labels[i].block_id == lbl_block)
+                    p->labels[i].defined = true;
+            }
             return;
         }
         /* Not a label — restore and parse as instruction */
@@ -3183,6 +3472,8 @@ static void pp_parse_entry(PtxParser *p) {
     p->label_count = 0;
     p->unresolved_count = 0;
     p->iface_count = 0;
+    p->merge_block_count = 0;
+    p->construct_depth = 0;
     p->is_entry = true;
     p->next_binding = p->module_binding_base;
     p->wg_size[0] = p->wg_size[1] = p->wg_size[2] = 0;
@@ -3259,6 +3550,8 @@ static void pp_parse_func(PtxParser *p) {
     p->reg_count = 0;
     p->label_count = 0;
     p->unresolved_count = 0;
+    p->merge_block_count = 0;
+    p->construct_depth = 0;
     p->is_entry = false;
 
     /* Optional return value */
@@ -3367,6 +3660,8 @@ static void pp_cleanup(PtxParser *p) {
     PTX_FREE(p->funcs);
     PTX_FREE(p->texrefs);
     PTX_FREE(p->samplers);
+    PTX_FREE(p->merge_blocks);
+    PTX_FREE(p->construct_stack);
 }
 
 /* ============================================================================

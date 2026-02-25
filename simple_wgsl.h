@@ -1277,6 +1277,7 @@ uint32_t ssir_function_add_local(SsirModule *mod, uint32_t func_id,
 
 uint32_t ssir_block_create(SsirModule *mod, uint32_t func_id, const char *name);
 uint32_t ssir_block_create_with_id(SsirModule *mod, uint32_t func_id, uint32_t block_id, const char *name);
+uint32_t ssir_block_insert_after(SsirModule *mod, uint32_t func_id, uint32_t after_block_id, const char *name);
 SsirBlock *ssir_get_block(SsirModule *mod, uint32_t func_id, uint32_t block_id);
 
 /* Instruction Builder API */

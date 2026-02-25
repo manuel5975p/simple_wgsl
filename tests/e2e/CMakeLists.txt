@@ -115,10 +115,54 @@ if(CUDA_STUBS_DIR)
     add_test(
         NAME e2e_preload_test
         COMMAND ${CMAKE_COMMAND} -E env
-            "LD_PRELOAD=${CMAKE_BINARY_DIR}/cuvk_runtime/libcuvk_runtime.so"
+            "LD_PRELOAD=${CMAKE_BINARY_DIR}/cuvk_runtime/libcuda.so.1"
+            "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/cuvk_runtime:$ENV{LD_LIBRARY_PATH}"
             $<TARGET_FILE:preload_test> ${PTX_ARGS}
     )
     set_tests_properties(e2e_preload_test PROPERTIES
         LABELS "e2e;preload"
     )
 endif()
+
+# --- nvcc full-binary tests: compile .cu to executables, run against libcuda.so.1 ---
+set(NVCC_TESTS
+    01_vector_add
+    02_device_clamp
+    03_device_chain
+    04_saxpy_fma
+    05_polynomial
+    06_mandelbrot
+    07_multi_device_func
+    08_multi_kernel
+    09_streams
+    10_matmul
+)
+
+set(NVCC_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc)
+file(MAKE_DIRECTORY ${NVCC_BIN_DIR})
+
+set(NVCC_BINARIES "")
+foreach(test ${NVCC_TESTS})
+    set(CU_SRC ${CMAKE_CURRENT_SOURCE_DIR}/nvcc/${test}.cu)
+    set(NVCC_OUT ${NVCC_BIN_DIR}/${test})
+    add_custom_command(
+        OUTPUT ${NVCC_OUT}
+        COMMAND ${NVCC_EXECUTABLE} -o ${NVCC_OUT} ${CU_SRC} -arch=${NVCC_SM}
+        DEPENDS ${CU_SRC}
+        COMMENT "nvcc: ${test}.cu -> ${test}"
+        VERBATIM
+    )
+    list(APPEND NVCC_BINARIES ${NVCC_OUT})
+
+    add_test(
+        NAME e2e_nvcc_${test}
+        COMMAND ${CMAKE_COMMAND} -E env
+            "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/cuvk_runtime:$ENV{LD_LIBRARY_PATH}"
+            ${NVCC_OUT}
+    )
+    set_tests_properties(e2e_nvcc_${test} PROPERTIES
+        LABELS "e2e;nvcc"
+    )
+endforeach()
+
+add_custom_target(e2e_nvcc_binaries ALL DEPENDS ${NVCC_BINARIES})

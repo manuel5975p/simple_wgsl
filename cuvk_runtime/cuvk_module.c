@@ -8,6 +8,7 @@
 
 #include "cuvk_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -116,9 +117,14 @@ static CUresult extract_params(SsirModule *ssir,
 static CUresult extract_params_bda(SsirModule *ssir,
                                     CuvkParamInfo **out_params,
                                     uint32_t *out_count,
-                                    uint32_t *out_pc_size)
+                                    uint32_t *out_pc_size,
+                                    uint32_t ep_index)
 {
-    /* Find the push constant global variable */
+    /* Find the push constant global for a specific entry point.
+     * Each entry point has its own KernelParams struct in its interface. */
+    SsirEntryPoint *ep = (ep_index < ssir->entry_point_count)
+                          ? &ssir->entry_points[ep_index] : NULL;
+
     for (uint32_t i = 0; i < ssir->global_count; i++) {
         SsirGlobalVar *g = &ssir->globals[i];
         SsirType *t = ssir_get_type(ssir, g->type);
@@ -126,6 +132,15 @@ static CUresult extract_params_bda(SsirModule *ssir,
             continue;
         if (t->ptr.space != SSIR_ADDR_PUSH_CONSTANT)
             continue;
+
+        /* If we have entry point info, only accept globals in its interface */
+        if (ep) {
+            bool in_iface = false;
+            for (uint32_t j = 0; j < ep->interface_count; j++) {
+                if (ep->interface[j] == g->id) { in_iface = true; break; }
+            }
+            if (!in_iface) continue;
+        }
 
         /* Found the push constant — its pointee is a struct */
         SsirType *st = ssir_get_type(ssir, t->ptr.pointee);
@@ -199,6 +214,34 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
 
+    const char *ptx_text = NULL;
+    char *fatbin_ptx = NULL;
+    uint32_t magic = 0;
+    memcpy(&magic, image, sizeof(magic));
+    CUVK_LOG("[cuvk] cuModuleLoadData: magic=0x%08X image=%p\n",
+            magic, image);
+
+    /* Handle FatbincWrapper (magic 0x466243B1) - unwrap to inner fatbin */
+    if (magic == 0x466243B1u) {
+        const void *inner;
+        memcpy(&inner, (const char *)image + 8, sizeof(inner));
+        CUVK_LOG("[cuvk]   FatbincWrapper -> inner=%p\n", inner);
+        if (!inner) return CUDA_ERROR_INVALID_IMAGE;
+        image = inner;
+        memcpy(&magic, image, sizeof(magic));
+        CUVK_LOG("[cuvk]   inner magic=0x%08X\n", magic);
+    }
+
+    /* Check for fatbin container (magic 0xBA55ED50) */
+    if (magic == 0xBA55ED50) {
+        fatbin_ptx = cuvk_fatbin_extract_ptx(image, NULL);
+        if (!fatbin_ptx)
+            return CUDA_ERROR_INVALID_IMAGE;
+        ptx_text = fatbin_ptx;
+    } else {
+        ptx_text = (const char *)image;
+    }
+
     /* Determine if BDA mode should be used */
     bool use_bda = ctx->has_bda;
 
@@ -209,11 +252,27 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
     SsirModule *ssir = NULL;
     char *error = NULL;
 
-    PtxToSsirResult pr = ptx_to_ssir((const char *)image, &ptx_opts, &ssir, &error);
+    /* Debug: dump raw PTX */
+    const char *ptx_dump = getenv("CUVK_DUMP_PTX");
+    if (ptx_dump) {
+        FILE *pf = fopen(ptx_dump, "w");
+        if (pf) {
+            fputs(ptx_text, pf);
+            fclose(pf);
+            CUVK_LOG("[cuvk] dumped PTX to %s (%zu bytes)\n",
+                    ptx_dump, strlen(ptx_text));
+        }
+    }
+
+    PtxToSsirResult pr = ptx_to_ssir(ptx_text, &ptx_opts, &ssir, &error);
+    free(fatbin_ptx);
     if (pr != PTX_TO_SSIR_OK) {
+        CUVK_LOG("[cuvk] ptx_to_ssir FAILED: %s\n", error ? error : "unknown");
         ptx_to_ssir_free(error);
         return CUDA_ERROR_INVALID_IMAGE;
     }
+    if (error)
+        CUVK_LOG("[cuvk] ptx_to_ssir warnings: %s\n", error);
     ptx_to_ssir_free(error);
 
     /* 2. SSIR -> SPIR-V */
@@ -226,8 +285,22 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
 
     SsirToSpirvResult sr = ssir_to_spirv(ssir, &spirv_opts, &words, &word_count);
     if (sr != SSIR_TO_SPIRV_OK) {
+        CUVK_LOG("[cuvk] ssir_to_spirv FAILED: %d\n", sr);
         ssir_module_destroy(ssir);
         return CUDA_ERROR_INVALID_IMAGE;
+    }
+    CUVK_LOG("[cuvk] SPIR-V: %zu words generated\n", word_count);
+
+    /* Debug: dump SPIR-V to file if CUVK_DUMP_SPIRV is set */
+    const char *dump_path = getenv("CUVK_DUMP_SPIRV");
+    if (dump_path) {
+        FILE *df = fopen(dump_path, "wb");
+        if (df) {
+            fwrite(words, sizeof(uint32_t), word_count, df);
+            fclose(df);
+            CUVK_LOG("[cuvk] dumped %zu SPIR-V words to %s\n",
+                    word_count, dump_path);
+        }
     }
 
     /* 3. Allocate CUmod_st */
@@ -245,26 +318,24 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
     mod->spirv_words = words;
     mod->spirv_count = (uint32_t)word_count;
 
-    /* 4. Extract parameter metadata (shared across all entry points for now) */
-    CuvkParamInfo *params = NULL;
-    uint32_t param_count = 0;
-    uint32_t pc_size = 0;
+    /* 4. For non-BDA mode, extract shared params; BDA extracts per entry point */
+    CuvkParamInfo *shared_params = NULL;
+    uint32_t shared_param_count = 0;
     CUresult res;
-    if (use_bda)
-        res = extract_params_bda(ssir, &params, &param_count, &pc_size);
-    else
-        res = extract_params(ssir, &params, &param_count);
-    if (res != CUDA_SUCCESS) {
-        ssir_to_spirv_free(mod->spirv_words);
-        ssir_module_destroy(ssir);
-        free(mod);
-        return res;
+    if (!use_bda) {
+        res = extract_params(ssir, &shared_params, &shared_param_count);
+        if (res != CUDA_SUCCESS) {
+            ssir_to_spirv_free(mod->spirv_words);
+            ssir_module_destroy(ssir);
+            free(mod);
+            return res;
+        }
     }
 
     /* 5. For each entry point, allocate a CUfunc_st */
     uint32_t ep_count = ssir->entry_point_count;
     if (ep_count == 0) {
-        free(params);
+        free(shared_params);
         ssir_to_spirv_free(mod->spirv_words);
         ssir_module_destroy(ssir);
         free(mod);
@@ -273,7 +344,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
 
     struct CUfunc_st *funcs = (struct CUfunc_st *)calloc(ep_count, sizeof(*funcs));
     if (!funcs) {
-        free(params);
+        free(shared_params);
         ssir_to_spirv_free(mod->spirv_words);
         ssir_module_destroy(ssir);
         free(mod);
@@ -290,7 +361,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
     VkResult vr = vkCreateShaderModule(ctx->device, &sm_ci, NULL, &shared_shader);
     if (vr != VK_SUCCESS) {
         free(funcs);
-        free(params);
+        free(shared_params);
         ssir_to_spirv_free(mod->spirv_words);
         ssir_module_destroy(ssir);
         free(mod);
@@ -310,13 +381,26 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
         /* Share the shader module (each function in the same module uses it) */
         f->shader_module = shared_shader;
 
-        /* Copy parameter info */
-        f->param_count = param_count;
-        f->push_constant_size = use_bda ? pc_size : 0;
-        if (param_count > 0) {
-            f->params = (CuvkParamInfo *)calloc(param_count, sizeof(CuvkParamInfo));
-            if (f->params)
-                memcpy(f->params, params, param_count * sizeof(CuvkParamInfo));
+        /* Extract parameter info per entry point */
+        if (use_bda) {
+            CuvkParamInfo *ep_params = NULL;
+            uint32_t ep_param_count = 0;
+            uint32_t ep_pc_size = 0;
+            res = extract_params_bda(ssir, &ep_params, &ep_param_count,
+                                     &ep_pc_size, i);
+            f->param_count = ep_param_count;
+            f->push_constant_size = ep_pc_size;
+            f->params = ep_params;
+        } else {
+            f->param_count = shared_param_count;
+            f->push_constant_size = 0;
+            if (shared_param_count > 0) {
+                f->params = (CuvkParamInfo *)calloc(shared_param_count,
+                                                     sizeof(CuvkParamInfo));
+                if (f->params)
+                    memcpy(f->params, shared_params,
+                           shared_param_count * sizeof(CuvkParamInfo));
+            }
         }
 
         if (use_bda) {
@@ -337,7 +421,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
                         vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
                 }
                 vkDestroyShaderModule(ctx->device, shared_shader, NULL);
-                free(funcs); free(params);
+                free(funcs); free(shared_params);
                 ssir_to_spirv_free(mod->spirv_words);
                 ssir_module_destroy(ssir); free(mod);
                 return cuvk_vk_to_cu(vr);
@@ -346,7 +430,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
             VkPushConstantRange pc_range = {0};
             pc_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
             pc_range.offset = 0;
-            pc_range.size = pc_size > 0 ? pc_size : 4; /* min 4 bytes */
+            pc_range.size = f->push_constant_size > 0 ? f->push_constant_size : 4;
 
             VkPipelineLayoutCreateInfo pl_ci = {0};
             pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -360,10 +444,10 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
         } else {
             /* Descriptor mode: one storage buffer per pointer param */
             VkDescriptorSetLayoutBinding *bindings = NULL;
-            if (param_count > 0) {
+            if (f->param_count > 0) {
                 bindings = (VkDescriptorSetLayoutBinding *)calloc(
-                    param_count, sizeof(VkDescriptorSetLayoutBinding));
-                for (uint32_t j = 0; j < param_count; j++) {
+                    f->param_count, sizeof(VkDescriptorSetLayoutBinding));
+                for (uint32_t j = 0; j < f->param_count; j++) {
                     bindings[j].binding = j;
                     bindings[j].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                     bindings[j].descriptorCount = 1;
@@ -373,7 +457,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
 
             VkDescriptorSetLayoutCreateInfo dsl_ci = {0};
             dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-            dsl_ci.bindingCount = param_count;
+            dsl_ci.bindingCount = f->param_count;
             dsl_ci.pBindings = bindings;
 
             vr = vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
@@ -390,7 +474,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
                         vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
                 }
                 vkDestroyShaderModule(ctx->device, shared_shader, NULL);
-                free(funcs); free(params);
+                free(funcs); free(shared_params);
                 ssir_to_spirv_free(mod->spirv_words);
                 ssir_module_destroy(ssir); free(mod);
                 return cuvk_vk_to_cu(vr);
@@ -417,7 +501,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
                     vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
             }
             vkDestroyShaderModule(ctx->device, shared_shader, NULL);
-            free(funcs); free(params);
+            free(funcs); free(shared_params);
             ssir_to_spirv_free(mod->spirv_words);
             ssir_module_destroy(ssir); free(mod);
             return cuvk_vk_to_cu(vr);
@@ -429,7 +513,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
         f->pipeline_cache_capacity = 0;
     }
 
-    free(params);
+    free(shared_params);
 
     mod->functions = funcs;
     mod->function_count = ep_count;

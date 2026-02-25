@@ -101,10 +101,11 @@ TEST_F(CuvkInitTest, DeviceGetAttribute) {
     EXPECT_EQ(res, CUDA_SUCCESS);
     EXPECT_GT(val, 0);
 
-    /* Unknown attribute should return error */
+    /* Unknown attribute returns SUCCESS with zero (for libcudart compat) */
     res = cuDeviceGetAttribute(
         &val, (CUdevice_attribute)99999, 0);
-    EXPECT_EQ(res, CUDA_ERROR_INVALID_VALUE);
+    EXPECT_EQ(res, CUDA_SUCCESS);
+    EXPECT_EQ(val, 0);
 }
 
 /* cuCtxCreate + cuCtxDestroy lifecycle */
@@ -139,7 +140,7 @@ TEST_F(CuvkInitTest, DriverVersion) {
     int version = 0;
     CUresult res = cuDriverGetVersion(&version);
     EXPECT_EQ(res, CUDA_SUCCESS);
-    EXPECT_EQ(version, 12000);
+    EXPECT_EQ(version, 13020);
 }
 
 /* cuCtxSetCurrent / cuCtxGetCurrent */

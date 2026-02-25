@@ -14,6 +14,13 @@
 #include "simple_wgsl.h"
 
 #include <stdbool.h>
+#include <stdio.h>
+
+#ifdef CUVK_DEBUG_LOG
+#define CUVK_LOG(...) fprintf(stderr, __VA_ARGS__)
+#else
+#define CUVK_LOG(...) ((void)0)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,6 +45,13 @@ static inline CUresult cuvk_vk_to_cu(VkResult vr) {
 /* ============================================================================
  * Internal helper structs
  * ============================================================================ */
+
+/* Context-local storage entry (used by cudart for per-context state) */
+typedef struct CuvkStorageEntry {
+    uintptr_t key;
+    void     *value;
+    void    (*dtor_cb)(CUcontext, void *key, void *value);
+} CuvkStorageEntry;
 
 /* A single Vulkan buffer allocation tracked by the context */
 typedef struct CuvkAlloc {
@@ -115,6 +129,11 @@ struct CUctx_st {
 
     /* Default (NULL) stream */
     struct CUstream_st              default_stream;
+
+    /* Context-local storage (used by cudart internals) */
+    CuvkStorageEntry               *storage;
+    uint32_t                        storage_count;
+    uint32_t                        storage_capacity;
 };
 
 /* CUfunction */
@@ -182,6 +201,9 @@ int32_t cuvk_find_memory_type(const VkPhysicalDeviceMemoryProperties *mem_props,
 
 /* Look up a CuvkAlloc by its device address (BDA) or buffer handle */
 CuvkAlloc *cuvk_alloc_lookup(struct CUctx_st *ctx, CUdeviceptr dptr);
+
+/* Extract PTX text from an NVIDIA fatbin container. Returns malloc'd string. */
+char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len);
 
 /* Submit whatever is recorded on the stream and wait for completion */
 CUresult cuvk_stream_submit_and_wait(struct CUstream_st *stream);

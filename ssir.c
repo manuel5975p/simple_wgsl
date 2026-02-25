@@ -1305,6 +1305,40 @@ uint32_t ssir_block_create_with_id(SsirModule *mod, uint32_t func_id, uint32_t b
     return b->id;
 }
 
+uint32_t ssir_block_insert_after(SsirModule *mod, uint32_t func_id,
+                                  uint32_t after_block_id, const char *name) {
+    wgsl_compiler_assert(mod != NULL, "ssir_block_insert_after: mod is NULL");
+    SsirFunction *f = ssir_get_function(mod, func_id);
+    if (!f) return 0;
+
+    /* Find position of after_block_id */
+    uint32_t insert_pos = f->block_count; /* default: append */
+    for (uint32_t i = 0; i < f->block_count; i++) {
+        if (f->blocks[i].id == after_block_id) {
+            insert_pos = i + 1;
+            break;
+        }
+    }
+
+    if (!ssir_grow_array((void **)&f->blocks, &f->block_capacity,
+            sizeof(SsirBlock), f->block_count + 1)) {
+        return 0;
+    }
+
+    /* Shift blocks after insert_pos */
+    if (insert_pos < f->block_count) {
+        memmove(&f->blocks[insert_pos + 1], &f->blocks[insert_pos],
+                (f->block_count - insert_pos) * sizeof(SsirBlock));
+    }
+
+    SsirBlock *b = &f->blocks[insert_pos];
+    memset(b, 0, sizeof(SsirBlock));
+    b->id = ssir_module_alloc_id(mod);
+    b->name = ssir_strdup(name);
+    f->block_count++;
+    return b->id;
+}
+
 // mod nonnull
 SsirBlock *ssir_get_block(SsirModule *mod, uint32_t func_id, uint32_t block_id) {
     wgsl_compiler_assert(mod != NULL, "ssir_get_block: mod is NULL");

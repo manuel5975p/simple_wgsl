@@ -6,6 +6,8 @@
 
 #include "cuvk_internal.h"
 
+#include <stdio.h>
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -131,6 +133,8 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
     (void)sharedMemBytes;
     (void)hStream;
     (void)extra;
+    CUVK_LOG("[cuvk] cuLaunchKernel: f=%p grid=(%u,%u,%u) block=(%u,%u,%u)\n",
+            (void *)f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ);
 
     if (!f)
         return CUDA_ERROR_INVALID_VALUE;

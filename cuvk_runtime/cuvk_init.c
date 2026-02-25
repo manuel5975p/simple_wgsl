@@ -9,6 +9,7 @@
 
 #include "cuvk_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -39,6 +40,8 @@ int32_t cuvk_find_memory_type(const VkPhysicalDeviceMemoryProperties *mem_props,
 CUresult CUDAAPI cuInit(unsigned int Flags)
 {
     (void)Flags;
+    CUVK_LOG("[cuvk] cuInit called (initialized=%d)\n",
+            g_cuvk.initialized);
 
     if (g_cuvk.initialized)
         return CUDA_SUCCESS;
@@ -63,8 +66,10 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
     create_info.ppEnabledExtensionNames = instance_extensions;
 
     VkResult vr = vkCreateInstance(&create_info, NULL, &g_cuvk.instance);
-    if (vr != VK_SUCCESS)
+    if (vr != VK_SUCCESS) {
+        CUVK_LOG("[cuvk] cuInit: vkCreateInstance failed vr=%d\n", vr);
         return cuvk_vk_to_cu(vr);
+    }
 
     /* Enumerate physical devices */
     uint32_t count = 0;
@@ -94,6 +99,7 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
 
     g_cuvk.physical_device_count = count;
     g_cuvk.initialized = true;
+    CUVK_LOG("[cuvk] cuInit SUCCESS (devices=%u)\n", count);
     return CUDA_SUCCESS;
 }
 
@@ -105,7 +111,8 @@ CUresult CUDAAPI cuDriverGetVersion(int *driverVersion)
 {
     if (!driverVersion)
         return CUDA_ERROR_INVALID_VALUE;
-    *driverVersion = 12000; /* Pretend CUDA 12.0 */
+    CUVK_LOG("[cuvk] cuDriverGetVersion called\n");
+    *driverVersion = 13020;
     return CUDA_SUCCESS;
 }
 
@@ -136,6 +143,7 @@ CUresult CUDAAPI cuDeviceGetCount(int *count)
     if (!count)
         return CUDA_ERROR_INVALID_VALUE;
     *count = (int)g_cuvk.physical_device_count;
+    CUVK_LOG("[cuvk] cuDeviceGetCount -> %d\n", *count);
     return CUDA_SUCCESS;
 }
 
@@ -207,7 +215,14 @@ CUresult CUDAAPI cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
     VkPhysicalDeviceProperties props;
     vkGetPhysicalDeviceProperties(phys, &props);
 
+    CUVK_LOG("[cuvk] cuDeviceGetAttribute(attrib=%d, dev=%d)\n", attrib, dev);
     switch (attrib) {
+    case CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR:
+        *pi = 8;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR:
+        *pi = 0;
+        return CUDA_SUCCESS;
     case CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK:
         *pi = (int)props.limits.maxComputeWorkGroupInvocations;
         return CUDA_SUCCESS;
@@ -249,13 +264,89 @@ CUresult CUDAAPI cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
         return CUDA_SUCCESS;
     }
     case CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT:
-        *pi = 1; /* Not directly available in Vulkan */
+        *pi = 68;
         return CUDA_SUCCESS;
     case CU_DEVICE_ATTRIBUTE_CLOCK_RATE:
-        *pi = 1000000; /* Placeholder: 1 GHz in kHz */
+        *pi = 1410000;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MEMORY_CLOCK_RATE:
+        *pi = 9501000;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_GLOBAL_MEMORY_BUS_WIDTH:
+        *pi = 384;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_L2_CACHE_SIZE:
+        *pi = 6291456;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK:
+        *pi = 65536;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_UNIFIED_ADDRESSING:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MANAGED_MEMORY:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_CAN_MAP_HOST_MEMORY:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_INTEGRATED:
+        *pi = 0;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_CONCURRENT_MANAGED_ACCESS:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_COMPUTE_PREEMPTION_SUPPORTED:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR:
+        *pi = 163840;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_MULTIPROCESSOR:
+        *pi = 65536;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN:
+        *pi = 163840;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_HOST_REGISTER_SUPPORTED:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS_USES_HOST_PAGE_TABLES:
+        *pi = 0;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_DIRECT_MANAGED_MEM_ACCESS_FROM_HOST:
+        *pi = 0;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_VIRTUAL_MEMORY_MANAGEMENT_SUPPORTED:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR_SUPPORTED:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_PAGEABLE_MEMORY_ACCESS:
+        *pi = 0;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_HOST_NATIVE_ATOMIC_SUPPORTED:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_SINGLE_TO_DOUBLE_PRECISION_PERF_RATIO:
+        *pi = 2;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_GLOBAL_L1_CACHE_SUPPORTED:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_LOCAL_L1_CACHE_SUPPORTED:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MULTI_GPU_BOARD:
+        *pi = 0;
         return CUDA_SUCCESS;
     default:
-        return CUDA_ERROR_INVALID_VALUE;
+        *pi = 0;
+        return CUDA_SUCCESS;
     }
 }
 
@@ -395,6 +486,10 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     if (has_bda) {
         ctx->pfn_get_bda = (PFN_vkGetBufferDeviceAddress)
             vkGetDeviceProcAddr(ctx->device, "vkGetBufferDeviceAddress");
+        if (!ctx->pfn_get_bda) {
+            ctx->pfn_get_bda = (PFN_vkGetBufferDeviceAddress)
+                vkGetDeviceProcAddr(ctx->device, "vkGetBufferDeviceAddressKHR");
+        }
     }
 
     /* Create command pool */
