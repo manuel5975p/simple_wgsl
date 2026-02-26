@@ -1170,7 +1170,7 @@ static int is_float_ssir_type(Ctx *c, uint32_t type_id) {
     wgsl_compiler_assert(c != NULL, "is_float_ssir_type: c is NULL");
     SsirType *t = ssir_get_type((SsirModule *)c->mod, type_id);
     if (!t) return 0;
-    if (t->kind == SSIR_TYPE_F32 || t->kind == SSIR_TYPE_F16) return 1;
+    if (t->kind == SSIR_TYPE_F32 || t->kind == SSIR_TYPE_F16 || t->kind == SSIR_TYPE_F64) return 1;
     if (t->kind == SSIR_TYPE_VEC) {
         return is_float_ssir_type(c, t->vec.elem);
     }
@@ -2146,6 +2146,30 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
                 wb_push(wb, type_spv);
                 wb_push(wb, result_spv);
                 wb_push(wb, get_spv_id(c, inst->extra[0]));
+            } else if (builtin_id == SSIR_BUILTIN_COUNTBITS) {
+                sts_emit_op(wb, SpvOpBitCount, 4);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->extra[0]));
+            } else if (builtin_id == SSIR_BUILTIN_REVERSEBITS) {
+                sts_emit_op(wb, SpvOpBitReverse, 4);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, get_spv_id(c, inst->extra[0]));
+            } else if (builtin_id == SSIR_BUILTIN_FIRSTLEADINGBIT) {
+                sts_emit_op(wb, SpvOpExtInst, 6);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, c->glsl_ext_id);
+                wb_push(wb, is_signed_ssir_type(c, inst->type) ? GLSLstd450FindSMsb : GLSLstd450FindUMsb);
+                wb_push(wb, get_spv_id(c, inst->extra[0]));
+            } else if (builtin_id == SSIR_BUILTIN_FIRSTTRAILINGBIT) {
+                sts_emit_op(wb, SpvOpExtInst, 6);
+                wb_push(wb, type_spv);
+                wb_push(wb, result_spv);
+                wb_push(wb, c->glsl_ext_id);
+                wb_push(wb, GLSLstd450FindILsb);
+                wb_push(wb, get_spv_id(c, inst->extra[0]));
             } else if (glsl_op >= 0) {
                 /* Generic GLSL.std.450 function */
                 sts_emit_op(wb, SpvOpExtInst, 5 + inst->extra_count);
@@ -2700,6 +2724,15 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
         /* Emit OpLabel */
         sts_emit_op(wb, SpvOpLabel, 2);
         wb_push(wb, block_spv);
+
+        /* Debug: emit block name */
+        if (block->name && block->name[0]) {
+            sts_emit_name(c, block_spv, block->name);
+        } else {
+            char tmp[32];
+            snprintf(tmp, sizeof(tmp), "blk_%u", block->id);
+            sts_emit_name(c, block_spv, tmp);
+        }
 
         /* Emit local variables in first block */
         if (bi == 0) {

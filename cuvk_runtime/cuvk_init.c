@@ -431,6 +431,7 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     vkGetPhysicalDeviceFeatures2(phys, &features2_ts);
 
     bool has_timeline = (ts_features.timelineSemaphore == VK_TRUE);
+    bool has_f64 = (features2.features.shaderFloat64 == VK_TRUE);
 
     /* Build device extension list */
     const char *device_extensions[2];
@@ -460,12 +461,17 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
     enable_ts.timelineSemaphore = has_timeline ? VK_TRUE : VK_FALSE;
 
-    /* Chain: device_ci -> bda -> ts */
+    VkPhysicalDeviceFeatures2 enable_features2 = {0};
+    enable_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    enable_features2.features.shaderFloat64 = has_f64 ? VK_TRUE : VK_FALSE;
+
+    /* Chain: device_ci -> features2 -> bda -> ts */
+    enable_features2.pNext = &enable_bda;
     enable_bda.pNext = &enable_ts;
 
     VkDeviceCreateInfo device_ci = {0};
     device_ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    device_ci.pNext = &enable_bda;
+    device_ci.pNext = &enable_features2;
     device_ci.queueCreateInfoCount = 1;
     device_ci.pQueueCreateInfos = &queue_ci;
     device_ci.enabledExtensionCount = ext_count;

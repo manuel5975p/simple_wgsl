@@ -1277,6 +1277,7 @@ uint32_t ssir_function_add_local(SsirModule *mod, uint32_t func_id,
 
 uint32_t ssir_block_create(SsirModule *mod, uint32_t func_id, const char *name);
 uint32_t ssir_block_create_with_id(SsirModule *mod, uint32_t func_id, uint32_t block_id, const char *name);
+uint32_t ssir_block_insert_before_with_id(SsirModule *mod, uint32_t func_id, uint32_t before_block_id, uint32_t block_id, const char *name);
 uint32_t ssir_block_insert_after(SsirModule *mod, uint32_t func_id, uint32_t after_block_id, const char *name);
 SsirBlock *ssir_get_block(SsirModule *mod, uint32_t func_id, uint32_t block_id);
 
@@ -1692,6 +1693,15 @@ void msl_to_ssir_free(char *str);
 const char *msl_to_ssir_result_string(MslToSsirResult r);
 
 /* ============================================================================
+ * PTX Parser (PTX source -> AST)
+ * ============================================================================ */
+
+typedef struct PtxModule PtxModule;
+
+PtxModule *ptx_parse(const char *source, char **out_error);
+void ptx_parse_free(PtxModule *mod);
+
+/* ============================================================================
  * PTX → SSIR
  * ============================================================================ */
 
@@ -1706,6 +1716,9 @@ typedef struct {
     int strict_mode;      /* reject .approx instructions (exact only) */
     int use_bda;          /* 1 = push constants + PhysicalStorageBuffer for kernel pointers */
 } PtxToSsirOptions;
+
+PtxToSsirResult ptx_lower(const PtxModule *mod, const PtxToSsirOptions *opts,
+    SsirModule **out_module, char **out_error);
 
 PtxToSsirResult ptx_to_ssir(const char *ptx_source, const PtxToSsirOptions *opts,
     SsirModule **out_module, char **out_error);

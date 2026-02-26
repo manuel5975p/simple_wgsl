@@ -136,6 +136,34 @@ set(NVCC_TESTS
     08_multi_kernel
     09_streams
     10_matmul
+    11_double_underscore_math
+    12_rsqrt_rcp
+    13_integer_intrinsics
+    14_saturate_math
+    15_double_precision
+    16_half_float_basic
+    17_half2_packed
+    18_fast_trig
+    19_warp_shuffle
+    20_shared_memory
+    21_atomic_ops
+    22_type_conversions
+    23_bitwise_ops
+    24_ternary_select
+    25_3d_grid
+    26_float_special
+    27_prefix_scan
+    28_long_long_ops
+    29_grid_stride_loop
+    30_complex_math
+    31_popc_brev
+    32_clz_bfind
+    33_cvt_rounding
+    34_funnel_shift
+    35_standard_math_heavy
+    36_fast_intrinsics_stress
+    37_compound_math_chains
+    38_extended_math
 )
 
 set(NVCC_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc)
