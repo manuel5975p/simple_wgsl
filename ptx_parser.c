@@ -6,7 +6,6 @@
  */
 
 #include "simple_wgsl.h"
-#include "ptx_ast.h"
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
