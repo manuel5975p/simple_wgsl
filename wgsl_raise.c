@@ -1,10 +1,7 @@
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 #include <stdarg.h>
-#include "simple_wgsl.h"
 #include <spirv/unified1/spirv.h>
 #include <spirv/unified1/GLSL.std.450.h>
+#include "simple_wgsl_internal.h"
 
 #ifndef WGSL_MALLOC
 #define WGSL_MALLOC(SZ) calloc(1, (SZ))
@@ -18,107 +15,41 @@
 
 #define SPV_MAGIC 0x07230203
 
-typedef enum {
-    SPV_ID_UNKNOWN = 0,
-    SPV_ID_TYPE,
-    SPV_ID_CONSTANT,
-    SPV_ID_VARIABLE,
-    SPV_ID_FUNCTION,
-    SPV_ID_LABEL,
-    SPV_ID_INSTRUCTION,
-    SPV_ID_EXT_INST_IMPORT
-} SpvIdKind;
+typedef SwSpvIdKind SpvIdKind;
+#define SPV_ID_UNKNOWN SW_SPV_ID_UNKNOWN
+#define SPV_ID_TYPE SW_SPV_ID_TYPE
+#define SPV_ID_CONSTANT SW_SPV_ID_CONSTANT
+#define SPV_ID_VARIABLE SW_SPV_ID_VARIABLE
+#define SPV_ID_FUNCTION SW_SPV_ID_FUNCTION
+#define SPV_ID_LABEL SW_SPV_ID_LABEL
+#define SPV_ID_INSTRUCTION SW_SPV_ID_INSTRUCTION
+#define SPV_ID_EXT_INST_IMPORT SW_SPV_ID_EXT_INST_IMPORT
 
-typedef enum {
-    SPV_TYPE_VOID = 0,
-    SPV_TYPE_BOOL,
-    SPV_TYPE_INT,
-    SPV_TYPE_FLOAT,
-    SPV_TYPE_VECTOR,
-    SPV_TYPE_MATRIX,
-    SPV_TYPE_ARRAY,
-    SPV_TYPE_RUNTIME_ARRAY,
-    SPV_TYPE_STRUCT,
-    SPV_TYPE_POINTER,
-    SPV_TYPE_FUNCTION,
-    SPV_TYPE_IMAGE,
-    SPV_TYPE_SAMPLED_IMAGE,
-    SPV_TYPE_SAMPLER
-} SpvTypeKind;
+typedef SwSpvTypeKind SpvTypeKind;
+#define SPV_TYPE_VOID SW_SPV_TYPE_VOID
+#define SPV_TYPE_BOOL SW_SPV_TYPE_BOOL
+#define SPV_TYPE_INT SW_SPV_TYPE_INT
+#define SPV_TYPE_FLOAT SW_SPV_TYPE_FLOAT
+#define SPV_TYPE_VECTOR SW_SPV_TYPE_VECTOR
+#define SPV_TYPE_MATRIX SW_SPV_TYPE_MATRIX
+#define SPV_TYPE_ARRAY SW_SPV_TYPE_ARRAY
+#define SPV_TYPE_RUNTIME_ARRAY SW_SPV_TYPE_RUNTIME_ARRAY
+#define SPV_TYPE_STRUCT SW_SPV_TYPE_STRUCT
+#define SPV_TYPE_POINTER SW_SPV_TYPE_POINTER
+#define SPV_TYPE_FUNCTION SW_SPV_TYPE_FUNCTION
+#define SPV_TYPE_IMAGE SW_SPV_TYPE_IMAGE
+#define SPV_TYPE_SAMPLED_IMAGE SW_SPV_TYPE_SAMPLED_IMAGE
+#define SPV_TYPE_SAMPLER SW_SPV_TYPE_SAMPLER
 
-typedef struct {
-    SpvTypeKind kind;
-    union {
-        struct {
-            uint32_t width;
-            uint32_t signedness;
-        } int_type;
-        struct {
-            uint32_t width;
-        } float_type;
-        struct {
-            uint32_t component_type;
-            uint32_t count;
-        } vector;
-        struct {
-            uint32_t column_type;
-            uint32_t columns;
-        } matrix;
-        struct {
-            uint32_t element_type;
-            uint32_t length_id;
-        } array;
-        struct {
-            uint32_t element_type;
-        } runtime_array;
-        struct {
-            uint32_t *member_types;
-            int member_count;
-        } struct_type;
-        struct {
-            uint32_t pointee_type;
-            SpvStorageClass storage;
-        } pointer;
-        struct {
-            uint32_t return_type;
-            uint32_t *param_types;
-            int param_count;
-        } function;
-        struct {
-            uint32_t sampled_type;
-            SpvDim dim;
-            uint32_t depth;
-            uint32_t arrayed;
-            uint32_t ms;
-            uint32_t sampled;
-            SpvImageFormat format;
-        } image;
-        struct {
-            uint32_t image_type;
-        } sampled_image;
-    };
-} SpvTypeInfo;
-
-typedef struct {
-    SpvDecoration decoration;
-    uint32_t *literals;
-    int literal_count;
-} SpvDecorationEntry;
-
-typedef struct {
-    uint32_t member_index;
-    SpvDecoration decoration;
-    uint32_t *literals;
-    int literal_count;
-} SpvMemberDecoration;
+typedef SwSpvTypeInfo SpvTypeInfo;
+typedef SwSpvDecorationEntry SpvDecorationEntry;
+typedef SwSpvMemberDecoration SpvMemberDecoration;
 
 typedef struct {
     SpvIdKind kind;
     uint32_t id;
     char *name;
-
     SpvTypeInfo type_info;
-
     union {
         struct {
             uint32_t type_id;
@@ -141,7 +72,6 @@ typedef struct {
             int operand_count;
         } instruction;
     };
-
     SpvDecorationEntry *decorations;
     int decoration_count;
     SpvMemberDecoration *member_decorations;
@@ -150,41 +80,9 @@ typedef struct {
     int member_name_count;
 } SpvIdInfo;
 
-typedef struct {
-    uint32_t label_id;
-    uint32_t *instructions;
-    int instruction_count;
-    int instruction_cap;
-    uint32_t merge_block;
-    uint32_t continue_block;
-    int is_loop_header;
-    int is_selection_header;
-    int emitted;
-} SpvBasicBlock;
-
-typedef struct {
-    uint32_t id;
-    char *name;
-    uint32_t return_type;
-    uint32_t func_type;
-    uint32_t *params;
-    int param_count;
-    SpvBasicBlock *blocks;
-    int block_count;
-    int block_cap;
-    SpvExecutionModel exec_model;
-    int is_entry_point;
-    uint32_t *interface_vars;
-    int interface_var_count;
-    int workgroup_size[3];
-} SpvFunction;
-
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-    int indent;
-} StringBuffer;
+typedef SwSpvBasicBlock SpvBasicBlock;
+typedef SwSpvFunction SpvFunction;
+typedef SwStringBuffer StringBuffer;
 
 typedef struct {
     uint32_t func_id;
@@ -243,72 +141,12 @@ static void wr_set_error(WgslRaiser *r, const char *msg) {
     r->last_error[n] = 0;
 }
 
-// sb nonnull
-static void sb_init(StringBuffer *sb) {
-    wgsl_compiler_assert(sb != NULL, "sb_init: sb is NULL");
-    sb->data = NULL;
-    sb->len = 0;
-    sb->cap = 0;
-    sb->indent = 0;
-}
-
-// sb nonnull
-static void sb_free(StringBuffer *sb) {
-    wgsl_compiler_assert(sb != NULL, "sb_free: sb is NULL");
-    WGSL_FREE(sb->data);
-    sb->data = NULL;
-    sb->len = sb->cap = 0;
-}
-
-// sb nonnull
-static int sb_reserve(StringBuffer *sb, size_t need) {
-    wgsl_compiler_assert(sb != NULL, "sb_reserve: sb is NULL");
-    if (sb->len + need + 1 <= sb->cap) return 1;
-    size_t ncap = sb->cap ? sb->cap : 256;
-    while (ncap < sb->len + need + 1) ncap *= 2;
-    char *nd = (char *)WGSL_REALLOC(sb->data, ncap);
-    if (!nd) return 0;
-    sb->data = nd;
-    sb->cap = ncap;
-    return 1;
-}
-
-// sb nonnull
-// s nonnull
-static void wr_sb_append(StringBuffer *sb, const char *s) {
-    wgsl_compiler_assert(sb != NULL, "wr_sb_append: sb is NULL");
-    wgsl_compiler_assert(s != NULL, "wr_sb_append: s is NULL");
-    size_t n = strlen(s);
-    if (!sb_reserve(sb, n)) return;
-    memcpy(sb->data + sb->len, s, n);
-    sb->len += n;
-    sb->data[sb->len] = 0;
-}
-
-// sb nonnull
-// fmt nonnull
-static void wr_sb_appendf(StringBuffer *sb, const char *fmt, ...) {
-    wgsl_compiler_assert(sb != NULL, "wr_sb_appendf: sb is NULL");
-    wgsl_compiler_assert(fmt != NULL, "wr_sb_appendf: fmt is NULL");
-    char buf[1024];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    wr_sb_append(sb, buf);
-}
-
-// sb nonnull
-static void sb_indent(StringBuffer *sb) {
-    wgsl_compiler_assert(sb != NULL, "sb_indent: sb is NULL");
-    for (int i = 0; i < sb->indent; i++) wr_sb_append(sb, "    ");
-}
-
-// sb nonnull
-static void sb_newline(StringBuffer *sb) {
-    wgsl_compiler_assert(sb != NULL, "sb_newline: sb is NULL");
-    wr_sb_append(sb, "\n");
-}
+#define sb_init sw_sb_init
+#define sb_free sw_sb_free
+#define wr_sb_append sw_sb_append
+#define wr_sb_appendf sw_sb_appendf
+#define sb_indent sw_sb_indent
+#define sb_newline sw_sb_nl
 
 // words nonnull
 // out_words_read nonnull
@@ -441,110 +279,43 @@ void wgsl_raise_destroy(WgslRaiser *r) {
     WGSL_FREE(r);
 }
 
-// r nonnull
 static void add_decoration(WgslRaiser *r, uint32_t target, SpvDecoration decor, const uint32_t *literals, int lit_count) {
-    wgsl_compiler_assert(r != NULL, "add_decoration: r is NULL");
     if (target >= r->id_bound) return;
     SpvIdInfo *info = &r->ids[target];
-    int idx = info->decoration_count++;
-    info->decorations = (SpvDecorationEntry *)WGSL_REALLOC(info->decorations, info->decoration_count * sizeof(SpvDecorationEntry));
-    // PRE: realloc succeeded
-    wgsl_compiler_assert(info->decorations != NULL, "add_decoration: realloc failed");
-    info->decorations[idx].decoration = decor;
-    info->decorations[idx].literal_count = lit_count;
-    if (lit_count > 0) {
-        info->decorations[idx].literals = (uint32_t *)WGSL_MALLOC(lit_count * sizeof(uint32_t));
-        memcpy(info->decorations[idx].literals, literals, lit_count * sizeof(uint32_t));
-    } else {
-        info->decorations[idx].literals = NULL;
-    }
+    sw_spv_add_decoration(&info->decorations, &info->decoration_count,
+        decor, literals, lit_count, realloc);
 }
 
-// r nonnull
 static void add_member_decoration(WgslRaiser *r, uint32_t struct_id, uint32_t member, SpvDecoration decor, const uint32_t *literals, int lit_count) {
-    wgsl_compiler_assert(r != NULL, "add_member_decoration: r is NULL");
     if (struct_id >= r->id_bound) return;
     SpvIdInfo *info = &r->ids[struct_id];
-    int idx = info->member_decoration_count++;
-    info->member_decorations = (SpvMemberDecoration *)WGSL_REALLOC(info->member_decorations, info->member_decoration_count * sizeof(SpvMemberDecoration));
-    // PRE: realloc succeeded
-    wgsl_compiler_assert(info->member_decorations != NULL, "add_member_decoration: realloc failed");
-    info->member_decorations[idx].member_index = member;
-    info->member_decorations[idx].decoration = decor;
-    info->member_decorations[idx].literal_count = lit_count;
-    if (lit_count > 0) {
-        info->member_decorations[idx].literals = (uint32_t *)WGSL_MALLOC(lit_count * sizeof(uint32_t));
-        memcpy(info->member_decorations[idx].literals, literals, lit_count * sizeof(uint32_t));
-    } else {
-        info->member_decorations[idx].literals = NULL;
-    }
+    sw_spv_add_member_decoration(&info->member_decorations,
+        &info->member_decoration_count, member, decor, literals, lit_count,
+        realloc);
 }
 
-// r nonnull
 static int has_decoration(WgslRaiser *r, uint32_t id, SpvDecoration decor, uint32_t *out_value) {
-    wgsl_compiler_assert(r != NULL, "has_decoration: r is NULL");
     if (id >= r->id_bound) return 0;
     SpvIdInfo *info = &r->ids[id];
-    // PRE: decorations array valid if decoration_count > 0
-    wgsl_compiler_assert(info->decoration_count == 0 || info->decorations != NULL, "has_decoration: decorations NULL with count > 0");
-    for (int i = 0; i < info->decoration_count; i++) {
-        if (info->decorations[i].decoration == decor) {
-            // PRE: literals array valid if literal_count > 0
-            wgsl_compiler_assert(info->decorations[i].literal_count == 0 || info->decorations[i].literals != NULL, "has_decoration: literals NULL with count > 0");
-            if (out_value && info->decorations[i].literal_count > 0) {
-                *out_value = info->decorations[i].literals[0];
-            }
-            return 1;
-        }
-    }
-    return 0;
+    return sw_spv_has_decoration(info->decorations, info->decoration_count,
+                                decor, out_value);
 }
 
-// r nonnull
 static SpvFunction *add_function(WgslRaiser *r) {
-    wgsl_compiler_assert(r != NULL, "add_function: r is NULL");
-    if (r->function_count >= r->function_cap) {
-        int ncap = r->function_cap ? r->function_cap * 2 : 8;
-        SpvFunction *tmp = (SpvFunction *)WGSL_REALLOC(r->functions, ncap * sizeof(SpvFunction));
-        if (!tmp) return NULL;
-        r->functions = tmp;
-        r->function_cap = ncap;
-    }
-    SpvFunction *fn = &r->functions[r->function_count++];
-    memset(fn, 0, sizeof(SpvFunction));
+    SpvFunction *fn = sw_spv_add_function(
+        &r->functions, &r->function_count, &r->function_cap, 0, realloc);
     fn->workgroup_size[0] = 1;
     fn->workgroup_size[1] = 1;
     fn->workgroup_size[2] = 1;
     return fn;
 }
 
-// fn nonnull
 static SpvBasicBlock *add_block(SpvFunction *fn, uint32_t label_id) {
-    wgsl_compiler_assert(fn != NULL, "add_block: fn is NULL");
-    if (fn->block_count >= fn->block_cap) {
-        int ncap = fn->block_cap ? fn->block_cap * 2 : 8;
-        SpvBasicBlock *tmp = (SpvBasicBlock *)WGSL_REALLOC(fn->blocks, ncap * sizeof(SpvBasicBlock));
-        if (!tmp) return NULL;
-        fn->blocks = tmp;
-        fn->block_cap = ncap;
-    }
-    SpvBasicBlock *blk = &fn->blocks[fn->block_count++];
-    memset(blk, 0, sizeof(SpvBasicBlock));
-    blk->label_id = label_id;
-    return blk;
+    return sw_spv_add_block(fn, label_id, realloc);
 }
 
-// blk nonnull
 static void add_block_instr(SpvBasicBlock *blk, uint32_t instr_start) {
-    wgsl_compiler_assert(blk != NULL, "add_block_instr: blk is NULL");
-    if (blk->instruction_count >= blk->instruction_cap) {
-        int ncap = blk->instruction_cap ? blk->instruction_cap * 2 : 16;
-        uint32_t *tmp = (uint32_t *)WGSL_REALLOC(blk->instructions, ncap * sizeof(uint32_t));
-        if (!tmp) return;
-        blk->instructions = tmp;
-        blk->instruction_cap = ncap;
-    }
-    blk->instructions[blk->instruction_count++] = instr_start;
+    sw_spv_add_block_instr(blk, instr_start, realloc);
 }
 
 WgslRaiseResult wgsl_raise_parse(WgslRaiser *r) {

@@ -1,4 +1,5 @@
 #include "simple_wgsl.h"
+#include "simple_wgsl_internal.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,6 +13,10 @@
 #ifndef PTX_FREE
 #define PTX_FREE(p) free(p)
 #endif
+
+static void *ptx_realloc_(void *p, size_t sz) {
+    return PTX_REALLOC(p, sz);
+}
 
 static char *ptx_strdup(const char *s) {
     if (!s) return NULL;
@@ -104,6 +109,8 @@ typedef struct {
     int had_error;
 } PtxLower;
 
+#define PL_BCTX(p) (p)->mod, (p)->func_id, (p)->block_id
+
 static void pl_error(PtxLower *p, const char *fmt, ...) {
     if (p->had_error) return;
     p->had_error = 1;
@@ -118,11 +125,7 @@ static void pl_error(PtxLower *p, const char *fmt, ...) {
 static void pl_add_iface(PtxLower *p, uint32_t global_id) {
     for (int i = 0; i < p->iface_count; i++)
         if (p->iface[i] == global_id) return;
-    if (p->iface_count >= p->iface_cap) {
-        p->iface_cap = p->iface_cap ? p->iface_cap * 2 : 16;
-        p->iface = (uint32_t *)PTX_REALLOC(p->iface,
-            p->iface_cap * sizeof(uint32_t));
-    }
+    SW_GROW(p->iface, p->iface_count, p->iface_cap, uint32_t, ptx_realloc_);
     p->iface[p->iface_count++] = global_id;
 }
 
@@ -197,10 +200,7 @@ static PlReg *pl_add_reg(PtxLower *p, const char *name,
     PlReg *existing = pl_find_reg(p, name);
     if (existing) return existing;
 
-    if (p->reg_count >= p->reg_cap) {
-        p->reg_cap = p->reg_cap ? p->reg_cap * 2 : 64;
-        p->regs = (PlReg *)PTX_REALLOC(p->regs, p->reg_cap * sizeof(PlReg));
-    }
+    SW_GROW(p->regs, p->reg_count, p->reg_cap, PlReg, ptx_realloc_);
     PlReg *r = &p->regs[p->reg_count++];
     memset(r, 0, sizeof(*r));
     snprintf(r->name, sizeof(r->name), "%s", name);
@@ -218,7 +218,7 @@ static PlReg *pl_add_reg(PtxLower *p, const char *name,
 static uint32_t pl_load_reg(PtxLower *p, const char *name) {
     PlReg *r = pl_find_reg(p, name);
     if (!r) { pl_error(p, "undefined register '%s'", name); return 0; }
-    return ssir_build_load(p->mod, p->func_id, p->block_id,
+    return ssir_build_load(PL_BCTX(p),
                            r->val_type, r->ptr_id);
 }
 
@@ -230,19 +230,19 @@ static void pl_store_reg_typed(PtxLower *p, const char *name,
         SsirType *vt = ssir_get_type(p->mod, value_type);
         SsirType *rt = ssir_get_type(p->mod, r->val_type);
         if (vt && rt && pl_scalar_bit_width(vt) != pl_scalar_bit_width(rt))
-            value = ssir_build_convert(p->mod, p->func_id, p->block_id,
+            value = ssir_build_convert(PL_BCTX(p),
                                        r->val_type, value);
         else
-            value = ssir_build_bitcast(p->mod, p->func_id, p->block_id,
+            value = ssir_build_bitcast(PL_BCTX(p),
                                        r->val_type, value);
     }
-    ssir_build_store(p->mod, p->func_id, p->block_id, r->ptr_id, value);
+    ssir_build_store(PL_BCTX(p), r->ptr_id, value);
 }
 
 static void pl_store_reg(PtxLower *p, const char *name, uint32_t value) {
     PlReg *r = pl_find_reg(p, name);
     if (!r) { pl_error(p, "undefined register '%s'", name); return; }
-    ssir_build_store(p->mod, p->func_id, p->block_id, r->ptr_id, value);
+    ssir_build_store(PL_BCTX(p), r->ptr_id, value);
 }
 
 static void pl_propagate_buffer(PtxLower *p, const char *dst, const char *src) {
@@ -286,11 +286,7 @@ static uint32_t pl_get_or_create_label(PtxLower *p, const char *name) {
     for (int i = 0; i < p->label_count; i++)
         if (strcmp(p->labels[i].name, name) == 0)
             return p->labels[i].block_id;
-    if (p->label_count >= p->label_cap) {
-        p->label_cap = p->label_cap ? p->label_cap * 2 : 32;
-        p->labels = (PlLabel *)PTX_REALLOC(p->labels,
-            p->label_cap * sizeof(PlLabel));
-    }
+    SW_GROW(p->labels, p->label_count, p->label_cap, PlLabel, ptx_realloc_);
     PlLabel *l = &p->labels[p->label_count++];
     snprintf(l->name, sizeof(l->name), "%s", name);
     l->block_id = ssir_module_alloc_id(p->mod);
@@ -313,21 +309,15 @@ static bool pl_is_merge_used(PtxLower *p, uint32_t block_id) {
 
 static void pl_mark_merge(PtxLower *p, uint32_t block_id) {
     if (pl_is_merge_used(p, block_id)) return;
-    if (p->merge_block_count >= p->merge_block_cap) {
-        p->merge_block_cap = p->merge_block_cap ? p->merge_block_cap * 2 : 16;
-        p->merge_blocks = (uint32_t *)PTX_REALLOC(p->merge_blocks,
-            p->merge_block_cap * sizeof(uint32_t));
-    }
+    SW_GROW(p->merge_blocks, p->merge_block_count, p->merge_block_cap,
+            uint32_t, ptx_realloc_);
     p->merge_blocks[p->merge_block_count++] = block_id;
 }
 
 static void pl_push_construct(PtxLower *p, uint32_t merge_block,
                                uint32_t target_label, bool has_inner_merge) {
-    if (p->construct_depth >= p->construct_cap) {
-        p->construct_cap = p->construct_cap ? p->construct_cap * 2 : 16;
-        p->construct_stack = PTX_REALLOC(p->construct_stack,
-            p->construct_cap * sizeof(p->construct_stack[0]));
-    }
+    SW_GROW(p->construct_stack, p->construct_depth, p->construct_cap,
+            __typeof__(*p->construct_stack), ptx_realloc_);
     p->construct_stack[p->construct_depth].merge_block = merge_block;
     p->construct_stack[p->construct_depth].target_label = target_label;
     p->construct_stack[p->construct_depth].has_inner_merge = has_inner_merge;
@@ -384,11 +374,8 @@ static PlSamplerRef *pl_find_sampler(PtxLower *p, const char *name) {
 static PlTexRef *pl_add_texref(PtxLower *p, const char *name,
                                 uint32_t global_id, uint32_t type_id,
                                 bool is_surface, SsirTextureDim dim) {
-    if (p->texref_count >= p->texref_cap) {
-        p->texref_cap = p->texref_cap ? p->texref_cap * 2 : 16;
-        p->texrefs = (PlTexRef *)PTX_REALLOC(p->texrefs,
-            p->texref_cap * sizeof(PlTexRef));
-    }
+    SW_GROW(p->texrefs, p->texref_count, p->texref_cap, PlTexRef,
+            ptx_realloc_);
     PlTexRef *tr = &p->texrefs[p->texref_count++];
     memset(tr, 0, sizeof(*tr));
     snprintf(tr->name, sizeof(tr->name), "%s", name);
@@ -401,11 +388,8 @@ static PlTexRef *pl_add_texref(PtxLower *p, const char *name,
 
 static PlSamplerRef *pl_add_sampler(PtxLower *p, const char *name,
                                      uint32_t global_id, uint32_t type_id) {
-    if (p->sampler_count >= p->sampler_cap) {
-        p->sampler_cap = p->sampler_cap ? p->sampler_cap * 2 : 16;
-        p->samplers = (PlSamplerRef *)PTX_REALLOC(p->samplers,
-            p->sampler_cap * sizeof(PlSamplerRef));
-    }
+    SW_GROW(p->samplers, p->sampler_count, p->sampler_cap, PlSamplerRef,
+            ptx_realloc_);
     PlSamplerRef *sr = &p->samplers[p->sampler_count++];
     memset(sr, 0, sizeof(*sr));
     snprintf(sr->name, sizeof(sr->name), "%s", name);
@@ -483,7 +467,7 @@ static uint32_t pl_load_special_reg(PtxLower *p, const char *name,
         if (p->wg_size[comp] > 0) {
             uint32_t val = ssir_const_u32(p->mod, p->wg_size[comp]);
             if (expected_type != u32_t && expected_type != 0)
-                return ssir_build_convert(p->mod, p->func_id, p->block_id,
+                return ssir_build_convert(PL_BCTX(p),
                                           expected_type, val);
             return val;
         }
@@ -492,12 +476,12 @@ static uint32_t pl_load_special_reg(PtxLower *p, const char *name,
             uint32_t pc_u32_ptr = ssir_type_ptr(p->mod, u32_t, SSIR_ADDR_PUSH_CONSTANT);
             uint32_t idx_const = ssir_const_u32(p->mod, member_idx);
             uint32_t indices[] = { idx_const };
-            uint32_t ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+            uint32_t ptr = ssir_build_access(PL_BCTX(p),
                 pc_u32_ptr, p->bda_pc_global, indices, 1);
-            uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id,
+            uint32_t val = ssir_build_load(PL_BCTX(p),
                                            u32_t, ptr);
             if (expected_type != u32_t && expected_type != 0)
-                return ssir_build_convert(p->mod, p->func_id, p->block_id,
+                return ssir_build_convert(PL_BCTX(p),
                                           expected_type, val);
             return val;
         }
@@ -506,27 +490,27 @@ static uint32_t pl_load_special_reg(PtxLower *p, const char *name,
     } else if (strcmp(name, "%laneid") == 0) {
         builtin = SSIR_BUILTIN_SUBGROUP_INVOCATION_ID;
         uint32_t gid = pl_ensure_builtin_global(p, builtin, u32_t, "gl_SubgroupInvocationID");
-        uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id, u32_t, gid);
+        uint32_t val = ssir_build_load(PL_BCTX(p), u32_t, gid);
         if (expected_type != u32_t && expected_type != 0)
-            return ssir_build_convert(p->mod, p->func_id, p->block_id, expected_type, val);
+            return ssir_build_convert(PL_BCTX(p), expected_type, val);
         return val;
     } else if (strcmp(name, "%warpid") == 0) {
         uint32_t gid = pl_ensure_builtin_global(p, SSIR_BUILTIN_LOCAL_INVOCATION_ID,
                                                  vec3u_t, "gl_LocalInvocationID");
-        uint32_t vec = ssir_build_load(p->mod, p->func_id, p->block_id, vec3u_t, gid);
-        uint32_t tidx = ssir_build_extract(p->mod, p->func_id, p->block_id, u32_t, vec, 0);
+        uint32_t vec = ssir_build_load(PL_BCTX(p), vec3u_t, gid);
+        uint32_t tidx = ssir_build_extract(PL_BCTX(p), u32_t, vec, 0);
         uint32_t c32 = ssir_const_u32(p->mod, 32);
-        uint32_t val = ssir_build_div(p->mod, p->func_id, p->block_id, u32_t, tidx, c32);
+        uint32_t val = ssir_build_div(PL_BCTX(p), u32_t, tidx, c32);
         if (expected_type != u32_t && expected_type != 0)
-            return ssir_build_convert(p->mod, p->func_id, p->block_id, expected_type, val);
+            return ssir_build_convert(PL_BCTX(p), expected_type, val);
         return val;
     }
 
     uint32_t gid = pl_ensure_builtin_global(p, builtin, vec3u_t, gname);
-    uint32_t vec = ssir_build_load(p->mod, p->func_id, p->block_id, vec3u_t, gid);
-    uint32_t val = ssir_build_extract(p->mod, p->func_id, p->block_id, u32_t, vec, comp);
+    uint32_t vec = ssir_build_load(PL_BCTX(p), vec3u_t, gid);
+    uint32_t val = ssir_build_extract(PL_BCTX(p), u32_t, vec, comp);
     if (expected_type != u32_t && expected_type != 0)
-        return ssir_build_convert(p->mod, p->func_id, p->block_id, expected_type, val);
+        return ssir_build_convert(PL_BCTX(p), expected_type, val);
     return val;
 }
 
@@ -570,22 +554,22 @@ static uint32_t pl_resolve_operand(PtxLower *p, const PtxOperand *op,
             return pl_load_special_reg(p, op->name, expected_type);
         PlReg *r = pl_find_reg(p, op->name);
         if (r) {
-            uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id,
+            uint32_t val = ssir_build_load(PL_BCTX(p),
                                             r->val_type, r->ptr_id);
             if (expected_type && r->val_type != expected_type) {
                 SsirType *rt = ssir_get_type(p->mod, r->val_type);
                 SsirType *et = ssir_get_type(p->mod, expected_type);
                 if (rt && et) {
                     if (pl_scalar_bit_width(rt) == pl_scalar_bit_width(et))
-                        val = ssir_build_bitcast(p->mod, p->func_id, p->block_id,
+                        val = ssir_build_bitcast(PL_BCTX(p),
                                                  expected_type, val);
                     else
-                        val = ssir_build_convert(p->mod, p->func_id, p->block_id,
+                        val = ssir_build_convert(PL_BCTX(p),
                                                  expected_type, val);
                 }
             }
             if (op->negated)
-                val = ssir_build_neg(p->mod, p->func_id, p->block_id,
+                val = ssir_build_neg(PL_BCTX(p),
                                      expected_type, val);
             return val;
         }
@@ -599,10 +583,10 @@ static uint32_t pl_resolve_operand(PtxLower *p, const PtxOperand *op,
         PlReg *r = pl_find_reg(p, op->base);
         uint32_t addr;
         if (r) {
-            addr = ssir_build_load(p->mod, p->func_id, p->block_id,
+            addr = ssir_build_load(PL_BCTX(p),
                                     r->val_type, r->ptr_id);
             if (r->val_type != u64_t)
-                addr = ssir_build_convert(p->mod, p->func_id, p->block_id,
+                addr = ssir_build_convert(PL_BCTX(p),
                                            u64_t, addr);
         } else {
             addr = pl_resolve_global_addr(p, op->base, u64_t);
@@ -613,7 +597,7 @@ static uint32_t pl_resolve_operand(PtxLower *p, const PtxOperand *op,
         }
         if (op->offset != 0) {
             uint32_t off = ssir_const_u64(p->mod, (uint64_t)op->offset);
-            addr = ssir_build_add(p->mod, p->func_id, p->block_id, u64_t, addr, off);
+            addr = ssir_build_add(PL_BCTX(p), u64_t, addr, off);
         }
         return addr;
     }
@@ -651,10 +635,8 @@ static void pl_declare_regs(PtxLower *p, const PtxRegDecl *decls, int count) {
 
 static void pl_register_func(PtxLower *p, const char *name,
                               uint32_t func_id, uint32_t ret_type) {
-    if (p->func_count >= p->func_cap) {
-        p->func_cap = p->func_cap ? p->func_cap * 2 : 16;
-        p->funcs = PTX_REALLOC(p->funcs, p->func_cap * sizeof(p->funcs[0]));
-    }
+    SW_GROW(p->funcs, p->func_count, p->func_cap,
+            __typeof__(*p->funcs), ptx_realloc_);
     snprintf(p->funcs[p->func_count].name, 80, "%s", name);
     p->funcs[p->func_count].func_id = func_id;
     p->funcs[p->func_count].ret_type = ret_type;
@@ -731,24 +713,24 @@ static void pl_lower_arith(PtxLower *p, const PtxInst *inst) {
         if (ty && (ty->kind == SSIR_TYPE_I32 || ty->kind == SSIR_TYPE_U32)) {
             result_type = (ty->kind == SSIR_TYPE_I32)
                 ? ssir_type_i64(p->mod) : ssir_type_u64(p->mod);
-            a = ssir_build_convert(p->mod, p->func_id, p->block_id, result_type, a);
-            b = ssir_build_convert(p->mod, p->func_id, p->block_id, result_type, b);
+            a = ssir_build_convert(PL_BCTX(p), result_type, a);
+            b = ssir_build_convert(PL_BCTX(p), result_type, b);
         } else if (ty && (ty->kind == SSIR_TYPE_I16 || ty->kind == SSIR_TYPE_U16)) {
             result_type = (ty->kind == SSIR_TYPE_I16)
                 ? ssir_type_i32(p->mod) : ssir_type_u32(p->mod);
-            a = ssir_build_convert(p->mod, p->func_id, p->block_id, result_type, a);
-            b = ssir_build_convert(p->mod, p->func_id, p->block_id, result_type, b);
+            a = ssir_build_convert(PL_BCTX(p), result_type, a);
+            b = ssir_build_convert(PL_BCTX(p), result_type, b);
         }
     }
 
     uint32_t result = 0;
     switch (inst->opcode) {
-    case PTX_OP_ADD: result = ssir_build_add(p->mod, p->func_id, p->block_id, result_type, a, b); break;
-    case PTX_OP_SUB: result = ssir_build_sub(p->mod, p->func_id, p->block_id, result_type, a, b); break;
+    case PTX_OP_ADD: result = ssir_build_add(PL_BCTX(p), result_type, a, b); break;
+    case PTX_OP_SUB: result = ssir_build_sub(PL_BCTX(p), result_type, a, b); break;
     case PTX_OP_MUL: case PTX_OP_MUL24:
-        result = ssir_build_mul(p->mod, p->func_id, p->block_id, result_type, a, b); break;
-    case PTX_OP_DIV: result = ssir_build_div(p->mod, p->func_id, p->block_id, result_type, a, b); break;
-    case PTX_OP_REM: result = ssir_build_rem(p->mod, p->func_id, p->block_id, result_type, a, b); break;
+        result = ssir_build_mul(PL_BCTX(p), result_type, a, b); break;
+    case PTX_OP_DIV: result = ssir_build_div(PL_BCTX(p), result_type, a, b); break;
+    case PTX_OP_REM: result = ssir_build_rem(PL_BCTX(p), result_type, a, b); break;
     default: break;
     }
 
@@ -771,29 +753,29 @@ static void pl_lower_unary(PtxLower *p, const PtxInst *inst) {
     uint32_t result = 0;
     switch (inst->opcode) {
     case PTX_OP_NEG:
-        result = ssir_build_neg(p->mod, p->func_id, p->block_id, type, a);
+        result = ssir_build_neg(PL_BCTX(p), type, a);
         break;
     case PTX_OP_ABS: {
         uint32_t args[] = { a };
-        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        result = ssir_build_builtin(PL_BCTX(p),
                                     type, SSIR_BUILTIN_ABS, args, 1);
         break;
     }
     case PTX_OP_NOT: {
         SsirType *ty = ssir_get_type(p->mod, type);
         if (ty && ty->kind == SSIR_TYPE_BOOL)
-            result = ssir_build_not(p->mod, p->func_id, p->block_id, type, a);
+            result = ssir_build_not(PL_BCTX(p), type, a);
         else
-            result = ssir_build_bit_not(p->mod, p->func_id, p->block_id, type, a);
+            result = ssir_build_bit_not(PL_BCTX(p), type, a);
         break;
     }
     case PTX_OP_CNOT: {
         uint32_t zero = pl_const_for_type(p, type, 0, 0.0, false);
         uint32_t bool_t = ssir_type_bool(p->mod);
-        uint32_t cmp = ssir_build_eq(p->mod, p->func_id, p->block_id, bool_t, a, zero);
+        uint32_t cmp = ssir_build_eq(PL_BCTX(p), bool_t, a, zero);
         uint32_t one = pl_const_for_type(p, type, 1, 0.0, false);
         uint32_t args[] = { cmp, one, zero };
-        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        result = ssir_build_builtin(PL_BCTX(p),
                                     type, SSIR_BUILTIN_SELECT, args, 3);
         break;
     }
@@ -809,7 +791,7 @@ static void pl_lower_minmax(PtxLower *p, const PtxInst *inst) {
     if (p->had_error) return;
     SsirBuiltinId bid = (inst->opcode == PTX_OP_MIN) ? SSIR_BUILTIN_MIN : SSIR_BUILTIN_MAX;
     uint32_t args[] = { a, b };
-    uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_builtin(PL_BCTX(p),
                                          type, bid, args, 2);
     pl_store_reg_typed(p, inst->dst.name, result, type);
 }
@@ -825,7 +807,7 @@ static void pl_lower_mad(PtxLower *p, const PtxInst *inst) {
         uint32_t c = pl_resolve_operand(p, &inst->src[2], type);
         if (p->had_error) return;
         uint32_t args[] = { a, b, c };
-        uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        uint32_t result = ssir_build_builtin(PL_BCTX(p),
                                              type, SSIR_BUILTIN_FMA, args, 3);
         pl_store_reg_typed(p, inst->dst.name, result, type);
     } else if (is_wide && ty &&
@@ -842,18 +824,18 @@ static void pl_lower_mad(PtxLower *p, const PtxInst *inst) {
         uint32_t b = pl_resolve_operand(p, &inst->src[1], type);
         uint32_t c = pl_resolve_operand(p, &inst->src[2], wide_type);
         if (p->had_error) return;
-        uint32_t wa = ssir_build_convert(p->mod, p->func_id, p->block_id, wide_type, a);
-        uint32_t wb = ssir_build_convert(p->mod, p->func_id, p->block_id, wide_type, b);
-        uint32_t mul = ssir_build_mul(p->mod, p->func_id, p->block_id, wide_type, wa, wb);
-        uint32_t result = ssir_build_add(p->mod, p->func_id, p->block_id, wide_type, mul, c);
+        uint32_t wa = ssir_build_convert(PL_BCTX(p), wide_type, a);
+        uint32_t wb = ssir_build_convert(PL_BCTX(p), wide_type, b);
+        uint32_t mul = ssir_build_mul(PL_BCTX(p), wide_type, wa, wb);
+        uint32_t result = ssir_build_add(PL_BCTX(p), wide_type, mul, c);
         pl_store_reg_typed(p, inst->dst.name, result, wide_type);
     } else {
         uint32_t a = pl_resolve_operand(p, &inst->src[0], type);
         uint32_t b = pl_resolve_operand(p, &inst->src[1], type);
         uint32_t c = pl_resolve_operand(p, &inst->src[2], type);
         if (p->had_error) return;
-        uint32_t mul = ssir_build_mul(p->mod, p->func_id, p->block_id, type, a, b);
-        uint32_t result = ssir_build_add(p->mod, p->func_id, p->block_id, type, mul, c);
+        uint32_t mul = ssir_build_mul(PL_BCTX(p), type, a, b);
+        uint32_t result = ssir_build_add(PL_BCTX(p), type, mul, c);
         pl_store_reg_typed(p, inst->dst.name, result, type);
     }
 }
@@ -868,15 +850,15 @@ static void pl_lower_fma(PtxLower *p, const PtxInst *inst) {
     bool round_ceil = (inst->modifiers & PTX_MOD_RP) != 0;
     uint32_t result;
     if (round_floor || round_ceil) {
-        uint32_t prod = ssir_build_mul(p->mod, p->func_id, p->block_id, type, a, b);
+        uint32_t prod = ssir_build_mul(PL_BCTX(p), type, a, b);
         SsirBuiltinId bid = round_floor ? SSIR_BUILTIN_FLOOR : SSIR_BUILTIN_CEIL;
         uint32_t rargs[] = { prod };
-        uint32_t rprod = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        uint32_t rprod = ssir_build_builtin(PL_BCTX(p),
                                              type, bid, rargs, 1);
-        result = ssir_build_add(p->mod, p->func_id, p->block_id, type, rprod, c);
+        result = ssir_build_add(PL_BCTX(p), type, rprod, c);
     } else {
         uint32_t args[] = { a, b, c };
-        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        result = ssir_build_builtin(PL_BCTX(p),
                                      type, SSIR_BUILTIN_FMA, args, 3);
     }
     pl_store_reg(p, inst->dst.name, result);
@@ -892,15 +874,15 @@ static void pl_lower_bitwise(PtxLower *p, const PtxInst *inst) {
     uint32_t result = 0;
     switch (inst->opcode) {
     case PTX_OP_AND:
-        result = is_bool ? ssir_build_and(p->mod, p->func_id, p->block_id, type, a, b)
-                         : ssir_build_bit_and(p->mod, p->func_id, p->block_id, type, a, b);
+        result = is_bool ? ssir_build_and(PL_BCTX(p), type, a, b)
+                         : ssir_build_bit_and(PL_BCTX(p), type, a, b);
         break;
     case PTX_OP_OR:
-        result = is_bool ? ssir_build_or(p->mod, p->func_id, p->block_id, type, a, b)
-                         : ssir_build_bit_or(p->mod, p->func_id, p->block_id, type, a, b);
+        result = is_bool ? ssir_build_or(PL_BCTX(p), type, a, b)
+                         : ssir_build_bit_or(PL_BCTX(p), type, a, b);
         break;
     case PTX_OP_XOR:
-        result = ssir_build_bit_xor(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_bit_xor(PL_BCTX(p), type, a, b);
         break;
     default: break;
     }
@@ -915,11 +897,11 @@ static void pl_lower_shift(PtxLower *p, const PtxInst *inst) {
     SsirType *ty = ssir_get_type(p->mod, type);
     uint32_t result;
     if (inst->opcode == PTX_OP_SHL)
-        result = ssir_build_shl(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_shl(PL_BCTX(p), type, a, b);
     else if (ty && pl_is_signed_type(ty->kind))
-        result = ssir_build_shr(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_shr(PL_BCTX(p), type, a, b);
     else
-        result = ssir_build_shr_logical(p->mod, p->func_id, p->block_id, type, a, b);
+        result = ssir_build_shr_logical(PL_BCTX(p), type, a, b);
     pl_store_reg_typed(p, inst->dst.name, result, type);
 }
 
@@ -933,28 +915,28 @@ static void pl_lower_setp(PtxLower *p, const PtxInst *inst) {
     SsirOpcode cmp_opcode = pl_cmp_op(inst->cmp_op);
     uint32_t cmp_result = 0;
     switch (cmp_opcode) {
-    case SSIR_OP_EQ: cmp_result = ssir_build_eq(p->mod, p->func_id, p->block_id, bool_t, a, b); break;
-    case SSIR_OP_NE: cmp_result = ssir_build_ne(p->mod, p->func_id, p->block_id, bool_t, a, b); break;
-    case SSIR_OP_LT: cmp_result = ssir_build_lt(p->mod, p->func_id, p->block_id, bool_t, a, b); break;
-    case SSIR_OP_LE: cmp_result = ssir_build_le(p->mod, p->func_id, p->block_id, bool_t, a, b); break;
-    case SSIR_OP_GT: cmp_result = ssir_build_gt(p->mod, p->func_id, p->block_id, bool_t, a, b); break;
-    case SSIR_OP_GE: cmp_result = ssir_build_ge(p->mod, p->func_id, p->block_id, bool_t, a, b); break;
+    case SSIR_OP_EQ: cmp_result = ssir_build_eq(PL_BCTX(p), bool_t, a, b); break;
+    case SSIR_OP_NE: cmp_result = ssir_build_ne(PL_BCTX(p), bool_t, a, b); break;
+    case SSIR_OP_LT: cmp_result = ssir_build_lt(PL_BCTX(p), bool_t, a, b); break;
+    case SSIR_OP_LE: cmp_result = ssir_build_le(PL_BCTX(p), bool_t, a, b); break;
+    case SSIR_OP_GT: cmp_result = ssir_build_gt(PL_BCTX(p), bool_t, a, b); break;
+    case SSIR_OP_GE: cmp_result = ssir_build_ge(PL_BCTX(p), bool_t, a, b); break;
     default: break;
     }
 
     if (inst->has_combine && inst->src_count >= 3) {
         uint32_t pred_src = pl_resolve_operand(p, &inst->src[2], bool_t);
         if (strcmp(inst->combine, "and") == 0)
-            cmp_result = ssir_build_and(p->mod, p->func_id, p->block_id, bool_t, cmp_result, pred_src);
+            cmp_result = ssir_build_and(PL_BCTX(p), bool_t, cmp_result, pred_src);
         else if (strcmp(inst->combine, "or") == 0)
-            cmp_result = ssir_build_or(p->mod, p->func_id, p->block_id, bool_t, cmp_result, pred_src);
+            cmp_result = ssir_build_or(PL_BCTX(p), bool_t, cmp_result, pred_src);
         else if (strcmp(inst->combine, "xor") == 0)
-            cmp_result = ssir_build_ne(p->mod, p->func_id, p->block_id, bool_t, cmp_result, pred_src);
+            cmp_result = ssir_build_ne(PL_BCTX(p), bool_t, cmp_result, pred_src);
     }
 
     pl_store_reg(p, inst->dst.name, cmp_result);
     if (inst->has_dst2) {
-        uint32_t neg = ssir_build_not(p->mod, p->func_id, p->block_id, bool_t, cmp_result);
+        uint32_t neg = ssir_build_not(PL_BCTX(p), bool_t, cmp_result);
         pl_store_reg(p, inst->dst2.name, neg);
     }
 }
@@ -966,7 +948,7 @@ static void pl_lower_selp(PtxLower *p, const PtxInst *inst) {
     uint32_t pred = pl_resolve_operand(p, &inst->src[2], ssir_type_bool(p->mod));
     if (p->had_error) return;
     uint32_t args[] = { b, a, pred };
-    uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_builtin(PL_BCTX(p),
                                          type, SSIR_BUILTIN_SELECT, args, 3);
     pl_store_reg(p, inst->dst.name, result);
 }
@@ -1026,10 +1008,10 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                 ? inst->src[0].base : inst->src[0].name;
             PlReg *param_reg = pl_find_reg(p, param_name);
             if (param_reg) {
-                uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                uint32_t val = ssir_build_load(PL_BCTX(p),
                                                param_reg->val_type, param_reg->ptr_id);
                 if (param_reg->val_type != type)
-                    val = ssir_build_convert(p->mod, p->func_id, p->block_id, type, val);
+                    val = ssir_build_convert(PL_BCTX(p), type, val);
                 pl_store_reg(p, inst->dst.name, val);
                 pl_propagate_buffer(p, inst->dst.name, param_name);
             } else {
@@ -1051,9 +1033,9 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                     uint32_t idx_val = byte_size > 0 ? (uint32_t)(off / byte_size) : 0;
                     uint32_t cidx = ssir_const_u32(p->mod, idx_val);
                     uint32_t indices[] = { cidx };
-                    uint32_t ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                    uint32_t ptr = ssir_build_access(PL_BCTX(p),
                         elem_ptr_type, gv_id, indices, 1);
-                    uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id, type, ptr);
+                    uint32_t val = ssir_build_load(PL_BCTX(p), type, ptr);
                     pl_store_reg(p, inst->dst.name, val);
                 } else {
                     pl_error(p, "unknown parameter '%s'", param_name);
@@ -1072,15 +1054,15 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                 uint32_t byte_offset = pl_resolve_operand(p, &inst->src[0], u64_t);
                 if (p->had_error) return;
                 uint32_t elem_sz = ssir_const_u64(p->mod, pl_type_byte_size(p, type));
-                uint32_t idx_u64 = ssir_build_div(p->mod, p->func_id, p->block_id,
+                uint32_t idx_u64 = ssir_build_div(PL_BCTX(p),
                     u64_t, byte_offset, elem_sz);
-                uint32_t idx = ssir_build_convert(p->mod, p->func_id, p->block_id,
+                uint32_t idx = ssir_build_convert(PL_BCTX(p),
                     u32_t, idx_u64);
                 uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, SSIR_ADDR_FUNCTION);
                 uint32_t indices[] = { idx };
-                uint32_t ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                uint32_t ptr = ssir_build_access(PL_BCTX(p),
                     elem_ptr_type, local_reg->local_ptr_id, indices, 1);
-                uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id, type, ptr);
+                uint32_t val = ssir_build_load(PL_BCTX(p), type, ptr);
                 pl_store_reg(p, inst->dst.name, val);
             } else if (local_reg) {
                 int64_t off = inst->src[0].kind == PTX_OPER_ADDR ? inst->src[0].offset : 0;
@@ -1089,9 +1071,9 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                 uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, SSIR_ADDR_FUNCTION);
                 uint32_t cidx = ssir_const_u32(p->mod, idx_val);
                 uint32_t indices[] = { cidx };
-                uint32_t ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                uint32_t ptr = ssir_build_access(PL_BCTX(p),
                     elem_ptr_type, local_reg->ptr_id, indices, 1);
-                uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id, type, ptr);
+                uint32_t val = ssir_build_load(PL_BCTX(p), type, ptr);
                 pl_store_reg(p, inst->dst.name, val);
             } else {
                 pl_error(p, "undefined local variable '%s'", base_name);
@@ -1112,7 +1094,7 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                     SSIR_ADDR_PHYSICAL_STORAGE_BUFFER);
                 uint32_t typed_ptr = ssir_build_bitcast(p->mod, p->func_id,
                     p->block_id, psb_ptr_type, byte_offset);
-                uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id,
+                uint32_t val = ssir_build_load(PL_BCTX(p),
                     type, typed_ptr);
                 pl_store_reg(p, inst->dst.name, val);
             } else if (base_reg && (base_reg->pending_binding != UINT32_MAX || base_reg->global_id != 0)) {
@@ -1120,8 +1102,8 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                 uint32_t u64_t = ssir_type_u64(p->mod);
                 uint32_t u32_t = ssir_type_u32(p->mod);
                 uint32_t elem_sz = ssir_const_u64(p->mod, pl_type_byte_size(p, type));
-                uint32_t idx_u64 = ssir_build_div(p->mod, p->func_id, p->block_id, u64_t, byte_offset, elem_sz);
-                uint32_t idx = ssir_build_convert(p->mod, p->func_id, p->block_id, u32_t, idx_u64);
+                uint32_t idx_u64 = ssir_build_div(PL_BCTX(p), u64_t, byte_offset, elem_sz);
+                uint32_t idx = ssir_build_convert(PL_BCTX(p), u32_t, idx_u64);
                 bool is_direct_global = (base_reg->pending_binding == UINT32_MAX &&
                                           base_reg->global_id != 0);
                 uint32_t ptr;
@@ -1131,25 +1113,25 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                     SsirAddressSpace gv_space = (gvt && gvt->kind == SSIR_TYPE_PTR) ? gvt->ptr.space : SSIR_ADDR_STORAGE;
                     uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, gv_space);
                     uint32_t indices[] = { idx };
-                    ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                    ptr = ssir_build_access(PL_BCTX(p),
                         elem_ptr_type, buf_global, indices, 1);
                 } else {
                     uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, SSIR_ADDR_STORAGE);
                     uint32_t const_0 = ssir_const_u32(p->mod, 0);
                     uint32_t indices[] = { const_0, idx };
-                    ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                    ptr = ssir_build_access(PL_BCTX(p),
                         elem_ptr_type, buf_global, indices, 2);
                 }
-                uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id, type, ptr);
+                uint32_t val = ssir_build_load(PL_BCTX(p), type, ptr);
                 pl_store_reg(p, inst->dst.name, val);
             } else {
-                uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id, type, byte_offset);
+                uint32_t val = ssir_build_load(PL_BCTX(p), type, byte_offset);
                 pl_store_reg(p, inst->dst.name, val);
             }
         } else {
             uint32_t addr = pl_resolve_operand(p, &inst->src[0], ssir_type_u64(p->mod));
             if (p->had_error) return;
-            uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id, type, addr);
+            uint32_t val = ssir_build_load(PL_BCTX(p), type, addr);
             pl_store_reg(p, inst->dst.name, val);
         }
     } else {
@@ -1157,10 +1139,10 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
         uint32_t vec_type = ssir_type_vec(p->mod, type, inst->vec_width);
         uint32_t addr = pl_resolve_operand(p, &inst->src[0], ssir_type_u64(p->mod));
         if (p->had_error) return;
-        uint32_t vec_val = ssir_build_load(p->mod, p->func_id, p->block_id, vec_type, addr);
+        uint32_t vec_val = ssir_build_load(PL_BCTX(p), vec_type, addr);
         if (inst->dst.kind == PTX_OPER_VEC) {
             for (int i = 0; i < inst->dst.vec_count && i < inst->vec_width; i++) {
-                uint32_t comp = ssir_build_extract(p->mod, p->func_id, p->block_id,
+                uint32_t comp = ssir_build_extract(PL_BCTX(p),
                                                    type, vec_val, i);
                 pl_store_reg(p, inst->dst.regs[i], comp);
             }
@@ -1189,15 +1171,15 @@ static void pl_lower_st(PtxLower *p, const PtxInst *inst) {
                 uint32_t byte_offset = pl_resolve_operand(p, addr_op, u64_t);
                 if (p->had_error) return;
                 uint32_t elem_sz = ssir_const_u64(p->mod, pl_type_byte_size(p, type));
-                uint32_t idx_u64 = ssir_build_div(p->mod, p->func_id, p->block_id,
+                uint32_t idx_u64 = ssir_build_div(PL_BCTX(p),
                     u64_t, byte_offset, elem_sz);
-                uint32_t idx = ssir_build_convert(p->mod, p->func_id, p->block_id,
+                uint32_t idx = ssir_build_convert(PL_BCTX(p),
                     u32_t, idx_u64);
                 uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, SSIR_ADDR_FUNCTION);
                 uint32_t indices[] = { idx };
-                uint32_t ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                uint32_t ptr = ssir_build_access(PL_BCTX(p),
                     elem_ptr_type, local_reg->local_ptr_id, indices, 1);
-                ssir_build_store(p->mod, p->func_id, p->block_id, ptr, val);
+                ssir_build_store(PL_BCTX(p), ptr, val);
             } else if (local_reg) {
                 int64_t off = addr_op->kind == PTX_OPER_ADDR ? addr_op->offset : 0;
                 uint32_t byte_size = pl_type_byte_size(p, type);
@@ -1205,9 +1187,9 @@ static void pl_lower_st(PtxLower *p, const PtxInst *inst) {
                 uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, SSIR_ADDR_FUNCTION);
                 uint32_t cidx = ssir_const_u32(p->mod, idx_val);
                 uint32_t indices[] = { cidx };
-                uint32_t ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                uint32_t ptr = ssir_build_access(PL_BCTX(p),
                     elem_ptr_type, local_reg->ptr_id, indices, 1);
-                ssir_build_store(p->mod, p->func_id, p->block_id, ptr, val);
+                ssir_build_store(PL_BCTX(p), ptr, val);
             } else {
                 pl_error(p, "undefined local variable '%s'", base_name);
             }
@@ -1228,14 +1210,14 @@ static void pl_lower_st(PtxLower *p, const PtxInst *inst) {
                     SSIR_ADDR_PHYSICAL_STORAGE_BUFFER);
                 uint32_t typed_ptr = ssir_build_bitcast(p->mod, p->func_id,
                     p->block_id, psb_ptr_type, byte_offset);
-                ssir_build_store(p->mod, p->func_id, p->block_id, typed_ptr, val);
+                ssir_build_store(PL_BCTX(p), typed_ptr, val);
             } else if (base_reg && (base_reg->pending_binding != UINT32_MAX || base_reg->global_id != 0)) {
                 uint32_t buf_global = pl_materialize_buffer(p, base_reg, type);
                 uint32_t u64_t = ssir_type_u64(p->mod);
                 uint32_t u32_t = ssir_type_u32(p->mod);
                 uint32_t elem_sz = ssir_const_u64(p->mod, pl_type_byte_size(p, type));
-                uint32_t idx_u64 = ssir_build_div(p->mod, p->func_id, p->block_id, u64_t, byte_offset, elem_sz);
-                uint32_t idx = ssir_build_convert(p->mod, p->func_id, p->block_id, u32_t, idx_u64);
+                uint32_t idx_u64 = ssir_build_div(PL_BCTX(p), u64_t, byte_offset, elem_sz);
+                uint32_t idx = ssir_build_convert(PL_BCTX(p), u32_t, idx_u64);
                 bool is_direct_global = (base_reg->pending_binding == UINT32_MAX &&
                                           base_reg->global_id != 0);
                 uint32_t ptr;
@@ -1245,24 +1227,24 @@ static void pl_lower_st(PtxLower *p, const PtxInst *inst) {
                     SsirAddressSpace gv_space = (gvt && gvt->kind == SSIR_TYPE_PTR) ? gvt->ptr.space : SSIR_ADDR_STORAGE;
                     uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, gv_space);
                     uint32_t indices[] = { idx };
-                    ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                    ptr = ssir_build_access(PL_BCTX(p),
                         elem_ptr_type, buf_global, indices, 1);
                 } else {
                     uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, SSIR_ADDR_STORAGE);
                     uint32_t const_0 = ssir_const_u32(p->mod, 0);
                     uint32_t indices[] = { const_0, idx };
-                    ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+                    ptr = ssir_build_access(PL_BCTX(p),
                         elem_ptr_type, buf_global, indices, 2);
                 }
-                ssir_build_store(p->mod, p->func_id, p->block_id, ptr, val);
+                ssir_build_store(PL_BCTX(p), ptr, val);
             } else {
-                ssir_build_store(p->mod, p->func_id, p->block_id, byte_offset, val);
+                ssir_build_store(PL_BCTX(p), byte_offset, val);
             }
         } else {
             uint32_t addr = pl_resolve_operand(p, addr_op, ssir_type_u64(p->mod));
             uint32_t val = pl_resolve_operand(p, val_op, type);
             if (p->had_error) return;
-            ssir_build_store(p->mod, p->func_id, p->block_id, addr, val);
+            ssir_build_store(PL_BCTX(p), addr, val);
         }
     } else {
         /* Vector store: addr in src[0], values in src[1] (vec operand) */
@@ -1272,9 +1254,9 @@ static void pl_lower_st(PtxLower *p, const PtxInst *inst) {
         uint32_t comps[4];
         for (int i = 0; i < inst->vec_width && i < val_op->vec_count; i++)
             comps[i] = pl_load_reg(p, val_op->regs[i]);
-        uint32_t vec_val = ssir_build_construct(p->mod, p->func_id, p->block_id,
+        uint32_t vec_val = ssir_build_construct(PL_BCTX(p),
                                                 vec_type, comps, inst->vec_width);
-        ssir_build_store(p->mod, p->func_id, p->block_id, addr, vec_val);
+        ssir_build_store(PL_BCTX(p), addr, vec_val);
     }
 }
 
@@ -1288,8 +1270,8 @@ static void pl_lower_cvt(PtxLower *p, const PtxInst *inst) {
     SsirType *dt = ssir_get_type(p->mod, dst_type);
     SsirType *st = ssir_get_type(p->mod, src_type);
     if (dt && st && dt->kind != st->kind) {
-        src = ssir_build_bitcast(p->mod, p->func_id, p->block_id, src_type, src);
-        result = ssir_build_convert(p->mod, p->func_id, p->block_id, dst_type, src);
+        src = ssir_build_bitcast(PL_BCTX(p), src_type, src);
+        result = ssir_build_convert(PL_BCTX(p), dst_type, src);
     } else {
         /* Same-type: check for integer rounding modes */
         bool same_type = (dt && st && dt->kind == st->kind);
@@ -1302,7 +1284,7 @@ static void pl_lower_cvt(PtxLower *p, const PtxInst *inst) {
         }
         if ((int)rnd_bid != -1) {
             uint32_t rargs[] = { src };
-            result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+            result = ssir_build_builtin(PL_BCTX(p),
                                          dst_type, rnd_bid, rargs, 1);
         } else {
             result = src;
@@ -1321,7 +1303,7 @@ static void pl_lower_cvt(PtxLower *p, const PtxInst *inst) {
             one = ssir_const_f32(p->mod, 1.0f);
         }
         uint32_t args[] = { result, zero, one };
-        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        result = ssir_build_builtin(PL_BCTX(p),
                                     dst_type, SSIR_BUILTIN_CLAMP, args, 3);
     }
     pl_store_reg_typed(p, inst->dst.name, result, dst_type);
@@ -1346,7 +1328,7 @@ static void pl_lower_math_unary(PtxLower *p, const PtxInst *inst) {
         uint32_t one = ssir_const_f32(p->mod, 1.0f);
         SsirType *ty = ssir_get_type(p->mod, type);
         if (ty && ty->kind == SSIR_TYPE_F64) one = ssir_const_f64(p->mod, 1.0);
-        result = ssir_build_div(p->mod, p->func_id, p->block_id, type, one, src);
+        result = ssir_build_div(PL_BCTX(p), type, one, src);
     } else {
         SsirBuiltinId bid = SSIR_BUILTIN_SQRT;
         switch (inst->opcode) {
@@ -1359,7 +1341,7 @@ static void pl_lower_math_unary(PtxLower *p, const PtxInst *inst) {
         default: break;
         }
         uint32_t args[] = { src };
-        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        result = ssir_build_builtin(PL_BCTX(p),
                                     type, bid, args, 1);
     }
     pl_store_reg(p, inst->dst.name, result);
@@ -1376,7 +1358,7 @@ static void pl_lower_atom(PtxLower *p, const PtxInst *inst) {
         cmp = pl_resolve_operand(p, &inst->src[2], type);
     if (p->had_error) return;
     (void)ptr_type;
-    uint32_t result = ssir_build_atomic(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_atomic(PL_BCTX(p),
                                         type, pl_atomic_op(inst->atomic_op),
                                         addr, val, cmp);
     pl_store_reg(p, inst->dst.name, result);
@@ -1384,14 +1366,14 @@ static void pl_lower_atom(PtxLower *p, const PtxInst *inst) {
 
 static void pl_lower_bar(PtxLower *p, const PtxInst *inst) {
     (void)inst;
-    ssir_build_barrier(p->mod, p->func_id, p->block_id, SSIR_BARRIER_WORKGROUP);
+    ssir_build_barrier(PL_BCTX(p), SSIR_BARRIER_WORKGROUP);
 }
 
 static void pl_lower_membar(PtxLower *p, const PtxInst *inst) {
     SsirBarrierScope scope = SSIR_BARRIER_WORKGROUP;
     if (inst->membar_scope == PTX_MEMBAR_GL || inst->membar_scope == PTX_MEMBAR_SYS)
         scope = SSIR_BARRIER_STORAGE;
-    ssir_build_barrier(p->mod, p->func_id, p->block_id, scope);
+    ssir_build_barrier(PL_BCTX(p), scope);
 }
 
 /* ===== Loop Restructuring ===== */
@@ -1489,11 +1471,9 @@ static const char *pl_lookup_precomputed_merge(PtxLower *p, const char *cond_tar
 
 static void pl_add_precomputed_merge(PtxLower *p, const char *cond_target,
                                       const char *merge_label) {
-    if (p->precomputed_merge_count >= p->precomputed_merge_cap) {
-        p->precomputed_merge_cap = p->precomputed_merge_cap ? p->precomputed_merge_cap * 2 : 16;
-        p->precomputed_merges = PTX_REALLOC(p->precomputed_merges,
-            p->precomputed_merge_cap * sizeof(p->precomputed_merges[0]));
-    }
+    SW_GROW(p->precomputed_merges, p->precomputed_merge_count,
+            p->precomputed_merge_cap, __typeof__(*p->precomputed_merges),
+            ptx_realloc_);
     int idx = p->precomputed_merge_count++;
     snprintf(p->precomputed_merges[idx].cond_target, 80, "%s", cond_target);
     snprintf(p->precomputed_merges[idx].merge_label, 80, "%s", merge_label);
@@ -1595,33 +1575,33 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
 
     if (has_pred) {
         if (pred_negated)
-            pred_val = ssir_build_not(p->mod, p->func_id, p->block_id,
+            pred_val = ssir_build_not(PL_BCTX(p),
                                       ssir_type_bool(p->mod), pred_val);
         uint32_t fallthrough = ssir_block_create(p->mod, p->func_id, NULL);
 
         const char *precomputed = pl_lookup_precomputed_merge(p, label);
 
         if (is_back_edge) {
-            ssir_build_branch_cond(p->mod, p->func_id, p->block_id,
+            ssir_build_branch_cond(PL_BCTX(p),
                                    pred_val, target, fallthrough);
             pl_create_loop_structure(p, target, p->block_id, fallthrough);
             pl_mark_merge(p, fallthrough);
         } else if (precomputed) {
             uint32_t real_merge = pl_get_or_create_label(p, precomputed);
             uint32_t deferred_id = ssir_module_alloc_id(p->mod);
-            ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
+            ssir_build_branch_cond_merge(PL_BCTX(p),
                                    pred_val, target, fallthrough, deferred_id);
             pl_mark_merge(p, deferred_id);
             pl_push_construct(p, deferred_id, real_merge, true);
         } else if (!pl_is_merge_used(p, target) &&
                    !pl_has_deferred_merge_for(p, target)) {
-            ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
+            ssir_build_branch_cond_merge(PL_BCTX(p),
                                    pred_val, target, fallthrough, target);
             pl_mark_merge(p, target);
             pl_push_construct(p, target, target, false);
         } else {
             uint32_t new_fallthrough = ssir_block_create(p->mod, p->func_id, NULL);
-            ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
+            ssir_build_branch_cond_merge(PL_BCTX(p),
                                    pred_val, fallthrough, new_fallthrough, fallthrough);
             pl_mark_merge(p, fallthrough);
             pl_push_construct(p, fallthrough, target, false);
@@ -1651,7 +1631,7 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
                 }
             }
         }
-        ssir_build_branch(p->mod, p->func_id, p->block_id, actual_target);
+        ssir_build_branch(PL_BCTX(p), actual_target);
         p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
         p->block_from_label = false;
     }
@@ -1659,7 +1639,7 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
 
 static void pl_lower_ret(PtxLower *p, const PtxInst *inst) {
     (void)inst;
-    ssir_build_return_void(p->mod, p->func_id, p->block_id);
+    ssir_build_return_void(PL_BCTX(p));
     p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
     p->block_from_label = false;
 }
@@ -1683,7 +1663,7 @@ static void pl_lower_call(PtxLower *p, const PtxInst *inst) {
     for (int i = 1; i < inst->src_count && arg_count < 16; i++)
         args[arg_count++] = pl_resolve_operand(p, &inst->src[i], 0);
     if (p->had_error) return;
-    uint32_t result = ssir_build_call(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_call(PL_BCTX(p),
                                       ret_type, callee, args, arg_count);
     if (inst->dst.kind == PTX_OPER_REG && inst->dst.name[0] && result)
         pl_store_reg(p, inst->dst.name, result);
@@ -1741,9 +1721,9 @@ static void pl_lower_tex(PtxLower *p, const PtxInst *inst) {
                 ddy_comps[i] = (grad_start + grad_dim + i < nall) ? all_coords[grad_start + grad_dim + i] : ssir_const_f32(p->mod, 0.0f);
             }
             uint32_t gvec_t = ssir_type_vec(p->mod, f32_t, grad_dim);
-            ddx_val = ssir_build_construct(p->mod, p->func_id, p->block_id,
+            ddx_val = ssir_build_construct(PL_BCTX(p),
                                             gvec_t, ddx_comps, grad_dim);
-            ddy_val = ssir_build_construct(p->mod, p->func_id, p->block_id,
+            ddy_val = ssir_build_construct(PL_BCTX(p),
                                             gvec_t, ddy_comps, grad_dim);
         }
     }
@@ -1762,9 +1742,9 @@ static void pl_lower_tex(PtxLower *p, const PtxInst *inst) {
 
     PlSamplerRef *sref = pl_get_implicit_sampler(p, tex_name);
 
-    uint32_t tex_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+    uint32_t tex_val = ssir_build_load(PL_BCTX(p),
                                         tref->type_id, tref->global_id);
-    uint32_t sampler_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+    uint32_t sampler_val = ssir_build_load(PL_BCTX(p),
                                             sref->type_id, sref->global_id);
 
     uint32_t f32_t = ssir_type_f32(p->mod);
@@ -1774,7 +1754,7 @@ static void pl_lower_tex(PtxLower *p, const PtxInst *inst) {
     for (int i = 0; i < ncoords && i < 4; i++) {
         SsirType *ct = ssir_get_type(p->mod, coord_type);
         if (ct && ct->kind != SSIR_TYPE_F32)
-            f32_coords[i] = ssir_build_convert(p->mod, p->func_id, p->block_id,
+            f32_coords[i] = ssir_build_convert(PL_BCTX(p),
                                                 f32_t, all_coords[i]);
         else
             f32_coords[i] = all_coords[i];
@@ -1787,12 +1767,12 @@ static void pl_lower_tex(PtxLower *p, const PtxInst *inst) {
         uint32_t vec_t = ssir_type_vec(p->mod, f32_t, ssir_cc);
         if (dim == SSIR_TEX_2D_ARRAY && ncoords >= 3) {
             uint32_t comps[3] = { f32_coords[1], f32_coords[2], f32_coords[0] };
-            coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id, vec_t, comps, 3);
+            coord_vec = ssir_build_construct(PL_BCTX(p), vec_t, comps, 3);
         } else if (dim == SSIR_TEX_1D_ARRAY && ncoords >= 2) {
             uint32_t comps[2] = { f32_coords[1], f32_coords[0] };
-            coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id, vec_t, comps, 2);
+            coord_vec = ssir_build_construct(PL_BCTX(p), vec_t, comps, 2);
         } else {
-            coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+            coord_vec = ssir_build_construct(PL_BCTX(p),
                                              vec_t, f32_coords, ssir_cc);
         }
     }
@@ -1800,23 +1780,23 @@ static void pl_lower_tex(PtxLower *p, const PtxInst *inst) {
     uint32_t vec4_t = ssir_type_vec(p->mod, dst_type, 4);
     uint32_t result = 0;
     if (inst->mip_mode == PTX_MIP_LEVEL) {
-        result = ssir_build_tex_sample_level(p->mod, p->func_id, p->block_id,
+        result = ssir_build_tex_sample_level(PL_BCTX(p),
                                               vec4_t, tex_val, sampler_val,
                                               coord_vec, lod_val);
     } else if (inst->mip_mode == PTX_MIP_GRAD) {
-        result = ssir_build_tex_sample_grad(p->mod, p->func_id, p->block_id,
+        result = ssir_build_tex_sample_grad(PL_BCTX(p),
                                              vec4_t, tex_val, sampler_val,
                                              coord_vec, ddx_val, ddy_val);
     } else {
         uint32_t lod0 = ssir_const_f32(p->mod, 0.0f);
-        result = ssir_build_tex_sample_level(p->mod, p->func_id, p->block_id,
+        result = ssir_build_tex_sample_level(PL_BCTX(p),
                                               vec4_t, tex_val, sampler_val,
                                               coord_vec, lod0);
     }
 
     if (inst->dst.kind == PTX_OPER_VEC) {
         for (int i = 0; i < inst->dst.vec_count && i < 4; i++) {
-            uint32_t comp = ssir_build_extract(p->mod, p->func_id, p->block_id,
+            uint32_t comp = ssir_build_extract(PL_BCTX(p),
                                                 dst_type, result, i);
             pl_store_reg(p, inst->dst.regs[i], comp);
         }
@@ -1849,9 +1829,9 @@ static void pl_lower_tld4(PtxLower *p, const PtxInst *inst) {
     }
     PlSamplerRef *sref = pl_get_implicit_sampler(p, tex_name);
 
-    uint32_t tex_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+    uint32_t tex_val = ssir_build_load(PL_BCTX(p),
                                         tref->type_id, tref->global_id);
-    uint32_t sampler_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+    uint32_t sampler_val = ssir_build_load(PL_BCTX(p),
                                             sref->type_id, sref->global_id);
 
     uint32_t f32_t = ssir_type_f32(p->mod);
@@ -1859,7 +1839,7 @@ static void pl_lower_tld4(PtxLower *p, const PtxInst *inst) {
     for (int i = 0; i < ncoords && i < 4; i++) {
         SsirType *ct = ssir_get_type(p->mod, coord_type);
         if (ct && ct->kind != SSIR_TYPE_F32)
-            f32_coords[i] = ssir_build_convert(p->mod, p->func_id, p->block_id,
+            f32_coords[i] = ssir_build_convert(PL_BCTX(p),
                                                 f32_t, coords[i]);
         else
             f32_coords[i] = coords[i];
@@ -1871,19 +1851,19 @@ static void pl_lower_tld4(PtxLower *p, const PtxInst *inst) {
         coord_vec = f32_coords[0];
     } else {
         uint32_t vec_t = ssir_type_vec(p->mod, f32_t, ssir_cc);
-        coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+        coord_vec = ssir_build_construct(PL_BCTX(p),
                                          vec_t, f32_coords, ssir_cc);
     }
 
     uint32_t vec4_t = ssir_type_vec(p->mod, dst_type, 4);
     uint32_t comp_val = ssir_const_u32(p->mod, (uint32_t)inst->tex_gather_comp);
-    uint32_t result = ssir_build_tex_gather(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_tex_gather(PL_BCTX(p),
                                              vec4_t, tex_val, sampler_val,
                                              coord_vec, comp_val);
 
     if (inst->dst.kind == PTX_OPER_VEC) {
         for (int i = 0; i < inst->dst.vec_count && i < 4; i++) {
-            uint32_t comp = ssir_build_extract(p->mod, p->func_id, p->block_id,
+            uint32_t comp = ssir_build_extract(PL_BCTX(p),
                                                 dst_type, result, i);
             pl_store_reg(p, inst->dst.regs[i], comp);
         }
@@ -1916,7 +1896,7 @@ static void pl_lower_suld(PtxLower *p, const PtxInst *inst) {
         sref = pl_add_texref(p, surf_name, gid, surf_t, true, dim);
     }
 
-    uint32_t surf_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+    uint32_t surf_val = ssir_build_load(PL_BCTX(p),
                                          sref->type_id, sref->global_id);
 
     int ssir_cc = 0;
@@ -1932,18 +1912,18 @@ static void pl_lower_suld(PtxLower *p, const PtxInst *inst) {
         coord_vec = coords[0];
     } else {
         uint32_t vec_t = ssir_type_vec(p->mod, u32_t, ssir_cc);
-        coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+        coord_vec = ssir_build_construct(PL_BCTX(p),
                                          vec_t, coords, ssir_cc);
     }
 
     uint32_t vec4_t = ssir_type_vec(p->mod, elem_type, 4);
     uint32_t level0 = ssir_const_i32(p->mod, 0);
-    uint32_t result = ssir_build_tex_load(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_tex_load(PL_BCTX(p),
                                            vec4_t, surf_val, coord_vec, level0);
 
     if (inst->dst.kind == PTX_OPER_VEC) {
         for (int i = 0; i < inst->dst.vec_count && i < 4; i++) {
-            uint32_t comp = ssir_build_extract(p->mod, p->func_id, p->block_id,
+            uint32_t comp = ssir_build_extract(PL_BCTX(p),
                                                 elem_type, result, i);
             pl_store_reg(p, inst->dst.regs[i], comp);
         }
@@ -1985,7 +1965,7 @@ static void pl_lower_sust(PtxLower *p, const PtxInst *inst) {
         sref = pl_add_texref(p, surf_name, gid, surf_t, true, dim);
     }
 
-    uint32_t surf_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+    uint32_t surf_val = ssir_build_load(PL_BCTX(p),
                                          sref->type_id, sref->global_id);
 
     int ssir_cc = 0;
@@ -2001,25 +1981,25 @@ static void pl_lower_sust(PtxLower *p, const PtxInst *inst) {
         coord_vec = coords[0];
     } else {
         uint32_t vec_t = ssir_type_vec(p->mod, u32_t, ssir_cc);
-        coord_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+        coord_vec = ssir_build_construct(PL_BCTX(p),
                                          vec_t, coords, ssir_cc);
     }
 
     uint32_t vec4_t = ssir_type_vec(p->mod, elem_type, 4);
     uint32_t value_vec;
     if (nsrc >= 4) {
-        value_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+        value_vec = ssir_build_construct(PL_BCTX(p),
                                          vec4_t, src_vals, 4);
     } else {
         uint32_t zero = pl_const_for_type(p, elem_type, 0, 0.0, false);
         uint32_t padded[4];
         for (int i = 0; i < 4; i++)
             padded[i] = (i < nsrc) ? src_vals[i] : zero;
-        value_vec = ssir_build_construct(p->mod, p->func_id, p->block_id,
+        value_vec = ssir_build_construct(PL_BCTX(p),
                                          vec4_t, padded, 4);
     }
 
-    ssir_build_tex_store(p->mod, p->func_id, p->block_id,
+    ssir_build_tex_store(PL_BCTX(p),
                           surf_val, coord_vec, value_vec);
 }
 
@@ -2039,7 +2019,7 @@ static void pl_lower_txq(PtxLower *p, const PtxInst *inst) {
         tref = pl_add_texref(p, tex_name, gid, tex_t, false, SSIR_TEX_2D);
     }
 
-    uint32_t tex_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+    uint32_t tex_val = ssir_build_load(PL_BCTX(p),
                                         tref->type_id, tref->global_id);
     uint32_t u32_t = ssir_type_u32(p->mod);
 
@@ -2050,7 +2030,7 @@ static void pl_lower_txq(PtxLower *p, const PtxInst *inst) {
         uint32_t result = ssir_build_tex_query_levels(p->mod, p->func_id,
                                                        p->block_id, u32_t, tex_val);
         if (res_type != u32_t)
-            result = ssir_build_convert(p->mod, p->func_id, p->block_id, res_type, result);
+            result = ssir_build_convert(PL_BCTX(p), res_type, result);
         pl_store_reg(p, inst->dst.name, result);
     } else {
         int size_components = 1;
@@ -2066,17 +2046,17 @@ static void pl_lower_txq(PtxLower *p, const PtxInst *inst) {
         uint32_t level0 = ssir_const_i32(p->mod, 0);
         uint32_t result;
         if (size_components == 1) {
-            result = ssir_build_tex_size(p->mod, p->func_id, p->block_id,
+            result = ssir_build_tex_size(PL_BCTX(p),
                                           u32_t, tex_val, level0);
         } else {
             uint32_t vec_t = ssir_type_vec(p->mod, u32_t, size_components);
-            uint32_t size_vec = ssir_build_tex_size(p->mod, p->func_id, p->block_id,
+            uint32_t size_vec = ssir_build_tex_size(PL_BCTX(p),
                                                      vec_t, tex_val, level0);
-            result = ssir_build_extract(p->mod, p->func_id, p->block_id,
+            result = ssir_build_extract(PL_BCTX(p),
                                          u32_t, size_vec, query);
         }
         if (res_type != u32_t)
-            result = ssir_build_convert(p->mod, p->func_id, p->block_id, res_type, result);
+            result = ssir_build_convert(PL_BCTX(p), res_type, result);
         pl_store_reg(p, inst->dst.name, result);
     }
 }
@@ -2086,7 +2066,7 @@ static void pl_lower_popc(PtxLower *p, const PtxInst *inst) {
     uint32_t src = pl_resolve_operand(p, &inst->src[0], type);
     if (p->had_error) return;
     uint32_t args[] = { src };
-    uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_builtin(PL_BCTX(p),
                                          type, SSIR_BUILTIN_COUNTBITS, args, 1);
     pl_store_reg_typed(p, inst->dst.name, result, type);
 }
@@ -2096,7 +2076,7 @@ static void pl_lower_brev(PtxLower *p, const PtxInst *inst) {
     uint32_t src = pl_resolve_operand(p, &inst->src[0], type);
     if (p->had_error) return;
     uint32_t args[] = { src };
-    uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_builtin(PL_BCTX(p),
                                          type, SSIR_BUILTIN_REVERSEBITS, args, 1);
     pl_store_reg_typed(p, inst->dst.name, result, type);
 }
@@ -2106,7 +2086,7 @@ static void pl_lower_clz(PtxLower *p, const PtxInst *inst) {
     uint32_t src = pl_resolve_operand(p, &inst->src[0], type);
     if (p->had_error) return;
     uint32_t args[] = { src };
-    uint32_t result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_builtin(PL_BCTX(p),
                                          type, SSIR_BUILTIN_FIRSTLEADINGBIT, args, 1);
     bool need_invert = (inst->opcode == PTX_OP_CLZ) ||
                        (inst->opcode == PTX_OP_BFIND &&
@@ -2115,27 +2095,27 @@ static void pl_lower_clz(PtxLower *p, const PtxInst *inst) {
         SsirType *ty = ssir_get_type(p->mod, type);
         int bits = ty ? pl_scalar_bit_width(ty) : 32;
         uint32_t width = pl_const_for_type(p, type, (uint64_t)(bits - 1), 0.0, false);
-        result = ssir_build_sub(p->mod, p->func_id, p->block_id, type, width, result);
+        result = ssir_build_sub(PL_BCTX(p), type, width, result);
     }
     if (inst->opcode == PTX_OP_CLZ) {
         uint32_t zero = pl_const_for_type(p, type, 0, 0.0, false);
         uint32_t bool_t = ssir_type_bool(p->mod);
-        uint32_t is_zero = ssir_build_eq(p->mod, p->func_id, p->block_id,
+        uint32_t is_zero = ssir_build_eq(PL_BCTX(p),
                                           bool_t, src, zero);
         SsirType *ty = ssir_get_type(p->mod, type);
         int bits = ty ? pl_scalar_bit_width(ty) : 32;
         uint32_t full_width = pl_const_for_type(p, type, (uint64_t)bits, 0.0, false);
         uint32_t sel_args[] = { result, full_width, is_zero };
-        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        result = ssir_build_builtin(PL_BCTX(p),
                                     type, SSIR_BUILTIN_SELECT, sel_args, 3);
     } else if (inst->opcode == PTX_OP_BFIND) {
         uint32_t zero = pl_const_for_type(p, type, 0, 0.0, false);
         uint32_t bool_t = ssir_type_bool(p->mod);
-        uint32_t is_zero = ssir_build_eq(p->mod, p->func_id, p->block_id,
+        uint32_t is_zero = ssir_build_eq(PL_BCTX(p),
                                           bool_t, src, zero);
         uint32_t neg1 = pl_const_for_type(p, type, 0xFFFFFFFF, 0.0, false);
         uint32_t sel_args[] = { result, neg1, is_zero };
-        result = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        result = ssir_build_builtin(PL_BCTX(p),
                                     type, SSIR_BUILTIN_SELECT, sel_args, 3);
     }
     pl_store_reg_typed(p, inst->dst.name, result, type);
@@ -2153,27 +2133,27 @@ static void pl_lower_shf(PtxLower *p, const PtxInst *inst) {
     uint32_t shift = pl_resolve_operand(p, &inst->src[2], u32_t);
     if (p->had_error) return;
 
-    uint32_t lo64 = ssir_build_convert(p->mod, p->func_id, p->block_id, u64_t, lo);
-    uint32_t hi64 = ssir_build_convert(p->mod, p->func_id, p->block_id, u64_t, hi);
+    uint32_t lo64 = ssir_build_convert(PL_BCTX(p), u64_t, lo);
+    uint32_t hi64 = ssir_build_convert(PL_BCTX(p), u64_t, hi);
     uint32_t c32_u32 = ssir_const_u32(p->mod, 32);
-    uint32_t hi_shifted = ssir_build_shl(p->mod, p->func_id, p->block_id, u64_t, hi64, c32_u32);
-    uint32_t concat = ssir_build_bit_or(p->mod, p->func_id, p->block_id, u64_t, hi_shifted, lo64);
+    uint32_t hi_shifted = ssir_build_shl(PL_BCTX(p), u64_t, hi64, c32_u32);
+    uint32_t concat = ssir_build_bit_or(PL_BCTX(p), u64_t, hi_shifted, lo64);
 
     bool wrap = (inst->modifiers & PTX_MOD_WRAP) != 0;
     uint32_t amt = shift;
     if (wrap) {
         uint32_t c31 = ssir_const_u32(p->mod, 31);
-        amt = ssir_build_bit_and(p->mod, p->func_id, p->block_id, u32_t, shift, c31);
+        amt = ssir_build_bit_and(PL_BCTX(p), u32_t, shift, c31);
     }
 
     uint32_t shifted;
     if (inst->modifiers & PTX_MOD_LEFT) {
-        shifted = ssir_build_shl(p->mod, p->func_id, p->block_id, u64_t, concat, amt);
-        shifted = ssir_build_shr_logical(p->mod, p->func_id, p->block_id, u64_t, shifted, c32_u32);
+        shifted = ssir_build_shl(PL_BCTX(p), u64_t, concat, amt);
+        shifted = ssir_build_shr_logical(PL_BCTX(p), u64_t, shifted, c32_u32);
     } else {
-        shifted = ssir_build_shr_logical(p->mod, p->func_id, p->block_id, u64_t, concat, amt);
+        shifted = ssir_build_shr_logical(PL_BCTX(p), u64_t, concat, amt);
     }
-    uint32_t result = ssir_build_convert(p->mod, p->func_id, p->block_id, u32_t, shifted);
+    uint32_t result = ssir_build_convert(PL_BCTX(p), u32_t, shifted);
     pl_store_reg_typed(p, inst->dst.name, result, u32_t);
 }
 
@@ -2189,14 +2169,14 @@ static void pl_lower_bfi(PtxLower *p, const PtxInst *inst) {
     if (p->had_error) return;
 
     uint32_t c1 = ssir_const_u32(p->mod, 1);
-    uint32_t shifted_1 = ssir_build_shl(p->mod, p->func_id, p->block_id, u32_t, c1, width);
-    uint32_t width_mask = ssir_build_sub(p->mod, p->func_id, p->block_id, u32_t, shifted_1, c1);
-    uint32_t mask = ssir_build_shl(p->mod, p->func_id, p->block_id, u32_t, width_mask, offset);
-    uint32_t inv_mask = ssir_build_bit_not(p->mod, p->func_id, p->block_id, u32_t, mask);
-    uint32_t base_cleared = ssir_build_bit_and(p->mod, p->func_id, p->block_id, u32_t, base, inv_mask);
-    uint32_t src_shifted = ssir_build_shl(p->mod, p->func_id, p->block_id, u32_t, src, offset);
-    uint32_t src_masked = ssir_build_bit_and(p->mod, p->func_id, p->block_id, u32_t, src_shifted, mask);
-    uint32_t result = ssir_build_bit_or(p->mod, p->func_id, p->block_id, u32_t, base_cleared, src_masked);
+    uint32_t shifted_1 = ssir_build_shl(PL_BCTX(p), u32_t, c1, width);
+    uint32_t width_mask = ssir_build_sub(PL_BCTX(p), u32_t, shifted_1, c1);
+    uint32_t mask = ssir_build_shl(PL_BCTX(p), u32_t, width_mask, offset);
+    uint32_t inv_mask = ssir_build_bit_not(PL_BCTX(p), u32_t, mask);
+    uint32_t base_cleared = ssir_build_bit_and(PL_BCTX(p), u32_t, base, inv_mask);
+    uint32_t src_shifted = ssir_build_shl(PL_BCTX(p), u32_t, src, offset);
+    uint32_t src_masked = ssir_build_bit_and(PL_BCTX(p), u32_t, src_shifted, mask);
+    uint32_t result = ssir_build_bit_or(PL_BCTX(p), u32_t, base_cleared, src_masked);
     pl_store_reg_typed(p, inst->dst.name, result, u32_t);
 }
 
@@ -2219,23 +2199,23 @@ static void pl_lower_prmt(PtxLower *p, const PtxInst *inst) {
     uint32_t result = c0;
     for (int i = 0; i < 4; i++) {
         uint32_t nibble_shift = ssir_const_u32(p->mod, (uint32_t)(i * 4));
-        uint32_t nibble = ssir_build_shr_logical(p->mod, p->func_id, p->block_id, u32_t, sel, nibble_shift);
-        nibble = ssir_build_bit_and(p->mod, p->func_id, p->block_id, u32_t, nibble, c0xf);
+        uint32_t nibble = ssir_build_shr_logical(PL_BCTX(p), u32_t, sel, nibble_shift);
+        nibble = ssir_build_bit_and(PL_BCTX(p), u32_t, nibble, c0xf);
         /* nibble < 4 -> byte from a, else byte from b (index - 4) */
-        uint32_t from_a_idx = ssir_build_bit_and(p->mod, p->func_id, p->block_id, u32_t, nibble, ssir_const_u32(p->mod, 3));
-        uint32_t byte_shift = ssir_build_mul(p->mod, p->func_id, p->block_id, u32_t, from_a_idx, c8);
-        uint32_t byte_a = ssir_build_shr_logical(p->mod, p->func_id, p->block_id, u32_t, a, byte_shift);
-        byte_a = ssir_build_bit_and(p->mod, p->func_id, p->block_id, u32_t, byte_a, c0xff);
-        uint32_t byte_b = ssir_build_shr_logical(p->mod, p->func_id, p->block_id, u32_t, b, byte_shift);
-        byte_b = ssir_build_bit_and(p->mod, p->func_id, p->block_id, u32_t, byte_b, c0xff);
+        uint32_t from_a_idx = ssir_build_bit_and(PL_BCTX(p), u32_t, nibble, ssir_const_u32(p->mod, 3));
+        uint32_t byte_shift = ssir_build_mul(PL_BCTX(p), u32_t, from_a_idx, c8);
+        uint32_t byte_a = ssir_build_shr_logical(PL_BCTX(p), u32_t, a, byte_shift);
+        byte_a = ssir_build_bit_and(PL_BCTX(p), u32_t, byte_a, c0xff);
+        uint32_t byte_b = ssir_build_shr_logical(PL_BCTX(p), u32_t, b, byte_shift);
+        byte_b = ssir_build_bit_and(PL_BCTX(p), u32_t, byte_b, c0xff);
         uint32_t bool_t = ssir_type_bool(p->mod);
-        uint32_t use_b = ssir_build_ge(p->mod, p->func_id, p->block_id, bool_t, nibble, c4);
+        uint32_t use_b = ssir_build_ge(PL_BCTX(p), bool_t, nibble, c4);
         uint32_t sel_args[] = { use_b, byte_b, byte_a };
-        uint32_t byte_val = ssir_build_builtin(p->mod, p->func_id, p->block_id,
+        uint32_t byte_val = ssir_build_builtin(PL_BCTX(p),
                                                 u32_t, SSIR_BUILTIN_SELECT, sel_args, 3);
         uint32_t out_shift = ssir_const_u32(p->mod, (uint32_t)(i * 8));
-        uint32_t shifted = ssir_build_shl(p->mod, p->func_id, p->block_id, u32_t, byte_val, out_shift);
-        result = ssir_build_bit_or(p->mod, p->func_id, p->block_id, u32_t, result, shifted);
+        uint32_t shifted = ssir_build_shl(PL_BCTX(p), u32_t, byte_val, out_shift);
+        result = ssir_build_bit_or(PL_BCTX(p), u32_t, result, shifted);
     }
     pl_store_reg_typed(p, inst->dst.name, result, u32_t);
 }
@@ -2246,19 +2226,19 @@ static void pl_lower_copysign(PtxLower *p, const PtxInst *inst) {
     uint32_t mag = pl_resolve_operand(p, &inst->src[1], type);
     if (p->had_error) return;
     uint32_t u32_type = ssir_type_u32(p->mod);
-    uint32_t mag_bits = ssir_build_bitcast(p->mod, p->func_id, p->block_id,
+    uint32_t mag_bits = ssir_build_bitcast(PL_BCTX(p),
                                             u32_type, mag);
-    uint32_t sgn_bits = ssir_build_bitcast(p->mod, p->func_id, p->block_id,
+    uint32_t sgn_bits = ssir_build_bitcast(PL_BCTX(p),
                                             u32_type, sgn);
     uint32_t mag_mask = ssir_const_u32(p->mod, 0x7FFFFFFF);
     uint32_t sgn_mask = ssir_const_u32(p->mod, 0x80000000);
-    uint32_t mag_cleared = ssir_build_bit_and(p->mod, p->func_id, p->block_id,
+    uint32_t mag_cleared = ssir_build_bit_and(PL_BCTX(p),
                                                u32_type, mag_bits, mag_mask);
-    uint32_t sgn_bit = ssir_build_bit_and(p->mod, p->func_id, p->block_id,
+    uint32_t sgn_bit = ssir_build_bit_and(PL_BCTX(p),
                                            u32_type, sgn_bits, sgn_mask);
-    uint32_t combined = ssir_build_bit_or(p->mod, p->func_id, p->block_id,
+    uint32_t combined = ssir_build_bit_or(PL_BCTX(p),
                                            u32_type, mag_cleared, sgn_bit);
-    uint32_t result = ssir_build_bitcast(p->mod, p->func_id, p->block_id,
+    uint32_t result = ssir_build_bitcast(PL_BCTX(p),
                                           type, combined);
     pl_store_reg_typed(p, inst->dst.name, result, type);
 }
@@ -2275,7 +2255,7 @@ static void pl_lower_inst(PtxLower *p, const PtxInst *inst) {
     if (has_pred) {
         PlReg *pr = pl_find_reg(p, inst->pred);
         if (pr) {
-            pred_val = ssir_build_load(p->mod, p->func_id, p->block_id,
+            pred_val = ssir_build_load(PL_BCTX(p),
                                         pr->val_type, pr->ptr_id);
         } else {
             pl_error(p, "undefined predicate register '%s'", inst->pred);
@@ -2295,11 +2275,11 @@ static void pl_lower_inst(PtxLower *p, const PtxInst *inst) {
     uint32_t then_block = 0;
     if (has_pred) {
         if (pred_negated)
-            pred_val = ssir_build_not(p->mod, p->func_id, p->block_id,
+            pred_val = ssir_build_not(PL_BCTX(p),
                                       ssir_type_bool(p->mod), pred_val);
         then_block = ssir_block_create(p->mod, p->func_id, NULL);
         merge_block = ssir_block_create(p->mod, p->func_id, NULL);
-        ssir_build_branch_cond_merge(p->mod, p->func_id, p->block_id,
+        ssir_build_branch_cond_merge(PL_BCTX(p),
                                pred_val, then_block, merge_block, merge_block);
         saved_block = p->block_id;
         p->block_id = then_block;
@@ -2378,7 +2358,7 @@ static void pl_lower_inst(PtxLower *p, const PtxInst *inst) {
     }
 
     if (has_pred && merge_block) {
-        ssir_build_branch(p->mod, p->func_id, p->block_id, merge_block);
+        ssir_build_branch(PL_BCTX(p), merge_block);
         p->block_id = merge_block;
         p->block_from_label = false;
         (void)saved_block;
@@ -2431,9 +2411,9 @@ static void pl_handle_label(PtxLower *p, const char *name) {
                 break;
             }
         }
-        ssir_build_branch(p->mod, p->func_id, p->block_id, target);
+        ssir_build_branch(PL_BCTX(p), target);
     } else {
-        ssir_build_branch(p->mod, p->func_id, p->block_id, bridge_target);
+        ssir_build_branch(PL_BCTX(p), bridge_target);
     }
 
     ssir_block_create_with_id(p->mod, p->func_id, lbl_block, name);
@@ -2458,15 +2438,15 @@ static void pl_lower_body(PtxLower *p, const PtxStmt *body, int body_count) {
         }
     }
 
-    SsirBlock *blk = ssir_get_block(p->mod, p->func_id, p->block_id);
+    SsirBlock *blk = ssir_get_block(PL_BCTX(p));
     if (blk && blk->inst_count == 0) {
-        ssir_build_return_void(p->mod, p->func_id, p->block_id);
+        ssir_build_return_void(PL_BCTX(p));
     } else if (blk && blk->inst_count > 0) {
         SsirInst *last = &blk->insts[blk->inst_count - 1];
         if (last->op != SSIR_OP_BRANCH && last->op != SSIR_OP_BRANCH_COND &&
             last->op != SSIR_OP_RETURN && last->op != SSIR_OP_RETURN_VOID &&
             last->op != SSIR_OP_UNREACHABLE && last->op != SSIR_OP_SWITCH) {
-            ssir_build_return_void(p->mod, p->func_id, p->block_id);
+            ssir_build_return_void(PL_BCTX(p));
         }
     }
 }
@@ -2488,10 +2468,7 @@ static void pl_build_bda_params(PtxLower *p, const PtxParam *params,
         uint32_t loc_id = ssir_function_add_local(p->mod, p->func_id,
             params[i].name, loc_ptr_type);
 
-        if (p->reg_count >= p->reg_cap) {
-            p->reg_cap = p->reg_cap ? p->reg_cap * 2 : 64;
-            p->regs = (PlReg *)PTX_REALLOC(p->regs, p->reg_cap * sizeof(PlReg));
-        }
+        SW_GROW(p->regs, p->reg_count, p->reg_cap, PlReg, ptx_realloc_);
         PlReg *r = &p->regs[p->reg_count++];
         memset(r, 0, sizeof(*r));
         snprintf(r->name, sizeof(r->name), "%s", params[i].name);
@@ -2553,11 +2530,11 @@ static void pl_build_bda_params(PtxLower *p, const PtxParam *params,
                                                   SSIR_ADDR_PUSH_CONSTANT);
         uint32_t idx = ssir_const_u32(p->mod, (uint32_t)i);
         uint32_t indices[] = { idx };
-        uint32_t member_ptr = ssir_build_access(p->mod, p->func_id, p->block_id,
+        uint32_t member_ptr = ssir_build_access(PL_BCTX(p),
             member_ptr_type, pc_global, indices, 1);
-        uint32_t val = ssir_build_load(p->mod, p->func_id, p->block_id,
+        uint32_t val = ssir_build_load(PL_BCTX(p),
                                        bda_params[i].type, member_ptr);
-        ssir_build_store(p->mod, p->func_id, p->block_id, r->ptr_id, val);
+        ssir_build_store(PL_BCTX(p), r->ptr_id, val);
     }
 }
 
@@ -2575,12 +2552,9 @@ static void pl_build_descriptor_params(PtxLower *p, const PtxParam *params,
             params[i].name, loc_ptr_type);
 
         uint32_t init_val = pl_const_for_type(p, param_type, 0, 0.0, false);
-        ssir_build_store(p->mod, p->func_id, p->block_id, loc_id, init_val);
+        ssir_build_store(PL_BCTX(p), loc_id, init_val);
 
-        if (p->reg_count >= p->reg_cap) {
-            p->reg_cap = p->reg_cap ? p->reg_cap * 2 : 64;
-            p->regs = (PlReg *)PTX_REALLOC(p->regs, p->reg_cap * sizeof(PlReg));
-        }
+        SW_GROW(p->regs, p->reg_count, p->reg_cap, PlReg, ptx_realloc_);
         PlReg *r = &p->regs[p->reg_count++];
         memset(r, 0, sizeof(*r));
         snprintf(r->name, sizeof(r->name), "%s", params[i].name);
@@ -2826,7 +2800,7 @@ static void pl_lower_func(PtxLower *p, const PtxFunc *func) {
     }
 
     if (func->is_decl_only) {
-        ssir_build_return_void(p->mod, p->func_id, p->block_id);
+        ssir_build_return_void(PL_BCTX(p));
     } else {
         pl_precompute_merges(p, func->body, func->body_count);
         pl_lower_body(p, func->body, func->body_count);

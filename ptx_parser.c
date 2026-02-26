@@ -5,13 +5,9 @@
  * The lowerer (ptx_lower.c) then converts the AST to SSIR.
  */
 
-#include "simple_wgsl.h"
-#include <stdio.h>
+#include "simple_wgsl_internal.h"
 #include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdbool.h>
-#include <stdarg.h>
 
 #ifndef PTX_MALLOC
 #define PTX_MALLOC(sz) calloc(1, (sz))
@@ -23,17 +19,12 @@
 #define PTX_FREE(p) free((p))
 #endif
 
+static void *sw_ptx_alloc(size_t sz) { return PTX_MALLOC(sz); }
 static char *ptx_strndup(const char *s, size_t n) {
-  wgsl_compiler_assert(s != NULL, "ptx_strndup: s is NULL");
-  char *r = (char *)PTX_MALLOC(n + 1);
-  if (!r) return NULL;
-  memcpy(r, s, n);
-  r[n] = '\0';
-  return r;
+  return sw_strndup(s, n, sw_ptx_alloc);
 }
-
 static char *ptx_strdup(const char *s) {
-  return s ? ptx_strndup(s, strlen(s)) : NULL;
+  return sw_strdup(s, sw_ptx_alloc);
 }
 
 /* ===== Token Types ===== */

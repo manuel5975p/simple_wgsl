@@ -2,12 +2,9 @@
  * SPIR-V to SSIR VtsConverter - Implementation
  */
 
-#include "simple_wgsl.h"
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 #include <spirv/unified1/spirv.h>
 #include <spirv/unified1/GLSL.std.450.h>
+#include "simple_wgsl_internal.h"
 
 #ifndef SPIRV_TO_SSIR_MALLOC
 #define SPIRV_TO_SSIR_MALLOC(sz) calloc(1, (sz))
@@ -21,100 +18,36 @@
 
 #define SPV_MAGIC 0x07230203
 
-typedef enum {
-    VTS_SPV_ID_UNKNOWN = 0,
-    VTS_SPV_ID_TYPE,
-    VTS_SPV_ID_CONSTANT,
-    VTS_SPV_ID_VARIABLE,
-    VTS_SPV_ID_FUNCTION,
-    VTS_SPV_ID_LABEL,
-    VTS_SPV_ID_INSTRUCTION,
-    VTS_SPV_ID_EXT_INST_IMPORT,
-    VTS_SPV_ID_PARAM,
-} VtsSpvIdKind;
+typedef SwSpvIdKind VtsSpvIdKind;
+#define VTS_SPV_ID_UNKNOWN SW_SPV_ID_UNKNOWN
+#define VTS_SPV_ID_TYPE SW_SPV_ID_TYPE
+#define VTS_SPV_ID_CONSTANT SW_SPV_ID_CONSTANT
+#define VTS_SPV_ID_VARIABLE SW_SPV_ID_VARIABLE
+#define VTS_SPV_ID_FUNCTION SW_SPV_ID_FUNCTION
+#define VTS_SPV_ID_LABEL SW_SPV_ID_LABEL
+#define VTS_SPV_ID_INSTRUCTION SW_SPV_ID_INSTRUCTION
+#define VTS_SPV_ID_EXT_INST_IMPORT SW_SPV_ID_EXT_INST_IMPORT
+#define VTS_SPV_ID_PARAM SW_SPV_ID_PARAM
 
-typedef enum {
-    VTS_SPV_TYPE_VOID = 0,
-    VTS_SPV_TYPE_BOOL,
-    VTS_SPV_TYPE_INT,
-    VTS_SPV_TYPE_FLOAT,
-    VTS_SPV_TYPE_VECTOR,
-    VTS_SPV_TYPE_MATRIX,
-    VTS_SPV_TYPE_ARRAY,
-    VTS_SPV_TYPE_RUNTIME_ARRAY,
-    VTS_SPV_TYPE_STRUCT,
-    VTS_SPV_TYPE_POINTER,
-    VTS_SPV_TYPE_FUNCTION,
-    VTS_SPV_TYPE_IMAGE,
-    VTS_SPV_TYPE_SAMPLED_IMAGE,
-    VTS_SPV_TYPE_SAMPLER,
-} VtsSpvTypeKind;
+typedef SwSpvTypeKind VtsSpvTypeKind;
+#define VTS_SPV_TYPE_VOID SW_SPV_TYPE_VOID
+#define VTS_SPV_TYPE_BOOL SW_SPV_TYPE_BOOL
+#define VTS_SPV_TYPE_INT SW_SPV_TYPE_INT
+#define VTS_SPV_TYPE_FLOAT SW_SPV_TYPE_FLOAT
+#define VTS_SPV_TYPE_VECTOR SW_SPV_TYPE_VECTOR
+#define VTS_SPV_TYPE_MATRIX SW_SPV_TYPE_MATRIX
+#define VTS_SPV_TYPE_ARRAY SW_SPV_TYPE_ARRAY
+#define VTS_SPV_TYPE_RUNTIME_ARRAY SW_SPV_TYPE_RUNTIME_ARRAY
+#define VTS_SPV_TYPE_STRUCT SW_SPV_TYPE_STRUCT
+#define VTS_SPV_TYPE_POINTER SW_SPV_TYPE_POINTER
+#define VTS_SPV_TYPE_FUNCTION SW_SPV_TYPE_FUNCTION
+#define VTS_SPV_TYPE_IMAGE SW_SPV_TYPE_IMAGE
+#define VTS_SPV_TYPE_SAMPLED_IMAGE SW_SPV_TYPE_SAMPLED_IMAGE
+#define VTS_SPV_TYPE_SAMPLER SW_SPV_TYPE_SAMPLER
 
-typedef struct {
-    VtsSpvTypeKind kind;
-    union {
-        struct {
-            uint32_t width;
-            uint32_t signedness;
-        } int_type;
-        struct {
-            uint32_t width;
-        } float_type;
-        struct {
-            uint32_t component_type;
-            uint32_t count;
-        } vector;
-        struct {
-            uint32_t column_type;
-            uint32_t columns;
-        } matrix;
-        struct {
-            uint32_t element_type;
-            uint32_t length_id;
-        } array;
-        struct {
-            uint32_t element_type;
-        } runtime_array;
-        struct {
-            uint32_t *member_types;
-            int member_count;
-        } struct_type;
-        struct {
-            uint32_t pointee_type;
-            SpvStorageClass storage;
-        } pointer;
-        struct {
-            uint32_t return_type;
-            uint32_t *param_types;
-            int param_count;
-        } function;
-        struct {
-            uint32_t sampled_type;
-            SpvDim dim;
-            uint32_t depth;
-            uint32_t arrayed;
-            uint32_t ms;
-            uint32_t sampled;
-            SpvImageFormat format;
-        } image;
-        struct {
-            uint32_t image_type;
-        } sampled_image;
-    };
-} VtsSpvTypeInfo;
-
-typedef struct {
-    SpvDecoration decoration;
-    uint32_t *literals;
-    int literal_count;
-} VtsSpvDecorationEntry;
-
-typedef struct {
-    uint32_t member_index;
-    SpvDecoration decoration;
-    uint32_t *literals;
-    int literal_count;
-} VtsSpvMemberDecoration;
+typedef SwSpvTypeInfo VtsSpvTypeInfo;
+typedef SwSpvDecorationEntry VtsSpvDecorationEntry;
+typedef SwSpvMemberDecoration VtsSpvMemberDecoration;
 
 typedef struct {
     VtsSpvIdKind kind;
@@ -160,39 +93,8 @@ typedef struct {
     int member_name_count;
 } VtsSpvIdInfo;
 
-typedef struct {
-    uint32_t label_id;
-    uint32_t *instructions;
-    int instruction_count;
-    int instruction_cap;
-    uint32_t merge_block;
-    uint32_t continue_block;
-    int is_loop_header;
-    int is_selection_header;
-} VtsSpvBasicBlock;
-
-typedef struct {
-    uint32_t id;
-    char *name;
-    uint32_t return_type;
-    uint32_t func_type;
-    uint32_t *params;
-    int param_count;
-    VtsSpvBasicBlock *blocks;
-    int block_count;
-    int block_cap;
-    SpvExecutionModel exec_model;
-    int is_entry_point;
-    uint32_t *interface_vars;
-    int interface_var_count;
-    int workgroup_size[3];
-    bool depth_replacing;
-    bool origin_upper_left;
-    bool early_fragment_tests;
-    uint32_t *local_vars;
-    int local_var_count;
-    int local_var_cap;
-} VtsSpvFunction;
+typedef SwSpvBasicBlock VtsSpvBasicBlock;
+typedef SwSpvFunction VtsSpvFunction;
 
 typedef struct {
     uint32_t func_id;
@@ -276,63 +178,26 @@ static char *vts_read_string(const uint32_t *words, int word_count, int *out_wor
     return copy;
 }
 
-// c nonnull
 static void vts_add_decoration(VtsConverter *c, uint32_t target, SpvDecoration decor, const uint32_t *literals, int lit_count) {
-    wgsl_compiler_assert(c != NULL, "vts_add_decoration: c is NULL");
     if (target >= c->id_bound) return;
     VtsSpvIdInfo *info = &c->ids[target];
-    int idx = info->decoration_count++;
-    info->decorations = (VtsSpvDecorationEntry *)SPIRV_TO_SSIR_REALLOC(info->decorations, info->decoration_count * sizeof(VtsSpvDecorationEntry));
-    /* PRE: realloc succeeded */
-    wgsl_compiler_assert(info->decorations != NULL, "vts_add_decoration: realloc failed");
-    info->decorations[idx].decoration = decor;
-    info->decorations[idx].literal_count = lit_count;
-    if (lit_count > 0) {
-        info->decorations[idx].literals = (uint32_t *)SPIRV_TO_SSIR_MALLOC(lit_count * sizeof(uint32_t));
-        memcpy(info->decorations[idx].literals, literals, lit_count * sizeof(uint32_t));
-    } else {
-        info->decorations[idx].literals = NULL;
-    }
+    sw_spv_add_decoration(&info->decorations, &info->decoration_count,
+        decor, literals, lit_count, realloc);
 }
 
-// c nonnull
 static void vts_add_member_decoration(VtsConverter *c, uint32_t struct_id, uint32_t member, SpvDecoration decor, const uint32_t *literals, int lit_count) {
-    wgsl_compiler_assert(c != NULL, "vts_add_member_decoration: c is NULL");
     if (struct_id >= c->id_bound) return;
     VtsSpvIdInfo *info = &c->ids[struct_id];
-    int idx = info->member_decoration_count++;
-    info->member_decorations = (VtsSpvMemberDecoration *)SPIRV_TO_SSIR_REALLOC(info->member_decorations, info->member_decoration_count * sizeof(VtsSpvMemberDecoration));
-    /* PRE: realloc succeeded */
-    wgsl_compiler_assert(info->member_decorations != NULL, "vts_add_member_decoration: realloc failed");
-    info->member_decorations[idx].member_index = member;
-    info->member_decorations[idx].decoration = decor;
-    info->member_decorations[idx].literal_count = lit_count;
-    if (lit_count > 0) {
-        info->member_decorations[idx].literals = (uint32_t *)SPIRV_TO_SSIR_MALLOC(lit_count * sizeof(uint32_t));
-        memcpy(info->member_decorations[idx].literals, literals, lit_count * sizeof(uint32_t));
-    } else {
-        info->member_decorations[idx].literals = NULL;
-    }
+    sw_spv_add_member_decoration(&info->member_decorations,
+        &info->member_decoration_count, member, decor, literals, lit_count,
+        realloc);
 }
 
-// c nonnull
 static int vts_has_decoration(VtsConverter *c, uint32_t id, SpvDecoration decor, uint32_t *out_value) {
-    wgsl_compiler_assert(c != NULL, "vts_has_decoration: c is NULL");
     if (id >= c->id_bound) return 0;
     VtsSpvIdInfo *info = &c->ids[id];
-    /* PRE: decorations array valid if decoration_count > 0 */
-    wgsl_compiler_assert(info->decoration_count == 0 || info->decorations != NULL, "vts_has_decoration: decorations NULL with count > 0");
-    for (int i = 0; i < info->decoration_count; i++) {
-        if (info->decorations[i].decoration == decor) {
-            /* PRE: literals array valid if literal_count > 0 */
-            wgsl_compiler_assert(info->decorations[i].literal_count == 0 || info->decorations[i].literals != NULL, "vts_has_decoration: literals NULL with count > 0");
-            if (out_value && info->decorations[i].literal_count > 0) {
-                *out_value = info->decorations[i].literals[0];
-            }
-            return 1;
-        }
-    }
-    return 0;
+    return sw_spv_has_decoration(info->decorations, info->decoration_count,
+                                decor, out_value);
 }
 
 // c nonnull
@@ -357,64 +222,25 @@ static int get_member_offset(VtsConverter *c, uint32_t struct_id, uint32_t membe
     return 0;
 }
 
-// c nonnull
 static VtsSpvFunction *vts_add_function(VtsConverter *c) {
-    wgsl_compiler_assert(c != NULL, "vts_add_function: c is NULL");
-    if (c->function_count >= c->function_cap) {
-        int ncap = c->function_cap ? c->function_cap * 2 : 8;
-        c->functions = (VtsSpvFunction *)SPIRV_TO_SSIR_REALLOC(c->functions, ncap * sizeof(VtsSpvFunction));
-        /* PRE: realloc succeeded */
-        wgsl_compiler_assert(c->functions != NULL, "vts_add_function: realloc failed");
-        c->function_cap = ncap;
-    }
-    VtsSpvFunction *fn = &c->functions[c->function_count++];
-    memset(fn, 0, sizeof(VtsSpvFunction));
+    SwSpvFunction *fn = sw_spv_add_function(
+        &c->functions, &c->function_count, &c->function_cap, 0, realloc);
     fn->workgroup_size[0] = 1;
     fn->workgroup_size[1] = 1;
     fn->workgroup_size[2] = 1;
     return fn;
 }
 
-// fn nonnull
 static VtsSpvBasicBlock *vts_add_block(VtsSpvFunction *fn, uint32_t label_id) {
-    wgsl_compiler_assert(fn != NULL, "vts_add_block: fn is NULL");
-    if (fn->block_count >= fn->block_cap) {
-        int ncap = fn->block_cap ? fn->block_cap * 2 : 8;
-        fn->blocks = (VtsSpvBasicBlock *)SPIRV_TO_SSIR_REALLOC(fn->blocks, ncap * sizeof(VtsSpvBasicBlock));
-        /* PRE: realloc succeeded */
-        wgsl_compiler_assert(fn->blocks != NULL, "vts_add_block: realloc failed");
-        fn->block_cap = ncap;
-    }
-    VtsSpvBasicBlock *blk = &fn->blocks[fn->block_count++];
-    memset(blk, 0, sizeof(VtsSpvBasicBlock));
-    blk->label_id = label_id;
-    return blk;
+    return sw_spv_add_block(fn, label_id, realloc);
 }
 
-// blk nonnull
 static void vts_add_block_instr(VtsSpvBasicBlock *blk, uint32_t instr_start) {
-    wgsl_compiler_assert(blk != NULL, "vts_add_block_instr: blk is NULL");
-    if (blk->instruction_count >= blk->instruction_cap) {
-        int ncap = blk->instruction_cap ? blk->instruction_cap * 2 : 16;
-        blk->instructions = (uint32_t *)SPIRV_TO_SSIR_REALLOC(blk->instructions, ncap * sizeof(uint32_t));
-        /* PRE: realloc succeeded */
-        wgsl_compiler_assert(blk->instructions != NULL, "vts_add_block_instr: realloc failed");
-        blk->instruction_cap = ncap;
-    }
-    blk->instructions[blk->instruction_count++] = instr_start;
+    sw_spv_add_block_instr(blk, instr_start, realloc);
 }
 
-// fn nonnull
 static void add_function_local_var(VtsSpvFunction *fn, uint32_t var_id) {
-    wgsl_compiler_assert(fn != NULL, "add_function_local_var: fn is NULL");
-    if (fn->local_var_count >= fn->local_var_cap) {
-        int ncap = fn->local_var_cap ? fn->local_var_cap * 2 : 8;
-        fn->local_vars = (uint32_t *)SPIRV_TO_SSIR_REALLOC(fn->local_vars, ncap * sizeof(uint32_t));
-        /* PRE: realloc succeeded */
-        wgsl_compiler_assert(fn->local_vars != NULL, "add_function_local_var: realloc failed");
-        fn->local_var_cap = ncap;
-    }
-    fn->local_vars[fn->local_var_count++] = var_id;
+    sw_spv_add_local_var(fn, var_id, realloc);
 }
 
 // c nonnull
@@ -1149,33 +975,8 @@ static uint32_t convert_scalar_type(VtsConverter *c, uint32_t spv_type_id) {
     }
 }
 
-static SsirAddressSpace storage_class_to_addr_space(SpvStorageClass sc) {
-    switch (sc) {
-        case SpvStorageClassFunction: return SSIR_ADDR_FUNCTION;
-        case SpvStorageClassPrivate: return SSIR_ADDR_PRIVATE;
-        case SpvStorageClassWorkgroup: return SSIR_ADDR_WORKGROUP;
-        case SpvStorageClassUniform: return SSIR_ADDR_UNIFORM;
-        case SpvStorageClassUniformConstant: return SSIR_ADDR_UNIFORM_CONSTANT;
-        case SpvStorageClassStorageBuffer: return SSIR_ADDR_STORAGE;
-        case SpvStorageClassInput: return SSIR_ADDR_INPUT;
-        case SpvStorageClassOutput: return SSIR_ADDR_OUTPUT;
-        case SpvStorageClassPushConstant: return SSIR_ADDR_PUSH_CONSTANT;
-        case SpvStorageClassPhysicalStorageBuffer: return SSIR_ADDR_PHYSICAL_STORAGE_BUFFER;
-        default: return SSIR_ADDR_FUNCTION;
-    }
-}
-
-static SsirTextureDim spv_dim_to_ssir(SpvDim dim, uint32_t arrayed, uint32_t ms) {
-    if (ms) return arrayed ? SSIR_TEX_MULTISAMPLED_2D_ARRAY : SSIR_TEX_MULTISAMPLED_2D;
-    switch (dim) {
-        case SpvDim1D: return arrayed ? SSIR_TEX_1D_ARRAY : SSIR_TEX_1D;
-        case SpvDim2D: return arrayed ? SSIR_TEX_2D_ARRAY : SSIR_TEX_2D;
-        case SpvDim3D: return SSIR_TEX_3D;
-        case SpvDimCube: return arrayed ? SSIR_TEX_CUBE_ARRAY : SSIR_TEX_CUBE;
-        case SpvDimBuffer: return SSIR_TEX_BUFFER;
-        default: return SSIR_TEX_2D;
-    }
-}
+#define storage_class_to_addr_space sw_spv_storage_class_to_ssir
+#define spv_dim_to_ssir sw_spv_dim_to_ssir
 
 // c nonnull
 static uint32_t convert_type(VtsConverter *c, uint32_t spv_type_id) {
@@ -1489,37 +1290,7 @@ static uint32_t convert_constant(VtsConverter *c, uint32_t spv_const_id) {
     return result;
 }
 
-static SsirBuiltinVar spv_builtin_to_ssir(SpvBuiltIn builtin) {
-    switch (builtin) {
-        case SpvBuiltInVertexIndex: return SSIR_BUILTIN_VERTEX_INDEX;
-        case SpvBuiltInInstanceIndex: return SSIR_BUILTIN_INSTANCE_INDEX;
-        case SpvBuiltInPosition: return SSIR_BUILTIN_POSITION;
-        case SpvBuiltInFrontFacing: return SSIR_BUILTIN_FRONT_FACING;
-        case SpvBuiltInFragDepth: return SSIR_BUILTIN_FRAG_DEPTH;
-        case SpvBuiltInSampleId: return SSIR_BUILTIN_SAMPLE_INDEX;
-        case SpvBuiltInSampleMask: return SSIR_BUILTIN_SAMPLE_MASK;
-        case SpvBuiltInLocalInvocationId: return SSIR_BUILTIN_LOCAL_INVOCATION_ID;
-        case SpvBuiltInLocalInvocationIndex: return SSIR_BUILTIN_LOCAL_INVOCATION_INDEX;
-        case SpvBuiltInGlobalInvocationId: return SSIR_BUILTIN_GLOBAL_INVOCATION_ID;
-        case SpvBuiltInWorkgroupId: return SSIR_BUILTIN_WORKGROUP_ID;
-        case SpvBuiltInNumWorkgroups: return SSIR_BUILTIN_NUM_WORKGROUPS;
-        case SpvBuiltInPointSize: return SSIR_BUILTIN_POINT_SIZE;
-        case SpvBuiltInClipDistance: return SSIR_BUILTIN_CLIP_DISTANCE;
-        case SpvBuiltInCullDistance: return SSIR_BUILTIN_CULL_DISTANCE;
-        case SpvBuiltInLayer: return SSIR_BUILTIN_LAYER;
-        case SpvBuiltInViewportIndex: return SSIR_BUILTIN_VIEWPORT_INDEX;
-        case SpvBuiltInFragCoord: return SSIR_BUILTIN_FRAG_COORD;
-        case SpvBuiltInHelperInvocation: return SSIR_BUILTIN_HELPER_INVOCATION;
-        case SpvBuiltInPrimitiveId: return SSIR_BUILTIN_PRIMITIVE_ID;
-        case SpvBuiltInBaseVertex: return SSIR_BUILTIN_BASE_VERTEX;
-        case SpvBuiltInBaseInstance: return SSIR_BUILTIN_BASE_INSTANCE;
-        case SpvBuiltInSubgroupSize: return SSIR_BUILTIN_SUBGROUP_SIZE;
-        case SpvBuiltInSubgroupLocalInvocationId: return SSIR_BUILTIN_SUBGROUP_INVOCATION_ID;
-        case SpvBuiltInSubgroupId: return SSIR_BUILTIN_SUBGROUP_ID;
-        case SpvBuiltInNumSubgroups: return SSIR_BUILTIN_NUM_SUBGROUPS;
-        default: return SSIR_BUILTIN_NONE;
-    }
-}
+#define spv_builtin_to_ssir sw_spv_builtin_to_ssir
 
 // c nonnull
 static void convert_global_vars(VtsConverter *c) {

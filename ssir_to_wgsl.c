@@ -4,16 +4,8 @@
  * Converts SSIR (Simple Shader IR) directly to WGSL text.
  */
 
-#include "simple_wgsl.h"
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
+#include "simple_wgsl_internal.h"
 #include <math.h>
-
-/* ============================================================================
- * Memory Allocation
- * ============================================================================ */
 
 #ifndef STW_MALLOC
 #define STW_MALLOC(sz) calloc(1, (sz))
@@ -25,69 +17,14 @@
 #define STW_FREE(p) free((p))
 #endif
 
-/* ============================================================================
- * String Buffer
- * ============================================================================ */
-
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-    int indent;
-} StwStringBuffer;
-
-static void stw_sb_init(StwStringBuffer *sb) {
-    sb->data = NULL;
-    sb->len = 0;
-    sb->cap = 0;
-    sb->indent = 0;
-}
-
-static void stw_sb_free(StwStringBuffer *sb) {
-    STW_FREE(sb->data);
-    sb->data = NULL;
-    sb->len = sb->cap = 0;
-}
-
-static int stw_sb_reserve(StwStringBuffer *sb, size_t need) {
-    if (sb->len + need + 1 <= sb->cap) return 1;
-    size_t ncap = sb->cap ? sb->cap : 256;
-    while (ncap < sb->len + need + 1) ncap *= 2;
-    char *nd = (char *)STW_REALLOC(sb->data, ncap);
-    if (!nd) return 0;
-    sb->data = nd;
-    sb->cap = ncap;
-    return 1;
-}
-
-static void stw_sb_append(StwStringBuffer *sb, const char *s) {
-    size_t slen = strlen(s);
-    if (!stw_sb_reserve(sb, slen)) return;
-    memcpy(sb->data + sb->len, s, slen);
-    sb->len += slen;
-    sb->data[sb->len] = '\0';
-}
-
-static void stw_sb_appendf(StwStringBuffer *sb, const char *fmt, ...) {
-    char buf[1024];
-    va_list args;
-    va_start(args, fmt);
-    int n = vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    if (n > 0) {
-        stw_sb_append(sb, buf);
-    }
-}
-
-static void stw_sb_indent(StwStringBuffer *sb) {
-    for (int i = 0; i < sb->indent; i++) {
-        stw_sb_append(sb, "    ");
-    }
-}
-
-static void stw_sb_newline(StwStringBuffer *sb) {
-    stw_sb_append(sb, "\n");
-}
+typedef SwStringBuffer StwStringBuffer;
+#define stw_sb_init sw_sb_init
+#define stw_sb_free sw_sb_free
+#define stw_sb_reserve sw_sb_reserve
+#define stw_sb_append sw_sb_append
+#define stw_sb_appendf sw_sb_appendf
+#define stw_sb_indent sw_sb_indent
+#define stw_sb_newline sw_sb_nl
 
 /* ============================================================================
  * Converter Context
@@ -139,12 +76,7 @@ static void ctx_free(SsirToWgslContext *ctx) {
 }
 
 static const char *stw_get_id_name(SsirToWgslContext *ctx, uint32_t id) {
-    if (id < ctx->id_names_cap && ctx->id_names[id]) {
-        return ctx->id_names[id];
-    }
-    static char buf[32];
-    snprintf(buf, sizeof(buf), "_v%u", id);
-    return buf;
+    return sw_get_id_name(ctx->id_names, ctx->id_names_cap, id);
 }
 
 static void set_id_name(SsirToWgslContext *ctx, uint32_t id, const char *name) {
@@ -535,32 +467,16 @@ static void stw_emit_constant(SsirToWgslContext *ctx, SsirConstant *c, StwString
 /* Forward declaration */
 static void stw_emit_expression(SsirToWgslContext *ctx, uint32_t id, StwStringBuffer *out);
 
-/* Find instruction by result ID in current function */
 static SsirInst *find_instruction(SsirToWgslContext *ctx, uint32_t id) {
-    if (ctx->inst_map && id < ctx->inst_map_cap) return ctx->inst_map[id];
-    return NULL;
+    return sw_find_inst(ctx->inst_map, ctx->inst_map_cap, id);
 }
 
-/* Check if ID is a function parameter */
 static SsirFunctionParam *stw_find_param(SsirToWgslContext *ctx, uint32_t id) {
-    if (!ctx->current_func) return NULL;
-    for (uint32_t i = 0; i < ctx->current_func->param_count; i++) {
-        if (ctx->current_func->params[i].id == id) {
-            return &ctx->current_func->params[i];
-        }
-    }
-    return NULL;
+    return sw_find_param(ctx->current_func, id);
 }
 
-/* Check if ID is a local variable */
 static SsirLocalVar *stw_find_local(SsirToWgslContext *ctx, uint32_t id) {
-    if (!ctx->current_func) return NULL;
-    for (uint32_t i = 0; i < ctx->current_func->local_count; i++) {
-        if (ctx->current_func->locals[i].id == id) {
-            return &ctx->current_func->locals[i];
-        }
-    }
-    return NULL;
+    return sw_find_local(ctx->current_func, id);
 }
 
 static void stw_emit_binary_op(SsirToWgslContext *ctx, SsirInst *inst, const char *op, StwStringBuffer *out) {

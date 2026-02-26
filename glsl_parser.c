@@ -10,42 +10,19 @@
  *   - Interface blocks → struct + global var
  */
 
-#include "simple_wgsl.h"
-#include <stdio.h>
+#include "simple_wgsl_internal.h"
 #include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdbool.h>
 
-/* ============================================================================
- * String Utilities
- * ============================================================================ */
-
-// s nonnull
+static void *sw_node_alloc_(size_t sz) { return NODE_MALLOC(sz); }
 static char *glsl_strndup(const char *s, size_t n) {
-    wgsl_compiler_assert(s != NULL, "glsl_strndup: s is NULL");
-    char *r = (char *)NODE_MALLOC(n + 1);
-    if (!r) return NULL;
-    memcpy(r, s, n);
-    r[n] = '\0';
-    return r;
+    return sw_strndup(s, n, sw_node_alloc_);
 }
-
-// s allowed to be NULL
 static char *glsl_strdup(const char *s) {
-    return s ? glsl_strndup(s, strlen(s)) : NULL;
+    return sw_strdup(s, sw_node_alloc_);
 }
-
-// cap nonnull
 static void *gp_grow_ptr_array(void *p, int needed, int *cap, size_t elem) {
-    wgsl_compiler_assert(cap != NULL, "gp_grow_ptr_array: cap is NULL");
-    if (needed <= *cap) return p;
-    int nc = (*cap == 0) ? 4 : (*cap * 2);
-    while (nc < needed) nc *= 2;
-    void *np = NODE_REALLOC(p, (size_t)nc * elem);
-    if (!np) return p;
-    *cap = nc;
-    return np;
+    return sw_grow_array(p, needed, cap, elem, realloc);
 }
 
 // arr nonnull, count nonnull, cap nonnull

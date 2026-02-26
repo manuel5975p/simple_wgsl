@@ -460,6 +460,8 @@ struct WgslLower {
     } fn_ctx;
 };
 
+#define WL_BCTX(l) (l)->ssir, (l)->fn_ctx.ssir_func_id, (l)->fn_ctx.ssir_block_id
+
 // l nonnull
 static uint32_t fresh_id(WgslLower *l) {
     wgsl_compiler_assert(l != NULL, "fresh_id: l is NULL");
@@ -1943,7 +1945,7 @@ static int emit_return(WgslLower *l) {
 
     // Build SSIR return void instruction
     if (ok && l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
-        ssir_build_return_void(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id);
+        ssir_build_return_void(WL_BCTX(l));
     }
 
     return ok;
@@ -1960,7 +1962,7 @@ static int emit_return_value(WgslLower *l, uint32_t value) {
     if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
         uint32_t ssir_val = ssir_id_map_get(l, value);
         if (ssir_val) {
-            ssir_build_return(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id, ssir_val);
+            ssir_build_return(WL_BCTX(l), ssir_val);
         }
     }
 
@@ -1999,8 +2001,7 @@ static int emit_load(WgslLower *l, uint32_t result_type, uint32_t *out_id, uint3
         uint32_t ssir_ptr = ssir_id_map_get(l, pointer);
         uint32_t ssir_type = spv_type_to_ssir(l, result_type);
         if (ssir_ptr && ssir_type) {
-            uint32_t ssir_result = ssir_build_load(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, ssir_type, ssir_ptr);
+            uint32_t ssir_result = ssir_build_load(WL_BCTX(l), ssir_type, ssir_ptr);
             ssir_id_map_set(l, id, ssir_result);
         }
     }
@@ -2022,8 +2023,7 @@ static int emit_store(WgslLower *l, uint32_t pointer, uint32_t object) {
         uint32_t ssir_ptr = ssir_id_map_get(l, pointer);
         uint32_t ssir_val = ssir_id_map_get(l, object);
         if (ssir_ptr && ssir_val) {
-            ssir_build_store(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, ssir_ptr, ssir_val);
+            ssir_build_store(WL_BCTX(l), ssir_ptr, ssir_val);
         }
     }
 
@@ -2058,8 +2058,7 @@ static int emit_access_chain(WgslLower *l, uint32_t result_type, uint32_t *out_i
             if (!ssir_indices[i]) have_all = 0;
         }
         if (have_all && ssir_type) {
-            uint32_t ssir_result = ssir_build_access(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, ssir_type,
+            uint32_t ssir_result = ssir_build_access(WL_BCTX(l), ssir_type,
                 ssir_base, ssir_indices, (uint32_t)index_count);
             ssir_id_map_set(l, id, ssir_result);
         }
@@ -2123,113 +2122,92 @@ static int emit_binary_op(WgslLower *l, SpvOp op, uint32_t result_type, uint32_t
                 // Arithmetic
                 case SpvOpFAdd:
                 case SpvOpIAdd:
-                    ssir_result = ssir_build_add(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_add(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFSub:
                 case SpvOpISub:
-                    ssir_result = ssir_build_sub(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_sub(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFMul:
                 case SpvOpIMul:
                 case SpvOpVectorTimesScalar:
-                    ssir_result = ssir_build_mul(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_mul(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpMatrixTimesScalar:
                 case SpvOpVectorTimesMatrix:
                 case SpvOpMatrixTimesVector:
                 case SpvOpMatrixTimesMatrix:
-                    ssir_result = ssir_build_mat_mul(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_mat_mul(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFDiv:
                 case SpvOpSDiv:
                 case SpvOpUDiv:
-                    ssir_result = ssir_build_div(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_div(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFRem:
                 case SpvOpSRem:
                 case SpvOpUMod:
-                    ssir_result = ssir_build_mod(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_mod(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 // Bitwise
                 case SpvOpBitwiseAnd:
-                    ssir_result = ssir_build_bit_and(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_bit_and(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpBitwiseOr:
-                    ssir_result = ssir_build_bit_or(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_bit_or(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpBitwiseXor:
-                    ssir_result = ssir_build_bit_xor(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_bit_xor(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpShiftLeftLogical:
-                    ssir_result = ssir_build_shl(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_shl(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpShiftRightArithmetic:
-                    ssir_result = ssir_build_shr(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_shr(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpShiftRightLogical:
-                    ssir_result = ssir_build_shr_logical(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_shr_logical(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 // Comparison
                 case SpvOpFOrdEqual:
                 case SpvOpIEqual:
-                    ssir_result = ssir_build_eq(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_eq(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFOrdNotEqual:
                 case SpvOpINotEqual:
-                    ssir_result = ssir_build_ne(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_ne(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFOrdLessThan:
                 case SpvOpSLessThan:
                 case SpvOpULessThan:
-                    ssir_result = ssir_build_lt(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_lt(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFOrdLessThanEqual:
                 case SpvOpSLessThanEqual:
                 case SpvOpULessThanEqual:
-                    ssir_result = ssir_build_le(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_le(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFOrdGreaterThan:
                 case SpvOpSGreaterThan:
                 case SpvOpUGreaterThan:
-                    ssir_result = ssir_build_gt(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_gt(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpFOrdGreaterThanEqual:
                 case SpvOpSGreaterThanEqual:
                 case SpvOpUGreaterThanEqual:
-                    ssir_result = ssir_build_ge(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_ge(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 // Logical
                 case SpvOpLogicalAnd:
-                    ssir_result = ssir_build_and(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_and(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 case SpvOpLogicalOr:
-                    ssir_result = ssir_build_or(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a, ssir_b);
+                    ssir_result = ssir_build_or(WL_BCTX(l), ssir_type, ssir_a, ssir_b);
                     break;
                 // Dot product - use builtin
                 case SpvOpDot: {
                     uint32_t args[2] = {ssir_a, ssir_b};
-                    ssir_result = ssir_build_builtin(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type,
+                    ssir_result = ssir_build_builtin(WL_BCTX(l), ssir_type,
                         SSIR_BUILTIN_DOT, args, 2);
                     break;
                 }
@@ -2268,27 +2246,22 @@ static int emit_unary_op(WgslLower *l, SpvOp op, uint32_t result_type, uint32_t 
             switch (op) {
                 case SpvOpFNegate:
                 case SpvOpSNegate:
-                    ssir_result = ssir_build_neg(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a);
+                    ssir_result = ssir_build_neg(WL_BCTX(l), ssir_type, ssir_a);
                     break;
                 case SpvOpLogicalNot:
-                    ssir_result = ssir_build_not(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a);
+                    ssir_result = ssir_build_not(WL_BCTX(l), ssir_type, ssir_a);
                     break;
                 case SpvOpNot:
-                    ssir_result = ssir_build_bit_not(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a);
+                    ssir_result = ssir_build_bit_not(WL_BCTX(l), ssir_type, ssir_a);
                     break;
                 case SpvOpConvertSToF:
                 case SpvOpConvertUToF:
                 case SpvOpConvertFToS:
                 case SpvOpConvertFToU:
-                    ssir_result = ssir_build_convert(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a);
+                    ssir_result = ssir_build_convert(WL_BCTX(l), ssir_type, ssir_a);
                     break;
                 case SpvOpBitcast:
-                    ssir_result = ssir_build_bitcast(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_type, ssir_a);
+                    ssir_result = ssir_build_bitcast(WL_BCTX(l), ssir_type, ssir_a);
                     break;
                 default:
                     break;
@@ -2329,8 +2302,7 @@ static int emit_composite_construct(WgslLower *l, uint32_t result_type, uint32_t
             if (!ssir_components[i]) have_all = 0;
         }
         if (have_all && ssir_type && count <= 16) {
-            uint32_t ssir_result = ssir_build_construct(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, ssir_type,
+            uint32_t ssir_result = ssir_build_construct(WL_BCTX(l), ssir_type,
                 ssir_components, (uint32_t)count);
             ssir_id_map_set(l, id, ssir_result);
         }
@@ -2362,8 +2334,7 @@ static int emit_composite_extract(WgslLower *l, uint32_t result_type, uint32_t *
         uint32_t ssir_composite = ssir_id_map_get(l, composite);
         uint32_t ssir_type = spv_type_to_ssir(l, result_type);
         if (ssir_composite && ssir_type) {
-            uint32_t ssir_result = ssir_build_extract(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, ssir_type,
+            uint32_t ssir_result = ssir_build_extract(WL_BCTX(l), ssir_type,
                 ssir_composite, indices[0]);
             ssir_id_map_set(l, id, ssir_result);
         }
@@ -2395,8 +2366,7 @@ static int emit_select(WgslLower *l, uint32_t result_type, uint32_t *out_id, uin
         uint32_t ssir_type = spv_type_to_ssir(l, result_type);
         if (ssir_cond && ssir_true && ssir_false && ssir_type) {
             uint32_t args[3] = {ssir_cond, ssir_true, ssir_false};
-            uint32_t ssir_result = ssir_build_builtin(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, ssir_type,
+            uint32_t ssir_result = ssir_build_builtin(WL_BCTX(l), ssir_type,
                 SSIR_BUILTIN_SELECT, args, 3);
             ssir_id_map_set(l, id, ssir_result);
         }
@@ -2417,8 +2387,7 @@ static int emit_branch(WgslLower *l, uint32_t target) {
     if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
         uint32_t ssir_target = ssir_id_map_get(l, target);
         if (ssir_target) {
-            ssir_build_branch(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, ssir_target);
+            ssir_build_branch(WL_BCTX(l), ssir_target);
         }
     }
 
@@ -2546,8 +2515,7 @@ static int emit_ext_inst(WgslLower *l, uint32_t result_type, uint32_t *out_id, u
                 if (!ssir_args[i]) have_all = 0;
             }
             if (have_all && ssir_type) {
-                uint32_t ssir_result = ssir_build_builtin(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_type,
+                uint32_t ssir_result = ssir_build_builtin(WL_BCTX(l), ssir_type,
                     ssir_builtin, ssir_args, (uint32_t)count);
                 ssir_id_map_set(l, id, ssir_result);
             }
@@ -2975,11 +2943,9 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
                 uint32_t ssir_idx = ssir_const_u32(l->ssir, l->imm_map[i].member_index);
                 uint32_t ssir_member_ptr = ssir_type_ptr(l->ssir,
                     l->imm_map[i].ssir_member_type, SSIR_ADDR_PUSH_CONSTANT);
-                uint32_t ssir_chain = ssir_build_access(l->ssir,
-                    l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+                uint32_t ssir_chain = ssir_build_access(WL_BCTX(l),
                     ssir_member_ptr, l->imm_map[i].ssir_pc_var, &ssir_idx, 1);
-                uint32_t ssir_loaded = ssir_build_load(l->ssir,
-                    l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+                uint32_t ssir_loaded = ssir_build_load(WL_BCTX(l),
                     l->imm_map[i].ssir_member_type, ssir_chain);
                 ssir_id_map_set(l, loaded, ssir_loaded);
             }
@@ -3633,8 +3599,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_samp && ssir_coord && ssir_result_type) {
-                uint32_t ssir_result = ssir_build_tex_sample(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id,
+                uint32_t ssir_result = ssir_build_tex_sample(WL_BCTX(l),
                     ssir_result_type, ssir_tex, ssir_samp,
                     ssir_coord);
                 ssir_id_map_set(l, result_id, ssir_result);
@@ -3686,8 +3651,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_ref = ssir_id_map_get(l, depth_ref.id);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_samp && ssir_coord && ssir_ref && ssir_result_type) {
-                uint32_t ssir_result = ssir_build_tex_sample_cmp(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                uint32_t ssir_result = ssir_build_tex_sample_cmp(WL_BCTX(l), ssir_result_type, ssir_tex, ssir_samp,
                     ssir_coord, ssir_ref);
                 ssir_id_map_set(l, result_id, ssir_result);
             }
@@ -3742,8 +3706,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_lod = ssir_id_map_get(l, lod_zero);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_samp && ssir_coord && ssir_ref && ssir_result_type) {
-                uint32_t ssir_result = ssir_build_tex_sample_cmp_level(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                uint32_t ssir_result = ssir_build_tex_sample_cmp_level(WL_BCTX(l), ssir_result_type, ssir_tex, ssir_samp,
                     ssir_coord, ssir_ref, ssir_lod ? ssir_lod : 0);
                 ssir_id_map_set(l, result_id, ssir_result);
             }
@@ -3786,8 +3749,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                 uint32_t ssir_level = ssir_id_map_get(l, level.id);
                 uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
                 if (ssir_tex && ssir_coord && ssir_result_type) {
-                    uint32_t ssir_result = ssir_build_tex_load(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_coord,
+                    uint32_t ssir_result = ssir_build_tex_load(WL_BCTX(l), ssir_result_type, ssir_tex, ssir_coord,
                         ssir_level ? ssir_level : 0);
                     ssir_id_map_set(l, result_id, ssir_result);
                 }
@@ -3804,8 +3766,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                 uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
                 uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
                 if (ssir_tex && ssir_coord && ssir_result_type) {
-                    uint32_t ssir_result = ssir_build_tex_load(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_coord, 0);
+                    uint32_t ssir_result = ssir_build_tex_load(WL_BCTX(l), ssir_result_type, ssir_tex, ssir_coord, 0);
                     ssir_id_map_set(l, result_id, ssir_result);
                 }
             }
@@ -3855,8 +3816,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_level = ssir_id_map_get(l, level.id);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_samp && ssir_coord && ssir_level && ssir_result_type) {
-                uint32_t ssir_result = ssir_build_tex_sample_level(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                uint32_t ssir_result = ssir_build_tex_sample_level(WL_BCTX(l), ssir_result_type, ssir_tex, ssir_samp,
                     ssir_coord, ssir_level);
                 ssir_id_map_set(l, result_id, ssir_result);
             }
@@ -3906,8 +3866,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_bias = ssir_id_map_get(l, bias.id);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_samp && ssir_coord && ssir_bias && ssir_result_type) {
-                uint32_t ssir_result = ssir_build_tex_sample_bias(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                uint32_t ssir_result = ssir_build_tex_sample_bias(WL_BCTX(l), ssir_result_type, ssir_tex, ssir_samp,
                     ssir_coord, ssir_bias);
                 ssir_id_map_set(l, result_id, ssir_result);
             }
@@ -3960,8 +3919,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_ddy = ssir_id_map_get(l, ddy.id);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_samp && ssir_coord && ssir_ddx && ssir_ddy && ssir_result_type) {
-                uint32_t ssir_result = ssir_build_tex_sample_grad(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex, ssir_samp,
+                uint32_t ssir_result = ssir_build_tex_sample_grad(WL_BCTX(l), ssir_result_type, ssir_tex, ssir_samp,
                     ssir_coord, ssir_ddx, ssir_ddy);
                 ssir_id_map_set(l, result_id, ssir_result);
             }
@@ -3994,8 +3952,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
             uint32_t ssir_val = ssir_id_map_get(l, value.id);
             if (ssir_tex && ssir_coord && ssir_val) {
-                ssir_build_tex_store(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_tex, ssir_coord, ssir_val);
+                ssir_build_tex_store(WL_BCTX(l), ssir_tex, ssir_coord, ssir_val);
             }
         }
 
@@ -4027,8 +3984,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_result_type) {
-                uint32_t ssir_result = ssir_build_tex_query_samples(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex);
+                uint32_t ssir_result = ssir_build_tex_query_samples(WL_BCTX(l), ssir_result_type, ssir_tex);
                 ssir_id_map_set(l, result_id, ssir_result);
             }
         }
@@ -4100,8 +4056,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                 uint32_t ssir_level = ssir_id_map_get(l, level.id);
                 uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
                 if (ssir_tex && ssir_result_type) {
-                    uint32_t ssir_result = ssir_build_tex_size(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex,
+                    uint32_t ssir_result = ssir_build_tex_size(WL_BCTX(l), ssir_result_type, ssir_tex,
                         ssir_level ? ssir_level : 0);
                     ssir_id_map_set(l, result_id, ssir_result);
                 }
@@ -4120,8 +4075,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                 uint32_t ssir_level = ssir_id_map_get(l, level_zero);
                 uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
                 if (ssir_tex && ssir_result_type) {
-                    uint32_t ssir_result = ssir_build_tex_size(l->ssir, l->fn_ctx.ssir_func_id,
-                        l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex,
+                    uint32_t ssir_result = ssir_build_tex_size(WL_BCTX(l), ssir_result_type, ssir_tex,
                         ssir_level ? ssir_level : 0);
                     ssir_id_map_set(l, result_id, ssir_result);
                 }
@@ -4154,8 +4108,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_result_type) {
-                uint32_t ssir_result = ssir_build_tex_query_levels(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_result_type, ssir_tex);
+                uint32_t ssir_result = ssir_build_tex_query_levels(WL_BCTX(l), ssir_result_type, ssir_tex);
                 ssir_id_map_set(l, result_id, ssir_result);
             }
         }
@@ -4168,24 +4121,21 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
     // Barrier builtins
     if (strcmp(callee_name, "storageBarrier") == 0) {
         if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
-            ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, SSIR_BARRIER_STORAGE);
+            ssir_build_barrier(WL_BCTX(l), SSIR_BARRIER_STORAGE);
         }
         r.id = 1; // non-zero to indicate success (void return)
         return r;
     }
     if (strcmp(callee_name, "workgroupBarrier") == 0) {
         if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
-            ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, SSIR_BARRIER_WORKGROUP);
+            ssir_build_barrier(WL_BCTX(l), SSIR_BARRIER_WORKGROUP);
         }
         r.id = 1;
         return r;
     }
     if (strcmp(callee_name, "textureBarrier") == 0) {
         if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
-            ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
-                l->fn_ctx.ssir_block_id, SSIR_BARRIER_IMAGE);
+            ssir_build_barrier(WL_BCTX(l), SSIR_BARRIER_IMAGE);
         }
         r.id = 1;
         return r;
@@ -4235,13 +4185,10 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_ptr = ssir_id_map_get(l, ptr.id);
             uint32_t ssir_type = spv_type_to_ssir(l, load_type);
             if (ssir_ptr && ssir_type) {
-                ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, SSIR_BARRIER_WORKGROUP);
-                uint32_t ssir_loaded = ssir_build_load(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id,
+                ssir_build_barrier(WL_BCTX(l), SSIR_BARRIER_WORKGROUP);
+                uint32_t ssir_loaded = ssir_build_load(WL_BCTX(l),
                     ssir_type, ssir_ptr);
-                ssir_build_barrier(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, SSIR_BARRIER_WORKGROUP);
+                ssir_build_barrier(WL_BCTX(l), SSIR_BARRIER_WORKGROUP);
                 ssir_id_map_set(l, result_id, ssir_loaded);
             }
         }
@@ -4419,8 +4366,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             uint32_t ssir_cmp = cmp_id ? ssir_id_map_get(l, cmp_id) : 0;
             uint32_t ssir_type = spv_type_to_ssir(l, result_type);
             if (ssir_ptr && ssir_type) {
-                uint32_t ssir_result = ssir_build_atomic_ex(l->ssir, l->fn_ctx.ssir_func_id,
-                    l->fn_ctx.ssir_block_id, ssir_type, aop, ssir_ptr,
+                uint32_t ssir_result = ssir_build_atomic_ex(WL_BCTX(l), ssir_type, aop, ssir_ptr,
                     ssir_val, ssir_cmp, mem_scope, SSIR_SEMANTICS_RELAXED);
                 if (r.id && r.id != 1) {
                     ssir_id_map_set(l, r.id, ssir_result);
@@ -4847,8 +4793,7 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
                         for (int i = 0; i < swizzle_len; ++i) {
                             ssir_indices[i] = (uint32_t)indices[i];
                         }
-                        uint32_t ssir_result = ssir_build_shuffle(l->ssir, l->fn_ctx.ssir_func_id,
-                            l->fn_ctx.ssir_block_id, ssir_type,
+                        uint32_t ssir_result = ssir_build_shuffle(WL_BCTX(l), ssir_type,
                             ssir_obj, ssir_obj,
                             ssir_indices, (uint32_t)swizzle_len);
                         ssir_id_map_set(l, result_id, ssir_result);
@@ -5324,7 +5269,7 @@ static int lower_if_stmt(WgslLower *l, const WgslAstNode *node) {
         uint32_t ssir_cond = ssir_id_map_get(l, cond.id);
         uint32_t ssir_false_target = ssir_else_block ? ssir_else_block : ssir_merge_block;
         if (ssir_cond) {
-            ssir_build_branch_cond_merge(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+            ssir_build_branch_cond_merge(WL_BCTX(l),
                 ssir_cond, ssir_then_block, ssir_false_target, ssir_merge_block);
         }
     }
@@ -5833,7 +5778,7 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
 
     /* Emit SSIR selection merge + switch */
     if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
-        ssir_build_selection_merge(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id, ssir_merge);
+        ssir_build_selection_merge(WL_BCTX(l), ssir_merge);
 
         uint32_t ssir_sel = ssir_id_map_get(l, sel.id);
         if (ssir_sel) {
@@ -5856,7 +5801,7 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
                     }
                 }
             }
-            ssir_build_switch(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+            ssir_build_switch(WL_BCTX(l),
                 ssir_sel, ssir_default, ssir_cases, (uint32_t)literal_count);
             WGSL_FREE(ssir_cases);
         }
@@ -5924,7 +5869,7 @@ static int lower_discard_stmt(WgslLower *l) {
     emit_op(wb, SpvOpKill, 1);
 
     if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
-        ssir_build_discard(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id);
+        ssir_build_discard(WL_BCTX(l));
     }
 
     l->fn_ctx.has_returned = 1;

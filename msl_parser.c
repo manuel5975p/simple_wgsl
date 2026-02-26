@@ -6,18 +6,10 @@
  * for round-trip testing, plus general MSL compute/vertex/fragment shaders.
  */
 
-#include "simple_wgsl.h"
-#include <stdio.h>
+#include "simple_wgsl_internal.h"
 #include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdbool.h>
-#include <stdarg.h>
 #include <math.h>
-
-/* ============================================================================
- * Memory Allocation
- * ============================================================================ */
 
 #ifndef MSL_MALLOC
 #define MSL_MALLOC(sz) calloc(1, (sz))
@@ -29,23 +21,13 @@
 #define MSL_FREE(p) free((p))
 #endif
 
-/* ============================================================================
- * String Utilities
- * ============================================================================ */
-
-// s nonnull
+static void *sw_msl_alloc(size_t sz) { return MSL_MALLOC(sz); }
+static void *sw_msl_realloc(void *p, size_t sz) { return MSL_REALLOC(p, sz); }
 static char *msl_strndup(const char *s, size_t n) {
-    wgsl_compiler_assert(s != NULL, "msl_strndup: s is NULL");
-    char *r = (char *)MSL_MALLOC(n + 1);
-    if (!r) return NULL;
-    memcpy(r, s, n);
-    r[n] = '\0';
-    return r;
+    return sw_strndup(s, n, sw_msl_alloc);
 }
-
-// s nullable
 static char *msl_strdup(const char *s) {
-    return s ? msl_strndup(s, strlen(s)) : NULL;
+    return sw_strdup(s, sw_msl_alloc);
 }
 
 /* ============================================================================
@@ -544,10 +526,7 @@ static void mp_expect(MslParser *p, MslTokType t) {
 // p nonnull
 static void mp_add_iface(MslParser *p, uint32_t gid) {
     wgsl_compiler_assert(p != NULL, "mp_add_iface: p is NULL");
-    if (p->iface_count >= p->iface_cap) {
-        p->iface_cap = p->iface_cap ? p->iface_cap * 2 : 16;
-        p->iface = (uint32_t *)MSL_REALLOC(p->iface, p->iface_cap * sizeof(uint32_t));
-    }
+    SW_GROW(p->iface, p->iface_count, p->iface_cap, uint32_t, sw_msl_realloc);
     p->iface[p->iface_count++] = gid;
 }
 
@@ -559,10 +538,7 @@ static void mp_add_sym(MslParser *p, const char *name, uint32_t id,
     bool is_out, bool is_in) {
     wgsl_compiler_assert(p != NULL, "mp_add_sym: p is NULL");
     wgsl_compiler_assert(name != NULL, "mp_add_sym: name is NULL");
-    if (p->sym_count >= p->sym_cap) {
-        p->sym_cap = p->sym_cap ? p->sym_cap * 2 : 32;
-        p->syms = (MslSym *)MSL_REALLOC(p->syms, p->sym_cap * sizeof(MslSym));
-    }
+    SW_GROW(p->syms, p->sym_count, p->sym_cap, MslSym, sw_msl_realloc);
     MslSym *s = &p->syms[p->sym_count++];
     s->name = msl_strdup(name);
     s->id = id;
@@ -621,10 +597,7 @@ static MslStructDef *mp_find_struct(MslParser *p, const char *name) {
 static MslStructDef *mp_add_struct(MslParser *p, const char *name) {
     wgsl_compiler_assert(p != NULL, "mp_add_struct: p is NULL");
     wgsl_compiler_assert(name != NULL, "mp_add_struct: name is NULL");
-    if (p->struct_count >= p->struct_cap) {
-        p->struct_cap = p->struct_cap ? p->struct_cap * 2 : 8;
-        p->structs = (MslStructDef *)MSL_REALLOC(p->structs, p->struct_cap * sizeof(MslStructDef));
-    }
+    SW_GROW(p->structs, p->struct_count, p->struct_cap, MslStructDef, sw_msl_realloc);
     MslStructDef *sd = &p->structs[p->struct_count++];
     memset(sd, 0, sizeof(*sd));
     sd->name = msl_strdup(name);

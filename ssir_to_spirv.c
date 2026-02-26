@@ -2,12 +2,9 @@
  * SSIR to SPIR-V Converter - Implementation
  */
 
-#include "simple_wgsl.h"
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
 #include <spirv/unified1/spirv.h>
 #include <spirv/unified1/GLSL.std.450.h>
+#include "simple_wgsl_internal.h"
 
 /* ============================================================================
  * Memory Allocation
@@ -575,21 +572,7 @@ static uint32_t sts_emit_type_struct(Ctx *c, uint32_t *member_types, uint32_t me
     return id;
 }
 
-static SpvStorageClass addr_space_to_storage_class(SsirAddressSpace space) {
-    switch (space) {
-        case SSIR_ADDR_FUNCTION: return SpvStorageClassFunction;
-        case SSIR_ADDR_PRIVATE: return SpvStorageClassPrivate;
-        case SSIR_ADDR_WORKGROUP: return SpvStorageClassWorkgroup;
-        case SSIR_ADDR_UNIFORM: return SpvStorageClassUniform;
-        case SSIR_ADDR_UNIFORM_CONSTANT: return SpvStorageClassUniformConstant;
-        case SSIR_ADDR_STORAGE: return SpvStorageClassStorageBuffer;
-        case SSIR_ADDR_INPUT: return SpvStorageClassInput;
-        case SSIR_ADDR_OUTPUT: return SpvStorageClassOutput;
-        case SSIR_ADDR_PUSH_CONSTANT: return SpvStorageClassPushConstant;
-        case SSIR_ADDR_PHYSICAL_STORAGE_BUFFER: return SpvStorageClassPhysicalStorageBuffer;
-        default: return SpvStorageClassFunction;
-    }
-}
+#define addr_space_to_storage_class sw_ssir_addr_space_to_spv
 
 // c nonnull
 static uint32_t sts_emit_type_pointer(Ctx *c, SpvStorageClass sc, uint32_t pointee) {
@@ -652,21 +635,7 @@ static uint32_t sts_emit_type_sampler(Ctx *c) {
     return id;
 }
 
-static SpvDim texture_dim_to_spv(SsirTextureDim dim) {
-    switch (dim) {
-        case SSIR_TEX_1D: return SpvDim1D;
-        case SSIR_TEX_2D: return SpvDim2D;
-        case SSIR_TEX_3D: return SpvDim3D;
-        case SSIR_TEX_CUBE: return SpvDimCube;
-        case SSIR_TEX_2D_ARRAY: return SpvDim2D;
-        case SSIR_TEX_CUBE_ARRAY: return SpvDimCube;
-        case SSIR_TEX_MULTISAMPLED_2D: return SpvDim2D;
-        case SSIR_TEX_1D_ARRAY: return SpvDim1D;
-        case SSIR_TEX_BUFFER: return SpvDimBuffer;
-        case SSIR_TEX_MULTISAMPLED_2D_ARRAY:
-        default: return SpvDim2D;
-    }
-}
+#define texture_dim_to_spv sw_ssir_tex_dim_to_spv
 
 // c nonnull
 static uint32_t sts_emit_type_image(Ctx *c, SsirTextureDim dim, uint32_t sampled_type,
@@ -1052,37 +1021,7 @@ static uint32_t sts_emit_constant(Ctx *c, const SsirConstant *cnst) {
  * Global Variable Emission
  * ============================================================================ */
 
-static SpvBuiltIn builtin_var_to_spv(SsirBuiltinVar b) {
-    switch (b) {
-        case SSIR_BUILTIN_VERTEX_INDEX: return SpvBuiltInVertexIndex;
-        case SSIR_BUILTIN_INSTANCE_INDEX: return SpvBuiltInInstanceIndex;
-        case SSIR_BUILTIN_POSITION: return SpvBuiltInPosition;
-        case SSIR_BUILTIN_FRONT_FACING: return SpvBuiltInFrontFacing;
-        case SSIR_BUILTIN_FRAG_DEPTH: return SpvBuiltInFragDepth;
-        case SSIR_BUILTIN_SAMPLE_INDEX: return SpvBuiltInSampleId;
-        case SSIR_BUILTIN_SAMPLE_MASK: return SpvBuiltInSampleMask;
-        case SSIR_BUILTIN_LOCAL_INVOCATION_ID: return SpvBuiltInLocalInvocationId;
-        case SSIR_BUILTIN_LOCAL_INVOCATION_INDEX: return SpvBuiltInLocalInvocationIndex;
-        case SSIR_BUILTIN_GLOBAL_INVOCATION_ID: return SpvBuiltInGlobalInvocationId;
-        case SSIR_BUILTIN_WORKGROUP_ID: return SpvBuiltInWorkgroupId;
-        case SSIR_BUILTIN_NUM_WORKGROUPS: return SpvBuiltInNumWorkgroups;
-        case SSIR_BUILTIN_POINT_SIZE: return SpvBuiltInPointSize;
-        case SSIR_BUILTIN_CLIP_DISTANCE: return SpvBuiltInClipDistance;
-        case SSIR_BUILTIN_CULL_DISTANCE: return SpvBuiltInCullDistance;
-        case SSIR_BUILTIN_LAYER: return SpvBuiltInLayer;
-        case SSIR_BUILTIN_VIEWPORT_INDEX: return SpvBuiltInViewportIndex;
-        case SSIR_BUILTIN_FRAG_COORD: return SpvBuiltInFragCoord;
-        case SSIR_BUILTIN_HELPER_INVOCATION: return SpvBuiltInHelperInvocation;
-        case SSIR_BUILTIN_PRIMITIVE_ID: return SpvBuiltInPrimitiveId;
-        case SSIR_BUILTIN_BASE_VERTEX: return SpvBuiltInBaseVertex;
-        case SSIR_BUILTIN_BASE_INSTANCE: return SpvBuiltInBaseInstance;
-        case SSIR_BUILTIN_SUBGROUP_SIZE: return SpvBuiltInSubgroupSize;
-        case SSIR_BUILTIN_SUBGROUP_INVOCATION_ID: return SpvBuiltInSubgroupLocalInvocationId;
-        case SSIR_BUILTIN_SUBGROUP_ID: return SpvBuiltInSubgroupId;
-        case SSIR_BUILTIN_NUM_SUBGROUPS: return SpvBuiltInNumSubgroups;
-        default: return SpvBuiltInMax;
-    }
-}
+#define builtin_var_to_spv sw_ssir_builtin_to_spv
 
 // c nonnull, g nonnull
 static uint32_t sts_emit_global_var(Ctx *c, const SsirGlobalVar *g) {

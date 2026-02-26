@@ -1,39 +1,17 @@
 // BEGIN FILE wgsl_parser.c
-#include "simple_wgsl.h"
-#include <stdio.h>
+#include "simple_wgsl_internal.h"
 #include <ctype.h>
-#include <stdlib.h>
-#include <string.h>
 #include <stdbool.h>
 
-// s nonnull
+static void *sw_node_alloc(size_t sz) { return NODE_MALLOC(sz); }
 static char *wgsl_strndup(const char *s, size_t n) {
-    wgsl_compiler_assert(s != NULL, "wgsl_strndup: s is NULL");
-    char *r = (char *)NODE_MALLOC(n + 1);
-    if (!r)
-        return NULL;
-    memcpy(r, s, n);
-    r[n] = '\0';
-    return r;
+    return sw_strndup(s, n, sw_node_alloc);
 }
-// s allowed to be NULL
 static char *wgsl_strdup(const char *s) {
-    return wgsl_strndup(s, s ? strlen(s) : 0);
+    return sw_strdup(s, sw_node_alloc);
 }
-// p allowed to be NULL
-// cap nonnull
 static void *grow_ptr_array(void *p, int needed, int *cap, size_t elem) {
-    wgsl_compiler_assert(cap != NULL, "grow_ptr_array: cap is NULL");
-    if (needed <= *cap)
-        return p;
-    int nc = (*cap == 0) ? 4 : (*cap * 2);
-    while (nc < needed)
-        nc *= 2;
-    void *np = NODE_REALLOC(p, (size_t)nc * elem);
-    if (!np)
-        return p;
-    *cap = nc;
-    return np;
+    return sw_grow_array(p, needed, cap, elem, realloc);
 }
 // arr nonnull
 // count nonnull
