@@ -182,10 +182,13 @@ struct CUmod_st {
 
 typedef struct CuvkGlobal {
     bool                initialized;
+    bool                has_validation;
+    bool                exiting;
     VkInstance          instance;
     VkPhysicalDevice    physical_devices[CUVK_MAX_PHYSICAL_DEVICES];
     uint32_t            physical_device_count;
     struct CUctx_st    *current_ctx;
+    VkDebugUtilsMessengerEXT debug_messenger;
 } CuvkGlobal;
 
 extern CuvkGlobal g_cuvk;

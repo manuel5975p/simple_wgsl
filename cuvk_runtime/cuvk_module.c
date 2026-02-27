@@ -547,16 +547,26 @@ CUresult CUDAAPI cuModuleUnload(CUmodule hmod)
         return CUDA_ERROR_INVALID_VALUE;
 
     struct CUctx_st *ctx = hmod->ctx;
-    if (!ctx)
-        return CUDA_ERROR_INVALID_CONTEXT;
 
-    /* Wait for device idle before destroying resources */
+    if (!ctx || !ctx->device ||
+        (g_cuvk.exiting && g_cuvk.has_validation)) {
+        for (uint32_t i = 0; i < hmod->function_count; i++) {
+            free(hmod->functions[i].pipeline_cache);
+            free(hmod->functions[i].name);
+            free(hmod->functions[i].params);
+        }
+        free(hmod->functions);
+        if (hmod->ssir) ssir_module_destroy(hmod->ssir);
+        if (hmod->spirv_words) ssir_to_spirv_free(hmod->spirv_words);
+        free(hmod);
+        return CUDA_SUCCESS;
+    }
+
     vkDeviceWaitIdle(ctx->device);
 
     /* Track whether we've already destroyed the shared shader module */
     VkShaderModule shared_shader = VK_NULL_HANDLE;
 
-    /* Destroy each function's Vulkan resources */
     for (uint32_t i = 0; i < hmod->function_count; i++) {
         struct CUfunc_st *f = &hmod->functions[i];
 
@@ -568,15 +578,12 @@ CUresult CUDAAPI cuModuleUnload(CUmodule hmod)
         }
         free(f->pipeline_cache);
 
-        /* Destroy pipeline layout */
         if (f->pipeline_layout)
             vkDestroyPipelineLayout(ctx->device, f->pipeline_layout, NULL);
 
-        /* Destroy descriptor set layout */
         if (f->desc_layout)
             vkDestroyDescriptorSetLayout(ctx->device, f->desc_layout, NULL);
 
-        /* Destroy shader module (only once, since all functions share it) */
         if (f->shader_module && f->shader_module != shared_shader) {
             shared_shader = f->shader_module;
             vkDestroyShaderModule(ctx->device, f->shader_module, NULL);
