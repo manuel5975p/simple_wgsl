@@ -1,0 +1,8 @@
+libcublas.so.13 {
+    global:
+        cublas*;
+        cu*;
+        __cuda*;
+    local:
+        *;
+};

@@ -165,6 +165,7 @@ set(NVCC_TESTS
     37_compound_math_chains
     38_extended_math
     39_graph_api
+    40_cublas_basic
 )
 
 set(NVCC_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc)
@@ -172,15 +173,20 @@ file(MAKE_DIRECTORY ${NVCC_BIN_DIR})
 
 # Tests that use CUDA driver API and need -lcuda
 set(NVCC_DRIVER_API_TESTS 39_graph_api)
+# Tests that use cuBLAS and need -lcublas
+set(NVCC_CUBLAS_TESTS 40_cublas_basic)
 
 set(NVCC_BINARIES "")
 foreach(test ${NVCC_TESTS})
     set(CU_SRC ${CMAKE_CURRENT_SOURCE_DIR}/nvcc/${test}.cu)
     set(NVCC_OUT ${NVCC_BIN_DIR}/${test})
-    # Check if this test needs driver API linking
+    # Check if this test needs extra linking
     set(_extra_flags "")
     if(test IN_LIST NVCC_DRIVER_API_TESTS)
         set(_extra_flags -lcuda)
+    endif()
+    if(test IN_LIST NVCC_CUBLAS_TESTS)
+        set(_extra_flags ${_extra_flags} -lcublas)
     endif()
     add_custom_command(
         OUTPUT ${NVCC_OUT}

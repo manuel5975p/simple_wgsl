@@ -235,11 +235,34 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
     /* Check for fatbin container (magic 0xBA55ED50) */
     if (magic == 0xBA55ED50) {
         fatbin_ptx = cuvk_fatbin_extract_ptx(image, NULL);
-        if (!fatbin_ptx)
-            return CUDA_ERROR_INVALID_IMAGE;
+        if (!fatbin_ptx) {
+            /* Fatbin has no PTX section (e.g. binary with no __global__
+             * kernels). Create an empty module — not an error. */
+            CUVK_LOG("[cuvk] fatbin has no PTX, creating empty module\n");
+            struct CUmod_st *mod = (struct CUmod_st *)calloc(1, sizeof(*mod));
+            if (!mod) return CUDA_ERROR_OUT_OF_MEMORY;
+            mod->ctx = ctx;
+            *module = mod;
+            return CUDA_SUCCESS;
+        }
         ptx_text = fatbin_ptx;
     } else {
         ptx_text = (const char *)image;
+    }
+
+    /* If fatbin-sourced PTX has no kernel/function entries, create an empty
+     * module. This happens with nvcc binaries that have no __global__ kernels
+     * (e.g. cuBLAS-only programs). Only applies to fatbin PTX, not raw PTX
+     * strings passed directly to cuModuleLoadData. */
+    if (fatbin_ptx &&
+        !strstr(ptx_text, ".entry") && !strstr(ptx_text, ".func")) {
+        CUVK_LOG("[cuvk] PTX has no .entry/.func, creating empty module\n");
+        free(fatbin_ptx);
+        struct CUmod_st *mod = (struct CUmod_st *)calloc(1, sizeof(*mod));
+        if (!mod) return CUDA_ERROR_OUT_OF_MEMORY;
+        mod->ctx = ctx;
+        *module = mod;
+        return CUDA_SUCCESS;
     }
 
     /* Determine if BDA mode should be used */

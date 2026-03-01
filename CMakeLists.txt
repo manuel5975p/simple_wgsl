@@ -122,7 +122,19 @@ if(WGSL_BUILD_FUZZ)
     add_subdirectory(fuzz)
 endif()
 
-find_package(Vulkan QUIET)
-if(Vulkan_FOUND)
-  add_subdirectory(cuvk_runtime)
+if(WIN32)
+    # Cross-compilation: always build cuvk_runtime if Vulkan lib provided
+    if(VULKAN_LIBRARY)
+        add_subdirectory(cuvk_runtime)
+
+        # Windows test executable
+        add_executable(win_test tests/win_test.c)
+        target_link_libraries(win_test cuvk_runtime_shared m)
+        target_include_directories(win_test PRIVATE ${CMAKE_SOURCE_DIR})
+    endif()
+else()
+    find_package(Vulkan QUIET)
+    if(Vulkan_FOUND)
+        add_subdirectory(cuvk_runtime)
+    endif()
 endif()

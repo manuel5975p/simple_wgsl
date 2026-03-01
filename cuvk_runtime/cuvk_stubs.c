@@ -1623,9 +1623,13 @@ static void tools_get_buffer2(void **out_ptr, size_t *out_size) {
  * Integrity check (HMAC-MD2) - ported from ZLUDA dark_api/src/lib.rs
  * ============================================================================ */
 
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <pthread.h>
+#endif
 #include <time.h>
 
 static const uint8_t MIXING_TABLE[256] = {
@@ -1765,8 +1769,13 @@ static void integrity_compute(uint32_t version, uint64_t unix_seconds,
     IntegrityPass3Input p3 = {
         .driver_version = (uint32_t)driver_ver_int,
         .version = version,
+#ifdef _WIN32
+        .current_process = (uint32_t)GetCurrentProcessId(),
+        .current_thread = (uint32_t)GetCurrentThreadId(),
+#else
         .current_process = (uint32_t)getpid(),
         .current_thread = (uint32_t)(uintptr_t)pthread_self(),
+#endif
         .cudart_table = cudart_table,
         .integrity_check_table = integrity_table,
         .fn_address = fn_address,
