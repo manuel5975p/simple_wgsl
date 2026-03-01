@@ -164,18 +164,27 @@ set(NVCC_TESTS
     36_fast_intrinsics_stress
     37_compound_math_chains
     38_extended_math
+    39_graph_api
 )
 
 set(NVCC_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc)
 file(MAKE_DIRECTORY ${NVCC_BIN_DIR})
 
+# Tests that use CUDA driver API and need -lcuda
+set(NVCC_DRIVER_API_TESTS 39_graph_api)
+
 set(NVCC_BINARIES "")
 foreach(test ${NVCC_TESTS})
     set(CU_SRC ${CMAKE_CURRENT_SOURCE_DIR}/nvcc/${test}.cu)
     set(NVCC_OUT ${NVCC_BIN_DIR}/${test})
+    # Check if this test needs driver API linking
+    set(_extra_flags "")
+    if(test IN_LIST NVCC_DRIVER_API_TESTS)
+        set(_extra_flags -lcuda)
+    endif()
     add_custom_command(
         OUTPUT ${NVCC_OUT}
-        COMMAND ${NVCC_EXECUTABLE} -o ${NVCC_OUT} ${CU_SRC} -arch=${NVCC_SM}
+        COMMAND ${NVCC_EXECUTABLE} -o ${NVCC_OUT} ${CU_SRC} -arch=${NVCC_SM} ${_extra_flags}
         DEPENDS ${CU_SRC}
         COMMENT "nvcc: ${test}.cu -> ${test}"
         VERBATIM
@@ -194,3 +203,46 @@ foreach(test ${NVCC_TESTS})
 endforeach()
 
 add_custom_target(e2e_nvcc_binaries ALL DEPENDS ${NVCC_BINARIES})
+
+# --- nvcc --cudart=shared tests: compile .cu to executables linked against shared cudart ---
+# These test our libcudart.so replacement instead of the statically-linked NVIDIA cudart.
+set(NVCC_SHARED_TESTS
+    01_vector_add
+    02_device_clamp
+    03_device_chain
+    04_saxpy_fma
+    05_polynomial
+    08_multi_kernel
+    09_streams
+    10_matmul
+)
+
+set(NVCC_SHARED_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc_shared)
+file(MAKE_DIRECTORY ${NVCC_SHARED_BIN_DIR})
+
+set(NVCC_SHARED_BINARIES "")
+foreach(test ${NVCC_SHARED_TESTS})
+    set(CU_SRC ${CMAKE_CURRENT_SOURCE_DIR}/nvcc/${test}.cu)
+    set(NVCC_OUT ${NVCC_SHARED_BIN_DIR}/${test})
+    add_custom_command(
+        OUTPUT ${NVCC_OUT}
+        COMMAND ${NVCC_EXECUTABLE} -o ${NVCC_OUT} ${CU_SRC} -arch=${NVCC_SM}
+            --cudart=shared -Xlinker -rpath,${CMAKE_BINARY_DIR}/cuvk_runtime
+        DEPENDS ${CU_SRC}
+        COMMENT "nvcc (shared cudart): ${test}.cu -> ${test}"
+        VERBATIM
+    )
+    list(APPEND NVCC_SHARED_BINARIES ${NVCC_OUT})
+
+    add_test(
+        NAME e2e_cudart_${test}
+        COMMAND ${CMAKE_COMMAND} -E env
+            "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/cuvk_runtime:$ENV{LD_LIBRARY_PATH}"
+            ${NVCC_OUT}
+    )
+    set_tests_properties(e2e_cudart_${test} PROPERTIES
+        LABELS "e2e;cudart"
+    )
+endforeach()
+
+add_custom_target(e2e_nvcc_shared_binaries ALL DEPENDS ${NVCC_SHARED_BINARIES})

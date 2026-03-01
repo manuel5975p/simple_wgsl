@@ -133,5 +133,9 @@ if(Vulkan_FOUND)
     target_link_libraries(cuvk_integration_test gtest_main cuvk_runtime_static)
     add_test(NAME cuvk_integration_test COMMAND cuvk_integration_test)
 
+    add_executable(cuvk_graph_test cuvk_graph_test.cpp)
+    target_link_libraries(cuvk_graph_test gtest_main cuvk_runtime_static)
+    add_test(NAME cuvk_graph_test COMMAND cuvk_graph_test)
+
     add_subdirectory(e2e)
 endif()

@@ -1,9 +1,9 @@
 /*
- * cuvk_stubs.c - Stub implementations for unimplemented CUDA driver API functions
+ * cuvk_stubs.c - Supplementary CUDA driver API implementations
  *
- * Each stub returns CUDA_ERROR_NOT_SUPPORTED (unless otherwise noted).
- * This file ensures that linking against libcuvk_runtime doesn't fail for
- * commonly used CUDA API functions.
+ * Contains a mix of real implementations and stubs. Functions that cannot
+ * be meaningfully implemented return CUDA_ERROR_NOT_SUPPORTED. Many former
+ * stubs have been upgraded to real (or reasonable no-op) implementations.
  *
  * Functions already implemented elsewhere:
  *   cuvk_init.c:   cuInit, cuDriverGetVersion, cuDeviceGet, cuDeviceGetCount,
@@ -142,8 +142,10 @@ CUresult CUDAAPI cuDeviceGetTexture1DLinearMaxWidth(
 
 CUresult CUDAAPI cuDeviceCanAccessPeer(int *canAccessPeer, CUdevice dev,
                                        CUdevice peerDev) {
-    (void)canAccessPeer; (void)dev; (void)peerDev;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)dev; (void)peerDev;
+    if (!canAccessPeer) return CUDA_ERROR_INVALID_VALUE;
+    *canAccessPeer = 0; /* no P2P on Vulkan compute backend */
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuDeviceGetP2PAttribute(int *value,
@@ -233,12 +235,12 @@ CUresult CUDAAPI cuCtxGetStreamPriorityRange(int *leastPriority,
 CUresult CUDAAPI cuCtxEnablePeerAccess(CUcontext peerContext,
                                        unsigned int Flags) {
     (void)peerContext; (void)Flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS; /* no-op - single device */
 }
 
 CUresult CUDAAPI cuCtxDisablePeerAccess(CUcontext peerContext) {
     (void)peerContext;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS; /* no-op */
 }
 
 /* ============================================================================
@@ -263,72 +265,89 @@ CUresult CUDAAPI cuMemGetInfo(size_t *free, size_t *total) {
     return CUDA_SUCCESS;
 }
 
-/* cuMemAllocPitch: macro maps to cuMemAllocPitch_v2 */
+/* cuMemAllocPitch: macro maps to cuMemAllocPitch_v2
+ * Allocate pitched linear memory. Pitch is aligned to 256 bytes. */
 CUresult CUDAAPI cuMemAllocPitch(CUdeviceptr *dptr, size_t *pPitch,
                                  size_t WidthInBytes, size_t Height,
                                  unsigned int ElementSizeBytes) {
-    (void)dptr; (void)pPitch; (void)WidthInBytes; (void)Height;
     (void)ElementSizeBytes;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    if (!dptr || !pPitch) return CUDA_ERROR_INVALID_VALUE;
+    /* Align pitch to 256 bytes */
+    size_t pitch = (WidthInBytes + 255) & ~(size_t)255;
+    *pPitch = pitch;
+    return cuMemAlloc_v2(dptr, pitch * Height);
 }
 
 /* cuMemAllocHost: macro maps to cuMemAllocHost_v2 */
 CUresult CUDAAPI cuMemAllocHost(void **pp, size_t bytesize) {
-    (void)pp; (void)bytesize;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    if (!pp) return CUDA_ERROR_INVALID_VALUE;
+    *pp = malloc(bytesize);
+    if (!*pp) return CUDA_ERROR_OUT_OF_MEMORY;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemFreeHost(void *p) {
-    (void)p;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    free(p);
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemHostAlloc(void **pp, size_t bytesize,
                                 unsigned int Flags) {
-    (void)pp; (void)bytesize; (void)Flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)Flags;
+    if (!pp) return CUDA_ERROR_INVALID_VALUE;
+    *pp = malloc(bytesize);
+    if (!*pp) return CUDA_ERROR_OUT_OF_MEMORY;
+    return CUDA_SUCCESS;
 }
 
-/* cuMemHostGetDevicePointer: macro maps to cuMemHostGetDevicePointer_v2 */
+/* cuMemHostGetDevicePointer: macro maps to cuMemHostGetDevicePointer_v2
+ * For unified addressing, host pointer == device pointer */
 CUresult CUDAAPI cuMemHostGetDevicePointer(CUdeviceptr *pdptr, void *p,
                                            unsigned int Flags) {
-    (void)pdptr; (void)p; (void)Flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)Flags;
+    if (!pdptr) return CUDA_ERROR_INVALID_VALUE;
+    *pdptr = (CUdeviceptr)p;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemHostGetFlags(unsigned int *pFlags, void *p) {
-    (void)pFlags; (void)p;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)p;
+    if (!pFlags) return CUDA_ERROR_INVALID_VALUE;
+    *pFlags = 0;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemAllocManaged(CUdeviceptr *dptr, size_t bytesize,
                                    unsigned int flags) {
-    (void)dptr; (void)bytesize; (void)flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)flags;
+    /* Managed memory: allocate as regular device memory */
+    return cuMemAlloc_v2(dptr, bytesize);
 }
 
-/* cuMemHostRegister: macro maps to cuMemHostRegister_v2 */
+/* cuMemHostRegister/Unregister: no-op on Vulkan */
 CUresult CUDAAPI cuMemHostRegister(void *p, size_t bytesize,
                                    unsigned int Flags) {
     (void)p; (void)bytesize; (void)Flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemHostUnregister(void *p) {
     (void)p;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemcpy(CUdeviceptr dst, CUdeviceptr src,
                           size_t ByteCount) {
-    (void)dst; (void)src; (void)ByteCount;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    if (ByteCount == 0) return CUDA_SUCCESS;
+    /* Treat as device-to-device copy */
+    return cuMemcpyDtoD_v2(dst, src, ByteCount);
 }
 
 CUresult CUDAAPI cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src,
                                size_t ByteCount, CUstream hStream) {
-    (void)dst; (void)src; (void)ByteCount; (void)hStream;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)hStream;
+    if (ByteCount == 0) return CUDA_SUCCESS;
+    return cuMemcpyDtoD_v2(dst, src, ByteCount);
 }
 
 CUresult CUDAAPI cuMemcpyPeer(CUdeviceptr dstDevice, CUcontext dstContext,
@@ -347,47 +366,72 @@ CUresult CUDAAPI cuMemcpyPeerAsync(CUdeviceptr dstDevice, CUcontext dstContext,
     return CUDA_ERROR_NOT_SUPPORTED;
 }
 
-/* cuMemAdvise: macro maps to cuMemAdvise_v2 */
+/* cuMemAdvise: no-op on Vulkan (memory placement hints are irrelevant) */
 CUresult CUDAAPI cuMemAdvise(CUdeviceptr devPtr, size_t count,
                              CUmem_advise advice, CUmemLocation location) {
     (void)devPtr; (void)count; (void)advice; (void)location;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS;
 }
 
-/* cuMemPrefetchAsync: macro maps via __CUDA_API_PTSZ to cuMemPrefetchAsync_v2 */
+/* cuMemPrefetchAsync: no-op on Vulkan (no separate page migration) */
 CUresult CUDAAPI cuMemPrefetchAsync(CUdeviceptr devPtr, size_t count,
                                     CUmemLocation location,
                                     unsigned int flags, CUstream hStream) {
     (void)devPtr; (void)count; (void)location; (void)flags; (void)hStream;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuPointerGetAttribute(void *data,
                                        CUpointer_attribute attribute,
                                        CUdeviceptr ptr) {
-    (void)data; (void)attribute; (void)ptr;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)ptr;
+    if (!data) return CUDA_ERROR_INVALID_VALUE;
+    switch (attribute) {
+    case CU_POINTER_ATTRIBUTE_CONTEXT:
+        *(CUcontext *)data = g_cuvk.current_ctx;
+        return CUDA_SUCCESS;
+    case CU_POINTER_ATTRIBUTE_MEMORY_TYPE:
+        *(unsigned int *)data = CU_MEMORYTYPE_DEVICE;
+        return CUDA_SUCCESS;
+    case CU_POINTER_ATTRIBUTE_DEVICE_ORDINAL:
+        *(int *)data = 0;
+        return CUDA_SUCCESS;
+    case CU_POINTER_ATTRIBUTE_IS_MANAGED:
+        *(unsigned int *)data = 0;
+        return CUDA_SUCCESS;
+    default:
+        return CUDA_ERROR_INVALID_VALUE;
+    }
 }
 
 CUresult CUDAAPI cuPointerGetAttributes(unsigned int numAttributes,
                                         CUpointer_attribute *attributes,
                                         void **data, CUdeviceptr ptr) {
-    (void)numAttributes; (void)attributes; (void)data; (void)ptr;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    if (!attributes || !data) return CUDA_ERROR_INVALID_VALUE;
+    for (unsigned int i = 0; i < numAttributes; i++) {
+        CUresult r = cuPointerGetAttribute(data[i], attributes[i], ptr);
+        if (r != CUDA_SUCCESS) return r;
+    }
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuPointerSetAttribute(const void *value,
                                        CUpointer_attribute attribute,
                                        CUdeviceptr ptr) {
     (void)value; (void)attribute; (void)ptr;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS; /* no-op - attribute hints not applicable */
 }
 
 /* cuMemGetAddressRange: macro maps to cuMemGetAddressRange_v2 */
 CUresult CUDAAPI cuMemGetAddressRange(CUdeviceptr *pbase, size_t *psize,
                                       CUdeviceptr dptr) {
-    (void)pbase; (void)psize; (void)dptr;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    struct CUctx_st *ctx = g_cuvk.current_ctx;
+    if (!ctx) return CUDA_ERROR_INVALID_CONTEXT;
+    CuvkAlloc *alloc = cuvk_alloc_lookup(ctx, dptr);
+    if (!alloc) return CUDA_ERROR_INVALID_VALUE;
+    if (pbase) *pbase = alloc->device_addr;
+    if (psize) *psize = (size_t)alloc->size;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemcpy3DPeer(const CUDA_MEMCPY3D_PEER *pCopy) {
@@ -433,13 +477,13 @@ CUresult CUDAAPI cuIpcCloseMemHandle(CUdeviceptr dptr) {
 
 CUresult CUDAAPI cuMemAllocAsync(CUdeviceptr *dptr, size_t bytesize,
                                  CUstream hStream) {
-    (void)dptr; (void)bytesize; (void)hStream;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)hStream;
+    return cuMemAlloc_v2(dptr, bytesize);
 }
 
 CUresult CUDAAPI cuMemFreeAsync(CUdeviceptr dptr, CUstream hStream) {
-    (void)dptr; (void)hStream;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)hStream;
+    return cuMemFree_v2(dptr);
 }
 
 /* ============================================================================
@@ -496,17 +540,19 @@ CUresult CUDAAPI cuFuncSetCacheConfig(CUfunction hfunc,
 CUresult CUDAAPI cuFuncSetSharedMemConfig(CUfunction hfunc,
                                           CUsharedconfig config) {
     (void)hfunc; (void)config;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS; /* no-op - shared mem config not applicable */
 }
 
 CUresult CUDAAPI cuFuncGetModule(CUmodule *hmod, CUfunction hfunc) {
-    (void)hmod; (void)hfunc;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    if (!hmod || !hfunc) return CUDA_ERROR_INVALID_VALUE;
+    *hmod = (CUmodule)hfunc->module;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuFuncGetName(const char **name, CUfunction hfunc) {
-    (void)name; (void)hfunc;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    if (!name || !hfunc) return CUDA_ERROR_INVALID_VALUE;
+    *name = hfunc->name;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuFuncIsLoaded(CUfunctionLoadingState *state,
@@ -648,9 +694,18 @@ CUresult CUDAAPI cuKernelGetName(const char **name, CUkernel kernel) {
 
 CUresult CUDAAPI cuKernelGetParamInfo(CUkernel kernel, size_t paramIndex,
                                       size_t *paramOffset, size_t *paramSize) {
-    (void)kernel; (void)paramIndex;
-    (void)paramOffset; (void)paramSize;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    if (!kernel) return CUDA_ERROR_INVALID_VALUE;
+    CUfunction func = (CUfunction)kernel;
+    if (paramIndex >= func->param_count) return CUDA_ERROR_INVALID_VALUE;
+    if (paramOffset) {
+        /* Compute offset by summing preceding param sizes (aligned) */
+        size_t offset = 0;
+        for (size_t i = 0; i < paramIndex; i++)
+            offset += func->params[i].size;
+        *paramOffset = offset;
+    }
+    if (paramSize) *paramSize = func->params[paramIndex].size;
+    return CUDA_SUCCESS;
 }
 
 /* ============================================================================
@@ -667,16 +722,21 @@ CUresult CUDAAPI cuLaunchCooperativeKernel(CUfunction f,
                                            unsigned int sharedMemBytes,
                                            CUstream hStream,
                                            void **kernelParams) {
-    (void)f; (void)gridDimX; (void)gridDimY; (void)gridDimZ;
-    (void)blockDimX; (void)blockDimY; (void)blockDimZ;
-    (void)sharedMemBytes; (void)hStream; (void)kernelParams;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    /* Cooperative launch is identical to regular launch for our purposes */
+    return cuLaunchKernel(f, gridDimX, gridDimY, gridDimZ,
+                          blockDimX, blockDimY, blockDimZ,
+                          sharedMemBytes, hStream, kernelParams, NULL);
 }
 
 CUresult CUDAAPI cuLaunchHostFunc(CUstream hStream, CUhostFn fn,
                                   void *userData) {
-    (void)hStream; (void)fn; (void)userData;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)hStream;
+    if (!fn) return CUDA_ERROR_INVALID_VALUE;
+    /* Synchronize the stream first, then call the host function */
+    CUresult r = cuStreamSynchronize(hStream);
+    if (r != CUDA_SUCCESS) return r;
+    fn(userData);
+    return CUDA_SUCCESS;
 }
 
 /* ============================================================================
@@ -685,21 +745,27 @@ CUresult CUDAAPI cuLaunchHostFunc(CUstream hStream, CUhostFn fn,
 
 CUresult CUDAAPI cuStreamWaitEvent(CUstream hStream, CUevent hEvent,
                                    unsigned int Flags) {
-    (void)hStream; (void)hEvent; (void)Flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)hStream; (void)Flags;
+    /* Synchronize the event (block until it completes) */
+    return cuEventSynchronize(hEvent);
 }
 
 CUresult CUDAAPI cuStreamAddCallback(CUstream hStream,
                                      CUstreamCallback callback,
                                      void *userData, unsigned int flags) {
-    (void)hStream; (void)callback; (void)userData; (void)flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)flags;
+    if (!callback) return CUDA_ERROR_INVALID_VALUE;
+    /* Synchronize the stream, then call the callback */
+    CUresult r = cuStreamSynchronize(hStream);
+    callback(hStream, (r == CUDA_SUCCESS) ? CUDA_SUCCESS : CUDA_ERROR_UNKNOWN,
+             userData);
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuStreamAttachMemAsync(CUstream hStream, CUdeviceptr dptr,
                                         size_t length, unsigned int flags) {
     (void)hStream; (void)dptr; (void)length; (void)flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    return CUDA_SUCCESS; /* no-op - all memory is accessible from all streams */
 }
 
 CUresult CUDAAPI cuStreamGetPriority(CUstream hStream, int *priority) {
@@ -735,14 +801,14 @@ CUresult CUDAAPI cuStreamGetDevice(CUstream hStream, CUdevice *device) {
  * ============================================================================ */
 
 CUresult CUDAAPI cuEventQuery(CUevent hEvent) {
-    (void)hEvent;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    if (!hEvent) return CUDA_ERROR_INVALID_VALUE;
+    return hEvent->recorded ? CUDA_SUCCESS : CUDA_ERROR_NOT_READY;
 }
 
 CUresult CUDAAPI cuEventRecordWithFlags(CUevent hEvent, CUstream hStream,
                                         unsigned int flags) {
-    (void)hEvent; (void)hStream; (void)flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)flags;
+    return cuEventRecord(hEvent, hStream);
 }
 
 /* ============================================================================
@@ -946,78 +1012,49 @@ CUresult CUDAAPI cuMipmappedArrayDestroy(CUmipmappedArray hMipmappedArray) {
 CUresult CUDAAPI cuOccupancyMaxActiveBlocksPerMultiprocessor(
     int *numBlocks, CUfunction func, int blockSize,
     size_t dynamicSMemSize) {
-    (void)numBlocks; (void)func; (void)blockSize; (void)dynamicSMemSize;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)func; (void)blockSize; (void)dynamicSMemSize;
+    if (!numBlocks) return CUDA_ERROR_INVALID_VALUE;
+    /* Conservative estimate: 1024 max threads / blockSize blocks active */
+    *numBlocks = (blockSize > 0) ? (1024 / blockSize) : 1;
+    if (*numBlocks < 1) *numBlocks = 1;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuOccupancyMaxPotentialBlockSize(
     int *minGridSize, int *blockSize, CUfunction func,
     CUoccupancyB2DSize blockSizeToDynamicSMemSize,
     size_t dynamicSMemSize, int blockSizeLimit) {
-    (void)minGridSize; (void)blockSize; (void)func;
-    (void)blockSizeToDynamicSMemSize; (void)dynamicSMemSize;
-    (void)blockSizeLimit;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)func; (void)blockSizeToDynamicSMemSize; (void)dynamicSMemSize;
+    if (!minGridSize || !blockSize) return CUDA_ERROR_INVALID_VALUE;
+    *blockSize = (blockSizeLimit > 0 && blockSizeLimit < 256) ? blockSizeLimit : 256;
+    *minGridSize = 68; /* rough multiprocessor count */
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(
     int *numBlocks, CUfunction func, int blockSize,
     size_t dynamicSMemSize, unsigned int flags) {
-    (void)numBlocks; (void)func; (void)blockSize;
-    (void)dynamicSMemSize; (void)flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)flags;
+    return cuOccupancyMaxActiveBlocksPerMultiprocessor(
+        numBlocks, func, blockSize, dynamicSMemSize);
 }
 
 CUresult CUDAAPI cuOccupancyMaxPotentialBlockSizeWithFlags(
     int *minGridSize, int *blockSize, CUfunction func,
     CUoccupancyB2DSize blockSizeToDynamicSMemSize,
     size_t dynamicSMemSize, int blockSizeLimit, unsigned int flags) {
-    (void)minGridSize; (void)blockSize; (void)func;
-    (void)blockSizeToDynamicSMemSize; (void)dynamicSMemSize;
-    (void)blockSizeLimit; (void)flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)flags;
+    return cuOccupancyMaxPotentialBlockSize(
+        minGridSize, blockSize, func, blockSizeToDynamicSMemSize,
+        dynamicSMemSize, blockSizeLimit);
 }
 
 CUresult CUDAAPI cuOccupancyAvailableDynamicSMemPerBlock(
     size_t *dynamicSmemSize, CUfunction func, int numBlocks, int blockSize) {
-    (void)dynamicSmemSize; (void)func; (void)numBlocks; (void)blockSize;
-    return CUDA_ERROR_NOT_SUPPORTED;
-}
-
-/* ============================================================================
- * Graph API (basic stubs)
- * ============================================================================ */
-
-CUresult CUDAAPI cuGraphCreate(CUgraph *phGraph, unsigned int flags) {
-    (void)phGraph; (void)flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
-}
-
-CUresult CUDAAPI cuGraphDestroy(CUgraph hGraph) {
-    (void)hGraph;
-    return CUDA_ERROR_NOT_SUPPORTED;
-}
-
-CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
-    (void)hGraphExec; (void)hStream;
-    return CUDA_ERROR_NOT_SUPPORTED;
-}
-
-CUresult CUDAAPI cuGraphExecDestroy(CUgraphExec hGraphExec) {
-    (void)hGraphExec;
-    return CUDA_ERROR_NOT_SUPPORTED;
-}
-
-/* cuGraphInstantiate: macro maps to cuGraphInstantiate_v3 */
-CUresult CUDAAPI cuGraphInstantiate(CUgraphExec *phGraphExec, CUgraph hGraph,
-                                    unsigned long long flags) {
-    (void)phGraphExec; (void)hGraph; (void)flags;
-    return CUDA_ERROR_NOT_SUPPORTED;
-}
-
-CUresult CUDAAPI cuGraphUpload(CUgraphExec hGraphExec, CUstream hStream) {
-    (void)hGraphExec; (void)hStream;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)func; (void)numBlocks; (void)blockSize;
+    if (!dynamicSmemSize) return CUDA_ERROR_INVALID_VALUE;
+    *dynamicSmemSize = 49152; /* 48 KB - standard shared memory limit */
+    return CUDA_SUCCESS;
 }
 
 /* ============================================================================
@@ -1342,6 +1379,40 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuGetExportTable",              (void *)cuGetExportTable},
     {"cuGetProcAddress",              (void *)cuGetProcAddress},
     {"cuGetProcAddress_v2",           (void *)cuGetProcAddress},
+    /* Graph API */
+    {"cuGraphCreate",                 (void *)cuGraphCreate},
+    {"cuGraphDestroy",                (void *)cuGraphDestroy},
+    {"cuGraphAddKernelNode",          (void *)cuGraphAddKernelNode},
+    {"cuGraphAddKernelNode_v2",       (void *)cuGraphAddKernelNode},
+    {"cuGraphAddMemcpyNode",          (void *)cuGraphAddMemcpyNode},
+    {"cuGraphAddMemsetNode",          (void *)cuGraphAddMemsetNode},
+    {"cuGraphAddHostNode",            (void *)cuGraphAddHostNode},
+    {"cuGraphAddEmptyNode",           (void *)cuGraphAddEmptyNode},
+    {"cuGraphAddDependencies",        (void *)cuGraphAddDependencies},
+    {"cuGraphRemoveDependencies",     (void *)cuGraphRemoveDependencies},
+    {"cuGraphGetNodes",               (void *)cuGraphGetNodes},
+    {"cuGraphGetEdges",               (void *)cuGraphGetEdges},
+    {"cuGraphGetEdges_v2",            (void *)cuGraphGetEdges},
+    {"cuGraphNodeGetType",            (void *)cuGraphNodeGetType},
+    {"cuGraphNodeGetDependencies",    (void *)cuGraphNodeGetDependencies},
+    {"cuGraphNodeGetDependencies_v2", (void *)cuGraphNodeGetDependencies},
+    {"cuGraphNodeGetDependentNodes",  (void *)cuGraphNodeGetDependentNodes},
+    {"cuGraphNodeGetDependentNodes_v2",(void *)cuGraphNodeGetDependentNodes},
+    {"cuGraphKernelNodeGetParams",    (void *)cuGraphKernelNodeGetParams},
+    {"cuGraphKernelNodeSetParams",    (void *)cuGraphKernelNodeSetParams},
+    {"cuGraphExecKernelNodeSetParams",(void *)cuGraphExecKernelNodeSetParams},
+    {"cuGraphInstantiate",            (void *)cuGraphInstantiate},
+    {"cuGraphInstantiateWithFlags",   (void *)cuGraphInstantiate},
+    {"cuGraphLaunch",                 (void *)cuGraphLaunch},
+    {"cuGraphUpload",                 (void *)cuGraphUpload},
+    {"cuGraphExecDestroy",            (void *)cuGraphExecDestroy},
+    {"cuGraphExecUpdate",             (void *)cuGraphExecUpdate},
+    {"cuGraphExecUpdate_v2",          (void *)cuGraphExecUpdate},
+    /* Stream capture */
+    {"cuStreamIsCapturing",           (void *)cuStreamIsCapturing},
+    {"cuStreamGetCaptureInfo",        (void *)cuStreamGetCaptureInfo},
+    {"cuStreamGetCaptureInfo_v2",     (void *)cuStreamGetCaptureInfo},
+    {"cuStreamGetCaptureInfo_v3",     (void *)cuStreamGetCaptureInfo},
     {NULL, NULL}
 };
 
@@ -2037,8 +2108,24 @@ CUresult CUDAAPI cuStreamEndCapture(CUstream hStream, CUgraph *phGraph) {
 
 CUresult CUDAAPI cuStreamIsCapturing(CUstream hStream,
                                      CUstreamCaptureStatus *captureStatus) {
-    (void)hStream; (void)captureStatus;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    (void)hStream;
+    if (!captureStatus) return CUDA_ERROR_INVALID_VALUE;
+    *captureStatus = CU_STREAM_CAPTURE_STATUS_NONE;
+    return CUDA_SUCCESS;
+}
+
+CUresult CUDAAPI cuStreamGetCaptureInfo(CUstream hStream,
+                                         CUstreamCaptureStatus *captureStatus_out,
+                                         cuuint64_t *id_out,
+                                         CUgraph *graph_out,
+                                         const CUgraphNode **dependencies_out,
+                                         const CUgraphEdgeData **edgeData_out,
+                                         size_t *numDependencies_out) {
+    (void)hStream; (void)id_out; (void)graph_out;
+    (void)dependencies_out; (void)edgeData_out; (void)numDependencies_out;
+    if (!captureStatus_out) return CUDA_ERROR_INVALID_VALUE;
+    *captureStatus_out = CU_STREAM_CAPTURE_STATUS_NONE;
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuThreadExchangeStreamCaptureMode(

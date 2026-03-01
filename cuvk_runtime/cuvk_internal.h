@@ -77,6 +77,47 @@ typedef struct CuvkParamInfo {
 } CuvkParamInfo;
 
 /* ============================================================================
+ * CUDA Graph backing structs
+ * ============================================================================ */
+
+/* CUgraphNode */
+struct CUgraphNode_st {
+    CUgraphNodeType          type;
+    union {
+        CUDA_KERNEL_NODE_PARAMS  kernel;
+        CUDA_MEMCPY3D            memcpy;
+        CUDA_MEMSET_NODE_PARAMS  memset;
+        CUDA_HOST_NODE_PARAMS    host;
+    } params;
+    void                   **kernel_params_copy;  /* owned copy of kernel param ptrs */
+    size_t                   kernel_params_count;
+
+    /* Graph topology (adjacency lists, indices into graph's node ptr array) */
+    uint32_t                *deps;
+    uint32_t                 dep_count;
+    uint32_t                 dep_capacity;
+    uint32_t                *dependents;
+    uint32_t                 dependent_count;
+    uint32_t                 dependent_capacity;
+};
+
+/* CUgraph — mutable graph template.
+ * Nodes are individually heap-allocated so CUgraphNode pointers remain stable. */
+struct CUgraph_st {
+    struct CUgraphNode_st **nodes;   /* array of pointers to heap-allocated nodes */
+    uint32_t                node_count;
+    uint32_t                node_capacity;
+};
+
+/* CUgraphExec — instantiated (executable) graph */
+struct CUgraphExec_st {
+    struct CUctx_st        *ctx;
+    struct CUgraphNode_st  *nodes;        /* flat deep copy, topologically sorted */
+    uint32_t                node_count;
+    uint64_t               *sem_values;   /* timeline semaphore value per node */
+};
+
+/* ============================================================================
  * CUDA opaque handle backing structs
  * ============================================================================ */
 
