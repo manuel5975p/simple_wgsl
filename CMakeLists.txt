@@ -127,10 +127,18 @@ if(WIN32)
     if(VULKAN_LIBRARY)
         add_subdirectory(cuvk_runtime)
 
-        # Windows test executable
+        # Windows test executables
         add_executable(win_test tests/win_test.c)
         target_link_libraries(win_test cuvk_runtime_shared m)
         target_include_directories(win_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+        # E2E PTX-based tests (cross-compiled for Wine)
+        set(WIN_E2E_TESTS test_vector_add test_saxpy test_scale test_dot_product)
+        foreach(test ${WIN_E2E_TESTS})
+            add_executable(${test} tests/e2e/${test}.c)
+            target_link_libraries(${test} cuvk_runtime_shared m)
+            target_include_directories(${test} PRIVATE ${CMAKE_SOURCE_DIR})
+        endforeach()
     endif()
 else()
     find_package(Vulkan QUIET)
