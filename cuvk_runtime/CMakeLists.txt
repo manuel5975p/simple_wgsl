@@ -1,27 +1,27 @@
 option(CUVK_DEBUG_LOG "Enable cuvk debug logging to stderr" OFF)
 
+include(FetchContent)
+FetchContent_Declare(
+    zstd
+    URL https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.tar.gz
+    SOURCE_SUBDIR build/cmake
+)
+set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(zstd)
+
 if(WIN32)
-    # Cross-compilation: Vulkan and zstd must be provided via cache vars
-    #   -DVULKAN_INCLUDE_DIR=...  -DVULKAN_LIBRARY=...
-    #   -DZSTD_INCLUDE_DIR=...    -DZSTD_LIBRARY=...
     if(NOT VULKAN_LIBRARY)
         message(FATAL_ERROR "Set -DVULKAN_LIBRARY=<path to libvulkan-1.a or vulkan-1.lib>")
     endif()
-    if(NOT DZSTD_LIBRARY AND NOT ZSTD_LIBRARY)
-        message(FATAL_ERROR "Set -DZSTD_LIBRARY=<path to libzstd.a>")
-    endif()
     set(_VULKAN_LIB ${VULKAN_LIBRARY})
     set(_VULKAN_INC ${VULKAN_INCLUDE_DIR})
-    set(_ZSTD_LIB ${ZSTD_LIBRARY})
-    set(_ZSTD_INC ${ZSTD_INCLUDE_DIR})
 else()
     find_package(Vulkan REQUIRED)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(ZSTD REQUIRED libzstd)
     set(_VULKAN_LIB Vulkan::Vulkan)
     set(_VULKAN_INC "")
-    set(_ZSTD_LIB ${ZSTD_LIBRARIES})
-    set(_ZSTD_INC ${ZSTD_INCLUDE_DIRS})
 endif()
 
 set(CUVK_SOURCES
@@ -37,8 +37,8 @@ set(CUVK_SOURCES
 
 # Helper: apply common settings to a cuvk target
 function(cuvk_target_setup tgt)
-    target_link_libraries(${tgt} PUBLIC wgsl_compiler ${_VULKAN_LIB} ${_ZSTD_LIB})
-    target_include_directories(${tgt} PUBLIC ${CMAKE_SOURCE_DIR} ${_VULKAN_INC} ${_ZSTD_INC})
+    target_link_libraries(${tgt} PUBLIC wgsl_compiler ${_VULKAN_LIB} libzstd_static)
+    target_include_directories(${tgt} PUBLIC ${CMAKE_SOURCE_DIR} ${_VULKAN_INC})
     if(CUVK_DEBUG_LOG)
         target_compile_definitions(${tgt} PRIVATE CUVK_DEBUG_LOG=1)
     endif()
