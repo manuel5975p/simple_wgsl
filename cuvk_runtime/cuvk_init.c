@@ -683,6 +683,48 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     ctx->default_stream.ctx = ctx;
     ctx->default_stream.recording = false;
 
+    /* Allocate reusable one-shot command buffer */
+    VkCommandBufferAllocateInfo oneshot_ai = {0};
+    oneshot_ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    oneshot_ai.commandPool = ctx->cmd_pool;
+    oneshot_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    oneshot_ai.commandBufferCount = 1;
+
+    vr = vkAllocateCommandBuffers(ctx->device, &oneshot_ai, &ctx->oneshot_cb);
+    if (vr != VK_SUCCESS) {
+        vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
+        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+                             &ctx->default_stream.cmd_buf);
+        if (ctx->timeline_sem)
+            vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        vkDestroyDevice(ctx->device, NULL);
+        free(ctx);
+        return cuvk_vk_to_cu(vr);
+    }
+
+    /* Create reusable one-shot fence (signaled so first reset succeeds) */
+    VkFenceCreateInfo oneshot_fence_ci = {0};
+    oneshot_fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    oneshot_fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    vr = vkCreateFence(ctx->device, &oneshot_fence_ci, NULL,
+                       &ctx->oneshot_fence);
+    if (vr != VK_SUCCESS) {
+        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &ctx->oneshot_cb);
+        vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
+        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+                             &ctx->default_stream.cmd_buf);
+        if (ctx->timeline_sem)
+            vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        vkDestroyDevice(ctx->device, NULL);
+        free(ctx);
+        return cuvk_vk_to_cu(vr);
+    }
+
     /* Cache memory and device properties */
     vkGetPhysicalDeviceMemoryProperties(phys, &ctx->mem_props);
     vkGetPhysicalDeviceProperties(phys, &ctx->dev_props);
@@ -721,6 +763,25 @@ CUresult CUDAAPI cuCtxDestroy_v2(CUcontext ctx)
         vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
                              &ctx->default_stream.cmd_buf);
 
+    /* Destroy reusable one-shot resources */
+    if (ctx->oneshot_fence)
+        vkDestroyFence(ctx->device, ctx->oneshot_fence, NULL);
+    if (ctx->oneshot_cb)
+        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+                             &ctx->oneshot_cb);
+
+    /* Destroy cached staging buffer */
+    if (ctx->staging_buf)
+        vkDestroyBuffer(ctx->device, ctx->staging_buf, NULL);
+    if (ctx->staging_mem)
+        vkFreeMemory(ctx->device, ctx->staging_mem, NULL);
+
+    /* Destroy download staging buffer */
+    if (ctx->download_buf)
+        vkDestroyBuffer(ctx->device, ctx->download_buf, NULL);
+    if (ctx->download_mem)
+        vkFreeMemory(ctx->device, ctx->download_mem, NULL);
+
     /* Destroy timeline semaphore */
     if (ctx->timeline_sem)
         vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
@@ -728,6 +789,14 @@ CUresult CUDAAPI cuCtxDestroy_v2(CUcontext ctx)
     /* Destroy descriptor pool */
     if (ctx->desc_pool)
         vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+
+    /* Destroy pinned host allocations */
+    for (uint32_t i = 0; i < ctx->host_alloc_count; i++) {
+        vkDestroyBuffer(ctx->device, ctx->host_allocs[i].buffer, NULL);
+        vkFreeMemory(ctx->device, ctx->host_allocs[i].memory, NULL);
+    }
+    free(ctx->host_allocs);
+    ctx->host_allocs = NULL;
 
     /* Destroy command pool */
     if (ctx->cmd_pool)

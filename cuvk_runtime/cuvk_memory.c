@@ -15,15 +15,28 @@
 #include <string.h>
 
 /* ============================================================================
- * Helper: create a staging buffer (host-visible, coherent)
+ * Helper: ensure the cached staging buffer is at least `size` bytes.
+ * Grow-only: if the current buffer is large enough, reuse it.
+ * The buffer is persistently mapped (never unmapped).
  * ============================================================================ */
 
-static CUresult cuvk_create_staging_buffer(struct CUctx_st *ctx,
-                                           VkDeviceSize size,
-                                           VkBuffer *out_buffer,
-                                           VkDeviceMemory *out_memory,
-                                           void **out_mapped)
+static CUresult cuvk_ensure_staging(struct CUctx_st *ctx, VkDeviceSize size)
 {
+    if (ctx->staging_capacity >= size)
+        return CUDA_SUCCESS;
+
+    /* Destroy old staging buffer if any */
+    if (ctx->staging_buf) {
+        vkDestroyBuffer(ctx->device, ctx->staging_buf, NULL);
+        ctx->staging_buf = VK_NULL_HANDLE;
+    }
+    if (ctx->staging_mem) {
+        vkFreeMemory(ctx->device, ctx->staging_mem, NULL);
+        ctx->staging_mem = VK_NULL_HANDLE;
+    }
+    ctx->staging_mapped = NULL;
+    ctx->staging_capacity = 0;
+
     VkBufferCreateInfo buf_ci = {0};
     buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buf_ci.size = size;
@@ -68,29 +81,123 @@ static CUresult cuvk_create_staging_buffer(struct CUctx_st *ctx,
         return cuvk_vk_to_cu(vr);
     }
 
-    if (out_mapped) {
-        void *mapped = NULL;
-        vr = vkMapMemory(ctx->device, memory, 0, size, 0, &mapped);
-        if (vr != VK_SUCCESS) {
-            vkFreeMemory(ctx->device, memory, NULL);
-            vkDestroyBuffer(ctx->device, buffer, NULL);
-            return cuvk_vk_to_cu(vr);
-        }
-        *out_mapped = mapped;
+    void *mapped = NULL;
+    vr = vkMapMemory(ctx->device, memory, 0, size, 0, &mapped);
+    if (vr != VK_SUCCESS) {
+        vkFreeMemory(ctx->device, memory, NULL);
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return cuvk_vk_to_cu(vr);
     }
 
-    *out_buffer = buffer;
-    *out_memory = memory;
+    ctx->staging_buf = buffer;
+    ctx->staging_mem = memory;
+    ctx->staging_capacity = size;
+    ctx->staging_mapped = mapped;
     return CUDA_SUCCESS;
 }
 
-/* Destroy a staging buffer */
-static void cuvk_destroy_staging_buffer(struct CUctx_st *ctx,
-                                        VkBuffer buffer,
-                                        VkDeviceMemory memory)
+/* ============================================================================
+ * Helper: ensure the download staging buffer is at least `size` bytes.
+ * Uses HOST_CACHED memory for fast CPU reads (device-to-host path).
+ * ============================================================================ */
+
+static CUresult cuvk_ensure_download_staging(struct CUctx_st *ctx,
+                                              VkDeviceSize size)
 {
-    vkDestroyBuffer(ctx->device, buffer, NULL);
-    vkFreeMemory(ctx->device, memory, NULL);
+    if (ctx->download_capacity >= size)
+        return CUDA_SUCCESS;
+
+    /* Destroy old download buffer if any */
+    if (ctx->download_buf) {
+        vkDestroyBuffer(ctx->device, ctx->download_buf, NULL);
+        ctx->download_buf = VK_NULL_HANDLE;
+    }
+    if (ctx->download_mem) {
+        vkFreeMemory(ctx->device, ctx->download_mem, NULL);
+        ctx->download_mem = VK_NULL_HANDLE;
+    }
+    ctx->download_mapped = NULL;
+    ctx->download_capacity = 0;
+
+    VkBufferCreateInfo buf_ci = {0};
+    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buf_ci.size = size;
+    buf_ci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkResult vr = vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
+    if (vr != VK_SUCCESS)
+        return cuvk_vk_to_cu(vr);
+
+    VkMemoryRequirements mem_reqs;
+    vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
+
+    /* Try HOST_VISIBLE | HOST_CACHED | HOST_COHERENT first */
+    int32_t mem_type = cuvk_find_memory_type(
+        &ctx->mem_props, mem_reqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    bool needs_invalidate = false;
+
+    if (mem_type < 0) {
+        /* Fall back to HOST_VISIBLE | HOST_CACHED without coherent */
+        mem_type = cuvk_find_memory_type(
+            &ctx->mem_props, mem_reqs.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        needs_invalidate = true;
+    }
+
+    if (mem_type < 0) {
+        /* Last resort: HOST_VISIBLE | HOST_COHERENT (same as upload staging) */
+        mem_type = cuvk_find_memory_type(
+            &ctx->mem_props, mem_reqs.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        needs_invalidate = false;
+    }
+
+    if (mem_type < 0) {
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+
+    VkMemoryAllocateInfo alloc_info = {0};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = mem_reqs.size;
+    alloc_info.memoryTypeIndex = (uint32_t)mem_type;
+
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    vr = vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
+    if (vr != VK_SUCCESS) {
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return cuvk_vk_to_cu(vr);
+    }
+
+    vr = vkBindBufferMemory(ctx->device, buffer, memory, 0);
+    if (vr != VK_SUCCESS) {
+        vkFreeMemory(ctx->device, memory, NULL);
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return cuvk_vk_to_cu(vr);
+    }
+
+    void *mapped = NULL;
+    vr = vkMapMemory(ctx->device, memory, 0, size, 0, &mapped);
+    if (vr != VK_SUCCESS) {
+        vkFreeMemory(ctx->device, memory, NULL);
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return cuvk_vk_to_cu(vr);
+    }
+
+    ctx->download_buf = buffer;
+    ctx->download_mem = memory;
+    ctx->download_capacity = size;
+    ctx->download_mapped = mapped;
+    ctx->download_needs_invalidate = needs_invalidate;
+    return CUDA_SUCCESS;
 }
 
 /* ============================================================================
@@ -308,7 +415,201 @@ CUresult CUDAAPI cuMemFree_v2(CUdeviceptr dptr)
 }
 
 /* ============================================================================
+ * Pinned host memory: lookup helpers
+ * ============================================================================ */
+
+static CuvkHostAlloc *cuvk_host_alloc_lookup(struct CUctx_st *ctx,
+                                              const void *ptr)
+{
+    if (!ctx || !ctx->host_allocs || ctx->host_alloc_count == 0)
+        return NULL;
+
+    uintptr_t addr = (uintptr_t)ptr;
+    uint32_t lo = 0, hi = ctx->host_alloc_count;
+
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        CuvkHostAlloc *a = &ctx->host_allocs[mid];
+        uintptr_t start = (uintptr_t)a->mapped;
+
+        if (addr < start) {
+            hi = mid;
+        } else if (addr >= start + (uintptr_t)a->size) {
+            lo = mid + 1;
+        } else {
+            return a;
+        }
+    }
+    return NULL;
+}
+
+static uint32_t cuvk_host_alloc_find_insert_pos(struct CUctx_st *ctx,
+                                                  uintptr_t addr)
+{
+    uint32_t lo = 0, hi = ctx->host_alloc_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if ((uintptr_t)ctx->host_allocs[mid].mapped < addr)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    return lo;
+}
+
+/* ============================================================================
+ * cuMemAllocHost_v2 - Allocate pinned host memory (HOST_CACHED VkBuffer)
+ * ============================================================================ */
+
+CUresult CUDAAPI cuMemAllocHost_v2(void **pp, size_t bytesize)
+{
+    if (!pp || bytesize == 0)
+        return CUDA_ERROR_INVALID_VALUE;
+
+    struct CUctx_st *ctx = g_cuvk.current_ctx;
+    if (!ctx)
+        return CUDA_ERROR_INVALID_CONTEXT;
+
+    VkBufferCreateInfo buf_ci = {0};
+    buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buf_ci.size = (VkDeviceSize)bytesize;
+    buf_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                   VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkResult vr = vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
+    if (vr != VK_SUCCESS)
+        return cuvk_vk_to_cu(vr);
+
+    VkMemoryRequirements mem_reqs;
+    vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
+
+    /* Prefer HOST_VISIBLE | HOST_CACHED | HOST_COHERENT (system RAM, cached) */
+    int32_t mem_type = cuvk_find_memory_type(
+        &ctx->mem_props, mem_reqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+        VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
+        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    bool coherent = true;
+
+    if (mem_type < 0) {
+        mem_type = cuvk_find_memory_type(
+            &ctx->mem_props, mem_reqs.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+        coherent = false;
+    }
+
+    if (mem_type < 0) {
+        mem_type = cuvk_find_memory_type(
+            &ctx->mem_props, mem_reqs.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        coherent = true;
+    }
+
+    if (mem_type < 0) {
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return CUDA_ERROR_OUT_OF_MEMORY;
+    }
+
+    VkMemoryAllocateInfo alloc_info = {0};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = mem_reqs.size;
+    alloc_info.memoryTypeIndex = (uint32_t)mem_type;
+
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    vr = vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
+    if (vr != VK_SUCCESS) {
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return cuvk_vk_to_cu(vr);
+    }
+
+    vr = vkBindBufferMemory(ctx->device, buffer, memory, 0);
+    if (vr != VK_SUCCESS) {
+        vkFreeMemory(ctx->device, memory, NULL);
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return cuvk_vk_to_cu(vr);
+    }
+
+    void *mapped = NULL;
+    vr = vkMapMemory(ctx->device, memory, 0, bytesize, 0, &mapped);
+    if (vr != VK_SUCCESS) {
+        vkFreeMemory(ctx->device, memory, NULL);
+        vkDestroyBuffer(ctx->device, buffer, NULL);
+        return cuvk_vk_to_cu(vr);
+    }
+
+    /* Track the allocation (sorted by mapped pointer) */
+    if (ctx->host_alloc_count >= ctx->host_alloc_capacity) {
+        uint32_t new_cap = ctx->host_alloc_capacity == 0 ? 8 :
+                           ctx->host_alloc_capacity * 2;
+        CuvkHostAlloc *new_allocs = (CuvkHostAlloc *)realloc(
+            ctx->host_allocs, new_cap * sizeof(CuvkHostAlloc));
+        if (!new_allocs) {
+            vkFreeMemory(ctx->device, memory, NULL);
+            vkDestroyBuffer(ctx->device, buffer, NULL);
+            return CUDA_ERROR_OUT_OF_MEMORY;
+        }
+        ctx->host_allocs = new_allocs;
+        ctx->host_alloc_capacity = new_cap;
+    }
+
+    uint32_t pos = cuvk_host_alloc_find_insert_pos(ctx, (uintptr_t)mapped);
+    if (pos < ctx->host_alloc_count) {
+        memmove(&ctx->host_allocs[pos + 1], &ctx->host_allocs[pos],
+                (ctx->host_alloc_count - pos) * sizeof(CuvkHostAlloc));
+    }
+
+    ctx->host_allocs[pos].buffer = buffer;
+    ctx->host_allocs[pos].memory = memory;
+    ctx->host_allocs[pos].size = (VkDeviceSize)bytesize;
+    ctx->host_allocs[pos].mapped = mapped;
+    ctx->host_allocs[pos].coherent = coherent;
+    ctx->host_alloc_count++;
+
+    *pp = mapped;
+    return CUDA_SUCCESS;
+}
+
+/* ============================================================================
+ * cuMemFreeHost - Free pinned host memory
+ * ============================================================================ */
+
+CUresult CUDAAPI cuMemFreeHost(void *p)
+{
+    if (!p)
+        return CUDA_SUCCESS;
+
+    struct CUctx_st *ctx = g_cuvk.current_ctx;
+    if (!ctx)
+        return CUDA_ERROR_INVALID_CONTEXT;
+
+    CuvkHostAlloc *alloc = cuvk_host_alloc_lookup(ctx, p);
+    if (!alloc)
+        return CUDA_ERROR_INVALID_VALUE;
+
+    uint32_t idx = (uint32_t)(alloc - ctx->host_allocs);
+
+    vkDestroyBuffer(ctx->device, alloc->buffer, NULL);
+    vkFreeMemory(ctx->device, alloc->memory, NULL);
+
+    if (idx + 1 < ctx->host_alloc_count) {
+        memmove(&ctx->host_allocs[idx], &ctx->host_allocs[idx + 1],
+                (ctx->host_alloc_count - idx - 1) * sizeof(CuvkHostAlloc));
+    }
+    ctx->host_alloc_count--;
+
+    return CUDA_SUCCESS;
+}
+
+/* ============================================================================
  * cuMemcpyHtoD_v2 - Host to Device copy (synchronous)
+ *
+ * If srcHost is pinned (cuMemAllocHost), DMA directly — no staging memcpy.
+ * Otherwise falls back to staging buffer path.
  * ============================================================================ */
 
 CUresult CUDAAPI cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
@@ -326,49 +627,65 @@ CUresult CUDAAPI cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
     if (!dst_alloc)
         return CUDA_ERROR_INVALID_VALUE;
 
-    VkDeviceSize offset = (VkDeviceSize)((uint64_t)dstDevice -
-                                          (uint64_t)dst_alloc->device_addr);
+    VkDeviceSize dst_offset = (VkDeviceSize)((uint64_t)dstDevice -
+                                              (uint64_t)dst_alloc->device_addr);
 
-    /* Create staging buffer */
-    VkBuffer staging_buf = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    void *mapped = NULL;
+    /* Fast path: srcHost is pinned memory — DMA directly */
+    CuvkHostAlloc *host_alloc = cuvk_host_alloc_lookup(ctx, srcHost);
+    if (host_alloc) {
+        VkDeviceSize src_offset = (VkDeviceSize)(
+            (uintptr_t)srcHost - (uintptr_t)host_alloc->mapped);
 
-    CUresult res = cuvk_create_staging_buffer(ctx, (VkDeviceSize)ByteCount,
-                                               &staging_buf, &staging_mem,
-                                               &mapped);
+        /* Flush CPU writes if non-coherent */
+        if (!host_alloc->coherent) {
+            VkMappedMemoryRange range = {0};
+            range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+            range.memory = host_alloc->memory;
+            range.offset = 0;
+            range.size = VK_WHOLE_SIZE;
+            vkFlushMappedMemoryRanges(ctx->device, 1, &range);
+        }
+
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        CUresult res = cuvk_oneshot_begin(ctx, &cb);
+        if (res != CUDA_SUCCESS)
+            return res;
+
+        VkBufferCopy region = {0};
+        region.srcOffset = src_offset;
+        region.dstOffset = dst_offset;
+        region.size = (VkDeviceSize)ByteCount;
+
+        vkCmdCopyBuffer(cb, host_alloc->buffer, dst_alloc->buffer, 1, &region);
+        return cuvk_oneshot_end(ctx, cb);
+    }
+
+    /* Slow path: staging buffer + memcpy */
+    CUresult res = cuvk_ensure_staging(ctx, (VkDeviceSize)ByteCount);
     if (res != CUDA_SUCCESS)
         return res;
 
-    /* Copy host data into staging */
-    memcpy(mapped, srcHost, ByteCount);
-    vkUnmapMemory(ctx->device, staging_mem);
+    memcpy(ctx->staging_mapped, srcHost, ByteCount);
 
-    /* Record and submit copy command */
     VkCommandBuffer cb = VK_NULL_HANDLE;
     res = cuvk_oneshot_begin(ctx, &cb);
-    if (res != CUDA_SUCCESS) {
-        cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
+    if (res != CUDA_SUCCESS)
         return res;
-    }
 
     VkBufferCopy region = {0};
     region.srcOffset = 0;
-    region.dstOffset = offset;
+    region.dstOffset = dst_offset;
     region.size = (VkDeviceSize)ByteCount;
 
-    vkCmdCopyBuffer(cb, staging_buf, dst_alloc->buffer, 1, &region);
-
-    res = cuvk_oneshot_end(ctx, cb);
-
-    /* Clean up staging */
-    cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
-
-    return res;
+    vkCmdCopyBuffer(cb, ctx->staging_buf, dst_alloc->buffer, 1, &region);
+    return cuvk_oneshot_end(ctx, cb);
 }
 
 /* ============================================================================
  * cuMemcpyDtoH_v2 - Device to Host copy (synchronous)
+ *
+ * If dstHost is pinned (cuMemAllocHost), DMA directly — no staging memcpy.
+ * Otherwise falls back to download staging buffer path.
  * ============================================================================ */
 
 CUresult CUDAAPI cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
@@ -386,55 +703,75 @@ CUresult CUDAAPI cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
     if (!src_alloc)
         return CUDA_ERROR_INVALID_VALUE;
 
-    VkDeviceSize offset = (VkDeviceSize)((uint64_t)srcDevice -
-                                          (uint64_t)src_alloc->device_addr);
+    VkDeviceSize src_offset = (VkDeviceSize)((uint64_t)srcDevice -
+                                              (uint64_t)src_alloc->device_addr);
 
-    /* Create staging buffer */
-    VkBuffer staging_buf = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    /* Fast path: dstHost is pinned memory — DMA directly */
+    CuvkHostAlloc *host_alloc = cuvk_host_alloc_lookup(ctx, dstHost);
+    if (host_alloc) {
+        VkDeviceSize dst_offset = (VkDeviceSize)(
+            (uintptr_t)dstHost - (uintptr_t)host_alloc->mapped);
 
-    CUresult res = cuvk_create_staging_buffer(ctx, (VkDeviceSize)ByteCount,
-                                               &staging_buf, &staging_mem,
-                                               NULL);
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        CUresult res = cuvk_oneshot_begin(ctx, &cb);
+        if (res != CUDA_SUCCESS)
+            return res;
+
+        VkBufferCopy region = {0};
+        region.srcOffset = src_offset;
+        region.dstOffset = dst_offset;
+        region.size = (VkDeviceSize)ByteCount;
+
+        vkCmdCopyBuffer(cb, src_alloc->buffer, host_alloc->buffer, 1, &region);
+
+        res = cuvk_oneshot_end(ctx, cb);
+        if (res != CUDA_SUCCESS)
+            return res;
+
+        /* Invalidate CPU cache if non-coherent */
+        if (!host_alloc->coherent) {
+            VkMappedMemoryRange range = {0};
+            range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+            range.memory = host_alloc->memory;
+            range.offset = 0;
+            range.size = VK_WHOLE_SIZE;
+            vkInvalidateMappedMemoryRanges(ctx->device, 1, &range);
+        }
+
+        return CUDA_SUCCESS;
+    }
+
+    /* Slow path: download staging buffer + memcpy */
+    CUresult res = cuvk_ensure_download_staging(ctx, (VkDeviceSize)ByteCount);
     if (res != CUDA_SUCCESS)
         return res;
 
-    /* Record and submit copy command */
     VkCommandBuffer cb = VK_NULL_HANDLE;
     res = cuvk_oneshot_begin(ctx, &cb);
-    if (res != CUDA_SUCCESS) {
-        cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
+    if (res != CUDA_SUCCESS)
         return res;
-    }
 
     VkBufferCopy region = {0};
-    region.srcOffset = offset;
+    region.srcOffset = src_offset;
     region.dstOffset = 0;
     region.size = (VkDeviceSize)ByteCount;
 
-    vkCmdCopyBuffer(cb, src_alloc->buffer, staging_buf, 1, &region);
+    vkCmdCopyBuffer(cb, src_alloc->buffer, ctx->download_buf, 1, &region);
 
     res = cuvk_oneshot_end(ctx, cb);
-    if (res != CUDA_SUCCESS) {
-        cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
+    if (res != CUDA_SUCCESS)
         return res;
+
+    if (ctx->download_needs_invalidate) {
+        VkMappedMemoryRange range = {0};
+        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        range.memory = ctx->download_mem;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        vkInvalidateMappedMemoryRanges(ctx->device, 1, &range);
     }
 
-    /* Map staging and copy to host */
-    void *mapped = NULL;
-    VkResult vr = vkMapMemory(ctx->device, staging_mem, 0,
-                               (VkDeviceSize)ByteCount, 0, &mapped);
-    if (vr != VK_SUCCESS) {
-        cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
-        return cuvk_vk_to_cu(vr);
-    }
-
-    memcpy(dstHost, mapped, ByteCount);
-    vkUnmapMemory(ctx->device, staging_mem);
-
-    /* Clean up staging */
-    cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
-
+    memcpy(dstHost, ctx->download_mapped, ByteCount);
     return CUDA_SUCCESS;
 }
 
@@ -593,25 +930,17 @@ CUresult CUDAAPI cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc,
     /* Staging buffer for remainder (or all if unaligned) */
     VkDeviceSize staging_size = (aligned_count == 0) ? (VkDeviceSize)N :
                                                         remainder;
-    VkBuffer staging_buf = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    void *mapped = NULL;
 
-    CUresult res = cuvk_create_staging_buffer(ctx, staging_size,
-                                               &staging_buf, &staging_mem,
-                                               &mapped);
+    CUresult res = cuvk_ensure_staging(ctx, staging_size);
     if (res != CUDA_SUCCESS)
         return res;
 
-    memset(mapped, uc, (size_t)staging_size);
-    vkUnmapMemory(ctx->device, staging_mem);
+    memset(ctx->staging_mapped, uc, (size_t)staging_size);
 
     VkCommandBuffer cb = VK_NULL_HANDLE;
     res = cuvk_oneshot_begin(ctx, &cb);
-    if (res != CUDA_SUCCESS) {
-        cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
+    if (res != CUDA_SUCCESS)
         return res;
-    }
 
     VkBufferCopy region = {0};
     region.srcOffset = 0;
@@ -621,12 +950,9 @@ CUresult CUDAAPI cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc,
                        offset;
     region.size = staging_size;
 
-    vkCmdCopyBuffer(cb, staging_buf, alloc->buffer, 1, &region);
+    vkCmdCopyBuffer(cb, ctx->staging_buf, alloc->buffer, 1, &region);
 
-    res = cuvk_oneshot_end(ctx, cb);
-    cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
-
-    return res;
+    return cuvk_oneshot_end(ctx, cb);
 }
 
 /* ============================================================================
@@ -689,30 +1015,21 @@ CUresult CUDAAPI cuMemsetD16_v2(CUdeviceptr dstDevice, unsigned short us,
     /* Staging buffer for remainder (or all if unaligned) */
     VkDeviceSize staging_size = (aligned_bytes == 0) ? byte_count :
                                                         remainder_bytes;
-    VkBuffer staging_buf = VK_NULL_HANDLE;
-    VkDeviceMemory staging_mem = VK_NULL_HANDLE;
-    void *mapped = NULL;
 
-    CUresult res = cuvk_create_staging_buffer(ctx, staging_size,
-                                               &staging_buf, &staging_mem,
-                                               &mapped);
+    CUresult res = cuvk_ensure_staging(ctx, staging_size);
     if (res != CUDA_SUCCESS)
         return res;
 
     /* Fill with 16-bit pattern */
-    unsigned short *p = (unsigned short *)mapped;
+    unsigned short *p = (unsigned short *)ctx->staging_mapped;
     size_t count = (size_t)(staging_size / 2);
     for (size_t i = 0; i < count; i++)
         p[i] = us;
 
-    vkUnmapMemory(ctx->device, staging_mem);
-
     VkCommandBuffer cb = VK_NULL_HANDLE;
     res = cuvk_oneshot_begin(ctx, &cb);
-    if (res != CUDA_SUCCESS) {
-        cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
+    if (res != CUDA_SUCCESS)
         return res;
-    }
 
     VkBufferCopy region = {0};
     region.srcOffset = 0;
@@ -722,10 +1039,7 @@ CUresult CUDAAPI cuMemsetD16_v2(CUdeviceptr dstDevice, unsigned short us,
                        offset;
     region.size = staging_size;
 
-    vkCmdCopyBuffer(cb, staging_buf, alloc->buffer, 1, &region);
+    vkCmdCopyBuffer(cb, ctx->staging_buf, alloc->buffer, 1, &region);
 
-    res = cuvk_oneshot_end(ctx, cb);
-    cuvk_destroy_staging_buffer(ctx, staging_buf, staging_mem);
-
-    return res;
+    return cuvk_oneshot_end(ctx, cb);
 }

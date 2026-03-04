@@ -62,6 +62,15 @@ typedef struct CuvkAlloc {
     void           *host_mapped;  /* persistent map for host-visible memory */
 } CuvkAlloc;
 
+/* A pinned host allocation (cuMemAllocHost) — VkBuffer in HOST_CACHED memory */
+typedef struct CuvkHostAlloc {
+    VkBuffer        buffer;
+    VkDeviceMemory  memory;
+    VkDeviceSize    size;
+    void           *mapped;       /* persistently mapped pointer returned to user */
+    bool            coherent;     /* false → needs flush/invalidate */
+} CuvkHostAlloc;
+
 /* Cached compute pipeline keyed by block dimensions */
 typedef struct CuvkPipelineEntry {
     uint32_t          block_x;
@@ -167,6 +176,28 @@ struct CUctx_st {
     /* Timeline semaphore for ordered submission */
     VkSemaphore                     timeline_sem;
     uint64_t                        timeline_value;
+
+    /* Reusable one-shot command buffer + fence (for synchronous ops) */
+    VkCommandBuffer                 oneshot_cb;
+    VkFence                         oneshot_fence;
+
+    /* Cached staging buffer for uploads (grow-only, persistently mapped) */
+    VkBuffer                        staging_buf;
+    VkDeviceMemory                  staging_mem;
+    VkDeviceSize                    staging_capacity;
+    void                           *staging_mapped;
+
+    /* Download staging buffer (HOST_CACHED for fast CPU reads) */
+    VkBuffer                        download_buf;
+    VkDeviceMemory                  download_mem;
+    VkDeviceSize                    download_capacity;
+    void                           *download_mapped;
+    bool                            download_needs_invalidate;
+
+    /* Pinned host allocations (cuMemAllocHost) */
+    CuvkHostAlloc                  *host_allocs;
+    uint32_t                        host_alloc_count;
+    uint32_t                        host_alloc_capacity;
 
     /* Default (NULL) stream */
     struct CUstream_st              default_stream;

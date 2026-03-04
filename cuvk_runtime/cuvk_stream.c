@@ -24,14 +24,8 @@ CUresult cuvk_oneshot_begin(struct CUctx_st *ctx, VkCommandBuffer *out_cb)
     if (!ctx || !out_cb)
         return CUDA_ERROR_INVALID_VALUE;
 
-    VkCommandBufferAllocateInfo alloc_info = {0};
-    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = ctx->cmd_pool;
-    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc_info.commandBufferCount = 1;
-
-    VkCommandBuffer cb = VK_NULL_HANDLE;
-    VkResult vr = vkAllocateCommandBuffers(ctx->device, &alloc_info, &cb);
+    /* Reuse the pre-allocated oneshot command buffer */
+    VkResult vr = vkResetCommandBuffer(ctx->oneshot_cb, 0);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
@@ -39,13 +33,11 @@ CUresult cuvk_oneshot_begin(struct CUctx_st *ctx, VkCommandBuffer *out_cb)
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    vr = vkBeginCommandBuffer(cb, &begin_info);
-    if (vr != VK_SUCCESS) {
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
+    vr = vkBeginCommandBuffer(ctx->oneshot_cb, &begin_info);
+    if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
-    }
 
-    *out_cb = cb;
+    *out_cb = ctx->oneshot_cb;
     return CUDA_SUCCESS;
 }
 
@@ -59,21 +51,13 @@ CUresult cuvk_oneshot_end(struct CUctx_st *ctx, VkCommandBuffer cb)
         return CUDA_ERROR_INVALID_VALUE;
 
     VkResult vr = vkEndCommandBuffer(cb);
-    if (vr != VK_SUCCESS) {
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
+    if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
-    }
 
-    /* Create an unsignaled fence */
-    VkFenceCreateInfo fence_ci = {0};
-    fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-
-    VkFence fence = VK_NULL_HANDLE;
-    vr = vkCreateFence(ctx->device, &fence_ci, NULL, &fence);
-    if (vr != VK_SUCCESS) {
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
+    /* Reset the reusable fence */
+    vr = vkResetFences(ctx->device, 1, &ctx->oneshot_fence);
+    if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
-    }
 
     /* Submit */
     VkSubmitInfo submit_info = {0};
@@ -81,22 +65,13 @@ CUresult cuvk_oneshot_end(struct CUctx_st *ctx, VkCommandBuffer cb)
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &cb;
 
-    vr = vkQueueSubmit(ctx->compute_queue, 1, &submit_info, fence);
-    if (vr != VK_SUCCESS) {
-        vkDestroyFence(ctx->device, fence, NULL);
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
+    vr = vkQueueSubmit(ctx->compute_queue, 1, &submit_info, ctx->oneshot_fence);
+    if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
-    }
 
     /* Wait for completion */
-    vr = vkWaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX);
-    CUresult result = cuvk_vk_to_cu(vr);
-
-    /* Cleanup */
-    vkDestroyFence(ctx->device, fence, NULL);
-    vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
-
-    return result;
+    vr = vkWaitForFences(ctx->device, 1, &ctx->oneshot_fence, VK_TRUE, UINT64_MAX);
+    return cuvk_vk_to_cu(vr);
 }
 
 /* ============================================================================

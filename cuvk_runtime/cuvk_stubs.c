@@ -278,18 +278,7 @@ CUresult CUDAAPI cuMemAllocPitch(CUdeviceptr *dptr, size_t *pPitch,
     return cuMemAlloc_v2(dptr, pitch * Height);
 }
 
-/* cuMemAllocHost: macro maps to cuMemAllocHost_v2 */
-CUresult CUDAAPI cuMemAllocHost(void **pp, size_t bytesize) {
-    if (!pp) return CUDA_ERROR_INVALID_VALUE;
-    *pp = malloc(bytesize);
-    if (!*pp) return CUDA_ERROR_OUT_OF_MEMORY;
-    return CUDA_SUCCESS;
-}
-
-CUresult CUDAAPI cuMemFreeHost(void *p) {
-    free(p);
-    return CUDA_SUCCESS;
-}
+/* cuMemAllocHost_v2 and cuMemFreeHost are implemented in cuvk_memory.c */
 
 CUresult CUDAAPI cuMemHostAlloc(void **pp, size_t bytesize,
                                 unsigned int Flags) {
