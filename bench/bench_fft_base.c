@@ -78,6 +78,20 @@ static int bit_reverse(int v, int bits) {
 }
 
 /* ========================================================================== */
+/* Float formatting: %.17g can produce "1" or "0" which WGSL parses as        */
+/* integer literals. sb_float ensures a decimal point is always present.       */
+/* ========================================================================== */
+
+static void sb_float(StrBuf *sb, double v) {
+  char tmp[64];
+  snprintf(tmp, sizeof(tmp), "%.17g", v);
+  sb_printf(sb, "%s", tmp);
+  /* If no '.' or 'e'/'E', it looks like an integer literal to WGSL */
+  if (!strchr(tmp, '.') && !strchr(tmp, 'e') && !strchr(tmp, 'E'))
+    sb_printf(sb, ".0");
+}
+
+/* ========================================================================== */
 /* WGSL generation: power-of-2 Cooley-Tukey (fully unrolled)                  */
 /* ========================================================================== */
 
@@ -120,12 +134,16 @@ static char *gen_fft_po2(int n) {
         if (fabs(tw_re) < 1e-15) tw_re = 0.0;
         if (fabs(tw_im) < 1e-15) tw_im = 0.0;
 
-        sb_printf(&sb,
-          "  let tr%d: f32 = %.17g * r%d - (%.17g) * i%d;\n",
-          tmp_id, tw_re, odd, tw_im, odd);
-        sb_printf(&sb,
-          "  let ti%d: f32 = %.17g * i%d + (%.17g) * r%d;\n",
-          tmp_id, tw_re, odd, tw_im, odd);
+        sb_printf(&sb, "  let tr%d: f32 = ", tmp_id);
+        sb_float(&sb, tw_re);
+        sb_printf(&sb, " * r%d - (", odd);
+        sb_float(&sb, tw_im);
+        sb_printf(&sb, ") * i%d;\n", odd);
+        sb_printf(&sb, "  let ti%d: f32 = ", tmp_id);
+        sb_float(&sb, tw_re);
+        sb_printf(&sb, " * i%d + (", odd);
+        sb_float(&sb, tw_im);
+        sb_printf(&sb, ") * r%d;\n", odd);
         sb_printf(&sb,
           "  let er%d: f32 = r%d; let ei%d: f32 = i%d;\n",
           tmp_id, even, tmp_id, even);
@@ -202,12 +220,16 @@ static char *gen_fft_dft(int n) {
           "  or%d = or%d - xi%d; oi%d = oi%d + xr%d;\n",
           k, k, j, k, k, j);
       } else {
-        sb_printf(&sb,
-          "  or%d = or%d + %.17g * xr%d - (%.17g) * xi%d;\n",
-          k, k, wr, j, wi, j);
-        sb_printf(&sb,
-          "  oi%d = oi%d + %.17g * xi%d + (%.17g) * xr%d;\n",
-          k, k, wr, j, wi, j);
+        sb_printf(&sb, "  or%d = or%d + ", k, k);
+        sb_float(&sb, wr);
+        sb_printf(&sb, " * xr%d - (", j);
+        sb_float(&sb, wi);
+        sb_printf(&sb, ") * xi%d;\n", j);
+        sb_printf(&sb, "  oi%d = oi%d + ", k, k);
+        sb_float(&sb, wr);
+        sb_printf(&sb, " * xi%d + (", j);
+        sb_float(&sb, wi);
+        sb_printf(&sb, ") * xr%d;\n", j);
       }
     }
   }

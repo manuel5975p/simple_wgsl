@@ -78,6 +78,7 @@ add_executable(wgsl_tests ${TEST_SOURCES})
 
 target_link_libraries(wgsl_tests
     wgsl_compiler
+    fft_stockham_gen
     GTest::gtest
     GTest::gtest_main
 )

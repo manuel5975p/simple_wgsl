@@ -122,6 +122,10 @@ if(WGSL_BUILD_FUZZ)
     add_subdirectory(fuzz)
 endif()
 
+add_library(fft_stockham_gen STATIC fft_stockham_gen.c)
+target_link_libraries(fft_stockham_gen m)
+target_include_directories(fft_stockham_gen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 if(WIN32)
     # Cross-compilation: always build cuvk_runtime if Vulkan lib provided
     if(VULKAN_LIBRARY)
@@ -145,7 +149,7 @@ else()
     if(Vulkan_FOUND)
         add_subdirectory(cuvk_runtime)
 
-        add_executable(bench_fft_base bench/bench_fft_base.c)
-        target_link_libraries(bench_fft_base wgsl_compiler Vulkan::Vulkan m)
+        add_executable(bench_fft_stockham bench/bench_fft_stockham.c)
+        target_link_libraries(bench_fft_stockham fft_stockham_gen wgsl_compiler Vulkan::Vulkan m)
     endif()
 endif()

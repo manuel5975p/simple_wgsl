@@ -2653,6 +2653,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
         wb_push(wb, param_type_spv);
         wb_push(wb, param_spv);
         sts_emit_name(c, param_spv, func->params[i].name);
+        set_ssir_type(c, func->params[i].id, func->params[i].type);
     }
 
     /* Emit blocks */

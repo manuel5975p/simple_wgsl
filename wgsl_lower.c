@@ -405,6 +405,17 @@ struct WgslLower {
     } imm_map[64];
     int imm_map_count;
 
+    // User-defined (non-entrypoint) function registry
+    struct {
+        const char *name;
+        uint32_t func_id;        // SPIR-V function ID
+        uint32_t return_type_id; // SPIR-V return type (void_type for void)
+        uint32_t *param_types;   // SPIR-V parameter types
+        int param_count;
+    } *user_funcs;
+    int user_func_count;
+    int user_func_cap;
+
     // SSIR ID mapping (SPV ID -> SSIR ID)
     uint32_t *ssir_id_map;
     uint32_t ssir_id_map_cap;
@@ -1521,6 +1532,17 @@ static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
             return lower_type(l, tn->type_args[0]);
         }
         return l->id_u32 ? l->id_u32 : emit_type_int(l, 32, 0);
+    }
+
+    // Pointer types: ptr<address_space, T>
+    if (strcmp(name, "ptr") == 0) {
+        if (tn->type_arg_count >= 2) {
+            const char *space_name = tn->type_args[0]->type_node.name;
+            SpvStorageClass sc = wgsl_address_space_to_storage_class(space_name);
+            uint32_t pointee = lower_type(l, tn->type_args[1]);
+            return emit_type_pointer(l, sc, pointee);
+        }
+        return emit_type_void(l);
     }
 
     // Array types
@@ -3020,6 +3042,15 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
                         wb_push_u32(wb, l->imm_map[i].pc_var);
                         wb_push_u32(wb, idx);
                     }
+                    // SSIR: emit access chain
+                    if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                        uint32_t ssir_idx = ssir_const_u32(l->ssir, l->imm_map[i].member_index);
+                        uint32_t ssir_member_ptr = ssir_type_ptr(l->ssir,
+                            l->imm_map[i].ssir_member_type, SSIR_ADDR_PUSH_CONSTANT);
+                        uint32_t ssir_chain = ssir_build_access(WL_BCTX(l),
+                            ssir_member_ptr, l->imm_map[i].ssir_pc_var, &ssir_idx, 1);
+                        ssir_id_map_set(l, chain_id, ssir_chain);
+                    }
                     r.id = chain_id;
                     r.type_id = l->imm_map[i].member_type;
                     if (out_sc) *out_sc = SpvStorageClassPushConstant;
@@ -4413,6 +4444,68 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         return r;
     }
 
+    // User-defined function call: look up in user_funcs registry
+    for (int uf = 0; uf < l->user_func_count; uf++) {
+        if (strcmp(l->user_funcs[uf].name, callee_name) != 0) continue;
+
+        uint32_t uf_func_id = l->user_funcs[uf].func_id;
+        uint32_t uf_return_type = l->user_funcs[uf].return_type_id;
+        int uf_param_count = l->user_funcs[uf].param_count;
+
+        // Lower arguments (handle ptr<immediate>→value conversion: load from pointer)
+        uint32_t arg_ids[32];
+        int arg_count = call->arg_count < 32 ? call->arg_count : 32;
+        for (int a = 0; a < arg_count; a++) {
+            const WgslAstNode *arg_node = call->args[a];
+            // If argument is &expr and parameter is a value type, load the value
+            if (arg_node->type == WGSL_NODE_UNARY && strcmp(arg_node->unary.op, "&") == 0 &&
+                a < uf_param_count && is_scalar_type(l->user_funcs[uf].param_types[a], l)) {
+                SpvStorageClass sc;
+                ExprResult ptr = lower_ptr_expr(l, arg_node->unary.expr, &sc);
+                if (ptr.id) {
+                    uint32_t loaded;
+                    if (emit_load(l, ptr.type_id, &loaded, ptr.id)) {
+                        arg_ids[a] = loaded;
+                        continue;
+                    }
+                }
+            }
+            ExprResult arg = lower_expr_full(l, arg_node);
+            arg_ids[a] = arg.id;
+        }
+
+        // Emit OpFunctionCall: result_type result_id func_id arg0 arg1 ...
+        uint32_t result_id = fresh_id(l);
+        WordBuf *wb = &l->sections.functions;
+        emit_op(wb, SpvOpFunctionCall, 4 + arg_count);
+        wb_push_u32(wb, uf_return_type);
+        wb_push_u32(wb, result_id);
+        wb_push_u32(wb, uf_func_id);
+        for (int a = 0; a < arg_count; a++) {
+            wb_push_u32(wb, arg_ids[a]);
+        }
+
+        r.id = result_id;
+        r.type_id = uf_return_type;
+
+        // SSIR function call
+        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+            uint32_t ssir_callee = ssir_id_map_get(l, uf_func_id);
+            uint32_t ssir_ret_type = spv_type_to_ssir(l, uf_return_type);
+            uint32_t ssir_args[32];
+            for (int a = 0; a < arg_count; a++)
+                ssir_args[a] = ssir_id_map_get(l, arg_ids[a]);
+            if (ssir_callee && ssir_ret_type) {
+                uint32_t ssir_result = ssir_build_call(WL_BCTX(l),
+                    ssir_ret_type, ssir_callee, ssir_args, (uint32_t)arg_count);
+                if (ssir_result) ssir_id_map_set(l, result_id, ssir_result);
+            }
+        }
+
+        (void)uf_param_count;
+        return r;
+    }
+
     return r;
 }
 
@@ -4689,7 +4782,11 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
             if (strcmp(un->op, "*") == 0) {
                 SpvStorageClass sc;
                 ExprResult ptr = lower_ptr_expr(l, un->expr, &sc);
-                if (!ptr.id) return r;
+                if (!ptr.id) {
+                    // Fallback: if the operand is a by-value binding (e.g., ptr<immediate> lowered
+                    // to value), dereferencing just returns the value itself.
+                    return lower_expr_full(l, un->expr);
+                }
                 uint32_t loaded;
                 if (emit_load(l, ptr.type_id, &loaded, ptr.id)) {
                     r.id = loaded;
@@ -4842,11 +4939,12 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
         case WGSL_NODE_INDEX: {
             const Index *idx = &node->index;
 
-            // First, check if this is storage buffer array indexing
+            // First, check if this is addressable array indexing (storage/uniform/workgroup/function)
             SpvStorageClass sc;
             ExprResult ptr = lower_ptr_expr(l, node, &sc);
-            if (ptr.id && (sc == SpvStorageClassStorageBuffer || sc == SpvStorageClassUniform)) {
-                // This is storage buffer array access - load from the pointer
+            if (ptr.id && (sc == SpvStorageClassStorageBuffer || sc == SpvStorageClassUniform ||
+                           sc == SpvStorageClassWorkgroup || sc == SpvStorageClassFunction)) {
+                // This is pointer-based array access - load from the pointer
                 uint32_t loaded;
                 if (emit_load(l, ptr.type_id, &loaded, ptr.id)) {
                     r.id = loaded;
@@ -5012,6 +5110,12 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
                 // cross returns vec3
                 if (strcmp(callee_name, "cross") == 0) {
                     return l->id_vec3f ? l->id_vec3f : emit_type_vector(l, l->id_f32, 3);
+                }
+                // User-defined function: look up return type
+                for (int uf = 0; uf < l->user_func_count; uf++) {
+                    if (strcmp(l->user_funcs[uf].name, callee_name) == 0) {
+                        return l->user_funcs[uf].return_type_id;
+                    }
                 }
                 // Most other functions preserve input type
                 if (call->arg_count > 0) {
@@ -5179,20 +5283,6 @@ static void collect_variables_from_block(WgslLower *l, const WgslAstNode *block)
 
 // Emit pending initializers after all OpVariable instructions
 // l nonnull
-static void emit_pending_initializers(WgslLower *l) {
-    wgsl_compiler_assert(l != NULL, "emit_pending_initializers: l is NULL");
-    for (int i = 0; i < l->fn_ctx.pending_init_count; ++i) {
-        ExprResult init = lower_expr_full(l, l->fn_ctx.pending_inits[i].init_expr);
-        if (init.id) {
-            emit_store(l, l->fn_ctx.pending_inits[i].var_id, init.id);
-        }
-    }
-    // Clear pending inits
-    WGSL_FREE(l->fn_ctx.pending_inits);
-    l->fn_ctx.pending_inits = NULL;
-    l->fn_ctx.pending_init_count = 0;
-    l->fn_ctx.pending_init_cap = 0;
-}
 
 // l nonnull
 // node nonnull
@@ -5201,8 +5291,24 @@ static int lower_var_decl(WgslLower *l, const WgslAstNode *node) {
     wgsl_compiler_assert(node != NULL, "lower_var_decl: node is NULL");
     const VarDecl *vd = &node->var_decl;
 
-    // var declarations are handled by collect_variables + pending_inits
-    if (vd->kind == WGSL_DECL_VAR) return 1;
+    // var declarations: OpVariable was emitted by collect_variables.
+    // Emit the init store here (inline) so that preceding let/const are in scope.
+    if (vd->kind == WGSL_DECL_VAR) {
+        if (vd->init) {
+            // Find the var's OpVariable ID in locals
+            for (int i = l->fn_ctx.locals.count - 1; i >= 0; --i) {
+                if (l->fn_ctx.locals.vars[i].name &&
+                    strcmp(l->fn_ctx.locals.vars[i].name, vd->name) == 0) {
+                    ExprResult init = lower_expr_full(l, vd->init);
+                    if (init.id) {
+                        emit_store(l, l->fn_ctx.locals.vars[i].ptr_id, init.id);
+                    }
+                    break;
+                }
+            }
+        }
+        return 1;
+    }
 
     // let/const: evaluate init expression and bind as SSA value
     if (!vd->init) return 1;
@@ -5523,12 +5629,9 @@ static int lower_for_stmt(WgslLower *l, const WgslAstNode *node) {
     wgsl_compiler_assert(node != NULL, "lower_for_stmt: node is NULL");
     const ForStmt *for_stmt = &node->for_stmt;
 
-    // Lower initializer (store is emitted here since var was already declared)
-    // Actually, the initializer in a for loop creates a new variable that should be
-    // handled in the variable collection pass. The init statement lowering here
-    // should just be a no-op for var decls.
-    // But we may have assignment as init, so handle those:
-    if (for_stmt->init && for_stmt->init->type == WGSL_NODE_ASSIGN) {
+    // Lower initializer — handles both `var i: u32 = 0u` (VAR_DECL) and `i = 0u` (ASSIGN).
+    // The variable was allocated by collect_variables, but the init store is emitted here.
+    if (for_stmt->init) {
         lower_statement(l, for_stmt->init);
     }
 
@@ -6337,6 +6440,199 @@ static int lower_module_vars(WgslLower *l) {
     return 1;
 }
 
+// ---------- User-defined (non-entrypoint) Function Lowering ----------
+
+// Lower a single user-defined helper function to SPIR-V.
+// l nonnull, fn_node nonnull
+static int lower_helper_function(WgslLower *l, const WgslAstNode *fn_node) {
+    wgsl_compiler_assert(l != NULL, "lower_helper_function: l is NULL");
+    wgsl_compiler_assert(fn_node != NULL, "lower_helper_function: fn_node is NULL");
+    if (fn_node->type != WGSL_NODE_FUNCTION) return 0;
+
+    const Function *fn = &fn_node->function;
+
+    // Clear function context
+    memset(&l->fn_ctx, 0, sizeof(l->fn_ctx));
+
+    // Lower return type
+    uint32_t return_type = emit_type_void(l);
+    if (fn->return_type) {
+        return_type = lower_type(l, fn->return_type);
+    }
+    l->fn_ctx.return_type_id = return_type;
+
+    // Lower parameter types
+    int param_count = fn->param_count;
+    uint32_t *param_types = NULL;
+    if (param_count > 0) {
+        param_types = (uint32_t *)WGSL_MALLOC(sizeof(uint32_t) * param_count);
+        if (!param_types) { fn_ctx_clear_locals(l); return 0; }
+        for (int i = 0; i < param_count; i++) {
+            const WgslAstNode *pn = fn->params[i];
+            if (pn && pn->type == WGSL_NODE_PARAM && pn->param.type) {
+                const WgslAstNode *pt = pn->param.type;
+                // ptr<immediate/push_constant, T> → pass T by value
+                // (PushConstant pointers can't be function parameters in Vulkan SPIR-V)
+                if (pt->type == WGSL_NODE_TYPE && strcmp(pt->type_node.name, "ptr") == 0 &&
+                    pt->type_node.type_arg_count >= 2) {
+                    const char *space = pt->type_node.type_args[0]->type_node.name;
+                    if (strcmp(space, "immediate") == 0 || strcmp(space, "push_constant") == 0) {
+                        param_types[i] = lower_type(l, pt->type_node.type_args[1]);
+                    } else {
+                        param_types[i] = lower_type(l, pt);
+                    }
+                } else {
+                    param_types[i] = lower_type(l, pt);
+                }
+            } else {
+                param_types[i] = l->id_f32; // fallback
+            }
+        }
+    }
+
+    // Create function type
+    uint32_t func_type = emit_type_function(l, return_type, param_types, param_count);
+    uint32_t func_id = fresh_id(l);
+    l->fn_ctx.func_id = func_id;
+
+    // Create SSIR function
+    uint32_t ssir_ret = spv_type_to_ssir(l, return_type);
+    uint32_t ssir_func = ssir_function_create(l->ssir, fn->name, ssir_ret ? ssir_ret : l->ssir_void);
+    l->fn_ctx.ssir_func_id = ssir_func;
+
+    // Map SPIR-V func_id → SSIR func_id so OpFunctionCall can find it
+    ssir_id_map_set(l, func_id, ssir_func);
+
+    // Emit OpFunction
+    if (!emit_function_begin(l, func_id, return_type, func_type)) {
+        WGSL_FREE(param_types);
+        fn_ctx_clear_locals(l);
+        return 0;
+    }
+
+    // Emit OpFunctionParameter for each parameter and register as local value bindings
+    for (int i = 0; i < param_count; i++) {
+        const WgslAstNode *pn = fn->params[i];
+        uint32_t param_id = fresh_id(l);
+        WordBuf *wb = &l->sections.functions;
+        emit_op(wb, SpvOpFunctionParameter, 3);
+        wb_push_u32(wb, param_types[i]);
+        wb_push_u32(wb, param_id);
+
+        // SSIR parameter
+        if (ssir_func) {
+            uint32_t ssir_param_type = spv_type_to_ssir(l, param_types[i]);
+            const char *pname = (pn && pn->type == WGSL_NODE_PARAM) ? pn->param.name : NULL;
+            uint32_t ssir_param = ssir_function_add_param(l->ssir, ssir_func, pname ? pname : "_p", ssir_param_type);
+            if (ssir_param) ssir_id_map_set(l, param_id, ssir_param);
+        }
+
+        // Register parameter as a value binding (like let)
+        if (pn && pn->type == WGSL_NODE_PARAM && pn->param.name) {
+            fn_ctx_add_local_ex(l, pn->param.name, param_id, param_types[i], 1);
+            emit_name(l, param_id, pn->param.name);
+        }
+    }
+
+    // Emit entry label
+    uint32_t label_id;
+    if (!emit_label(l, &label_id)) {
+        WGSL_FREE(param_types);
+        fn_ctx_clear_locals(l);
+        return 0;
+    }
+    l->fn_ctx.label_id = label_id;
+
+    // Create SSIR entry block
+    uint32_t ssir_block = ssir_block_create(l->ssir, ssir_func, "entry");
+    l->fn_ctx.ssir_block_id = ssir_block;
+
+    // First pass: collect variable declarations (OpVariable must be at start of block)
+    if (fn->body) {
+        collect_variables_from_block(l, fn->body);
+    }
+
+    // Clear pending inits (emitted inline by lower_var_decl)
+    WGSL_FREE(l->fn_ctx.pending_inits);
+    l->fn_ctx.pending_inits = NULL;
+    l->fn_ctx.pending_init_count = 0;
+    l->fn_ctx.pending_init_cap = 0;
+
+    // Second pass: lower function body
+    if (fn->body) {
+        lower_block(l, fn->body);
+    }
+
+    // Emit return if not already returned
+    if (!l->fn_ctx.has_returned) {
+        emit_return(l);
+    }
+
+    if (!emit_function_end(l)) {
+        WGSL_FREE(param_types);
+        fn_ctx_clear_locals(l);
+        return 0;
+    }
+
+    emit_name(l, func_id, fn->name);
+
+    // Register in user_funcs table
+    if (l->user_func_count >= l->user_func_cap) {
+        int new_cap = l->user_func_cap ? l->user_func_cap * 2 : 8;
+        void *p = WGSL_REALLOC(l->user_funcs, new_cap * sizeof(l->user_funcs[0]));
+        if (p) {
+            l->user_funcs = (__typeof__(l->user_funcs))p;
+            l->user_func_cap = new_cap;
+        }
+    }
+    if (l->user_func_count < l->user_func_cap) {
+        l->user_funcs[l->user_func_count].name = fn->name;
+        l->user_funcs[l->user_func_count].func_id = func_id;
+        l->user_funcs[l->user_func_count].return_type_id = return_type;
+        l->user_funcs[l->user_func_count].param_types = param_types;
+        l->user_funcs[l->user_func_count].param_count = param_count;
+        l->user_func_count++;
+    } else {
+        WGSL_FREE(param_types);
+    }
+
+    fn_ctx_clear_locals(l);
+    return 1;
+}
+
+// Lower all non-entrypoint functions in the program.
+// Must be called before lowering entry points so that OpFunctionCall can reference them.
+static int lower_helper_functions(WgslLower *l, const WgslResolverEntrypoint *eps, int ep_count) {
+    if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return 1;
+    const Program *prog = &l->program->program;
+
+    for (int d = 0; d < prog->decl_count; d++) {
+        const WgslAstNode *decl = prog->decls[d];
+        if (!decl || decl->type != WGSL_NODE_FUNCTION) continue;
+
+        // Skip entrypoint functions
+        int is_ep = 0;
+        for (int e = 0; e < ep_count; e++) {
+            if (eps[e].function_node == decl) { is_ep = 1; break; }
+        }
+        if (is_ep) continue;
+
+        // When compiling for a specific entry point, skip helpers not called by it
+        if (l->opts.entry_point && decl->function.name) {
+            int reachable = 0;
+            for (int e = 0; e < ep_count && !reachable; e++) {
+                if (!l->opts.entry_point || strcmp(eps[e].name, l->opts.entry_point) == 0) {
+                    reachable = wgsl_resolver_is_called_by(l->resolver, eps[e].name, decl->function.name);
+                }
+            }
+            if (!reachable) continue;
+        }
+
+        if (!lower_helper_function(l, decl)) return 0;
+    }
+    return 1;
+}
+
 // l nonnull
 // ep nonnull
 static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32_t *out_func_id, uint32_t **out_interface, int *out_interface_count) {
@@ -7067,8 +7363,13 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
         collect_variables_from_block(l, fn->body);
     }
 
-    // Emit pending initializers (stores happen after all OpVariable)
-    emit_pending_initializers(l);
+    // Note: var initializers are now emitted inline by lower_var_decl,
+    // so preceding let/const bindings are in scope. Clear any pending inits
+    // that were collected but will be emitted inline.
+    WGSL_FREE(l->fn_ctx.pending_inits);
+    l->fn_ctx.pending_inits = NULL;
+    l->fn_ctx.pending_init_count = 0;
+    l->fn_ctx.pending_init_cap = 0;
 
     // Pre-load fragment input parameters as local value bindings.
     // This is needed because find_global_by_name returns the first match,
@@ -7447,6 +7748,11 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
         }
     }
 
+    // Lower non-entrypoint helper functions before entry points
+    if (eps && ep_count > 0) {
+        if (!lower_helper_functions(l, eps, ep_count)) goto fail;
+    }
+
     if (ep_count <= 0 || !eps) {
         // Synthesize a default fragment entry
         l->eps = (WgslLowerEntrypointInfo *)WGSL_MALLOC(sizeof(WgslLowerEntrypointInfo));
@@ -7610,6 +7916,10 @@ void wgsl_lower_destroy(WgslLower *lower) {
     }
     WGSL_FREE(lower->global_map);
     WGSL_FREE(lower->struct_cache);
+    for (int i = 0; i < lower->user_func_count; ++i) {
+        WGSL_FREE(lower->user_funcs[i].param_types);
+    }
+    WGSL_FREE(lower->user_funcs);
     for (int i = 0; i < lower->ep_count; ++i) {
         WGSL_FREE((void *)lower->eps[i].interface_ids);
     }

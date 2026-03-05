@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "test_utils.h"
+#include "fft_stockham_gen.h"
 
 TEST(LowerTest, EmitMinimalSpirv) {
     const char *source = "fn main() {}";
@@ -2109,4 +2110,259 @@ TEST(IntegrationTest, ReflectionVector) {
     return vec4<f32>(vec3<f32>(spec), 1.0);
 })");
     EXPECT_TRUE(r.success) << r.error;
+}
+
+// --- Const array regression tests ---
+
+TEST(ConstArrayTest, ModuleScopeConstArrayF32) {
+    auto r = wgsl_test::CompileWgsl(R"(
+const WEIGHTS = array<f32, 4>(0.1, 0.2, 0.3, 0.4);
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let w = WEIGHTS[gid.x % 4u];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ConstArrayTest, ModuleScopeConstArrayU32) {
+    auto r = wgsl_test::CompileWgsl(R"(
+const INDICES = array<u32, 3>(10u, 20u, 30u);
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = INDICES[gid.x % 3u];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ConstArrayTest, ModuleScopeConstArrayI32) {
+    auto r = wgsl_test::CompileWgsl(R"(
+const OFFSETS = array<i32, 4>(-2, -1, 1, 2);
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let off = OFFSETS[gid.x % 4u];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ConstArrayTest, ConstArrayIndexedByLoopVariable) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Out { data: array<f32>, }
+const TAPS = array<f32, 4>(0.25, 0.5, 0.75, 1.0);
+@group(0) @binding(0) var<storage, read_write> out: Out;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    var sum = 0.0;
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        sum = sum + TAPS[i];
+    }
+    out.data[gid.x] = sum;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ConstArrayTest, MultipleConstArrays) {
+    auto r = wgsl_test::CompileWgsl(R"(
+const A = array<f32, 3>(1.0, 2.0, 3.0);
+const B = array<f32, 3>(4.0, 5.0, 6.0);
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x % 3u;
+    let sum = A[i] + B[i];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ConstArrayTest, ConstArrayInExpression) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Out { data: array<f32>, }
+const SCALE = array<f32, 4>(0.5, 1.0, 1.5, 2.0);
+@group(0) @binding(0) var<storage, read_write> out: Out;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x % 4u;
+    out.data[gid.x] = SCALE[i] * 3.14 + 1.0;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ConstArrayTest, ConstArrayOfVec2) {
+    auto r = wgsl_test::CompileWgsl(R"(
+const DIRS = array<vec2<f32>, 4>(
+    vec2<f32>(1.0, 0.0),
+    vec2<f32>(0.0, 1.0),
+    vec2<f32>(-1.0, 0.0),
+    vec2<f32>(0.0, -1.0)
+);
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let d = DIRS[gid.x % 4u];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ConstArrayTest, ConstArrayOfVec4) {
+    auto r = wgsl_test::CompileWgsl(R"(
+const COLORS = array<vec4<f32>, 3>(
+    vec4<f32>(1.0, 0.0, 0.0, 1.0),
+    vec4<f32>(0.0, 1.0, 0.0, 1.0),
+    vec4<f32>(0.0, 0.0, 1.0, 1.0)
+);
+@fragment fn main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let i = u32(pos.x) % 3u;
+    return COLORS[i];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(ConstArrayTest, FunctionScopeLetArray) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let weights = array<f32, 4>(0.1, 0.2, 0.3, 0.4);
+    let w = weights[gid.x % 4u];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// ============================================================================
+// Stockham FFT generator tests
+// ============================================================================
+
+class StockhamGenTest : public ::testing::Test {};
+
+// Helper: compile WGSL from gen_fft_stockham through the full pipeline
+static void CompileStockhamShader(int radix, int stride, int n_total,
+                                  int direction, int workgroup_size) {
+    char *src = gen_fft_stockham(radix, stride, n_total, direction, workgroup_size);
+    ASSERT_NE(src, nullptr) << "gen_fft_stockham returned NULL for radix=" << radix
+        << " stride=" << stride << " n_total=" << n_total
+        << " dir=" << direction << " wg=" << workgroup_size;
+
+    WgslAstNode *ast = wgsl_parse(src);
+    ASSERT_NE(ast, nullptr) << "wgsl_parse failed for radix=" << radix;
+
+    WgslResolver *resolver = wgsl_resolver_build(ast);
+    ASSERT_NE(resolver, nullptr) << "wgsl_resolver_build failed for radix=" << radix;
+
+    uint32_t *spirv = nullptr;
+    size_t spirv_size = 0;
+    WgslLowerOptions opts = {};
+    opts.spirv_version = 0x00010300;
+    opts.env = WGSL_LOWER_ENV_VULKAN_1_1;
+    opts.packing = WGSL_LOWER_PACK_STD430;
+
+    WgslLowerResult result = wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &spirv_size);
+    EXPECT_EQ(result, WGSL_LOWER_OK)
+        << "wgsl_lower_emit_spirv failed for radix=" << radix
+        << " stride=" << stride << " n_total=" << n_total;
+
+    if (spirv) wgsl_lower_free(spirv);
+    wgsl_resolver_free(resolver);
+    wgsl_free_ast(ast);
+    free(src);
+}
+
+TEST_F(StockhamGenTest, AllRadicesCompile) {
+    for (int radix = 2; radix <= 32; radix++) {
+        SCOPED_TRACE("radix=" + std::to_string(radix));
+        CompileStockhamShader(radix, /*stride=*/1, /*n_total=*/radix,
+                              /*direction=*/1, /*workgroup_size=*/64);
+    }
+}
+
+TEST_F(StockhamGenTest, NonTrivialStride) {
+    CompileStockhamShader(/*radix=*/4, /*stride=*/8, /*n_total=*/32,
+                          /*direction=*/1, /*workgroup_size=*/64);
+}
+
+TEST_F(StockhamGenTest, InverseDirection) {
+    CompileStockhamShader(/*radix=*/8, /*stride=*/1, /*n_total=*/8,
+                          /*direction=*/-1, /*workgroup_size=*/64);
+}
+
+// =========================================================================
+// User-defined function call tests
+// =========================================================================
+
+TEST(UserFunctionTest, SimpleHelperFunction) {
+    const char *source = R"(
+        fn double_it(x: f32) -> f32 {
+            return x + x;
+        }
+        @compute @workgroup_size(1)
+        fn main() {
+            let v = double_it(3.0);
+        }
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << "Validation error: " << result.error;
+}
+
+TEST(UserFunctionTest, Vec2Helper) {
+    const char *source = R"(
+        fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+            return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+        }
+        @compute @workgroup_size(1)
+        fn main() {
+            let a = vec2<f32>(1.0, 2.0);
+            let b = vec2<f32>(3.0, 4.0);
+            let c = cmul(a, b);
+        }
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << "Validation error: " << result.error;
+}
+
+TEST(UserFunctionTest, VoidHelper) {
+    const char *source = R"(
+        struct Buf { d: array<f32> };
+        @group(0) @binding(0) var<storage, read_write> buf: Buf;
+
+        fn store_pair(offset: u32, x: f32, y: f32) {
+            buf.d[offset] = x;
+            buf.d[offset + 1u] = y;
+        }
+        @compute @workgroup_size(1)
+        fn main() {
+            store_pair(0u, 1.0, 2.0);
+        }
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << "Validation error: " << result.error;
+}
+
+TEST(UserFunctionTest, MultipleHelpers) {
+    const char *source = R"(
+        fn add(a: f32, b: f32) -> f32 { return a + b; }
+        fn mul(a: f32, b: f32) -> f32 { return a * b; }
+        @compute @workgroup_size(1)
+        fn main() {
+            let x = add(1.0, 2.0);
+            let y = mul(x, 3.0);
+        }
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << "Validation error: " << result.error;
+}
+
+TEST(UserFunctionTest, HelperCallingHelper) {
+    const char *source = R"(
+        fn square(x: f32) -> f32 { return x * x; }
+        fn sum_of_squares(a: f32, b: f32) -> f32 {
+            return square(a) + square(b);
+        }
+        @compute @workgroup_size(1)
+        fn main() {
+            let r = sum_of_squares(3.0, 4.0);
+        }
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << "Validation error: " << result.error;
+}
+
+TEST(UserFunctionTest, IntegerParams) {
+    const char *source = R"(
+        fn index2d(row: u32, col: u32, stride: u32) -> u32 {
+            return row * stride + col;
+        }
+        @compute @workgroup_size(1)
+        fn main() {
+            let idx = index2d(3u, 5u, 10u);
+        }
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << "Validation error: " << result.error;
 }

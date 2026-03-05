@@ -1009,6 +1009,8 @@ static WgslAstNode *parse_loop_stmt(Parser *P) {
 // P nonnull
 static WgslAstNode *parse_statement(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_statement: P is NULL");
+    if (check(P, TOK_LBRACE))
+        return parse_block(P);
     if (check(P, TOK_IF))
         return parse_if_stmt(P);
     if (check(P, TOK_WHILE))

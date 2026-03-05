@@ -469,6 +469,7 @@ const WgslResolverEntrypoint *wgsl_resolver_entrypoints(const WgslResolver *r, i
 
 const WgslSymbolInfo *wgsl_resolver_entrypoint_globals(const WgslResolver *r, const char *entry_name, int *out_count);
 const WgslSymbolInfo *wgsl_resolver_entrypoint_binding_vars(const WgslResolver *r, const char *entry_name, int *out_count);
+int wgsl_resolver_is_called_by(const WgslResolver *r, const char *entry_name, const char *func_name);
 
 /* Immediate variable reflection */
 typedef struct WgslImmediateInfo {

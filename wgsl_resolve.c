@@ -1112,6 +1112,38 @@ static const WgslSymbolInfo *entrypoint_syms(const WgslResolver *r, const char *
 const WgslSymbolInfo *wgsl_resolver_entrypoint_globals(const WgslResolver *r, const char *entry_name, int *out_count) { return entrypoint_syms(r, entry_name, 0, out_count); }
 const WgslSymbolInfo *wgsl_resolver_entrypoint_binding_vars(const WgslResolver *r, const char *entry_name, int *out_count) { return entrypoint_syms(r, entry_name, 1, out_count); }
 
+int wgsl_resolver_is_called_by(const WgslResolver *r, const char *entry_name, const char *func_name) {
+    if (!r || !entry_name || !func_name) return 0;
+    const FnInfo *root = find_fninfo_by_name(r, entry_name);
+    if (!root) return 0;
+    // DFS through call graph to find func_name
+    char *visited = (char *)NODE_MALLOC((size_t)r->fn_info_count + 1);
+    if (!visited) return 0;
+    memset(visited, 0, (size_t)r->fn_info_count + 1);
+    // Stack-based DFS
+    const FnInfo **stack = (const FnInfo **)NODE_MALLOC(sizeof(const FnInfo *) * (r->fn_info_count + 1));
+    if (!stack) { NODE_FREE(visited); return 0; }
+    int sp = 0;
+    stack[sp++] = root;
+    int found = 0;
+    while (sp > 0 && !found) {
+        const FnInfo *fi = stack[--sp];
+        int idx = -1;
+        for (int j = 0; j < r->fn_info_count; j++)
+            if (r->fn_infos[j].fn == fi->fn) { idx = j; break; }
+        if (idx >= 0 && visited[idx]) continue;
+        if (idx >= 0) visited[idx] = 1;
+        for (int c = 0; c < fi->calls_count; c++) {
+            if (strcmp(fi->calls[c], func_name) == 0) { found = 1; break; }
+            const FnInfo *callee = find_fninfo_by_name(r, fi->calls[c]);
+            if (callee && sp < r->fn_info_count) stack[sp++] = callee;
+        }
+    }
+    NODE_FREE(stack);
+    NODE_FREE(visited);
+    return found;
+}
+
 /* immediate variable reflection */
 static int type_alignment_bytes(const WgslResolver *r, const WgslAstNode *t, SsirLayoutRule layout) {
     if (!t || t->type != WGSL_NODE_TYPE)
