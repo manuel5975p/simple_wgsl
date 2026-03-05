@@ -376,6 +376,8 @@ CUresult CUDAAPI cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize)
     ctx->alloc_count++;
 
     *dptr = (CUdeviceptr)device_addr;
+    CUVK_LOG("[cuvk] cuMemAlloc_v2: SUCCESS addr=0x%llx size=%zu\n",
+            (unsigned long long)device_addr, bytesize);
     return CUDA_SUCCESS;
 }
 

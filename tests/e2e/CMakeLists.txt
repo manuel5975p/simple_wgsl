@@ -166,6 +166,7 @@ set(NVCC_TESTS
     38_extended_math
     39_graph_api
     40_cublas_basic
+    41_cufft_basic
 )
 
 set(NVCC_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc)
@@ -175,6 +176,8 @@ file(MAKE_DIRECTORY ${NVCC_BIN_DIR})
 set(NVCC_DRIVER_API_TESTS 39_graph_api)
 # Tests that use cuBLAS and need -lcublas
 set(NVCC_CUBLAS_TESTS 40_cublas_basic)
+# Tests that use cuFFT and need -lcufft
+set(NVCC_CUFFT_TESTS 41_cufft_basic)
 
 set(NVCC_BINARIES "")
 foreach(test ${NVCC_TESTS})
@@ -187,6 +190,9 @@ foreach(test ${NVCC_TESTS})
     endif()
     if(test IN_LIST NVCC_CUBLAS_TESTS)
         set(_extra_flags ${_extra_flags} -lcublas)
+    endif()
+    if(test IN_LIST NVCC_CUFFT_TESTS)
+        set(_extra_flags ${_extra_flags} -lcufft)
     endif()
     add_custom_command(
         OUTPUT ${NVCC_OUT}

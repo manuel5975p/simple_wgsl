@@ -50,7 +50,8 @@ CUresult CUDAAPI cuGetErrorString(CUresult error, const char **pStr) {
 }
 
 CUresult CUDAAPI cuGetErrorName(CUresult error, const char **pStr) {
-    return cuGetErrorString(error, pStr); /* same for our purposes */
+    fprintf(stderr, "[cuvk] cuGetErrorName: error=%d\n", error);
+    return cuGetErrorString(error, pStr);
 }
 
 /* ============================================================================
@@ -327,16 +328,43 @@ CUresult CUDAAPI cuMemHostUnregister(void *p) {
 
 CUresult CUDAAPI cuMemcpy(CUdeviceptr dst, CUdeviceptr src,
                           size_t ByteCount) {
+    CUVK_LOG("[cuvk] cuMemcpy: dst=0x%llx src=0x%llx size=%zu\n",
+             (unsigned long long)dst, (unsigned long long)src, ByteCount);
     if (ByteCount == 0) return CUDA_SUCCESS;
-    /* Treat as device-to-device copy */
-    return cuMemcpyDtoD_v2(dst, src, ByteCount);
+    struct CUctx_st *ctx = g_cuvk.current_ctx;
+    if (!ctx) return CUDA_ERROR_INVALID_CONTEXT;
+
+    bool src_dev = (cuvk_alloc_lookup(ctx, src) != NULL);
+    bool dst_dev = (cuvk_alloc_lookup(ctx, dst) != NULL);
+
+    if (src_dev && dst_dev)
+        return cuMemcpyDtoD_v2(dst, src, ByteCount);
+    if (!src_dev && dst_dev)
+        return cuMemcpyHtoD_v2(dst, (const void *)(uintptr_t)src, ByteCount);
+    if (src_dev && !dst_dev)
+        return cuMemcpyDtoH_v2((void *)(uintptr_t)dst, src, ByteCount);
+    memcpy((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, ByteCount);
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemcpyAsync(CUdeviceptr dst, CUdeviceptr src,
                                size_t ByteCount, CUstream hStream) {
     (void)hStream;
     if (ByteCount == 0) return CUDA_SUCCESS;
-    return cuMemcpyDtoD_v2(dst, src, ByteCount);
+    struct CUctx_st *ctx = g_cuvk.current_ctx;
+    if (!ctx) return CUDA_ERROR_INVALID_CONTEXT;
+
+    bool src_dev = (cuvk_alloc_lookup(ctx, src) != NULL);
+    bool dst_dev = (cuvk_alloc_lookup(ctx, dst) != NULL);
+
+    if (src_dev && dst_dev)
+        return cuMemcpyDtoD_v2(dst, src, ByteCount);
+    if (!src_dev && dst_dev)
+        return cuMemcpyHtoD_v2(dst, (const void *)(uintptr_t)src, ByteCount);
+    if (src_dev && !dst_dev)
+        return cuMemcpyDtoH_v2((void *)(uintptr_t)dst, src, ByteCount);
+    memcpy((void *)(uintptr_t)dst, (const void *)(uintptr_t)src, ByteCount);
+    return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuMemcpyPeer(CUdeviceptr dstDevice, CUcontext dstContext,
@@ -388,7 +416,15 @@ CUresult CUDAAPI cuPointerGetAttribute(void *data,
     case CU_POINTER_ATTRIBUTE_IS_MANAGED:
         *(unsigned int *)data = 0;
         return CUDA_SUCCESS;
+    case CU_POINTER_ATTRIBUTE_SYNC_MEMOPS:
+        *(unsigned int *)data = 1;
+        return CUDA_SUCCESS;
+    case CU_POINTER_ATTRIBUTE_BUFFER_ID:
+        *(unsigned long long *)data = (unsigned long long)ptr;
+        return CUDA_SUCCESS;
     default:
+        CUVK_LOG("[cuvk] cuPointerGetAttribute: UNSUPPORTED attrib=%d ptr=0x%llx\n",
+                attribute, (unsigned long long)ptr);
         return CUDA_ERROR_INVALID_VALUE;
     }
 }
@@ -480,20 +516,34 @@ CUresult CUDAAPI cuMemFreeAsync(CUdeviceptr dptr, CUstream hStream) {
  * ============================================================================ */
 
 CUresult CUDAAPI cuModuleLoad(CUmodule *module, const char *fname) {
+    CUVK_LOG("[cuvk] cuModuleLoad: fname=%s\n", fname ? fname : "(null)");
     (void)module; (void)fname;
     return CUDA_ERROR_NOT_SUPPORTED;
 }
 
 CUresult CUDAAPI cuModuleLoadFatBinary(CUmodule *module,
                                        const void *fatCubin) {
+    CUVK_LOG("[cuvk] cuModuleLoadFatBinary called\n");
     return cuModuleLoadData(module, fatCubin);
 }
 
 /* cuModuleGetGlobal: macro maps to cuModuleGetGlobal_v2 */
 CUresult CUDAAPI cuModuleGetGlobal(CUdeviceptr *dptr, size_t *bytes,
                                    CUmodule hmod, const char *name) {
-    (void)dptr; (void)bytes; (void)hmod; (void)name;
-    return CUDA_ERROR_NOT_SUPPORTED;
+    CUVK_LOG("[cuvk] cuModuleGetGlobal: name='%s'\n", name ? name : "(null)");
+    if (!dptr || !hmod || !name)
+        return CUDA_ERROR_INVALID_VALUE;
+    for (uint32_t i = 0; i < hmod->global_count; i++) {
+        if (strcmp(hmod->globals[i].name, name) == 0) {
+            *dptr = (CUdeviceptr)hmod->globals[i].device_addr;
+            if (bytes) *bytes = hmod->globals[i].size;
+            CUVK_LOG("[cuvk]   -> found: addr=0x%llx size=%u\n",
+                    (unsigned long long)hmod->globals[i].device_addr,
+                    hmod->globals[i].size);
+            return CUDA_SUCCESS;
+        }
+    }
+    return CUDA_ERROR_NOT_FOUND;
 }
 
 CUresult CUDAAPI cuModuleGetTexRef(CUtexref *pTexRef, CUmodule hmod,
@@ -510,7 +560,7 @@ CUresult CUDAAPI cuModuleGetSurfRef(CUsurfref *pSurfRef, CUmodule hmod,
 
 CUresult CUDAAPI cuModuleGetLoadingMode(CUmoduleLoadingMode *mode) {
     if (!mode) return CUDA_ERROR_INVALID_VALUE;
-    *mode = CU_MODULE_EAGER_LOADING;
+    *mode = CU_MODULE_LAZY_LOADING;
     return CUDA_SUCCESS;
 }
 
@@ -643,12 +693,14 @@ CUresult CUDAAPI cuLibraryGetKernelCount(unsigned int *count,
     if (!count) return CUDA_ERROR_INVALID_VALUE;
     CUmodule mod = (CUmodule)lib;
     *count = mod ? mod->function_count : 0;
+    CUVK_LOG("[cuvk] cuLibraryGetKernelCount: count=%u\n", *count);
     return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuLibraryEnumerateKernels(CUkernel *kernels,
                                            unsigned int numKernels,
                                            CUlibrary lib) {
+    CUVK_LOG("[cuvk] cuLibraryEnumerateKernels: numKernels=%u\n", numKernels);
     if (!kernels) return CUDA_ERROR_INVALID_VALUE;
     CUmodule mod = (CUmodule)lib;
     if (!mod) return CUDA_ERROR_INVALID_VALUE;
@@ -659,6 +711,8 @@ CUresult CUDAAPI cuLibraryEnumerateKernels(CUkernel *kernels,
 
 CUresult CUDAAPI cuKernelGetAttribute(int *pi, CUfunction_attribute attrib,
                                       CUkernel kernel, CUdevice dev) {
+    CUVK_LOG("[cuvk] cuKernelGetAttribute: attrib=%d kernel=%p dev=%d\n",
+            attrib, (void *)kernel, dev);
     (void)dev;
     return cuFuncGetAttribute(pi, attrib, (CUfunction)kernel);
 }
@@ -676,13 +730,17 @@ CUresult CUDAAPI cuKernelSetCacheConfig(CUkernel kernel, CUfunc_cache config,
 }
 
 CUresult CUDAAPI cuKernelGetName(const char **name, CUkernel kernel) {
+    CUVK_LOG("[cuvk] cuKernelGetName: kernel=%p\n", (void *)kernel);
     if (!name || !kernel) return CUDA_ERROR_INVALID_VALUE;
     *name = ((CUfunction)kernel)->name;
+    CUVK_LOG("[cuvk]   -> name='%s'\n", *name ? *name : "(null)");
     return CUDA_SUCCESS;
 }
 
 CUresult CUDAAPI cuKernelGetParamInfo(CUkernel kernel, size_t paramIndex,
                                       size_t *paramOffset, size_t *paramSize) {
+    CUVK_LOG("[cuvk] cuKernelGetParamInfo: kernel=%p idx=%zu\n",
+            (void *)kernel, paramIndex);
     if (!kernel) return CUDA_ERROR_INVALID_VALUE;
     CUfunction func = (CUfunction)kernel;
     if (paramIndex >= func->param_count) return CUDA_ERROR_INVALID_VALUE;
@@ -715,6 +773,17 @@ CUresult CUDAAPI cuLaunchCooperativeKernel(CUfunction f,
     return cuLaunchKernel(f, gridDimX, gridDimY, gridDimZ,
                           blockDimX, blockDimY, blockDimZ,
                           sharedMemBytes, hStream, kernelParams, NULL);
+}
+
+CUresult CUDAAPI cuLaunchKernelEx(const CUlaunchConfig *config,
+                                  CUfunction f, void **kernelParams,
+                                  void **extra) {
+    if (!config) return CUDA_ERROR_INVALID_VALUE;
+    return cuLaunchKernel(f,
+                          config->gridDimX, config->gridDimY, config->gridDimZ,
+                          config->blockDimX, config->blockDimY, config->blockDimZ,
+                          config->sharedMemBytes, config->hStream,
+                          kernelParams, extra);
 }
 
 CUresult CUDAAPI cuLaunchHostFunc(CUstream hStream, CUhostFn fn,
@@ -782,6 +851,32 @@ CUresult CUDAAPI cuStreamGetDevice(CUstream hStream, CUdevice *device) {
     (void)hStream;
     if (!device) return CUDA_ERROR_INVALID_VALUE;
     *device = 0;
+    return CUDA_SUCCESS;
+}
+
+CUresult CUDAAPI cuStreamSetAttribute(CUstream hStream, CUstreamAttrID attr,
+                                       const CUstreamAttrValue *value) {
+    (void)hStream; (void)attr; (void)value;
+    return CUDA_SUCCESS;
+}
+
+CUresult CUDAAPI cuStreamGetAttribute(CUstream hStream, CUstreamAttrID attr,
+                                       CUstreamAttrValue *value) {
+    (void)hStream; (void)attr; (void)value;
+    return CUDA_SUCCESS;
+}
+
+CUresult CUDAAPI cuStreamGetId(CUstream hStream, unsigned long long *streamId) {
+    (void)hStream;
+    if (!streamId) return CUDA_ERROR_INVALID_VALUE;
+    *streamId = (unsigned long long)(uintptr_t)hStream;
+    return CUDA_SUCCESS;
+}
+
+CUresult CUDAAPI cuCtxGetId(CUcontext hCtx, unsigned long long *ctxId) {
+    (void)hCtx;
+    if (!ctxId) return CUDA_ERROR_INVALID_VALUE;
+    *ctxId = (unsigned long long)(uintptr_t)(hCtx ? hCtx : g_cuvk.current_ctx);
     return CUDA_SUCCESS;
 }
 
@@ -1047,17 +1142,17 @@ CUresult CUDAAPI cuOccupancyAvailableDynamicSMemPerBlock(
 }
 
 /* ============================================================================
- * Linker
+ * Linker stubs (only when nvJitLink is not enabled)
  * ============================================================================ */
 
-/* cuLinkCreate: macro maps to cuLinkCreate_v2 */
+#ifndef CUVK_NVJITLINK
+
 CUresult CUDAAPI cuLinkCreate(unsigned int numOptions, CUjit_option *options,
                               void **optionValues, CUlinkState *stateOut) {
     (void)numOptions; (void)options; (void)optionValues; (void)stateOut;
     return CUDA_ERROR_NOT_SUPPORTED;
 }
 
-/* cuLinkAddData: macro maps to cuLinkAddData_v2 */
 CUresult CUDAAPI cuLinkAddData(CUlinkState state, CUjitInputType type,
                                void *data, size_t size, const char *name,
                                unsigned int numOptions, CUjit_option *options,
@@ -1067,7 +1162,6 @@ CUresult CUDAAPI cuLinkAddData(CUlinkState state, CUjitInputType type,
     return CUDA_ERROR_NOT_SUPPORTED;
 }
 
-/* cuLinkAddFile: macro maps to cuLinkAddFile_v2 */
 CUresult CUDAAPI cuLinkAddFile(CUlinkState state, CUjitInputType type,
                                const char *path, unsigned int numOptions,
                                CUjit_option *options, void **optionValues) {
@@ -1086,6 +1180,8 @@ CUresult CUDAAPI cuLinkDestroy(CUlinkState state) {
     (void)state;
     return CUDA_ERROR_NOT_SUPPORTED;
 }
+
+#endif /* !CUVK_NVJITLINK */
 
 /* ============================================================================
  * External memory / semaphore
@@ -1227,6 +1323,13 @@ CUresult CUDAAPI cuEventDestroy_v2(CUevent hEvent);
 CUresult CUDAAPI cuEventRecord(CUevent hEvent, CUstream hStream);
 CUresult CUDAAPI cuEventSynchronize(CUevent hEvent);
 CUresult CUDAAPI cuEventElapsedTime_v2(float *ms, CUevent start, CUevent end);
+CUresult CUDAAPI cuMemAllocHost_v2(void **pp, size_t bytesize);
+CUresult CUDAAPI cuMemFreeHost(void *p);
+CUresult CUDAAPI cuMemGetInfo(size_t *free, size_t *total);
+CUresult CUDAAPI cuModuleLoad(CUmodule *module, const char *fname);
+CUresult CUDAAPI cuModuleLoadFatBinary(CUmodule *module, const void *fatCubin);
+CUresult CUDAAPI cuModuleGetGlobal(CUdeviceptr *dptr, size_t *bytes,
+                                    CUmodule hmod, const char *name);
 
 typedef struct {
     const char *name;
@@ -1260,6 +1363,7 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuCtxGetDevice",                (void *)cuCtxGetDevice},
     {"cuCtxGetFlags",                 (void *)cuCtxGetFlags},
     {"cuCtxGetApiVersion",            (void *)cuCtxGetApiVersion},
+    {"cuCtxGetId",                    (void *)cuCtxGetId},
     {"cuCtxSetLimit",                 (void *)cuCtxSetLimit},
     {"cuCtxGetLimit",                 (void *)cuCtxGetLimit},
     {"cuCtxGetCacheConfig",           (void *)cuCtxGetCacheConfig},
@@ -1342,6 +1446,7 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuIpcOpenMemHandle_v2",         (void *)cuIpcOpenMemHandle},
     {"cuIpcCloseMemHandle",           (void *)cuIpcCloseMemHandle},
     {"cuLaunchKernel",                (void *)cuLaunchKernel},
+    {"cuLaunchKernelEx",              (void *)cuLaunchKernelEx},
     {"cuStreamCreate",                (void *)cuStreamCreate},
     {"cuStreamCreateWithPriority",    (void *)cuStreamCreateWithPriority},
     {"cuStreamDestroy",               (void *)cuStreamDestroy_v2},
@@ -1354,6 +1459,9 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuStreamGetCtx",                (void *)cuStreamGetCtx},
     {"cuStreamGetCtx_v2",             (void *)cuStreamGetCtx},
     {"cuStreamGetDevice",             (void *)cuStreamGetDevice},
+    {"cuStreamSetAttribute",          (void *)cuStreamSetAttribute},
+    {"cuStreamGetAttribute",          (void *)cuStreamGetAttribute},
+    {"cuStreamGetId",                 (void *)cuStreamGetId},
     {"cuEventCreate",                 (void *)cuEventCreate},
     {"cuEventDestroy",                (void *)cuEventDestroy_v2},
     {"cuEventDestroy_v2",            (void *)cuEventDestroy_v2},
@@ -1402,8 +1510,167 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuStreamGetCaptureInfo",        (void *)cuStreamGetCaptureInfo},
     {"cuStreamGetCaptureInfo_v2",     (void *)cuStreamGetCaptureInfo},
     {"cuStreamGetCaptureInfo_v3",     (void *)cuStreamGetCaptureInfo},
+    /* Device info / peer access */
+    {"cuDeviceGetLuid",               (void *)cuDeviceGetLuid},
+    {"cuDeviceCanAccessPeer",         (void *)cuDeviceCanAccessPeer},
+    {"cuDeviceGetP2PAttribute",       (void *)cuDeviceGetP2PAttribute},
+    {"cuDeviceGetByPCIBusId",         (void *)cuDeviceGetByPCIBusId},
+    {"cuDeviceGetPCIBusId",           (void *)cuDeviceGetPCIBusId},
+    {"cuCtxEnablePeerAccess",         (void *)cuCtxEnablePeerAccess},
+    {"cuCtxDisablePeerAccess",        (void *)cuCtxDisablePeerAccess},
+    /* Host / managed memory */
+    {"cuMemAllocHost",                (void *)cuMemAllocHost_v2},
+    {"cuMemAllocHost_v2",             (void *)cuMemAllocHost_v2},
+    {"cuMemFreeHost",                 (void *)cuMemFreeHost},
+    {"cuMemAllocPitch",               (void *)cuMemAllocPitch},
+    {"cuMemAllocPitch_v2",            (void *)cuMemAllocPitch},
+    {"cuMemHostAlloc",                (void *)cuMemHostAlloc},
+    {"cuMemHostGetDevicePointer",     (void *)cuMemHostGetDevicePointer},
+    {"cuMemHostGetDevicePointer_v2",  (void *)cuMemHostGetDevicePointer},
+    {"cuMemHostGetFlags",             (void *)cuMemHostGetFlags},
+    {"cuMemAllocManaged",             (void *)cuMemAllocManaged},
+    {"cuMemHostRegister",             (void *)cuMemHostRegister},
+    {"cuMemHostRegister_v2",          (void *)cuMemHostRegister},
+    {"cuMemHostUnregister",           (void *)cuMemHostUnregister},
+    /* Generic memcpy */
+    {"cuMemcpy",                      (void *)cuMemcpy},
+    {"cuMemcpyAsync",                 (void *)cuMemcpyAsync},
+    {"cuMemcpyPeer",                  (void *)cuMemcpyPeer},
+    {"cuMemcpyPeerAsync",             (void *)cuMemcpyPeerAsync},
+    {"cuMemcpy3DPeer",                (void *)cuMemcpy3DPeer},
+    {"cuMemcpy3DPeerAsync",           (void *)cuMemcpy3DPeerAsync},
+    /* Memory hints */
+    {"cuMemAdvise",                   (void *)cuMemAdvise},
+    {"cuMemPrefetchAsync",            (void *)cuMemPrefetchAsync},
+    /* Pointer queries */
+    {"cuPointerGetAttribute",         (void *)cuPointerGetAttribute},
+    {"cuPointerGetAttributes",        (void *)cuPointerGetAttributes},
+    {"cuPointerSetAttribute",         (void *)cuPointerSetAttribute},
+    {"cuMemGetAddressRange",          (void *)cuMemGetAddressRange},
+    {"cuMemGetAddressRange_v2",       (void *)cuMemGetAddressRange},
+    /* Async alloc/free */
+    {"cuMemAllocAsync",               (void *)cuMemAllocAsync},
+    {"cuMemAllocAsync_v2",            (void *)cuMemAllocAsync},
+    {"cuMemFreeAsync",                (void *)cuMemFreeAsync},
+    /* Module extras */
+    {"cuModuleGetTexRef",             (void *)cuModuleGetTexRef},
+    {"cuModuleGetSurfRef",            (void *)cuModuleGetSurfRef},
+    /* Function config */
+    {"cuFuncSetSharedMemConfig",      (void *)cuFuncSetSharedMemConfig},
+    {"cuFuncGetParamInfo",            (void *)cuKernelGetParamInfo},
+    /* Launch extras */
+    {"cuLaunchCooperativeKernel",     (void *)cuLaunchCooperativeKernel},
+    {"cuLaunchHostFunc",              (void *)cuLaunchHostFunc},
+    /* Stream extras */
+    {"cuStreamAddCallback",           (void *)cuStreamAddCallback},
+    {"cuStreamAttachMemAsync",        (void *)cuStreamAttachMemAsync},
+    {"cuStreamBeginCapture",          (void *)cuStreamBeginCapture},
+    {"cuStreamBeginCapture_v2",       (void *)cuStreamBeginCapture},
+    {"cuStreamEndCapture",            (void *)cuStreamEndCapture},
+    {"cuThreadExchangeStreamCaptureMode",
+                                      (void *)cuThreadExchangeStreamCaptureMode},
+    /* Event extras */
+    {"cuEventRecordWithFlags",        (void *)cuEventRecordWithFlags},
+    /* Occupancy */
+    {"cuOccupancyMaxActiveBlocksPerMultiprocessor",
+                                      (void *)cuOccupancyMaxActiveBlocksPerMultiprocessor},
+    {"cuOccupancyMaxPotentialBlockSize",
+                                      (void *)cuOccupancyMaxPotentialBlockSize},
+    {"cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags",
+                                      (void *)cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags},
+    {"cuOccupancyMaxPotentialBlockSizeWithFlags",
+                                      (void *)cuOccupancyMaxPotentialBlockSizeWithFlags},
+    {"cuOccupancyAvailableDynamicSMemPerBlock",
+                                      (void *)cuOccupancyAvailableDynamicSMemPerBlock},
+    /* Texture / surface objects */
+    {"cuTexObjectCreate",             (void *)cuTexObjectCreate},
+    {"cuTexObjectDestroy",            (void *)cuTexObjectDestroy},
+    {"cuTexObjectGetResourceDesc",    (void *)cuTexObjectGetResourceDesc},
+    {"cuTexObjectGetTextureDesc",     (void *)cuTexObjectGetTextureDesc},
+    {"cuTexObjectGetResourceViewDesc",(void *)cuTexObjectGetResourceViewDesc},
+    {"cuSurfObjectCreate",            (void *)cuSurfObjectCreate},
+    {"cuSurfObjectDestroy",           (void *)cuSurfObjectDestroy},
+    /* Texture references (deprecated) */
+    {"cuTexRefSetAddress",            (void *)cuTexRefSetAddress},
+    {"cuTexRefSetAddress_v2",         (void *)cuTexRefSetAddress},
+    {"cuTexRefSetAddress2D",          (void *)cuTexRefSetAddress2D},
+    {"cuTexRefSetAddress2D_v3",       (void *)cuTexRefSetAddress2D},
+    {"cuTexRefSetFormat",             (void *)cuTexRefSetFormat},
+    {"cuTexRefSetFlags",              (void *)cuTexRefSetFlags},
+    {"cuTexRefSetArray",              (void *)cuTexRefSetArray},
+    {"cuTexRefSetAddressMode",        (void *)cuTexRefSetAddressMode},
+    {"cuTexRefSetFilterMode",         (void *)cuTexRefSetFilterMode},
+    {"cuTexRefGetAddress",            (void *)cuTexRefGetAddress},
+    {"cuTexRefGetAddress_v2",         (void *)cuTexRefGetAddress},
+    {"cuTexRefGetArray",              (void *)cuTexRefGetArray},
+    {"cuTexRefGetFormat",             (void *)cuTexRefGetFormat},
+    {"cuTexRefGetFlags",              (void *)cuTexRefGetFlags},
+    {"cuTexRefCreate",                (void *)cuTexRefCreate},
+    {"cuTexRefDestroy",               (void *)cuTexRefDestroy},
+    {"cuSurfRefSetArray",             (void *)cuSurfRefSetArray},
+    {"cuSurfRefGetArray",             (void *)cuSurfRefGetArray},
+    /* Array management */
+    {"cuArrayCreate",                 (void *)cuArrayCreate},
+    {"cuArrayCreate_v2",              (void *)cuArrayCreate},
+    {"cuArrayDestroy",                (void *)cuArrayDestroy},
+    {"cuArrayGetDescriptor",          (void *)cuArrayGetDescriptor},
+    {"cuArrayGetDescriptor_v2",       (void *)cuArrayGetDescriptor},
+    {"cuArray3DCreate",               (void *)cuArray3DCreate},
+    {"cuArray3DCreate_v2",            (void *)cuArray3DCreate},
+    {"cuArray3DGetDescriptor",        (void *)cuArray3DGetDescriptor},
+    {"cuArray3DGetDescriptor_v2",     (void *)cuArray3DGetDescriptor},
+    {"cuMipmappedArrayCreate",        (void *)cuMipmappedArrayCreate},
+    {"cuMipmappedArrayGetLevel",      (void *)cuMipmappedArrayGetLevel},
+    {"cuMipmappedArrayDestroy",       (void *)cuMipmappedArrayDestroy},
+    /* Linker (already in table but adding file variant) */
+    {"cuLinkAddFile",                 (void *)cuLinkAddFile},
+    {"cuLinkAddFile_v2",              (void *)cuLinkAddFile},
+    /* External memory / semaphores */
+    {"cuImportExternalMemory",        (void *)cuImportExternalMemory},
+    {"cuDestroyExternalMemory",       (void *)cuDestroyExternalMemory},
+    {"cuImportExternalSemaphore",     (void *)cuImportExternalSemaphore},
+    {"cuDestroyExternalSemaphore",    (void *)cuDestroyExternalSemaphore},
+    {"cuSignalExternalSemaphoresAsync",
+                                      (void *)cuSignalExternalSemaphoresAsync},
+    {"cuWaitExternalSemaphoresAsync",
+                                      (void *)cuWaitExternalSemaphoresAsync},
+    /* Graphics interop */
+    {"cuGraphicsUnregisterResource",  (void *)cuGraphicsUnregisterResource},
+    {"cuGraphicsMapResources",        (void *)cuGraphicsMapResources},
+    {"cuGraphicsUnmapResources",      (void *)cuGraphicsUnmapResources},
+    {"cuGraphicsResourceGetMappedPointer",
+                                      (void *)cuGraphicsResourceGetMappedPointer},
+    {"cuGraphicsResourceGetMappedPointer_v2",
+                                      (void *)cuGraphicsResourceGetMappedPointer},
+    {"cuGraphicsResourceSetMapFlags", (void *)cuGraphicsResourceSetMapFlags},
+    {"cuGraphicsResourceSetMapFlags_v2",
+                                      (void *)cuGraphicsResourceSetMapFlags},
+    /* Memory pools */
+    {"cuMemPoolCreate",               (void *)cuMemPoolCreate},
+    {"cuMemPoolDestroy",              (void *)cuMemPoolDestroy},
+    {"cuMemPoolTrimTo",               (void *)cuMemPoolTrimTo},
+    {"cuMemPoolSetAttribute",         (void *)cuMemPoolSetAttribute},
+    {"cuMemPoolGetAttribute",         (void *)cuMemPoolGetAttribute},
+    {"cuMemAllocFromPoolAsync",       (void *)cuMemAllocFromPoolAsync},
+    /* Virtual memory */
+    {"cuMemAddressReserve",           (void *)cuMemAddressReserve},
+    {"cuMemAddressFree",              (void *)cuMemAddressFree},
+    {"cuMemCreate",                   (void *)cuMemCreate},
+    {"cuMemRelease",                  (void *)cuMemRelease},
+    {"cuMemMap",                      (void *)cuMemMap},
+    {"cuMemUnmap",                    (void *)cuMemUnmap},
+    {"cuMemSetAccess",                (void *)cuMemSetAccess},
+    {"cuMemGetAccess",                (void *)cuMemGetAccess},
+    {"cuMemGetAllocationGranularity", (void *)cuMemGetAllocationGranularity},
+    {"cuMemGetAllocationPropertiesFromHandle",
+                                      (void *)cuMemGetAllocationPropertiesFromHandle},
+    /* Memory range attributes */
+    {"cuMemRangeGetAttribute",        (void *)cuMemRangeGetAttribute},
+    {"cuMemRangeGetAttributes",       (void *)cuMemRangeGetAttributes},
     {NULL, NULL}
 };
+
+static CUresult generic_noop_fn(void);
 
 CUresult CUDAAPI cuGetProcAddress(const char *symbol, void **pfn,
                                   int cudaVersion, cuuint64_t flags,
@@ -1438,11 +1705,12 @@ CUresult CUDAAPI cuGetProcAddress(const char *symbol, void **pfn,
         }
     }
 
-    CUVK_LOG("[cuvk] cuGetProcAddress: NOT FOUND \"%s\"\n", symbol);
+    CUVK_LOG("[cuvk] cuGetProcAddress: NOT FOUND \"%s\" ver=%d\n",
+            symbol, cudaVersion);
     *pfn = NULL;
     if (symbolStatus)
         *symbolStatus = CU_GET_PROC_ADDRESS_SYMBOL_NOT_FOUND;
-    return CUDA_ERROR_NOT_FOUND;
+    return CUDA_SUCCESS;
 }
 
 /* FatbincWrapper: __fatBinC_Wrapper_t from CUDA runtime internals */
@@ -1522,7 +1790,7 @@ static CUresult CUDAAPI cudart_load_compilers(void) {
 static CUresult CUDAAPI
 ctx_local_storage_put(CUcontext cu_ctx, void *key, void *value,
                       void (*dtor_cb)(CUcontext, void *, void *)) {
-    CUVK_LOG("[cuvk] ctx_storage_put: ctx=%p key=%p value=%p dtor=%p\n",
+    fprintf(stderr, "[cuvk] ctx_storage_put: ctx=%p key=%p value=%p dtor=%p\n",
             (void *)cu_ctx, key, value, (void *)(uintptr_t)dtor_cb);
     fflush(stderr);
     struct CUctx_st *ctx = cu_ctx ? (struct CUctx_st *)cu_ctx : g_cuvk.current_ctx;
@@ -1552,6 +1820,8 @@ ctx_local_storage_put(CUcontext cu_ctx, void *key, void *value,
 
 static CUresult CUDAAPI
 ctx_local_storage_delete(CUcontext cu_ctx, void *key) {
+    fprintf(stderr, "[cuvk] ctx_storage_delete: ctx=%p key=%p\n",
+            (void *)cu_ctx, key);
     struct CUctx_st *ctx = cu_ctx ? (struct CUctx_st *)cu_ctx : g_cuvk.current_ctx;
     if (!ctx) return CUDA_ERROR_INVALID_CONTEXT;
     uintptr_t k = (uintptr_t)key;
@@ -1582,8 +1852,10 @@ ctx_local_storage_get(void **value_out, CUcontext cu_ctx, void *key) {
             return CUDA_SUCCESS;
         }
     }
-    CUVK_LOG("[cuvk]   -> NOT_FOUND (count=%u)\n", ctx->storage_count);
-    return CUDA_ERROR_INVALID_HANDLE;
+    if (value_out) *value_out = NULL;
+    CUVK_LOG("[cuvk]   -> NOT_FOUND (count=%u) key=0x%lx\n",
+            ctx->storage_count, (unsigned long)k);
+    return CUDA_ERROR_NOT_FOUND;
 }
 
 static const void *g_ctx_storage_table[4] = {
@@ -1594,6 +1866,111 @@ static const void *g_ctx_storage_table[4] = {
 };
 
 static CUresult generic_noop_fn(void) { return CUDA_SUCCESS; }
+
+static CUresult unk1_fn0(void) { fprintf(stderr, "[cuvk] UNK1[0] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn1(void) { fprintf(stderr, "[cuvk] UNK1[1] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn2(void) { fprintf(stderr, "[cuvk] UNK1[2] called\n"); return CUDA_SUCCESS; }
+static void *g_unk1_fn3_buf = NULL;
+static CUresult unk1_fn3(void *a, void *b, void *c, void *d) {
+    uintptr_t size = (uintptr_t)c;
+    CUVK_LOG("[cuvk] UNK1[3]: ctx=%p frame=%p size=0x%lx d=%p\n",
+            a, b, (unsigned long)size, d);
+    if (b) {
+        fprintf(stderr, "[cuvk] UNK1[3]: frame before (first 128 bytes):\n");
+        for (uintptr_t i = 0; i < 128; i += 8) {
+            void *val = *(void **)((uint8_t *)b + i);
+            fprintf(stderr, "[cuvk]   [0x%03x] = %p\n", (unsigned)i, val);
+        }
+        void **out = (void **)b;
+        if (*out == NULL && size > 0 && size < 0x100000) {
+            void *buf = calloc(1, size);
+            *out = buf;
+            g_unk1_fn3_buf = buf;
+            CUVK_LOG("[cuvk] UNK1[3]: allocated %lu bytes at %p, stored at frame[0]\n",
+                    (unsigned long)size, buf);
+        }
+    }
+    return CUDA_SUCCESS;
+}
+static CUresult unk1_fn4(void) { fprintf(stderr, "[cuvk] UNK1[4] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn5(void) { fprintf(stderr, "[cuvk] UNK1[5] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn6(void) { fprintf(stderr, "[cuvk] UNK1[6] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn7(void) { fprintf(stderr, "[cuvk] UNK1[7] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn8(void) { fprintf(stderr, "[cuvk] UNK1[8] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn9(void) { fprintf(stderr, "[cuvk] UNK1[9] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn10(void) { fprintf(stderr, "[cuvk] UNK1[10] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn11(void) { fprintf(stderr, "[cuvk] UNK1[11] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn12(void) { fprintf(stderr, "[cuvk] UNK1[12] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn13(void) { fprintf(stderr, "[cuvk] UNK1[13] called\n"); return CUDA_SUCCESS; }
+static CUresult unk1_fn14(void) { fprintf(stderr, "[cuvk] UNK1[14] called\n"); return CUDA_SUCCESS; }
+
+static CUresult unk2_fn0(void) { fprintf(stderr, "[cuvk] UNK2[0] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn1(void) { fprintf(stderr, "[cuvk] UNK2[1] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn2(void) { fprintf(stderr, "[cuvk] UNK2[2] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn3(void) { fprintf(stderr, "[cuvk] UNK2[3] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn4(void) { fprintf(stderr, "[cuvk] UNK2[4] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn5(void) { fprintf(stderr, "[cuvk] UNK2[5] called\n"); return CUDA_SUCCESS; }
+static int unk2_fn6(void *a, void *b, void *c, void *d, void *e, void *f) {
+    CUVK_LOG("[cuvk] UNK2[6]: cuFFT_ctx=%p mod=%p cb=%p out=%p mod2=%p vtbl=%p\n",
+            a, b, c, d, e, f);
+
+    if (f) {
+        void **vtbl = (void **)f;
+        for (int i = 0; i < 16; i++)
+            CUVK_LOG("[cuvk]   vtbl[%d] = %p\n", i, vtbl[i]);
+    }
+
+    CUmodule mod = (CUmodule)b;
+    if (mod) {
+        CUVK_LOG("[cuvk]   mod->function_count=%u\n", mod->function_count);
+        for (uint32_t i = 0; i < mod->function_count; i++) {
+            CUVK_LOG("[cuvk]   func[%u] name='%s' params=%u\n",
+                    i, mod->functions[i].name, mod->functions[i].param_count);
+        }
+    }
+
+    (void)a; (void)e; (void)f;
+    typedef void (*store_cb)(void *dest, void *value);
+    store_cb cb = (store_cb)c;
+    if (cb && d && mod && mod->function_count > 0) {
+        struct CUfunc_st *func = &mod->functions[0];
+        cb(d, func);
+        CUVK_LOG("[cuvk] UNK2[6]: stored func=%p at out\n", (void *)func);
+    }
+    return 1;
+}
+static CUresult unk2_fn7(void) { fprintf(stderr, "[cuvk] UNK2[7] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn8(void) { fprintf(stderr, "[cuvk] UNK2[8] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn9(void) { fprintf(stderr, "[cuvk] UNK2[9] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn10(void) { fprintf(stderr, "[cuvk] UNK2[10] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn11(void) { fprintf(stderr, "[cuvk] UNK2[11] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn12(void) { fprintf(stderr, "[cuvk] UNK2[12] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn13(void) { fprintf(stderr, "[cuvk] UNK2[13] called\n"); return CUDA_SUCCESS; }
+static CUresult unk2_fn14(void) { fprintf(stderr, "[cuvk] UNK2[14] called\n"); return CUDA_SUCCESS; }
+
+static const void *g_unk1_table[16] = {
+    (const void *)(16 * sizeof(void *)),
+    (const void *)unk1_fn0, (const void *)unk1_fn1,
+    (const void *)unk1_fn2, (const void *)unk1_fn3,
+    (const void *)unk1_fn4, (const void *)unk1_fn5,
+    (const void *)unk1_fn6, (const void *)unk1_fn7,
+    (const void *)unk1_fn8, (const void *)unk1_fn9,
+    (const void *)unk1_fn10, (const void *)unk1_fn11,
+    (const void *)unk1_fn12, (const void *)unk1_fn13,
+    (const void *)unk1_fn14,
+};
+
+static const void *g_unk2_table[16] = {
+    (const void *)(16 * sizeof(void *)),
+    (const void *)unk2_fn0, (const void *)unk2_fn1,
+    (const void *)unk2_fn2, (const void *)unk2_fn3,
+    (const void *)unk2_fn4, (const void *)unk2_fn5,
+    (const void *)unk2_fn6, (const void *)unk2_fn7,
+    (const void *)unk2_fn8, (const void *)unk2_fn9,
+    (const void *)unk2_fn10, (const void *)unk2_fn11,
+    (const void *)unk2_fn12, (const void *)unk2_fn13,
+    (const void *)unk2_fn14,
+};
 
 static uint32_t g_tools_buffer1[1024] = {0};
 static uint32_t g_tools_buffer2[14] = {0};
@@ -1934,7 +2311,8 @@ CUresult CUDAAPI cuGetExportTable(const void **ppExportTable,
         0xa8, 0xc3, 0x68, 0xf3, 0x55, 0xd8, 0x95, 0x93
     };
     if (memcmp(pExportTableId->bytes, CTX_STORAGE_UUID, 16) == 0) {
-        CUVK_LOG("[cuvk]   -> CONTEXT_LOCAL_STORAGE\n");
+        fprintf(stderr, "[cuvk]   -> CONTEXT_LOCAL_STORAGE: put=%p del=%p get=%p\n",
+                g_ctx_storage_table[0], g_ctx_storage_table[1], g_ctx_storage_table[2]);
         *ppExportTable = g_ctx_storage_table;
         return CUDA_SUCCESS;
     }
@@ -1956,10 +2334,28 @@ CUresult CUDAAPI cuGetExportTable(const void **ppExportTable,
         *ppExportTable = g_context_checks_table;
         return CUDA_SUCCESS;
     }
-    /* Other interfaces: return no-op table */
-    CUVK_LOG("[cuvk]   -> generic noop table\n");
-    *ppExportTable = g_unknown_table;
-    return CUDA_SUCCESS;
+    static const unsigned char UNK1_UUID[16] = {
+        0x21, 0x31, 0x8c, 0x60, 0x97, 0x14, 0x32, 0x48,
+        0x8c, 0xa6, 0x41, 0xff, 0x73, 0x24, 0xc8, 0xf2
+    };
+    if (memcmp(pExportTableId->bytes, UNK1_UUID, 16) == 0) {
+        CUVK_LOG("[cuvk]   -> UNK1 table\n");
+        *ppExportTable = g_unk1_table;
+        return CUDA_SUCCESS;
+    }
+    static const unsigned char UNK2_UUID[16] = {
+        0x6e, 0x16, 0x3f, 0xbe, 0xb9, 0x58, 0x44, 0x4d,
+        0x83, 0x5c, 0xe1, 0x82, 0xaf, 0xf1, 0x99, 0x1e
+    };
+    if (memcmp(pExportTableId->bytes, UNK2_UUID, 16) == 0) {
+        CUVK_LOG("[cuvk]   -> UNK2 table\n");
+        *ppExportTable = g_unk2_table;
+        return CUDA_SUCCESS;
+    }
+    /* Other unknown interfaces: return NOT_FOUND */
+    CUVK_LOG("[cuvk]   -> NOT_FOUND (unknown table)\n");
+    *ppExportTable = NULL;
+    return CUDA_ERROR_NOT_FOUND;
 }
 
 /* ============================================================================

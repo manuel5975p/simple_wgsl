@@ -1,4 +1,5 @@
 option(CUVK_DEBUG_LOG "Enable cuvk debug logging to stderr" OFF)
+option(CUVK_NVJITLINK "Enable nvJitLink for LTO-IR compilation (requires libnvJitLink.so)" OFF)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -33,14 +34,23 @@ set(CUVK_SOURCES
     cuvk_graph.c
     cuvk_stubs.c
     cuvk_fatbin.c
+    cuvk_compat.c
 )
+
+if(CUVK_NVJITLINK)
+    list(APPEND CUVK_SOURCES cuvk_jitlink.c)
+endif()
 
 # Helper: apply common settings to a cuvk target
 function(cuvk_target_setup tgt)
-    target_link_libraries(${tgt} PUBLIC wgsl_compiler ${_VULKAN_LIB} libzstd_static)
+    target_link_libraries(${tgt} PUBLIC wgsl_compiler ${_VULKAN_LIB} libzstd_static lz4)
     target_include_directories(${tgt} PUBLIC ${CMAKE_SOURCE_DIR} ${_VULKAN_INC})
     if(CUVK_DEBUG_LOG)
         target_compile_definitions(${tgt} PRIVATE CUVK_DEBUG_LOG=1)
+    endif()
+    if(CUVK_NVJITLINK)
+        target_compile_definitions(${tgt} PRIVATE CUVK_NVJITLINK=1)
+        target_link_libraries(${tgt} PUBLIC dl)
     endif()
     if(WIN32)
         target_link_libraries(${tgt} PUBLIC -lpthread)
@@ -98,5 +108,26 @@ else()
         OUTPUT_NAME "cublas"
         SOVERSION 13
         LINK_OPTIONS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cublas.map"
+    )
+endif()
+
+# Shared library: cufft64_*.dll / libcufft.so.12
+# Links against cuvk_runtime_shared (libcuda.so) to share g_cuvk state.
+add_library(cuvk_cufft_shared SHARED cuvk_cufft.c)
+target_link_libraries(cuvk_cufft_shared PUBLIC cuvk_runtime_shared wgsl_compiler ${_VULKAN_LIB} m)
+target_include_directories(cuvk_cufft_shared PUBLIC ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR} ${_VULKAN_INC})
+if(CUVK_DEBUG_LOG)
+    target_compile_definitions(cuvk_cufft_shared PRIVATE CUVK_DEBUG_LOG=1)
+endif()
+if(WIN32)
+    set_target_properties(cuvk_cufft_shared PROPERTIES
+        OUTPUT_NAME "cufft64_12"
+        PREFIX ""
+    )
+else()
+    set_target_properties(cuvk_cufft_shared PROPERTIES
+        OUTPUT_NAME "cufft"
+        SOVERSION 12
+        LINK_OPTIONS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cufft.map"
     )
 endif()

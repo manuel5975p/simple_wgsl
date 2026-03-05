@@ -230,6 +230,16 @@ struct CUfunc_st {
     bool                    use_bda;
 };
 
+/* A module-level global variable (e.g. .global .u64 lut_sp) */
+typedef struct CuvkModuleGlobal {
+    char                name[256];
+    uint32_t            size;
+    uint32_t            binding;
+    VkBuffer            buffer;
+    VkDeviceMemory      memory;
+    uint64_t            device_addr;
+} CuvkModuleGlobal;
+
 /* CUmodule */
 struct CUmod_st {
     struct CUctx_st    *ctx;
@@ -244,6 +254,13 @@ struct CUmod_st {
     /* Functions extracted from the module */
     struct CUfunc_st   *functions;
     uint32_t            function_count;
+
+    /* Module-level globals (descriptor-backed) */
+    CuvkModuleGlobal   *globals;
+    uint32_t            global_count;
+    VkDescriptorSetLayout globals_desc_layout;
+    VkDescriptorPool      globals_desc_pool;
+    VkDescriptorSet       globals_desc_set;
 };
 
 /* ============================================================================
@@ -282,6 +299,13 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len);
 
 /* Submit whatever is recorded on the stream and wait for completion */
 CUresult cuvk_stream_submit_and_wait(struct CUstream_st *stream);
+
+#ifdef CUVK_NVJITLINK
+/* Compile LTO-IR sections from a fatbin via nvJitLink. Returns malloc'd PTX. */
+char *cuvk_jitlink_compile_ltoir(const void *fatbin_data, size_t *ptx_len);
+/* Compile raw LTO-IR blob via nvJitLink. Returns malloc'd PTX. */
+char *cuvk_jitlink_compile_raw(const void *data, size_t size, size_t *ptx_len);
+#endif
 
 /* Begin a one-shot command buffer (for synchronous memory ops, etc.) */
 CUresult cuvk_oneshot_begin(struct CUctx_st *ctx, VkCommandBuffer *out_cb);

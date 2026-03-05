@@ -264,7 +264,7 @@ typedef struct {
   PtxModule *mod;
   PtxEntry *cur_entry;
   PtxFunc *cur_func;
-  char pending_pred[80];
+  char pending_pred[PTX_NAME_MAX];
   bool pending_pred_negated;
   bool pending_has_pred;
   char error[1024];
@@ -1570,7 +1570,7 @@ static void pp_parse_instruction(PtxParser *p) {
   if (pp_check(p, PTK_IDENT)) {
     PtxLexer save = p->lex;
     PtxToken save_tok = p->cur;
-    char name[80];
+    char name[PTX_NAME_MAX];
     tok_to_str(&p->cur, name, sizeof(name));
     pp_next(p);
     if (pp_check(p, PTK_COLON)) {
@@ -1586,7 +1586,7 @@ static void pp_parse_instruction(PtxParser *p) {
     p->cur = save_tok;
   }
 
-  char op[80];
+  char op[PTX_NAME_MAX];
   tok_to_str(&p->cur, op, sizeof(op));
 
   if (pp_check(p, PTK_IDENT)) {
@@ -1790,19 +1790,29 @@ static void pp_parse_toplevel(PtxParser *p) {
       }
     } else if (pp_check_dot(p, ".extern")) {
       pp_next(p);
-      while (!pp_check(p, PTK_SEMI) && !pp_check(p, PTK_EOF) &&
-             !pp_check(p, PTK_LBRACE))
-        pp_next(p);
-      if (pp_check(p, PTK_LBRACE)) {
-        int depth = 1;
-        pp_next(p);
-        while (depth > 0 && !pp_check(p, PTK_EOF)) {
-          if (pp_check(p, PTK_LBRACE)) depth++;
-          if (pp_check(p, PTK_RBRACE)) depth--;
+      if (pp_check_dot(p, ".global"))
+        pp_parse_global_decl(p, PTX_SPACE_GLOBAL);
+      else if (pp_check_dot(p, ".shared"))
+        pp_parse_global_decl(p, PTX_SPACE_SHARED);
+      else if (pp_check_dot(p, ".const"))
+        pp_parse_global_decl(p, PTX_SPACE_CONST);
+      else if (pp_check_dot(p, ".func"))
+        pp_parse_func(p);
+      else {
+        while (!pp_check(p, PTK_SEMI) && !pp_check(p, PTK_EOF) &&
+               !pp_check(p, PTK_LBRACE))
           pp_next(p);
+        if (pp_check(p, PTK_LBRACE)) {
+          int depth = 1;
+          pp_next(p);
+          while (depth > 0 && !pp_check(p, PTK_EOF)) {
+            if (pp_check(p, PTK_LBRACE)) depth++;
+            if (pp_check(p, PTK_RBRACE)) depth--;
+            pp_next(p);
+          }
         }
+        pp_eat(p, PTK_SEMI);
       }
-      pp_eat(p, PTK_SEMI);
     } else if (pp_check_dot(p, ".entry")) {
       pp_parse_entry(p);
     } else if (pp_check_dot(p, ".func")) {

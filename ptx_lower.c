@@ -29,7 +29,7 @@ static char *ptx_strdup(const char *s) {
 /* ===== Internal Types (mirrors original PtxParser state) ===== */
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     uint32_t ptr_id;
     uint32_t ptr_type;
     uint32_t val_type;
@@ -41,7 +41,7 @@ typedef struct {
 } PlReg;
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     uint32_t block_id;
     bool defined;
 } PlLabel;
@@ -102,7 +102,7 @@ typedef struct {
     PlSamplerRef *samplers;
     int sampler_count, sampler_cap;
 
-    struct { char cond_target[80]; char merge_label[80]; } *precomputed_merges;
+    struct { char cond_target[PTX_NAME_MAX]; char merge_label[PTX_NAME_MAX]; } *precomputed_merges;
     int precomputed_merge_count, precomputed_merge_cap;
 
     char error[1024];
@@ -637,7 +637,7 @@ static void pl_register_func(PtxLower *p, const char *name,
                               uint32_t func_id, uint32_t ret_type) {
     SW_GROW(p->funcs, p->func_count, p->func_cap,
             __typeof__(*p->funcs), ptx_realloc_);
-    snprintf(p->funcs[p->func_count].name, 80, "%s", name);
+    snprintf(p->funcs[p->func_count].name, sizeof(p->funcs[p->func_count].name), "%s", name);
     p->funcs[p->func_count].func_id = func_id;
     p->funcs[p->func_count].ret_type = ret_type;
     p->func_count++;
@@ -739,7 +739,8 @@ static void pl_lower_arith(PtxLower *p, const PtxInst *inst) {
         if (inst->src[0].kind == PTX_OPER_REG &&
             (inst->opcode == PTX_OP_ADD || inst->opcode == PTX_OP_SUB)) {
             SsirType *t = ssir_get_type(p->mod, result_type);
-            if (t && (t->kind == SSIR_TYPE_U64 || t->kind == SSIR_TYPE_I64))
+            if (t && (t->kind == SSIR_TYPE_U64 || t->kind == SSIR_TYPE_I64 ||
+                      t->kind == SSIR_TYPE_U32 || t->kind == SSIR_TYPE_I32))
                 pl_propagate_buffer(p, inst->dst.name, inst->src[0].name);
         }
     }
@@ -976,19 +977,19 @@ static void pl_lower_mov(PtxLower *p, const PtxInst *inst) {
                 pl_propagate_buffer(p, inst->dst.name, inst->src[0].name);
                 return;
             }
-            for (int gi = 0; gi < p->mod->global_count; gi++) {
-                if (p->mod->globals[gi].name &&
-                    strcmp(p->mod->globals[gi].name, inst->src[0].name) == 0) {
-                    uint32_t zero = ssir_const_u64(p->mod, 0);
-                    pl_store_reg_typed(p, inst->dst.name, zero, type);
-                    PlReg *dr = pl_find_reg(p, inst->dst.name);
-                    if (dr) {
-                        dr->global_id = p->mod->globals[gi].id;
-                        dr->is_bda_ptr = false;
-                    }
-                    pl_add_iface(p, p->mod->globals[gi].id);
-                    return;
+        }
+        for (uint32_t gi = 0; gi < p->mod->global_count; gi++) {
+            if (p->mod->globals[gi].name &&
+                strcmp(p->mod->globals[gi].name, inst->src[0].name) == 0) {
+                uint32_t zero = pl_const_for_type(p, type, 0, 0.0, false);
+                pl_store_reg_typed(p, inst->dst.name, zero, type);
+                PlReg *dr = pl_find_reg(p, inst->dst.name);
+                if (dr) {
+                    dr->global_id = p->mod->globals[gi].id;
+                    dr->is_bda_ptr = false;
                 }
+                pl_add_iface(p, p->mod->globals[gi].id);
+                return;
             }
         }
     }
@@ -1002,6 +1003,8 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
     SsirAddressSpace space = pl_mem_space(inst->space);
     uint32_t type = pl_map_type(p, inst->type);
 
+    fprintf(stderr, "[ptx_lower] ld vec=%d space=%d type=%d\n",
+            inst->vec_width, space, inst->type);
     if (inst->vec_width <= 1) {
         if (space == SSIR_ADDR_UNIFORM) {
             const char *param_name = inst->src[0].kind == PTX_OPER_ADDR
@@ -1014,6 +1017,14 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                     val = ssir_build_convert(PL_BCTX(p), type, val);
                 pl_store_reg(p, inst->dst.name, val);
                 pl_propagate_buffer(p, inst->dst.name, param_name);
+                if (p->use_bda) {
+                    SsirType *lt = ssir_get_type(p->mod, type);
+                    if (lt && (lt->kind == SSIR_TYPE_U64 ||
+                               lt->kind == SSIR_TYPE_I64)) {
+                        PlReg *dr = pl_find_reg(p, inst->dst.name);
+                        if (dr) dr->is_bda_ptr = true;
+                    }
+                }
             } else {
                 /* Check if it's a global (e.g. ld.const [coeffs]) */
                 SsirGlobalVar *gv = NULL;
@@ -1125,8 +1136,54 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
                 uint32_t val = ssir_build_load(PL_BCTX(p), type, ptr);
                 pl_store_reg(p, inst->dst.name, val);
             } else {
-                uint32_t val = ssir_build_load(PL_BCTX(p), type, byte_offset);
-                pl_store_reg(p, inst->dst.name, val);
+                SsirGlobalVar *gv = NULL;
+                for (uint32_t gi = 0; gi < (uint32_t)p->mod->global_count; gi++) {
+                    if (p->mod->globals[gi].name &&
+                        strcmp(p->mod->globals[gi].name, base_name) == 0) {
+                        gv = &p->mod->globals[gi];
+                        break;
+                    }
+                }
+                if (gv) {
+                    SsirType *gvt = ssir_get_type(p->mod, gv->type);
+                    SsirType *pointee = (gvt && gvt->kind == SSIR_TYPE_PTR)
+                        ? ssir_get_type(p->mod, gvt->ptr.pointee) : NULL;
+                    bool is_composite = pointee &&
+                        (pointee->kind == SSIR_TYPE_ARRAY ||
+                         pointee->kind == SSIR_TYPE_RUNTIME_ARRAY ||
+                         pointee->kind == SSIR_TYPE_STRUCT);
+                    uint32_t val;
+                    if (is_composite) {
+                        uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type,
+                            SSIR_ADDR_STORAGE);
+                        int64_t off = inst->src[0].kind == PTX_OPER_ADDR
+                            ? inst->src[0].offset : 0;
+                        uint32_t byte_size = pl_type_byte_size(p, type);
+                        uint32_t idx_val = byte_size > 0
+                            ? (uint32_t)(off / byte_size) : 0;
+                        uint32_t cidx = ssir_const_u32(p->mod, idx_val);
+                        uint32_t indices[] = { cidx };
+                        uint32_t ptr = ssir_build_access(PL_BCTX(p),
+                            elem_ptr_type, gv->id, indices, 1);
+                        val = ssir_build_load(PL_BCTX(p), type, ptr);
+                    } else {
+                        val = ssir_build_load(PL_BCTX(p), type, gv->id);
+                    }
+                    pl_store_reg(p, inst->dst.name, val);
+                    pl_add_iface(p, gv->id);
+                    if (p->use_bda) {
+                        SsirType *lt = ssir_get_type(p->mod, type);
+                        if (lt && (lt->kind == SSIR_TYPE_U64 ||
+                                   lt->kind == SSIR_TYPE_I64)) {
+                            PlReg *dr = pl_find_reg(p, inst->dst.name);
+                            if (dr) dr->is_bda_ptr = true;
+                        }
+                    }
+                } else {
+                    uint32_t val = ssir_build_load(PL_BCTX(p),
+                        type, byte_offset);
+                    pl_store_reg(p, inst->dst.name, val);
+                }
             }
         } else {
             uint32_t addr = pl_resolve_operand(p, &inst->src[0], ssir_type_u64(p->mod));
@@ -1137,9 +1194,87 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
     } else {
         /* Vector load: dst is a VEC operand */
         uint32_t vec_type = ssir_type_vec(p->mod, type, inst->vec_width);
-        uint32_t addr = pl_resolve_operand(p, &inst->src[0], ssir_type_u64(p->mod));
+        const char *base_name = inst->src[0].kind == PTX_OPER_ADDR
+            ? inst->src[0].base : inst->src[0].name;
+        uint32_t byte_offset = pl_resolve_operand(p, &inst->src[0],
+            ssir_type_u64(p->mod));
         if (p->had_error) return;
-        uint32_t vec_val = ssir_build_load(PL_BCTX(p), vec_type, addr);
+
+        uint32_t vec_val;
+        PlReg *base_reg = base_name[0] ? pl_find_reg(p, base_name) : NULL;
+        fprintf(stderr, "[ptx_lower] vec_ld: base='%s' reg=%p bda=%d use_bda=%d space=%d\n",
+                base_name, (void*)base_reg, base_reg ? base_reg->is_bda_ptr : -1,
+                p->use_bda, space);
+        if (base_reg && base_reg->is_bda_ptr && p->use_bda &&
+            space == SSIR_ADDR_STORAGE) {
+            uint32_t psb_ptr_type = ssir_type_ptr(p->mod, vec_type,
+                SSIR_ADDR_PHYSICAL_STORAGE_BUFFER);
+            uint32_t typed_ptr = ssir_build_bitcast(p->mod, p->func_id,
+                p->block_id, psb_ptr_type, byte_offset);
+            vec_val = ssir_build_load(PL_BCTX(p), vec_type, typed_ptr);
+        } else if (base_reg && (base_reg->pending_binding != UINT32_MAX ||
+                                base_reg->global_id != 0) &&
+                   space == SSIR_ADDR_STORAGE) {
+            uint32_t buf_global = pl_materialize_buffer(p, base_reg, type);
+            uint32_t u64_t = ssir_type_u64(p->mod);
+            uint32_t u32_t = ssir_type_u32(p->mod);
+            uint32_t elem_sz = ssir_const_u64(p->mod,
+                pl_type_byte_size(p, type));
+            uint32_t idx_u64 = ssir_build_div(PL_BCTX(p),
+                u64_t, byte_offset, elem_sz);
+            uint32_t idx = ssir_build_convert(PL_BCTX(p), u32_t, idx_u64);
+            bool is_direct_global = (base_reg->pending_binding == UINT32_MAX
+                && base_reg->global_id != 0);
+            uint32_t base_ptr;
+            if (is_direct_global) {
+                SsirGlobalVar *gv = ssir_get_global(p->mod, buf_global);
+                SsirType *gvt = gv ? ssir_get_type(p->mod, gv->type) : NULL;
+                SsirAddressSpace gv_space = (gvt && gvt->kind == SSIR_TYPE_PTR)
+                    ? gvt->ptr.space : SSIR_ADDR_STORAGE;
+                uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type, gv_space);
+                uint32_t indices[] = { idx };
+                base_ptr = ssir_build_access(PL_BCTX(p),
+                    elem_ptr_type, buf_global, indices, 1);
+            } else {
+                uint32_t elem_ptr_type = ssir_type_ptr(p->mod, type,
+                    SSIR_ADDR_STORAGE);
+                uint32_t const_0 = ssir_const_u32(p->mod, 0);
+                uint32_t indices[] = { const_0, idx };
+                base_ptr = ssir_build_access(PL_BCTX(p),
+                    elem_ptr_type, buf_global, indices, 2);
+            }
+            vec_val = ssir_build_load(PL_BCTX(p), type, base_ptr);
+            /* For vec loads from descriptor buffers, load components individually */
+        } else if (space == SSIR_ADDR_WORKGROUP && base_reg &&
+                   base_reg->global_id != 0) {
+            uint32_t u64_t = ssir_type_u64(p->mod);
+            uint32_t u32_t = ssir_type_u32(p->mod);
+            uint32_t byte_sz = ssir_const_u64(p->mod, 4);
+            uint32_t base_idx_u64 = ssir_build_div(PL_BCTX(p),
+                u64_t, byte_offset, byte_sz);
+            uint32_t base_idx = ssir_build_convert(PL_BCTX(p),
+                u32_t, base_idx_u64);
+            uint32_t elem_ptr_type = ssir_type_ptr(p->mod, u32_t,
+                SSIR_ADDR_WORKGROUP);
+            uint32_t comps[4];
+            for (int vi = 0; vi < inst->vec_width && vi < 4; vi++) {
+                uint32_t ci = ssir_const_u32(p->mod, (uint32_t)vi);
+                uint32_t idx = ssir_build_add(PL_BCTX(p),
+                    u32_t, base_idx, ci);
+                uint32_t indices[] = { idx };
+                uint32_t ptr = ssir_build_access(PL_BCTX(p),
+                    elem_ptr_type, base_reg->global_id, indices, 1);
+                uint32_t raw = ssir_build_load(PL_BCTX(p), u32_t, ptr);
+                comps[vi] = (type != u32_t)
+                    ? ssir_build_bitcast(PL_BCTX(p), type, raw)
+                    : raw;
+            }
+            vec_val = ssir_build_construct(PL_BCTX(p), vec_type,
+                comps, inst->vec_width);
+        } else {
+            vec_val = ssir_build_load(PL_BCTX(p), vec_type, byte_offset);
+        }
+
         if (inst->dst.kind == PTX_OPER_VEC) {
             for (int i = 0; i < inst->dst.vec_count && i < inst->vec_width; i++) {
                 uint32_t comp = ssir_build_extract(PL_BCTX(p),
@@ -1249,14 +1384,53 @@ static void pl_lower_st(PtxLower *p, const PtxInst *inst) {
     } else {
         /* Vector store: addr in src[0], values in src[1] (vec operand) */
         uint32_t vec_type = ssir_type_vec(p->mod, type, inst->vec_width);
-        uint32_t addr = pl_resolve_operand(p, addr_op, ssir_type_u64(p->mod));
+        const char *base_name = addr_op->kind == PTX_OPER_ADDR
+            ? addr_op->base : addr_op->name;
+        uint32_t byte_offset = pl_resolve_operand(p, addr_op,
+            ssir_type_u64(p->mod));
         if (p->had_error) return;
         uint32_t comps[4];
         for (int i = 0; i < inst->vec_width && i < val_op->vec_count; i++)
             comps[i] = pl_load_reg(p, val_op->regs[i]);
         uint32_t vec_val = ssir_build_construct(PL_BCTX(p),
                                                 vec_type, comps, inst->vec_width);
-        ssir_build_store(PL_BCTX(p), addr, vec_val);
+
+        PlReg *base_reg = base_name[0] ? pl_find_reg(p, base_name) : NULL;
+        if (base_reg && base_reg->is_bda_ptr && p->use_bda &&
+            space == SSIR_ADDR_STORAGE) {
+            uint32_t psb_ptr_type = ssir_type_ptr(p->mod, vec_type,
+                SSIR_ADDR_PHYSICAL_STORAGE_BUFFER);
+            uint32_t typed_ptr = ssir_build_bitcast(p->mod, p->func_id,
+                p->block_id, psb_ptr_type, byte_offset);
+            ssir_build_store(PL_BCTX(p), typed_ptr, vec_val);
+        } else if (space == SSIR_ADDR_WORKGROUP && base_reg &&
+                   base_reg->global_id != 0) {
+            uint32_t u64_t = ssir_type_u64(p->mod);
+            uint32_t u32_t = ssir_type_u32(p->mod);
+            uint32_t byte_sz = ssir_const_u64(p->mod, 4);
+            uint32_t base_idx_u64 = ssir_build_div(PL_BCTX(p),
+                u64_t, byte_offset, byte_sz);
+            uint32_t base_idx = ssir_build_convert(PL_BCTX(p),
+                u32_t, base_idx_u64);
+            uint32_t elem_ptr_type = ssir_type_ptr(p->mod, u32_t,
+                SSIR_ADDR_WORKGROUP);
+            for (int vi = 0; vi < inst->vec_width && vi < 4; vi++) {
+                uint32_t comp = ssir_build_extract(PL_BCTX(p),
+                    type, vec_val, vi);
+                uint32_t raw = (type != u32_t)
+                    ? ssir_build_bitcast(PL_BCTX(p), u32_t, comp)
+                    : comp;
+                uint32_t ci = ssir_const_u32(p->mod, (uint32_t)vi);
+                uint32_t idx = ssir_build_add(PL_BCTX(p),
+                    u32_t, base_idx, ci);
+                uint32_t indices[] = { idx };
+                uint32_t ptr = ssir_build_access(PL_BCTX(p),
+                    elem_ptr_type, base_reg->global_id, indices, 1);
+                ssir_build_store(PL_BCTX(p), ptr, raw);
+            }
+        } else {
+            ssir_build_store(PL_BCTX(p), byte_offset, vec_val);
+        }
     }
 }
 
@@ -1475,8 +1649,8 @@ static void pl_add_precomputed_merge(PtxLower *p, const char *cond_target,
             p->precomputed_merge_cap, __typeof__(*p->precomputed_merges),
             ptx_realloc_);
     int idx = p->precomputed_merge_count++;
-    snprintf(p->precomputed_merges[idx].cond_target, 80, "%s", cond_target);
-    snprintf(p->precomputed_merges[idx].merge_label, 80, "%s", merge_label);
+    snprintf(p->precomputed_merges[idx].cond_target, PTX_NAME_MAX, "%s", cond_target);
+    snprintf(p->precomputed_merges[idx].merge_label, PTX_NAME_MAX, "%s", merge_label);
 }
 
 static int pl_find_label_index(const PtxStmt *body, int body_count, const char *name) {
@@ -2455,7 +2629,7 @@ static void pl_lower_body(PtxLower *p, const PtxStmt *body, int body_count) {
 
 static void pl_build_bda_params(PtxLower *p, const PtxParam *params,
                                  int param_count) {
-    typedef struct { char name[80]; uint32_t type; bool is_ptr; } BdaP;
+    typedef struct { char name[PTX_NAME_MAX]; uint32_t type; bool is_ptr; } BdaP;
     BdaP bda_params[64];
     int bda_count = 0;
 
@@ -2479,7 +2653,7 @@ static void pl_build_bda_params(PtxLower *p, const PtxParam *params,
         r->is_bda_ptr = is_pointer;
 
         if (bda_count < 64) {
-            snprintf(bda_params[bda_count].name, 80, "%s", params[i].name);
+            snprintf(bda_params[bda_count].name, PTX_NAME_MAX, "%s", params[i].name);
             bda_params[bda_count].type = param_type;
             bda_params[bda_count].is_ptr = is_pointer;
             bda_count++;
@@ -2585,12 +2759,32 @@ static void pl_lower_globals(PtxLower *p, const PtxModule *mod) {
             arr_count /= 4;
             repack_as_u32 = true;
         }
+        if (addr_space == SSIR_ADDR_WORKGROUP && arr_count == 0) {
+            elem_type = ssir_type_u32(p->mod);
+            arr_count = 16384;
+        }
 
         uint32_t var_type = arr_count > 0
             ? ssir_type_array(p->mod, elem_type, arr_count)
             : elem_type;
+
+        bool wrap_in_struct = (!g->has_init && addr_space == SSIR_ADDR_STORAGE
+                               && p->use_bda);
+        if (wrap_in_struct) {
+            uint32_t members[] = { var_type };
+            uint32_t offsets[] = { 0 };
+            char sname[80];
+            snprintf(sname, sizeof(sname), "global_%s", g->name);
+            var_type = ssir_type_struct(p->mod, sname, members, 1, offsets);
+        }
+
         uint32_t ptr_type = ssir_type_ptr(p->mod, var_type, addr_space);
         uint32_t gid = ssir_global_var(p->mod, g->name, ptr_type);
+
+        if (wrap_in_struct) {
+            ssir_global_set_group(p->mod, gid, 0);
+            ssir_global_set_binding(p->mod, gid, p->next_binding++);
+        }
 
         if (g->has_init && g->init_count > 0) {
             if (repack_as_u32) {

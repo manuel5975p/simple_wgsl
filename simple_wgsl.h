@@ -1780,6 +1780,8 @@ enum {
     PTX_MOD_TO      = 1 << 20,
 };
 
+#define PTX_NAME_MAX 256
+
 typedef enum {
     PTX_OPER_NONE = 0,
     PTX_OPER_REG, PTX_OPER_IMM_INT, PTX_OPER_IMM_FLT,
@@ -1788,12 +1790,12 @@ typedef enum {
 
 typedef struct {
     PtxOperKind kind;
-    char name[80];
+    char name[PTX_NAME_MAX];
     int64_t ival;
     double fval;
-    char base[80];
+    char base[PTX_NAME_MAX];
     int64_t offset;
-    char regs[4][80];
+    char regs[4][PTX_NAME_MAX];
     int vec_count;
     bool negated;
 } PtxOperand;
@@ -1814,7 +1816,7 @@ typedef struct {
     int bar_id;
     char combine[8];
     bool has_combine;
-    char pred[80];
+    char pred[PTX_NAME_MAX];
     bool pred_negated;
     bool has_pred;
     PtxOperand dst;
@@ -1830,13 +1832,13 @@ typedef enum { PTX_STMT_LABEL, PTX_STMT_INST } PtxStmtKind;
 typedef struct {
     PtxStmtKind kind;
     union {
-        char label[80];
+        char label[PTX_NAME_MAX];
         PtxInst inst;
     };
 } PtxStmt;
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     PtxDataType type;
     int vec_width;
     int count;
@@ -1844,21 +1846,21 @@ typedef struct {
 } PtxRegDecl;
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     PtxDataType type;
     uint32_t alignment;
     uint32_t array_size;
 } PtxLocalDecl;
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     PtxDataType type;
     uint32_t alignment;
     uint32_t array_size;
 } PtxParam;
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     PtxParam *params;
     int param_count, param_cap;
     PtxRegDecl *reg_decls;
@@ -1871,10 +1873,10 @@ typedef struct {
 } PtxEntry;
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     PtxDataType return_type;
     bool has_return;
-    char return_reg[80];
+    char return_reg[PTX_NAME_MAX];
     PtxParam *params;
     int param_count, param_cap;
     PtxRegDecl *reg_decls;
@@ -1887,7 +1889,7 @@ typedef struct {
 } PtxFunc;
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     PtxDataType type;
     PtxMemSpace space;
     uint32_t alignment;
@@ -1902,7 +1904,7 @@ typedef enum {
 } PtxRefKind;
 
 typedef struct {
-    char name[80];
+    char name[PTX_NAME_MAX];
     PtxRefKind kind;
 } PtxRefDecl;
 

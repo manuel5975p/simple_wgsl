@@ -304,10 +304,10 @@ CUresult CUDAAPI cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
     CUVK_LOG("[cuvk] cuDeviceGetAttribute(attrib=%d, dev=%d)\n", attrib, dev);
     switch (attrib) {
     case CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR:
-        *pi = 8;
+        *pi = 7;
         return CUDA_SUCCESS;
     case CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR:
-        *pi = 0;
+        *pi = 5;
         return CUDA_SUCCESS;
     case CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK:
         *pi = (int)props.limits.maxComputeWorkGroupInvocations;
@@ -351,6 +351,30 @@ CUresult CUDAAPI cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
     }
     case CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT:
         *pi = 68;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR:
+        *pi = 2048;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR:
+        *pi = 32;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT:
+        *pi = 3;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_GPU_OVERLAP:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY:
+        *pi = 65536;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_PITCH:
+        *pi = 2147483647;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT:
+        *pi = 512;
         return CUDA_SUCCESS;
     case CU_DEVICE_ATTRIBUTE_CLOCK_RATE:
         *pi = 1410000;
