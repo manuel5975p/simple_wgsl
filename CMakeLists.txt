@@ -144,5 +144,8 @@ else()
     find_package(Vulkan QUIET)
     if(Vulkan_FOUND)
         add_subdirectory(cuvk_runtime)
+
+        add_executable(bench_fft_base bench/bench_fft_base.c)
+        target_link_libraries(bench_fft_base wgsl_compiler Vulkan::Vulkan m)
     endif()
 endif()

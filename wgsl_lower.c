@@ -2992,13 +2992,17 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
         case WGSL_NODE_IDENT: {
             const char *name = node->ident.name;
 
-            // Check local variables
-            uint32_t ptr_id, type_id;
-            if (fn_ctx_find_local(l, name, &ptr_id, &type_id)) {
-                r.id = ptr_id;
-                r.type_id = type_id;
-                if (out_sc) *out_sc = SpvStorageClassFunction;
-                return r;
+            // Check local variables (skip is_value bindings - they are values, not pointers)
+            for (int i = l->fn_ctx.locals.count - 1; i >= 0; --i) {
+                if (strcmp(l->fn_ctx.locals.vars[i].name, name) == 0) {
+                    if (!l->fn_ctx.locals.vars[i].is_value) {
+                        r.id = l->fn_ctx.locals.vars[i].ptr_id;
+                        r.type_id = l->fn_ctx.locals.vars[i].type_id;
+                        if (out_sc) *out_sc = SpvStorageClassFunction;
+                        return r;
+                    }
+                    break;
+                }
             }
 
             // Check immediate variables (return pointer to struct member)
@@ -4377,6 +4381,38 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         return r;
     }
 
+    // Array constructor: array<T, N>(a, b, c, ...)
+    if (strcmp(callee_name, "array") == 0) {
+        uint32_t elem_type = 0;
+        if (call->callee && call->callee->type == WGSL_NODE_TYPE) {
+            const TypeNode *tn = &call->callee->type_node;
+            if (tn->type_arg_count > 0)
+                elem_type = lower_type(l, tn->type_args[0]);
+        }
+
+        int count = call->arg_count;
+        if (count > 256) count = 256;
+        uint32_t constituents[256];
+        int all_ok = 1;
+        for (int i = 0; i < count; ++i) {
+            ExprResult arg = lower_expr_full(l, call->args[i]);
+            if (!arg.id) { all_ok = 0; break; }
+            constituents[i] = arg.id;
+            if (!elem_type) elem_type = arg.type_id;
+        }
+
+        if (all_ok && elem_type && count > 0) {
+            uint32_t len_id = emit_const_u32(l, (uint32_t)count);
+            uint32_t array_type = emit_type_array(l, elem_type, len_id);
+            uint32_t result;
+            if (emit_composite_construct(l, array_type, &result, constituents, count)) {
+                r.id = result;
+                r.type_id = array_type;
+            }
+        }
+        return r;
+    }
+
     return r;
 }
 
@@ -4819,10 +4855,31 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
                 return r;
             }
 
-            // Otherwise, try regular value-based access (vector indexing)
+            // Otherwise, try regular value-based access
             ExprResult arr = lower_expr_full(l, idx->object);
             ExprResult index = lower_expr_full(l, idx->index);
             if (!arr.id || !index.id) return r;
+
+            // Check if this is a fixed-size array type
+            uint32_t arr_elem_type = get_runtime_array_element_type(l, arr.type_id);
+            if (arr_elem_type) {
+                // Array value: copy to temp Function variable, access chain, load
+                uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassFunction, arr.type_id);
+                uint32_t var_id;
+                if (emit_local_variable(l, ptr_type, arr.type_id, &var_id, 0)) {
+                    emit_store(l, var_id, arr.id);
+                    uint32_t elem_ptr_type = emit_type_pointer(l, SpvStorageClassFunction, arr_elem_type);
+                    uint32_t chain_id;
+                    if (emit_access_chain(l, elem_ptr_type, &chain_id, var_id, &index.id, 1)) {
+                        uint32_t loaded;
+                        if (emit_load(l, arr_elem_type, &loaded, chain_id)) {
+                            r.id = loaded;
+                            r.type_id = arr_elem_type;
+                        }
+                    }
+                }
+                return r;
+            }
 
             // Use VectorExtractDynamic for vectors
             uint32_t elem_type = l->id_f32;
