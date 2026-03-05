@@ -136,18 +136,67 @@ set(NVCC_TESTS
     08_multi_kernel
     09_streams
     10_matmul
+    11_double_underscore_math
+    12_rsqrt_rcp
+    13_integer_intrinsics
+    14_saturate_math
+    15_double_precision
+    16_half_float_basic
+    17_half2_packed
+    18_fast_trig
+    19_warp_shuffle
+    20_shared_memory
+    21_atomic_ops
+    22_type_conversions
+    23_bitwise_ops
+    24_ternary_select
+    25_3d_grid
+    26_float_special
+    27_prefix_scan
+    28_long_long_ops
+    29_grid_stride_loop
+    30_complex_math
+    31_popc_brev
+    32_clz_bfind
+    33_cvt_rounding
+    34_funnel_shift
+    35_standard_math_heavy
+    36_fast_intrinsics_stress
+    37_compound_math_chains
+    38_extended_math
+    39_graph_api
+    40_cublas_basic
+    41_cufft_basic
 )
 
 set(NVCC_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc)
 file(MAKE_DIRECTORY ${NVCC_BIN_DIR})
 
+# Tests that use CUDA driver API and need -lcuda
+set(NVCC_DRIVER_API_TESTS 39_graph_api)
+# Tests that use cuBLAS and need -lcublas
+set(NVCC_CUBLAS_TESTS 40_cublas_basic)
+# Tests that use cuFFT and need -lcufft
+set(NVCC_CUFFT_TESTS 41_cufft_basic)
+
 set(NVCC_BINARIES "")
 foreach(test ${NVCC_TESTS})
     set(CU_SRC ${CMAKE_CURRENT_SOURCE_DIR}/nvcc/${test}.cu)
     set(NVCC_OUT ${NVCC_BIN_DIR}/${test})
+    # Check if this test needs extra linking
+    set(_extra_flags "")
+    if(test IN_LIST NVCC_DRIVER_API_TESTS)
+        set(_extra_flags -lcuda)
+    endif()
+    if(test IN_LIST NVCC_CUBLAS_TESTS)
+        set(_extra_flags ${_extra_flags} -lcublas)
+    endif()
+    if(test IN_LIST NVCC_CUFFT_TESTS)
+        set(_extra_flags ${_extra_flags} -lcufft)
+    endif()
     add_custom_command(
         OUTPUT ${NVCC_OUT}
-        COMMAND ${NVCC_EXECUTABLE} -o ${NVCC_OUT} ${CU_SRC} -arch=${NVCC_SM}
+        COMMAND ${NVCC_EXECUTABLE} -o ${NVCC_OUT} ${CU_SRC} -arch=${NVCC_SM} ${_extra_flags}
         DEPENDS ${CU_SRC}
         COMMENT "nvcc: ${test}.cu -> ${test}"
         VERBATIM
@@ -166,3 +215,46 @@ foreach(test ${NVCC_TESTS})
 endforeach()
 
 add_custom_target(e2e_nvcc_binaries ALL DEPENDS ${NVCC_BINARIES})
+
+# --- nvcc --cudart=shared tests: compile .cu to executables linked against shared cudart ---
+# These test our libcudart.so replacement instead of the statically-linked NVIDIA cudart.
+set(NVCC_SHARED_TESTS
+    01_vector_add
+    02_device_clamp
+    03_device_chain
+    04_saxpy_fma
+    05_polynomial
+    08_multi_kernel
+    09_streams
+    10_matmul
+)
+
+set(NVCC_SHARED_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc_shared)
+file(MAKE_DIRECTORY ${NVCC_SHARED_BIN_DIR})
+
+set(NVCC_SHARED_BINARIES "")
+foreach(test ${NVCC_SHARED_TESTS})
+    set(CU_SRC ${CMAKE_CURRENT_SOURCE_DIR}/nvcc/${test}.cu)
+    set(NVCC_OUT ${NVCC_SHARED_BIN_DIR}/${test})
+    add_custom_command(
+        OUTPUT ${NVCC_OUT}
+        COMMAND ${NVCC_EXECUTABLE} -o ${NVCC_OUT} ${CU_SRC} -arch=${NVCC_SM}
+            --cudart=shared -Xlinker -rpath,${CMAKE_BINARY_DIR}/cuvk_runtime
+        DEPENDS ${CU_SRC}
+        COMMENT "nvcc (shared cudart): ${test}.cu -> ${test}"
+        VERBATIM
+    )
+    list(APPEND NVCC_SHARED_BINARIES ${NVCC_OUT})
+
+    add_test(
+        NAME e2e_cudart_${test}
+        COMMAND ${CMAKE_COMMAND} -E env
+            "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/cuvk_runtime:$ENV{LD_LIBRARY_PATH}"
+            ${NVCC_OUT}
+    )
+    set_tests_properties(e2e_cudart_${test} PROPERTIES
+        LABELS "e2e;cudart"
+    )
+endforeach()
+
+add_custom_target(e2e_nvcc_shared_binaries ALL DEPENDS ${NVCC_SHARED_BINARIES})

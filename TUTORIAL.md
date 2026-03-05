@@ -48,9 +48,15 @@ Step-by-step guides for every major use case of simple_wgsl.
   - [Layout Rules: std430 vs Scalar](#layout-rules-std430-vs-scalar)
   - [Mixing Immediates with Bind Group Resources](#mixing-immediates-with-bind-group-resources)
   - [Multi-Entry-Point Isolation](#multi-entry-point-isolation)
-- [11. Custom Memory Allocators](#11-custom-memory-allocators)
-- [12. Error Handling Patterns](#12-error-handling-patterns)
-- [13. Real-World Examples](#13-real-world-examples)
+- [11. Compiling PTX (CUDA Assembly)](#11-compiling-ptx-cuda-assembly)
+  - [PTX to SPIR-V](#ptx-to-spirv)
+  - [PTX to WGSL](#ptx-to-wgsl)
+  - [PTX with Buffer Device Address Mode](#ptx-with-buffer-device-address-mode)
+  - [Two-Step: Parse then Lower](#two-step-parse-then-lower)
+- [12. CUDA-on-Vulkan Runtime (cuvk_runtime)](#12-cuda-on-vulkan-runtime-cuvk_runtime)
+- [13. Custom Memory Allocators](#13-custom-memory-allocators)
+- [14. Error Handling Patterns](#14-error-handling-patterns)
+- [15. Real-World Examples](#15-real-world-examples)
   - [Compute Shader: Double Array Values](#compute-shader-double-array-values)
   - [Vertex + Fragment Pipeline](#vertex--fragment-pipeline)
   - [Texture Sampling Shader](#texture-sampling-shader)
@@ -1290,7 +1296,228 @@ Note that `main3` gets `b` at offset 0 (not offset 4), because when compiled in 
 
 ---
 
-## 11. Custom Memory Allocators
+## 11. Compiling PTX (CUDA Assembly)
+
+PTX is NVIDIA's virtual instruction set for CUDA kernels. simple_wgsl can cross-compile PTX to any output format via SSIR.
+
+### PTX to SPIR-V
+
+The simplest case: compile a PTX kernel to SPIR-V for use with Vulkan.
+
+```c
+int main(void) {
+    const char *ptx_source =
+        ".version 7.0\n"
+        ".target sm_50\n"
+        ".address_size 64\n"
+        "\n"
+        ".entry vector_add(\n"
+        "    .param .u64 a_ptr,\n"
+        "    .param .u64 b_ptr,\n"
+        "    .param .u64 c_ptr\n"
+        ")\n"
+        ".reqntid 256\n"
+        "{\n"
+        "    .reg .u32 %tid;\n"
+        "    .reg .u64 %rd<6>;\n"
+        "    .reg .f32 %f<3>;\n"
+        "\n"
+        "    mov.u32 %tid, %tid.x;\n"
+        "    cvt.u64.u32 %rd0, %tid;\n"
+        "    shl.b64 %rd1, %rd0, 2;\n"
+        "\n"
+        "    ld.param.u64 %rd2, [a_ptr];\n"
+        "    add.u64 %rd3, %rd2, %rd1;\n"
+        "    ld.global.f32 %f0, [%rd3];\n"
+        "\n"
+        "    ld.param.u64 %rd2, [b_ptr];\n"
+        "    add.u64 %rd3, %rd2, %rd1;\n"
+        "    ld.global.f32 %f1, [%rd3];\n"
+        "\n"
+        "    add.f32 %f2, %f0, %f1;\n"
+        "\n"
+        "    ld.param.u64 %rd2, [c_ptr];\n"
+        "    add.u64 %rd3, %rd2, %rd1;\n"
+        "    st.global.f32 [%rd3], %f2;\n"
+        "\n"
+        "    exit;\n"
+        "}\n";
+
+    PtxToSsirOptions opts = { .preserve_names = 1 };
+    SsirModule *mod = NULL;
+    char *error = NULL;
+
+    PtxToSsirResult res = ptx_to_ssir(ptx_source, &opts, &mod, &error);
+    if (res != PTX_TO_SSIR_OK) {
+        fprintf(stderr, "PTX error: %s\n", error);
+        ptx_to_ssir_free(error);
+        return 1;
+    }
+
+    SsirToSpirvOptions spirv_opts = { .enable_debug_names = 1 };
+    uint32_t *spirv = NULL;
+    size_t word_count = 0;
+    ssir_to_spirv(mod, &spirv_opts, &spirv, &word_count);
+    printf("Generated %zu SPIR-V words from PTX\n", word_count);
+
+    ssir_to_spirv_free(spirv);
+    ssir_module_destroy(mod);
+    return 0;
+}
+```
+
+Pointer parameters (`.param .u64`) are mapped to storage buffer bindings at `@group(0) @binding(0)`, `@binding(1)`, etc. The `.reqntid 256` directive sets the compute workgroup size.
+
+### PTX to WGSL
+
+Cross-compile a CUDA kernel to WGSL for WebGPU:
+
+```c
+    PtxToSsirOptions ptx_opts = { .preserve_names = 1 };
+    SsirModule *mod = NULL;
+    char *error = NULL;
+    ptx_to_ssir(ptx_source, &ptx_opts, &mod, &error);
+
+    SsirToWgslOptions wgsl_opts = { .preserve_names = 1 };
+    char *wgsl = NULL;
+    char *wgsl_err = NULL;
+    ssir_to_wgsl(mod, &wgsl_opts, &wgsl, &wgsl_err);
+
+    printf("WGSL:\n%s\n", wgsl);
+
+    ssir_to_wgsl_free(wgsl);
+    ssir_to_wgsl_free(wgsl_err);
+    ssir_module_destroy(mod);
+```
+
+The same SsirModule can be emitted to GLSL, MSL, or HLSL using the corresponding `ssir_to_*` functions.
+
+### PTX with Buffer Device Address Mode
+
+For use with `cuvk_runtime` or other systems that pass buffer pointers as 64-bit device addresses:
+
+```c
+    PtxToSsirOptions opts = {
+        .preserve_names = 1,
+        .use_bda = 1,  // push constants + PhysicalStorageBuffer
+    };
+    SsirModule *mod = NULL;
+    char *error = NULL;
+    ptx_to_ssir(ptx_source, &opts, &mod, &error);
+```
+
+With `use_bda = 1`, all kernel parameters are packed into a push constant struct. Pointer parameters become `PhysicalStorageBuffer` 64-bit device addresses instead of descriptor-bound storage buffers. This is more efficient for runtime dispatch.
+
+### Two-Step: Parse then Lower
+
+You can separate parsing from lowering if you need to inspect the PTX module structure:
+
+```c
+    PtxModule *ptx_mod = ptx_parse(ptx_source, &error);
+    if (!ptx_mod) {
+        fprintf(stderr, "Parse error: %s\n", error);
+        ptx_to_ssir_free(error);
+        return 1;
+    }
+
+    // Inspect the parsed PTX
+    printf("PTX version: %d.%d\n", ptx_mod->version_major, ptx_mod->version_minor);
+    printf("Address size: %d\n", ptx_mod->address_size);
+
+    // Lower to SSIR
+    PtxToSsirOptions opts = { .preserve_names = 1 };
+    SsirModule *mod = NULL;
+    ptx_lower(ptx_mod, &opts, &mod, &error);
+
+    // Use mod with any emitter...
+
+    ssir_module_destroy(mod);
+    ptx_parse_free(ptx_mod);
+```
+
+---
+
+## 12. CUDA-on-Vulkan Runtime (cuvk_runtime)
+
+The `cuvk_runtime` library is a drop-in replacement for `libcuda.so.1` that transparently runs CUDA compute kernels on Vulkan. Programs compiled with `nvcc` work without modification.
+
+### Using with LD_PRELOAD
+
+The simplest way to run an existing CUDA binary on a non-NVIDIA GPU:
+
+```bash
+# Build cuvk_runtime (requires Vulkan SDK)
+cmake -B build -G Ninja
+ninja -C build
+
+# Run any CUDA program with the Vulkan-backed libcuda.so.1
+LD_PRELOAD=build/cuvk_runtime/libcuda.so.1 ./my_cuda_program
+```
+
+The runtime intercepts CUDA driver API calls (`cuInit`, `cuModuleLoad`, `cuLaunchKernel`, etc.), extracts PTX from the embedded fatbin, compiles it to SPIR-V on the fly, and dispatches to Vulkan compute pipelines.
+
+### Linking Directly
+
+For new projects, link against `cuvk_runtime_shared` instead of the NVIDIA CUDA driver:
+
+```c
+#include "cuda.h"
+
+int main(void) {
+    cuInit(0);
+
+    CUdevice dev;
+    cuDeviceGet(&dev, 0);
+
+    CUcontext ctx;
+    cuCtxCreate(&ctx, 0, dev);
+
+    // Load a PTX module
+    CUmodule mod;
+    cuModuleLoadData(&mod, ptx_source);
+
+    CUfunction func;
+    cuModuleGetFunction(&func, mod, "vector_add");
+
+    // Allocate device memory
+    CUdeviceptr d_a, d_b, d_c;
+    cuMemAlloc(&d_a, N * sizeof(float));
+    cuMemAlloc(&d_b, N * sizeof(float));
+    cuMemAlloc(&d_c, N * sizeof(float));
+
+    // Copy data to device
+    cuMemcpyHtoD(d_a, h_a, N * sizeof(float));
+    cuMemcpyHtoD(d_b, h_b, N * sizeof(float));
+
+    // Launch kernel
+    void *args[] = { &d_a, &d_b, &d_c };
+    cuLaunchKernel(func,
+                   (N + 255) / 256, 1, 1,  // grid
+                   256, 1, 1,               // block
+                   0, NULL, args, NULL);
+
+    // Copy result back
+    cuMemcpyDtoH(h_c, d_c, N * sizeof(float));
+
+    cuMemFree(d_a);
+    cuMemFree(d_b);
+    cuMemFree(d_c);
+    cuModuleUnload(mod);
+    cuCtxDestroy(ctx);
+}
+```
+
+This is standard CUDA driver API usage. The only difference is linking against `cuvk_runtime_shared` instead of `-lcuda`.
+
+### Environment Variables
+
+| Variable | Effect |
+|----------|--------|
+| `CUVK_VALIDATION` | Set to any value to enable Vulkan validation layers |
+
+---
+
+## 13. Custom Memory Allocators
 
 To embed simple_wgsl in an environment with custom memory management (game engines, WASM, embedded), define allocator macros before including the header:
 
@@ -1325,7 +1552,7 @@ The macros must be defined before `#include "simple_wgsl.h"` in every translatio
 
 ---
 
-## 12. Error Handling Patterns
+## 14. Error Handling Patterns
 
 Every API follows a consistent pattern: call a function, check the result enum, and optionally retrieve an error message.
 
@@ -1369,7 +1596,7 @@ spirv_to_ssir_result_string(SPIRV_TO_SSIR_INVALID_SPIRV)    // "invalid SPIR-V"
 
 ---
 
-## 13. Real-World Examples
+## 15. Real-World Examples
 
 ### Compute Shader: Double Array Values
 

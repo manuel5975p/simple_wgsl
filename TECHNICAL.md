@@ -71,6 +71,14 @@ Complete technical documentation for simple_wgsl: architecture, intermediate rep
   - [Lowering Behavior](#lowering-behavior)
   - [Layout Rules](#layout-rules)
 - [Memory Management](#memory-management)
+- [CUDA-on-Vulkan Runtime (cuvk_runtime)](#cuda-on-vulkan-runtime-cuvk_runtime)
+  - [Architecture](#architecture-1)
+  - [Core Structures](#core-structures)
+  - [Parameter Passing Modes](#parameter-passing-modes)
+  - [Memory Management](#memory-management-1)
+  - [Fatbin Parsing](#fatbin-parsing)
+  - [Produced Libraries](#produced-libraries)
+  - [Build Configuration](#build-configuration)
 - [Language Mapping Tables](#language-mapping-tables)
   - [WGSL to GLSL Mapping](#wgsl-to-glsl-mapping)
 - [Error Handling](#error-handling)
@@ -524,7 +532,7 @@ SSIR supports 70+ opcodes organized into categories:
 
 ### Built-in Functions
 
-72+ built-in functions callable via `SSIR_OP_BUILTIN`:
+88 built-in functions callable via `SSIR_OP_BUILTIN`:
 
 **Trigonometric**: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh`
 
@@ -901,10 +909,18 @@ Forcing PTX into the WGSL AST would require either losing PTX-specific semantics
 - Operations: `add`, `min`, `max`, `and`, `or`, `xor`, `exch`, `cas`, `inc`, `dec`
 - Spaces: `.global`, `.shared`
 
+**Texture and surface instructions:**
+- `tex.{dim}.v4.{type}.{coord_type}` -- texture sampling (1D, 2D, 3D)
+- `tld4.{comp}.{dim}.v4.{type}.{coord_type}` -- texture gather (component selection)
+- `suld.b.{dim}.{type}` -- surface load
+- `sust.b.{dim}.{type}` -- surface store
+- Coordinate types: `.s32`, `.f32`
+- Texture references mapped to SSIR sampled textures; surfaces mapped to storage textures
+
 **Synchronization:**
-- `bar.sync N` — workgroup barrier
-- `bar.arrive`, `bar.red` — partial barrier variants
-- `membar.{scope}` — memory fence (`.cta`, `.gl`, `.sys`)
+- `bar.sync N` -- workgroup barrier
+- `bar.arrive`, `bar.red` -- partial barrier variants
+- `membar.{scope}` -- memory fence (`.cta`, `.gl`, `.sys`)
 
 ### PTX API
 
@@ -918,6 +934,7 @@ typedef enum {
 typedef struct {
     int preserve_names;   // keep PTX register names as SSIR debug names
     int strict_mode;      // reject .approx instructions
+    int use_bda;          // 1 = push constants + PhysicalStorageBuffer for kernel pointers
 } PtxToSsirOptions;
 
 PtxToSsirResult ptx_to_ssir(const char *ptx_source,
@@ -929,6 +946,8 @@ void ptx_to_ssir_free(char *str);
 
 const char *ptx_to_ssir_result_string(PtxToSsirResult r);
 ```
+
+When `use_bda = 1`, all kernel parameters are packed into a push constant struct and pointer parameters become `PhysicalStorageBuffer` device addresses. This is the mode used by `cuvk_runtime` for efficient kernel dispatch. When `use_bda = 0` (default), pointer parameters map to storage buffer descriptor bindings.
 
 Usage follows the same pattern as all other parsers:
 
@@ -954,7 +973,7 @@ ssir_module_destroy(mod);
 
 ### Architecture of ptx_parser.c
 
-The parser is organized into clearly separated sections (~2,200 lines total):
+The parser is organized into clearly separated sections (~1,900 lines in ptx_parser.c, ~3,100 lines in ptx_lower.c):
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -1219,6 +1238,15 @@ This is the most common predicated pattern and is handled with zero overhead.
 | `membar.cta` | `SSIR_OP_BARRIER(SSIR_BARRIER_WORKGROUP)` |
 | `membar.gl` | `SSIR_OP_BARRIER(SSIR_BARRIER_STORAGE)` |
 
+**Texture and surface:**
+
+| PTX | SSIR |
+|-----|------|
+| `tex.{dim}.v4.{type}.{coord}` | `SSIR_OP_TEX_SAMPLE_LEVEL` or `SSIR_OP_TEX_SAMPLE_GRAD` |
+| `tld4.{comp}.{dim}.v4.{type}.{coord}` | `SSIR_OP_TEX_SAMPLE_LEVEL` (per-component gather) |
+| `suld.b.{dim}.{type}` | `SSIR_OP_TEX_LOAD` (storage texture load) |
+| `sust.b.{dim}.{type}` | `SSIR_OP_TEX_STORE` (storage texture store) |
+
 **Type conversion:**
 
 | PTX | SSIR |
@@ -1276,19 +1304,18 @@ ssir_module_destroy(mod);
 
 **Current limitations:**
 - **Pointer arithmetic preserved as-is**: PTX's raw pointer arithmetic (`base + index * sizeof(T)`) is not reconstructed into typed array indexing. Output is correct but more verbose.
-- **No texture/surface instructions**: `tex`, `tld4`, `suld`, `sust` are not supported (requires SSIR texture infrastructure mapping).
 - **No tensor core / WMMA instructions**: Matrix multiply-accumulate operations are out of scope.
 - **No warp-level primitives**: `shfl`, `vote`, `match`, `redux` are not implemented.
 - **No indirect calls**: Function pointers are not supported.
 - **Predicated non-branch instructions**: Currently parsed but not wrapped in conditional blocks (the predicate guard is consumed, but the instruction executes unconditionally in SSIR).
 
 **Planned future work:**
-- **Typed array reconstruction**: Pattern-match `base + idx * sizeof(T)` → `array[idx]` for cleaner output
+- **Typed array reconstruction**: Pattern-match `base + idx * sizeof(T)` -> `array[idx]` for cleaner output
 - **Full predicate lowering**: Insert conditional blocks for predicated non-branch instructions
 - **Dead store elimination**: Remove redundant register stores
 - **Constant folding**: Evaluate compile-time-known expressions
 - **Warp-level primitives**: Map `shfl` to subgroup operations
-- **`ssir_to_ptx` emitter**: Enable WGSL/GLSL → PTX compilation for CUDA targets
+- **`ssir_to_ptx` emitter**: Enable WGSL/GLSL -> PTX compilation for CUDA targets
 
 ---
 
@@ -1459,6 +1486,103 @@ Default: `calloc`/`realloc`/`free` from the C standard library. Note that `NODE_
 | `dpdx` / `dpdy` | `dFdx` / `dFdy` |
 | `textureSample(t, s, c)` | `texture(t, c)` |
 | `textureLoad(t, c, l)` | `texelFetch(t, c, l)` |
+
+---
+
+## CUDA-on-Vulkan Runtime (cuvk_runtime)
+
+The `cuvk_runtime/` directory contains a drop-in replacement for the NVIDIA CUDA driver API (`libcuda.so.1`) that runs CUDA compute kernels on any Vulkan-capable GPU. It uses simple_wgsl's PTX-to-SPIR-V pipeline at runtime.
+
+### Architecture
+
+```
+nvcc binary
+  |
+  |  dlopen("libcuda.so.1")  -->  cuvk_runtime
+  |
+  v
+cuModuleLoad(fatbin)
+  |  extract PTX (zstd/lz4 decompress)
+  v
+ptx_to_ssir(ptx, {.use_bda = 1})
+  |
+  v
+ssir_to_spirv(ssir)
+  |
+  v
+VkShaderModule --> VkComputePipeline (cached per block dims)
+  |
+  v
+cuLaunchKernel(grid, block, params)
+  |  pack params as push constants (BDA) or descriptors
+  v
+vkCmdDispatch(gridDimX, gridDimY, gridDimZ)
+```
+
+### Core Structures
+
+**CUctx_st** (CUDA context): Vulkan device, queue, command/descriptor pools, timeline semaphore. Tracks all device allocations in a sorted array with binary-search lookup. Owns staging buffers (upload: `HOST_COHERENT`, download: `HOST_CACHED`, grow-only, persistently mapped).
+
+**CUmod_st** (CUDA module): SPIR-V word array + SsirModule for reflection. Per-module global variables backed by device buffers in a shared descriptor set.
+
+**CUfunc_st** (CUDA function): VkPipeline cache keyed by `(blockDimX, blockDimY, blockDimZ)`. On cache miss, the runtime copies the SPIR-V, patches the `OpExecutionMode LocalSize` words at `[i+3..i+5]` with the new block dimensions, creates a new `VkShaderModule` + `VkComputePipeline`, and caches it.
+
+### Parameter Passing Modes
+
+**BDA mode** (default when `VkPhysicalDeviceBufferDeviceAddressFeatures` available):
+- All kernel parameters packed into push constants (max 256 bytes)
+- Pointer parameters stored as 64-bit device addresses via `vkGetBufferDeviceAddress`
+- Hidden `__ntid_x/y/z` block dimensions appended to the push constant block
+- No per-launch descriptor allocation
+
+**Descriptor mode** (fallback):
+- Each pointer parameter becomes a storage buffer descriptor binding
+- Descriptor set allocated per launch from context pool
+- Scalar parameters passed as push constants
+
+### Memory Management
+
+`cuMemAlloc` creates a `VkBuffer` with `DEVICE_LOCAL` memory. The device address (from `vkGetBufferDeviceAddress` in BDA mode, or a synthetic monotonic counter otherwise) is returned as `CUdeviceptr`. Allocations stored in a sorted array for O(log n) lookup by address.
+
+`cuMemcpyHtoD`/`cuMemcpyDtoH` use staging buffers. Upload: host -> `HOST_COHERENT` staging -> `vkCmdCopyBuffer` -> device. Download: device -> `vkCmdCopyBuffer` -> `HOST_CACHED` staging -> host.
+
+### Fatbin Parsing
+
+CUDA fatbinaries (magic `0xBA55ED50`) contain PTX text sections optionally compressed with ZSTD (magic `0x28B52FFD`) or LZ4. The parser iterates sections (kind=1 for PTX, kind=2 for cubin), decompresses the first PTX section found, and passes it to `ptx_to_ssir`.
+
+### Produced Libraries
+
+| Target | Linux | Windows |
+|--------|-------|---------|
+| CUDA driver | `libcuda.so.1` | `nvcuda.dll` |
+| CUDA runtime | `libcudart.so.1` | `cudart64_12.dll` |
+| cuBLAS | `libcublas.so.13` | `cublas64_12.dll` |
+| cuFFT | `libcufft.so.12` | `cufft64_12.dll` |
+
+The cuFFT library implements Cooley-Tukey FFT via WGSL compute shaders (bit-reversal permutation + log2(N) butterfly stages with precomputed twiddle factors).
+
+### Build Configuration
+
+Built automatically when Vulkan is found (Linux) or `VULKAN_LIBRARY` is set (Windows cross-compilation). Dependencies: Vulkan SDK, `wgsl_compiler`, zstd v1.5.7 (FetchContent), lz4.
+
+Optional: `-DCUVK_NVJITLINK=ON` enables `libnvJitLink.so` for compiling CUDA LTO-IR to PTX when no text PTX is available in the fatbin.
+
+### Source Files (~11k lines)
+
+| File | Purpose |
+|------|---------|
+| `cuvk_internal.h` | All internal structs and Vulkan-to-CUDA error mapping |
+| `cuvk_init.c` | Vulkan instance/device creation, feature detection |
+| `cuvk_module.c` | PTX loading, SPIR-V compilation, parameter reflection |
+| `cuvk_launch.c` | LocalSize patching, pipeline caching, kernel dispatch |
+| `cuvk_memory.c` | Device allocation, host/device memcpy via staging buffers |
+| `cuvk_fatbin.c` | Fatbin section parsing, ZSTD/LZ4 decompression |
+| `cuvk_stream.c` | Stream/event management, one-shot command buffers |
+| `cuvk_stubs.c` | Primary context management, device attributes, API stubs |
+| `cuvk_compat.c` | Unversioned API wrappers (cuMemAlloc -> cuMemAlloc_v2) |
+| `cuvk_cufft.c` | Cooley-Tukey FFT via WGSL compute shaders |
+| `cuvk_cublas.c` | cuBLAS stubs |
+| `cuvk_jitlink.c` | Optional nvJitLink integration for LTO-IR |
 
 ---
 

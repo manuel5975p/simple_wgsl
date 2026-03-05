@@ -73,6 +73,7 @@ add_library(wgsl_compiler STATIC
     spirv_to_ssir.c
     msl_parser.c
     ptx_parser.c
+    ptx_lower.c
 )
 
 set_target_properties(wgsl_compiler PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -121,7 +122,27 @@ if(WGSL_BUILD_FUZZ)
     add_subdirectory(fuzz)
 endif()
 
-find_package(Vulkan QUIET)
-if(Vulkan_FOUND)
-  add_subdirectory(cuvk_runtime)
+if(WIN32)
+    # Cross-compilation: always build cuvk_runtime if Vulkan lib provided
+    if(VULKAN_LIBRARY)
+        add_subdirectory(cuvk_runtime)
+
+        # Windows test executables
+        add_executable(win_test tests/win_test.c)
+        target_link_libraries(win_test cuvk_runtime_shared m)
+        target_include_directories(win_test PRIVATE ${CMAKE_SOURCE_DIR})
+
+        # E2E PTX-based tests (cross-compiled for Wine)
+        set(WIN_E2E_TESTS test_vector_add test_saxpy test_scale test_dot_product)
+        foreach(test ${WIN_E2E_TESTS})
+            add_executable(${test} tests/e2e/${test}.c)
+            target_link_libraries(${test} cuvk_runtime_shared m)
+            target_include_directories(${test} PRIVATE ${CMAKE_SOURCE_DIR})
+        endforeach()
+    endif()
+else()
+    find_package(Vulkan QUIET)
+    if(Vulkan_FOUND)
+        add_subdirectory(cuvk_runtime)
+    endif()
 endif()

@@ -4,16 +4,8 @@
  * Converts SSIR (Simple Shader IR) to HLSL code compatible with DXC.
  */
 
-#include "simple_wgsl.h"
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
+#include "simple_wgsl_internal.h"
 #include <math.h>
-
-/* ============================================================================
- * Memory Allocation
- * ============================================================================ */
 
 #ifndef STM_MALLOC
 #define STM_MALLOC(sz) calloc(1, (sz))
@@ -25,63 +17,14 @@
 #define STM_FREE(p) free((p))
 #endif
 
-/* ============================================================================
- * String Buffer
- * ============================================================================ */
-
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-    int indent;
-} HlslBuf;
-
-static void hb_init(HlslBuf *b) {
-    b->data = NULL;
-    b->len = 0;
-    b->cap = 0;
-    b->indent = 0;
-}
-
-static void hb_free(HlslBuf *b) {
-    STM_FREE(b->data);
-    b->data = NULL;
-    b->len = b->cap = 0;
-}
-
-static int hb_reserve(HlslBuf *b, size_t need) {
-    if (b->len + need + 1 <= b->cap) return 1;
-    size_t nc = b->cap ? b->cap : 256;
-    while (nc < b->len + need + 1) nc *= 2;
-    char *nd = (char *)STM_REALLOC(b->data, nc);
-    if (!nd) return 0;
-    b->data = nd;
-    b->cap = nc;
-    return 1;
-}
-
-static void hb_append(HlslBuf *b, const char *s) {
-    size_t sl = strlen(s);
-    if (!hb_reserve(b, sl)) return;
-    memcpy(b->data + b->len, s, sl);
-    b->len += sl;
-    b->data[b->len] = '\0';
-}
-
-static void hb_appendf(HlslBuf *b, const char *fmt, ...) {
-    char buf[1024];
-    va_list a;
-    va_start(a, fmt);
-    int n = vsnprintf(buf, sizeof(buf), fmt, a);
-    va_end(a);
-    if (n > 0) hb_append(b, buf);
-}
-
-static void hb_indent(HlslBuf *b) {
-    for (int i = 0; i < b->indent; i++) hb_append(b, "    ");
-}
-
-static void hb_nl(HlslBuf *b) { hb_append(b, "\n"); }
+typedef SwStringBuffer HlslBuf;
+#define hb_init sw_sb_init
+#define hb_free sw_sb_free
+#define hb_reserve sw_sb_reserve
+#define hb_append sw_sb_append
+#define hb_appendf sw_sb_appendf
+#define hb_indent sw_sb_indent
+#define hb_nl sw_sb_nl
 
 /* ============================================================================
  * Converter Context
@@ -126,16 +69,7 @@ static void hctx_free(HlslCtx *c) {
 }
 
 static const char *hlsl_get_name(HlslCtx *c, uint32_t id) {
-    if (id < c->id_names_cap && c->id_names[id]) return c->id_names[id];
-
-    // Cycle buffers to avoid overwrite in nested calls
-    static char buffers[4][64];
-    static int next_buf = 0;
-    char *buf = buffers[next_buf];
-    next_buf = (next_buf + 1) % 4;
-
-    snprintf(buf, 64, "_v%u", id);
-    return buf;
+    return sw_get_id_name(c->id_names, c->id_names_cap, id);
 }
 
 static int is_hlsl_reserved(const char *n) {
@@ -490,8 +424,7 @@ static const char *bfunc_to_hlsl(SsirBuiltinId id) {
 static void hlsl_emit_expr(HlslCtx *c, uint32_t id, HlslBuf *b);
 
 static SsirInst *hlsl_find_inst(HlslCtx *c, uint32_t id) {
-    if (c->inst_map && id < c->inst_map_cap) return c->inst_map[id];
-    return NULL;
+    return sw_find_inst(c->inst_map, c->inst_map_cap, id);
 }
 
 static void hlsl_emit_expr(HlslCtx *c, uint32_t id, HlslBuf *b) {

@@ -34,6 +34,25 @@ int32_t cuvk_find_memory_type(const VkPhysicalDeviceMemoryProperties *mem_props,
 }
 
 /* ============================================================================
+ * Vulkan debug callback
+ * ============================================================================ */
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL cuvk_debug_callback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT type,
+    const VkDebugUtilsMessengerCallbackDataEXT *data,
+    void *user)
+{
+    (void)type; (void)user;
+    const char *sev = (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
+                          ? "ERROR" : "WARN";
+    fprintf(stderr, "[cuvk/vk] %s: %s\n", sev, data->pMessage);
+    return VK_FALSE;
+}
+
+static void cuvk_atexit_handler(void) { g_cuvk.exiting = true; }
+
+/* ============================================================================
  * cuInit
  * ============================================================================ */
 
@@ -46,9 +65,22 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
     if (g_cuvk.initialized)
         return CUDA_SUCCESS;
 
-    /* Create VkInstance with VK_KHR_get_physical_device_properties2 */
-    const char *instance_extensions[] = {
-        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
+    bool want_validation = false;
+#ifndef NDEBUG
+    if (getenv("CUVK_VALIDATION"))
+        want_validation = true;
+#endif
+
+    const char *instance_extensions[2];
+    uint32_t inst_ext_count = 0;
+    instance_extensions[inst_ext_count++] =
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
+    if (want_validation)
+        instance_extensions[inst_ext_count++] =
+            VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+
+    const char *validation_layers[] = {
+        "VK_LAYER_KHRONOS_validation",
     };
 
     VkApplicationInfo app_info = {0};
@@ -57,18 +89,71 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
     app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     app_info.pEngineName = "cuvk_runtime";
     app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    app_info.apiVersion = VK_API_VERSION_1_1;
+    app_info.apiVersion = VK_API_VERSION_1_2;
+
+    VkDebugUtilsMessengerCreateInfoEXT dbg_ci = {0};
+    dbg_ci.sType =
+        VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    dbg_ci.messageSeverity =
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    dbg_ci.messageType =
+        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    dbg_ci.pfnUserCallback = cuvk_debug_callback;
+
+    const char *log_action = "VK_DBG_LAYER_ACTION_LOG_MSG";
+    VkBool32 vk_false = VK_FALSE;
+    VkLayerSettingEXT layer_settings[] = {
+        {
+            .pLayerName   = "VK_LAYER_KHRONOS_validation",
+            .pSettingName = "debug_action",
+            .type         = VK_LAYER_SETTING_TYPE_STRING_EXT,
+            .valueCount   = 1,
+            .pValues      = &log_action,
+        },
+        {
+            .pLayerName   = "VK_LAYER_KHRONOS_validation",
+            .pSettingName = "thread_safety",
+            .type         = VK_LAYER_SETTING_TYPE_BOOL32_EXT,
+            .valueCount   = 1,
+            .pValues      = &vk_false,
+        },
+    };
+    VkLayerSettingsCreateInfoEXT layer_settings_ci = {0};
+    layer_settings_ci.sType =
+        VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT;
+    layer_settings_ci.settingCount = 2;
+    layer_settings_ci.pSettings = layer_settings;
 
     VkInstanceCreateInfo create_info = {0};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     create_info.pApplicationInfo = &app_info;
-    create_info.enabledExtensionCount = 1;
+    create_info.enabledExtensionCount = inst_ext_count;
     create_info.ppEnabledExtensionNames = instance_extensions;
+    if (want_validation) {
+        create_info.enabledLayerCount = 1;
+        create_info.ppEnabledLayerNames = validation_layers;
+        dbg_ci.pNext = &layer_settings_ci;
+        create_info.pNext = &dbg_ci;
+    }
 
     VkResult vr = vkCreateInstance(&create_info, NULL, &g_cuvk.instance);
     if (vr != VK_SUCCESS) {
         CUVK_LOG("[cuvk] cuInit: vkCreateInstance failed vr=%d\n", vr);
         return cuvk_vk_to_cu(vr);
+    }
+
+    g_cuvk.has_validation = want_validation;
+    if (want_validation) {
+        PFN_vkCreateDebugUtilsMessengerEXT fn =
+            (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+                g_cuvk.instance, "vkCreateDebugUtilsMessengerEXT");
+        if (fn) {
+            fn(g_cuvk.instance, &dbg_ci, NULL,
+               &g_cuvk.debug_messenger);
+        }
     }
 
     /* Enumerate physical devices */
@@ -99,6 +184,7 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
 
     g_cuvk.physical_device_count = count;
     g_cuvk.initialized = true;
+    atexit(cuvk_atexit_handler);
     CUVK_LOG("[cuvk] cuInit SUCCESS (devices=%u)\n", count);
     return CUDA_SUCCESS;
 }
@@ -218,10 +304,10 @@ CUresult CUDAAPI cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
     CUVK_LOG("[cuvk] cuDeviceGetAttribute(attrib=%d, dev=%d)\n", attrib, dev);
     switch (attrib) {
     case CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR:
-        *pi = 8;
+        *pi = 7;
         return CUDA_SUCCESS;
     case CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR:
-        *pi = 0;
+        *pi = 5;
         return CUDA_SUCCESS;
     case CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK:
         *pi = (int)props.limits.maxComputeWorkGroupInvocations;
@@ -265,6 +351,30 @@ CUresult CUDAAPI cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
     }
     case CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT:
         *pi = 68;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR:
+        *pi = 2048;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR:
+        *pi = 32;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_ASYNC_ENGINE_COUNT:
+        *pi = 3;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_GPU_OVERLAP:
+        *pi = 1;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_TOTAL_CONSTANT_MEMORY:
+        *pi = 65536;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_MAX_PITCH:
+        *pi = 2147483647;
+        return CUDA_SUCCESS;
+    case CU_DEVICE_ATTRIBUTE_TEXTURE_ALIGNMENT:
+        *pi = 512;
         return CUDA_SUCCESS;
     case CU_DEVICE_ATTRIBUTE_CLOCK_RATE:
         *pi = 1410000;
@@ -431,6 +541,8 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     vkGetPhysicalDeviceFeatures2(phys, &features2_ts);
 
     bool has_timeline = (ts_features.timelineSemaphore == VK_TRUE);
+    bool has_f64 = (features2.features.shaderFloat64 == VK_TRUE);
+    bool has_i64 = (features2.features.shaderInt64 == VK_TRUE);
 
     /* Build device extension list */
     const char *device_extensions[2];
@@ -460,12 +572,18 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
     enable_ts.timelineSemaphore = has_timeline ? VK_TRUE : VK_FALSE;
 
-    /* Chain: device_ci -> bda -> ts */
+    VkPhysicalDeviceFeatures2 enable_features2 = {0};
+    enable_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    enable_features2.features.shaderFloat64 = has_f64 ? VK_TRUE : VK_FALSE;
+    enable_features2.features.shaderInt64 = has_i64 ? VK_TRUE : VK_FALSE;
+
+    /* Chain: device_ci -> features2 -> bda -> ts */
+    enable_features2.pNext = &enable_bda;
     enable_bda.pNext = &enable_ts;
 
     VkDeviceCreateInfo device_ci = {0};
     device_ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    device_ci.pNext = &enable_bda;
+    device_ci.pNext = &enable_features2;
     device_ci.queueCreateInfoCount = 1;
     device_ci.pQueueCreateInfos = &queue_ci;
     device_ci.enabledExtensionCount = ext_count;
@@ -589,6 +707,48 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     ctx->default_stream.ctx = ctx;
     ctx->default_stream.recording = false;
 
+    /* Allocate reusable one-shot command buffer */
+    VkCommandBufferAllocateInfo oneshot_ai = {0};
+    oneshot_ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    oneshot_ai.commandPool = ctx->cmd_pool;
+    oneshot_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    oneshot_ai.commandBufferCount = 1;
+
+    vr = vkAllocateCommandBuffers(ctx->device, &oneshot_ai, &ctx->oneshot_cb);
+    if (vr != VK_SUCCESS) {
+        vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
+        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+                             &ctx->default_stream.cmd_buf);
+        if (ctx->timeline_sem)
+            vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        vkDestroyDevice(ctx->device, NULL);
+        free(ctx);
+        return cuvk_vk_to_cu(vr);
+    }
+
+    /* Create reusable one-shot fence (signaled so first reset succeeds) */
+    VkFenceCreateInfo oneshot_fence_ci = {0};
+    oneshot_fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    oneshot_fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    vr = vkCreateFence(ctx->device, &oneshot_fence_ci, NULL,
+                       &ctx->oneshot_fence);
+    if (vr != VK_SUCCESS) {
+        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &ctx->oneshot_cb);
+        vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
+        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+                             &ctx->default_stream.cmd_buf);
+        if (ctx->timeline_sem)
+            vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        vkDestroyDevice(ctx->device, NULL);
+        free(ctx);
+        return cuvk_vk_to_cu(vr);
+    }
+
     /* Cache memory and device properties */
     vkGetPhysicalDeviceMemoryProperties(phys, &ctx->mem_props);
     vkGetPhysicalDeviceProperties(phys, &ctx->dev_props);
@@ -608,6 +768,15 @@ CUresult CUDAAPI cuCtxDestroy_v2(CUcontext ctx)
 {
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
+    if (!ctx->device)
+        return CUDA_SUCCESS;
+
+    if (g_cuvk.exiting && g_cuvk.has_validation) {
+        ctx->device = VK_NULL_HANDLE;
+        if (g_cuvk.current_ctx == ctx)
+            g_cuvk.current_ctx = NULL;
+        return CUDA_SUCCESS;
+    }
 
     vkDeviceWaitIdle(ctx->device);
 
@@ -618,6 +787,25 @@ CUresult CUDAAPI cuCtxDestroy_v2(CUcontext ctx)
         vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
                              &ctx->default_stream.cmd_buf);
 
+    /* Destroy reusable one-shot resources */
+    if (ctx->oneshot_fence)
+        vkDestroyFence(ctx->device, ctx->oneshot_fence, NULL);
+    if (ctx->oneshot_cb)
+        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+                             &ctx->oneshot_cb);
+
+    /* Destroy cached staging buffer */
+    if (ctx->staging_buf)
+        vkDestroyBuffer(ctx->device, ctx->staging_buf, NULL);
+    if (ctx->staging_mem)
+        vkFreeMemory(ctx->device, ctx->staging_mem, NULL);
+
+    /* Destroy download staging buffer */
+    if (ctx->download_buf)
+        vkDestroyBuffer(ctx->device, ctx->download_buf, NULL);
+    if (ctx->download_mem)
+        vkFreeMemory(ctx->device, ctx->download_mem, NULL);
+
     /* Destroy timeline semaphore */
     if (ctx->timeline_sem)
         vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
@@ -626,22 +814,34 @@ CUresult CUDAAPI cuCtxDestroy_v2(CUcontext ctx)
     if (ctx->desc_pool)
         vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
 
+    /* Destroy pinned host allocations */
+    for (uint32_t i = 0; i < ctx->host_alloc_count; i++) {
+        vkDestroyBuffer(ctx->device, ctx->host_allocs[i].buffer, NULL);
+        vkFreeMemory(ctx->device, ctx->host_allocs[i].memory, NULL);
+    }
+    free(ctx->host_allocs);
+    ctx->host_allocs = NULL;
+
     /* Destroy command pool */
     if (ctx->cmd_pool)
         vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
 
     /* Destroy device */
-    if (ctx->device)
-        vkDestroyDevice(ctx->device, NULL);
+    vkDestroyDevice(ctx->device, NULL);
+    ctx->device = VK_NULL_HANDLE;
 
     /* Free tracked allocations array */
     free(ctx->allocs);
+    ctx->allocs = NULL;
 
     /* Clear current context if this was it */
     if (g_cuvk.current_ctx == ctx)
         g_cuvk.current_ctx = NULL;
 
-    free(ctx);
+    /* NOTE: do not free(ctx) here. Modules hold a ctx pointer and may be
+     * unloaded after the context during atexit. We null device above so
+     * cuModuleUnload can detect the destroyed context and skip cleanup.
+     * The struct leaks at process exit, which is harmless. */
     return CUDA_SUCCESS;
 }
 

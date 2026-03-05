@@ -14,7 +14,7 @@ SPIR-V ┘              └── HLSL
 
 - **Single header, zero dependencies** -- include `simple_wgsl.h` and link the static library. No runtime dependencies beyond the C standard library.
 - **Seven languages, one pipeline** -- parse WGSL, GLSL, MSL, or PTX source; ingest SPIR-V binaries; emit to any of five output formats. Every conversion flows through the same intermediate representation.
-- **~39k lines of C99** -- no templates, no inheritance hierarchies, no build system complexity. Every compilation unit is a single `.c` file. Builds in under a second.
+- **~43k lines of C99** -- no templates, no inheritance hierarchies, no build system complexity. Every compilation unit is a single `.c` file. Builds in under a second.
 - **Embeddable** -- all memory allocation goes through overridable macros (`NODE_MALLOC`, `SSIR_MALLOC`, etc.), so you can plug in your own allocator for game engines, embedded systems, or WASM targets.
 - **Fuzz-hardened** -- eight libFuzzer targets with AddressSanitizer + UndefinedBehaviorSanitizer have been run continuously.
 
@@ -126,21 +126,22 @@ SSIR (Simple Shader Intermediate Representation) sits at the center. All source 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `simple_wgsl.h` | 1719 | Unified public API header |
-| `wgsl_parser.c` | 2452 | WGSL lexer + recursive-descent parser |
-| `glsl_parser.c` | 2466 | GLSL 450 lexer + recursive-descent parser |
-| `msl_parser.c` | 2432 | MSL lexer + parser (produces SSIR directly) |
-| `ptx_parser.c` | 2183 | PTX assembly parser (produces SSIR directly) |
+| `simple_wgsl.h` | 1958 | Unified public API header |
+| `wgsl_parser.c` | 2430 | WGSL lexer + recursive-descent parser |
+| `glsl_parser.c` | 2443 | GLSL 450 lexer + recursive-descent parser |
+| `msl_parser.c` | 2405 | MSL lexer + parser (produces SSIR directly) |
+| `ptx_parser.c` | 1879 | PTX assembly lexer + recursive-descent parser |
+| `ptx_lower.c` | 3099 | PTX to SSIR lowering (register tracking, BDA support, texture/surface ops) |
 | `wgsl_resolve.c` | 1234 | Semantic analysis and symbol resolution |
-| `wgsl_lower.c` | 7745 | AST to SSIR to SPIR-V compilation |
-| `wgsl_raise.c` | 2377 | SPIR-V to WGSL decompilation |
-| `ssir.c` | 3363 | SSIR module, type system, and builder API |
-| `ssir_to_spirv.c` | 2954 | SSIR to SPIR-V serialization |
-| `ssir_to_wgsl.c` | 1687 | SSIR to WGSL text emission |
-| `ssir_to_glsl.c` | 1753 | SSIR to GLSL 450 text emission |
-| `ssir_to_msl.c` | 2136 | SSIR to Metal Shading Language emission |
-| `ssir_to_hlsl.c` | 1537 | SSIR to HLSL emission |
-| `spirv_to_ssir.c` | 2795 | SPIR-V to SSIR deserialization |
+| `wgsl_lower.c` | 7690 | AST to SSIR to SPIR-V compilation |
+| `wgsl_raise.c` | 2148 | SPIR-V to WGSL decompilation |
+| `ssir.c` | 3430 | SSIR module, type system, and builder API |
+| `ssir_to_spirv.c` | 3055 | SSIR to SPIR-V serialization |
+| `ssir_to_wgsl.c` | 1603 | SSIR to WGSL text emission |
+| `ssir_to_glsl.c` | 1684 | SSIR to GLSL 450 text emission |
+| `ssir_to_msl.c` | 2068 | SSIR to Metal Shading Language emission |
+| `ssir_to_hlsl.c` | 1470 | SSIR to HLSL emission |
+| `spirv_to_ssir.c` | 2566 | SPIR-V to SSIR deserialization |
 
 ### Extensions
 
@@ -158,13 +159,28 @@ See the [TUTORIAL.md](TUTORIAL.md) immediates section for usage details and the 
 - **[TECHNICAL.md](TECHNICAL.md)** -- Architecture, SSIR specification, full API reference, type system, instruction set, and internal design details.
 - **[TUTORIAL.md](TUTORIAL.md)** -- Step-by-step guides for every major use case: parsing, compiling, decompiling, cross-compiling, immediates (push constants), building the SSIR programmatically, custom allocators, and more.
 
+### CUDA-on-Vulkan Runtime (cuvk_runtime)
+
+When the Vulkan SDK is available, the build also produces `cuvk_runtime` -- a drop-in `libcuda.so.1` replacement that runs CUDA compute kernels on any Vulkan GPU. CUDA binaries compiled with `nvcc` link against this library at runtime (via `LD_PRELOAD` or direct linking), and their PTX kernels are cross-compiled to SPIR-V on the fly.
+
+```
+CUDA fatbin --> extract PTX (zstd/lz4) --> ptx_to_ssir --> ssir_to_spirv --> VkComputePipeline
+```
+
+Two parameter-passing modes:
+- **BDA mode** (Vulkan 1.1+ with buffer device address): kernel parameters packed into push constants, pointers as 64-bit device addresses
+- **Descriptor mode** (fallback): each pointer parameter becomes a storage buffer descriptor binding
+
+Includes stub implementations for `libcudart.so.1`, `libcublas.so.13`, and `libcufft.so.12`. The cuFFT stub implements Cooley-Tukey FFT via WGSL compute shaders. See `cuvk_runtime/` for source (~11k lines).
+
 ### Dependencies
 
 | Dependency | Version | Source |
 |-----------|---------|--------|
 | SPIR-V Headers (Khronos) | vulkan-sdk-1.4.341 | System or FetchContent |
 | Google Test | v1.14.0 | FetchContent (tests only) |
-| Vulkan SDK | system | Optional, for GPU tests |
+| Vulkan SDK | system | Optional, for GPU tests and cuvk_runtime |
+| zstd | v1.5.7 | FetchContent (cuvk_runtime only) |
 | `spirv-val` / `spirv-dis` | system | Optional, SPIRV-Tools for test validation |
 
 ### License

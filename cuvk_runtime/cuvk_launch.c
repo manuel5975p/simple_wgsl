@@ -200,6 +200,12 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
+        if (f->module->global_count > 0) {
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    f->pipeline_layout, 0, 1,
+                                    &f->module->globals_desc_set, 0, NULL);
+        }
+
         if (f->push_constant_size > 0) {
             vkCmdPushConstants(cmd, f->pipeline_layout,
                                VK_SHADER_STAGE_COMPUTE_BIT,

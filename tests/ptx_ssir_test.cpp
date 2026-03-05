@@ -1292,3 +1292,484 @@ TEST(PtxSsir, NvccStyleVectorAdd) {
     }
     EXPECT_TRUE(has_f32_add) << "Missing f32 ADD for the actual vector addition";
 }
+
+/* ============================================================================
+ * popc / brev / clz / bfind / shf / cvt rounding
+ * ============================================================================ */
+
+static bool HasBuiltin(SsirFunction *f, SsirBuiltinId bid) {
+    for (uint32_t bi = 0; bi < f->block_count; bi++) {
+        SsirBlock *b = &f->blocks[bi];
+        for (uint32_t i = 0; i < b->inst_count; i++) {
+            if (b->insts[i].op == SSIR_OP_BUILTIN &&
+                (SsirBuiltinId)b->insts[i].operands[0] == bid)
+                return true;
+        }
+    }
+    return false;
+}
+
+TEST(PtxSsir, PopcEmitsCountBits) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry popc_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<2>;
+            popc.b32 %r1, %r0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_COUNTBITS))
+        << "popc.b32 should emit SSIR_BUILTIN_COUNTBITS";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, BrevEmitsReverseBits) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry brev_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<2>;
+            brev.b32 %r1, %r0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_REVERSEBITS))
+        << "brev.b32 should emit SSIR_BUILTIN_REVERSEBITS";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, ClzEmitsFirstLeadingBitAndSub) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry clz_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<2>;
+            clz.b32 %r1, %r0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_FIRSTLEADINGBIT))
+        << "clz.b32 should use SSIR_BUILTIN_FIRSTLEADINGBIT internally";
+    EXPECT_GT(CountOps(&r.mod->functions[0].blocks[0], SSIR_OP_SUB), 0u)
+        << "clz.b32 should emit SUB (31 - firstLeadingBit)";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, BfindEmitsFirstLeadingBit) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry bfind_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<2>;
+            bfind.u32 %r1, %r0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_FIRSTLEADINGBIT))
+        << "bfind.u32 should emit SSIR_BUILTIN_FIRSTLEADINGBIT";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, BfindShiftamtEmitsFirstLeadingBit) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry bfind_sa_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<2>;
+            bfind.shiftamt.u32 %r1, %r0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_FIRSTLEADINGBIT))
+        << "bfind.shiftamt should emit SSIR_BUILTIN_FIRSTLEADINGBIT";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, ShfLeftWrapEmitsShiftOps) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry shf_l_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<4>;
+            shf.l.wrap.b32 %r3, %r0, %r1, %r2;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    SsirBlock *b = &r.mod->functions[0].blocks[0];
+    EXPECT_GT(CountOps(b, SSIR_OP_SHL), 0u)
+        << "shf.l.wrap should emit SHL";
+    EXPECT_GT(CountOps(b, SSIR_OP_SHR_LOGICAL), 0u)
+        << "shf.l.wrap should emit SHR_LOGICAL";
+    EXPECT_GT(CountOps(b, SSIR_OP_BIT_OR), 0u)
+        << "shf.l.wrap should emit BIT_OR";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, ShfRightWrapEmitsShiftOps) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry shf_r_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<4>;
+            shf.r.wrap.b32 %r3, %r0, %r1, %r2;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    SsirBlock *b = &r.mod->functions[0].blocks[0];
+    EXPECT_GT(CountOps(b, SSIR_OP_SHL), 0u)
+        << "shf.r.wrap should emit SHL";
+    EXPECT_GT(CountOps(b, SSIR_OP_SHR_LOGICAL), 0u)
+        << "shf.r.wrap should emit SHR_LOGICAL";
+    EXPECT_GT(CountOps(b, SSIR_OP_BIT_OR), 0u)
+        << "shf.r.wrap should emit BIT_OR";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, CvtRmiF32EmitsFloor) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry cvt_rmi_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .f32 %f<2>;
+            cvt.rmi.f32.f32 %f1, %f0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_FLOOR))
+        << "cvt.rmi.f32.f32 should emit SSIR_BUILTIN_FLOOR";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, CvtRpiF32EmitsCeil) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry cvt_rpi_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .f32 %f<2>;
+            cvt.rpi.f32.f32 %f1, %f0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_CEIL))
+        << "cvt.rpi.f32.f32 should emit SSIR_BUILTIN_CEIL";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, CvtRziF32EmitsTrunc) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry cvt_rzi_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .f32 %f<2>;
+            cvt.rzi.f32.f32 %f1, %f0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_TRUNC))
+        << "cvt.rzi.f32.f32 should emit SSIR_BUILTIN_TRUNC";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, CvtRniF32EmitsRound) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry cvt_rni_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .f32 %f<2>;
+            cvt.rni.f32.f32 %f1, %f0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_TRUE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_ROUND))
+        << "cvt.rni.f32.f32 should emit SSIR_BUILTIN_ROUND";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, CvtRoundingNotAppliedOnTypeChange) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry cvt_cross_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .f32 %f<1>;
+            .reg .s32 %r<1>;
+            cvt.rzi.s32.f32 %r0, %f0;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+
+    ASSERT_GT(r.mod->function_count, 0u);
+    EXPECT_FALSE(HasBuiltin(&r.mod->functions[0], SSIR_BUILTIN_TRUNC))
+        << "cvt.rzi.s32.f32 is a cross-type convert, not a same-type rounding op";
+    EXPECT_GT(CountOps(&r.mod->functions[0].blocks[0], SSIR_OP_CONVERT), 0u)
+        << "cross-type cvt should emit CONVERT";
+
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V generation failed: " << spv.error;
+}
+
+TEST(PtxSsir, BraceBlockParsesInlineAsm) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry brace_test(.param .u64 A)
+        .reqntid 1, 1, 1
+        {
+            .reg .u64 %rd<2>;
+            .reg .f32 %f<2>;
+            ld.param.u64 %rd0, [A];
+            { .reg .f32 %tmp;
+              mov.f32 %tmp, 0f3F800000;
+              mov.f32 %f0, %tmp; }
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(TotalInsts(&r.mod->functions[0]), 2u);
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}
+
+TEST(PtxSsir, LocalMemoryDeclaration) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry local_test(.param .u64 Out)
+        .reqntid 1, 1, 1
+        {
+            .reg .u64 %rd<2>;
+            .reg .f32 %f<2>;
+            .local .align 4 .b8 __scratch[16];
+            ld.param.u64 %rd0, [Out];
+            st.local.f32 [__scratch], 0f41200000;
+            ld.local.f32 %f0, [__scratch];
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(CountOps(&r.mod->functions[0].blocks[0], SSIR_OP_STORE), 0u);
+    EXPECT_GT(CountOps(&r.mod->functions[0].blocks[0], SSIR_OP_LOAD), 0u);
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}
+
+TEST(PtxSsir, BfiB32Decomposition) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry bfi_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<5>;
+            mov.b32 %r0, 0xFF00FF00;
+            mov.b32 %r1, 0x000000AB;
+            bfi.b32 %r2, %r1, %r0, 8, 8;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(TotalInsts(&r.mod->functions[0]), 5u)
+        << "bfi should emit decomposed shift/mask/or chain";
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}
+
+TEST(PtxSsir, PrmtB32Decomposition) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry prmt_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .b32 %r<4>;
+            mov.b32 %r0, 0x44332211;
+            mov.b32 %r1, 0x88776655;
+            prmt.b32 %r2, %r0, %r1, 0x3210;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(TotalInsts(&r.mod->functions[0]), 10u)
+        << "prmt should emit decomposed byte extraction chain";
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}
+
+TEST(PtxSsir, ConstInitializedArray) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .const .align 4 .f32 coeffs[4] = {0f3F800000, 0f40000000, 0f40400000, 0f40800000};
+        .visible .entry const_test(.param .u64 Out)
+        .reqntid 1, 1, 1
+        {
+            .reg .u64 %rd<1>;
+            .reg .f32 %f<1>;
+            ld.param.u64 %rd0, [Out];
+            ld.const.f32 %f0, [coeffs];
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(r.mod->global_count, 0u);
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}
+
+TEST(PtxSsir, Mul24EmitsMultiply) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry mul24_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .s32 %r<3>;
+            mul24.lo.s32 %r2, %r0, %r1;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(CountOps(&r.mod->functions[0].blocks[0], SSIR_OP_MUL), 0u);
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}
+
+TEST(PtxSsir, MulhiEmitsWideMultiply) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry mulhi_test()
+        .reqntid 1, 1, 1
+        {
+            .reg .s32 %r<3>;
+            mul.hi.s32 %r2, %r0, %r1;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(TotalInsts(&r.mod->functions[0]), 4u)
+        << "mulhi should widen, multiply, shift right by 32";
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}
+
+TEST(PtxSsir, BarrierWithSharedMemoryValidSpirv) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry barrier_test(.param .u64 Out)
+        .reqntid 256, 1, 1
+        {
+            .reg .u32 %r0;
+            .reg .u64 %rd0;
+            mov.u32 %r0, %tid.x;
+            bar.sync 0;
+            ld.param.u64 %rd0, [Out];
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(CountOps(&r.mod->functions[0].blocks[0], SSIR_OP_BARRIER), 0u);
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}
+
+TEST(PtxSsir, AtomicGlobalAddValidSpirv) {
+    std::string ptx = std::string(PTX_HEADER) + R"(
+        .visible .entry atomic_test(.param .u64 Buf)
+        .reqntid 1, 1, 1
+        {
+            .reg .u64 %rd<2>;
+            .reg .u32 %r<2>;
+            ld.param.u64 %rd0, [Buf];
+            atom.global.add.u32 %r0, [%rd0], 1;
+            ret;
+        }
+    )";
+    auto r = Parse(ptx);
+    ASSERT_TRUE(r.success) << r.error;
+    SsirGuard2 g(r.mod);
+    EXPECT_GT(CountOps(&r.mod->functions[0].blocks[0], SSIR_OP_ATOMIC), 0u);
+    auto spv = EmitSpirv(r.mod);
+    EXPECT_TRUE(spv.success) << "SPIR-V: " << spv.error;
+}

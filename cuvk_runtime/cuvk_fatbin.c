@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <lz4.h>
 #include <zstd.h>
 
 #define FATBIN_MAGIC 0xBA55ED50
@@ -69,14 +70,14 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len)
                     comp_size, sec->padded_payload_size,
                     payload[0], payload[1], payload[2], payload[3]);
 
-            /* Check for ZSTD magic regardless of comp_size vs padded_payload_size,
-             * since comp_size can equal padded_payload_size when padding is 0. */
+            uint64_t decomp_size = 0;
+            if (sec->header_size >= 0x40) {
+                decomp_size = *(const uint64_t *)(pos + 0x38);
+            }
+
+            /* ZSTD compressed (magic 0x28B52FFD) */
             if (comp_size >= 4 && payload[0] == 0x28 && payload[1] == 0xB5
                 && payload[2] == 0x2F && payload[3] == 0xFD) {
-                uint64_t decomp_size = 0;
-                if (sec->header_size >= 0x40) {
-                    decomp_size = *(const uint64_t *)(pos + 0x38);
-                }
                 if (decomp_size == 0) {
                     decomp_size =
                         ZSTD_getFrameContentSize(payload, comp_size);
@@ -99,6 +100,44 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len)
                 ptx[result] = '\0';
                 if (ptx_len)
                     *ptx_len = result;
+                return ptx;
+            }
+
+            /* LZ4 compressed (non-text first byte + compressed_size set) */
+            if (comp_size > 0 && payload[0] < 0x20) {
+                if (decomp_size == 0)
+                    decomp_size = (uint64_t)sec->padded_payload_size * 4;
+
+                char *ptx = (char *)malloc(decomp_size + 1);
+                if (!ptx)
+                    return NULL;
+
+                int result = LZ4_decompress_safe(
+                    (const char *)payload, ptx,
+                    (int)comp_size, (int)decomp_size);
+                if (result <= 0) {
+                    CUVK_LOG("[cuvk] LZ4 decompress failed: %d\n", result);
+                    free(ptx);
+                    return NULL;
+                }
+
+                ptx[result] = '\0';
+                CUVK_LOG("[cuvk] LZ4 decompressed %u -> %d bytes\n",
+                         comp_size, result);
+                {
+                    const char *p = ptx;
+                    while (*p) {
+                        const char *nl = strchr(p, '\n');
+                        if (!nl) nl = p + strlen(p);
+                        size_t len = (size_t)(nl - p);
+                        if (len > 0 && (strstr(p, ".global") || strstr(p, ".visible") || strstr(p, ".extern"))) {
+                            CUVK_LOG("[cuvk] PTX_LINE: %.*s\n", (int)(len < 200 ? len : 200), p);
+                        }
+                        p = *nl ? nl + 1 : nl;
+                    }
+                }
+                if (ptx_len)
+                    *ptx_len = (size_t)result;
                 return ptx;
             }
 

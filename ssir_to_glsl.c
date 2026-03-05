@@ -5,16 +5,8 @@
  * Modeled after ssir_to_wgsl.c with GLSL-specific syntax and conventions.
  */
 
-#include "simple_wgsl.h"
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
+#include "simple_wgsl_internal.h"
 #include <math.h>
-
-/* ============================================================================
- * Memory Allocation
- * ============================================================================ */
 
 #ifndef STG_MALLOC
 #define STG_MALLOC(sz) calloc(1, (sz))
@@ -26,63 +18,14 @@
 #define STG_FREE(p) free((p))
 #endif
 
-/* ============================================================================
- * String Buffer
- * ============================================================================ */
-
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-    int indent;
-} GlslBuf;
-
-static void gb_init(GlslBuf *b) {
-    b->data = NULL;
-    b->len = 0;
-    b->cap = 0;
-    b->indent = 0;
-}
-
-static void gb_free(GlslBuf *b) {
-    STG_FREE(b->data);
-    b->data = NULL;
-    b->len = b->cap = 0;
-}
-
-static int gb_reserve(GlslBuf *b, size_t need) {
-    if (b->len + need + 1 <= b->cap) return 1;
-    size_t nc = b->cap ? b->cap : 256;
-    while (nc < b->len + need + 1) nc *= 2;
-    char *nd = (char *)STG_REALLOC(b->data, nc);
-    if (!nd) return 0;
-    b->data = nd;
-    b->cap = nc;
-    return 1;
-}
-
-static void gb_append(GlslBuf *b, const char *s) {
-    size_t sl = strlen(s);
-    if (!gb_reserve(b, sl)) return;
-    memcpy(b->data + b->len, s, sl);
-    b->len += sl;
-    b->data[b->len] = '\0';
-}
-
-static void gb_appendf(GlslBuf *b, const char *fmt, ...) {
-    char buf[1024];
-    va_list a;
-    va_start(a, fmt);
-    int n = vsnprintf(buf, sizeof(buf), fmt, a);
-    va_end(a);
-    if (n > 0) gb_append(b, buf);
-}
-
-static void gb_indent(GlslBuf *b) {
-    for (int i = 0; i < b->indent; i++) gb_append(b, "    ");
-}
-
-static void gb_nl(GlslBuf *b) { gb_append(b, "\n"); }
+typedef SwStringBuffer GlslBuf;
+#define gb_init sw_sb_init
+#define gb_free sw_sb_free
+#define gb_reserve sw_sb_reserve
+#define gb_append sw_sb_append
+#define gb_appendf sw_sb_appendf
+#define gb_indent sw_sb_indent
+#define gb_nl sw_sb_nl
 
 /* ============================================================================
  * Converter Context
@@ -127,10 +70,7 @@ static void gctx_free(GlslCtx *c) {
 }
 
 static const char *glsl_get_name(GlslCtx *c, uint32_t id) {
-    if (id < c->id_names_cap && c->id_names[id]) return c->id_names[id];
-    static char buf[32];
-    snprintf(buf, sizeof(buf), "_v%u", id);
-    return buf;
+    return sw_get_id_name(c->id_names, c->id_names_cap, id);
 }
 
 static int is_glsl_reserved(const char *n) {
@@ -531,24 +471,15 @@ static void glsl_emit_constant(GlslCtx *c, SsirConstant *k, GlslBuf *b) {
 static void glsl_emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b);
 
 static SsirInst *glsl_find_inst(GlslCtx *c, uint32_t id) {
-    if (c->inst_map && id < c->inst_map_cap) return c->inst_map[id];
-    return NULL;
+    return sw_find_inst(c->inst_map, c->inst_map_cap, id);
 }
 
 static SsirFunctionParam *glsl_find_param(GlslCtx *c, uint32_t id) {
-    if (!c->current_func) return NULL;
-    for (uint32_t i = 0; i < c->current_func->param_count; i++) {
-        if (c->current_func->params[i].id == id) return &c->current_func->params[i];
-    }
-    return NULL;
+    return sw_find_param(c->current_func, id);
 }
 
 static SsirLocalVar *glsl_find_local(GlslCtx *c, uint32_t id) {
-    if (!c->current_func) return NULL;
-    for (uint32_t i = 0; i < c->current_func->local_count; i++) {
-        if (c->current_func->locals[i].id == id) return &c->current_func->locals[i];
-    }
-    return NULL;
+    return sw_find_local(c->current_func, id);
 }
 
 static void glsl_emit_binop(GlslCtx *c, SsirInst *inst, const char *op, GlslBuf *b) {

@@ -5,16 +5,8 @@
  * Modeled after ssir_to_glsl.c with Metal-specific syntax and conventions.
  */
 
-#include "simple_wgsl.h"
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
+#include "simple_wgsl_internal.h"
 #include <math.h>
-
-/* ============================================================================
- * Memory Allocation
- * ============================================================================ */
 
 #ifndef STM_MALLOC
 #define STM_MALLOC(sz) calloc(1, (sz))
@@ -26,61 +18,13 @@
 #define STM_FREE(p) free((p))
 #endif
 
-/* ============================================================================
- * String Buffer
- * ============================================================================ */
-
-typedef struct {
-    char *data;
-    size_t len;
-    size_t cap;
-    int indent;
-} MslBuf;
-
-static void mb_init(MslBuf *b) {
-    b->data = NULL;
-    b->len = 0;
-    b->cap = 0;
-    b->indent = 0;
-}
-
-static void mb_free(MslBuf *b) {
-    STM_FREE(b->data);
-    b->data = NULL;
-    b->len = b->cap = 0;
-}
-
-static int mb_reserve(MslBuf *b, size_t need) {
-    if (b->len + need + 1 <= b->cap) return 1;
-    size_t nc = b->cap ? b->cap : 256;
-    while (nc < b->len + need + 1) nc *= 2;
-    char *nd = (char *)STM_REALLOC(b->data, nc);
-    if (!nd) return 0;
-    b->data = nd;
-    b->cap = nc;
-    return 1;
-}
-
-static void mb_append(MslBuf *b, const char *s) {
-    size_t sl = strlen(s);
-    if (!mb_reserve(b, sl)) return;
-    memcpy(b->data + b->len, s, sl);
-    b->len += sl;
-    b->data[b->len] = '\0';
-}
-
-static void mb_appendf(MslBuf *b, const char *fmt, ...) {
-    char buf[1024];
-    va_list a;
-    va_start(a, fmt);
-    int n = vsnprintf(buf, sizeof(buf), fmt, a);
-    va_end(a);
-    if (n > 0) mb_append(b, buf);
-}
-
-static void mb_indent(MslBuf *b) {
-    for (int i = 0; i < b->indent; i++) mb_append(b, "    ");
-}
+typedef SwStringBuffer MslBuf;
+#define mb_init sw_sb_init
+#define mb_free sw_sb_free
+#define mb_reserve sw_sb_reserve
+#define mb_append sw_sb_append
+#define mb_appendf sw_sb_appendf
+#define mb_indent sw_sb_indent
 
 /* ============================================================================
  * Interface Field Tracking (for entry point I/O)
@@ -150,10 +94,7 @@ static void mctx_free(MslCtx *c) {
 }
 
 static const char *msl_get_name(MslCtx *c, uint32_t id) {
-    if (id < c->id_names_cap && c->id_names[id]) return c->id_names[id];
-    static char buf[32];
-    snprintf(buf, sizeof(buf), "_v%u", id);
-    return buf;
+    return sw_get_id_name(c->id_names, c->id_names_cap, id);
 }
 
 static int is_msl_reserved(const char *n) {
@@ -571,24 +512,15 @@ static void msl_emit_constant(MslCtx *c, SsirConstant *k, MslBuf *b) {
 static void msl_emit_expr(MslCtx *c, uint32_t id, MslBuf *b);
 
 static SsirInst *msl_find_inst(MslCtx *c, uint32_t id) {
-    if (c->inst_map && id < c->inst_map_cap) return c->inst_map[id];
-    return NULL;
+    return sw_find_inst(c->inst_map, c->inst_map_cap, id);
 }
 
 static SsirFunctionParam *msl_find_param(MslCtx *c, uint32_t id) {
-    if (!c->current_func) return NULL;
-    for (uint32_t i = 0; i < c->current_func->param_count; i++) {
-        if (c->current_func->params[i].id == id) return &c->current_func->params[i];
-    }
-    return NULL;
+    return sw_find_param(c->current_func, id);
 }
 
 static SsirLocalVar *msl_find_local(MslCtx *c, uint32_t id) {
-    if (!c->current_func) return NULL;
-    for (uint32_t i = 0; i < c->current_func->local_count; i++) {
-        if (c->current_func->locals[i].id == id) return &c->current_func->locals[i];
-    }
-    return NULL;
+    return sw_find_local(c->current_func, id);
 }
 
 static SsirTextureDim resolve_texture_dim(MslCtx *c, uint32_t id) {

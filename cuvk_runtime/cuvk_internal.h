@@ -62,6 +62,15 @@ typedef struct CuvkAlloc {
     void           *host_mapped;  /* persistent map for host-visible memory */
 } CuvkAlloc;
 
+/* A pinned host allocation (cuMemAllocHost) — VkBuffer in HOST_CACHED memory */
+typedef struct CuvkHostAlloc {
+    VkBuffer        buffer;
+    VkDeviceMemory  memory;
+    VkDeviceSize    size;
+    void           *mapped;       /* persistently mapped pointer returned to user */
+    bool            coherent;     /* false → needs flush/invalidate */
+} CuvkHostAlloc;
+
 /* Cached compute pipeline keyed by block dimensions */
 typedef struct CuvkPipelineEntry {
     uint32_t          block_x;
@@ -75,6 +84,47 @@ typedef struct CuvkParamInfo {
     uint32_t    size;        /* byte size of parameter */
     bool        is_pointer;  /* true if this param is a device pointer */
 } CuvkParamInfo;
+
+/* ============================================================================
+ * CUDA Graph backing structs
+ * ============================================================================ */
+
+/* CUgraphNode */
+struct CUgraphNode_st {
+    CUgraphNodeType          type;
+    union {
+        CUDA_KERNEL_NODE_PARAMS  kernel;
+        CUDA_MEMCPY3D            memcpy;
+        CUDA_MEMSET_NODE_PARAMS  memset;
+        CUDA_HOST_NODE_PARAMS    host;
+    } params;
+    void                   **kernel_params_copy;  /* owned copy of kernel param ptrs */
+    size_t                   kernel_params_count;
+
+    /* Graph topology (adjacency lists, indices into graph's node ptr array) */
+    uint32_t                *deps;
+    uint32_t                 dep_count;
+    uint32_t                 dep_capacity;
+    uint32_t                *dependents;
+    uint32_t                 dependent_count;
+    uint32_t                 dependent_capacity;
+};
+
+/* CUgraph — mutable graph template.
+ * Nodes are individually heap-allocated so CUgraphNode pointers remain stable. */
+struct CUgraph_st {
+    struct CUgraphNode_st **nodes;   /* array of pointers to heap-allocated nodes */
+    uint32_t                node_count;
+    uint32_t                node_capacity;
+};
+
+/* CUgraphExec — instantiated (executable) graph */
+struct CUgraphExec_st {
+    struct CUctx_st        *ctx;
+    struct CUgraphNode_st  *nodes;        /* flat deep copy, topologically sorted */
+    uint32_t                node_count;
+    uint64_t               *sem_values;   /* timeline semaphore value per node */
+};
 
 /* ============================================================================
  * CUDA opaque handle backing structs
@@ -127,6 +177,28 @@ struct CUctx_st {
     VkSemaphore                     timeline_sem;
     uint64_t                        timeline_value;
 
+    /* Reusable one-shot command buffer + fence (for synchronous ops) */
+    VkCommandBuffer                 oneshot_cb;
+    VkFence                         oneshot_fence;
+
+    /* Cached staging buffer for uploads (grow-only, persistently mapped) */
+    VkBuffer                        staging_buf;
+    VkDeviceMemory                  staging_mem;
+    VkDeviceSize                    staging_capacity;
+    void                           *staging_mapped;
+
+    /* Download staging buffer (HOST_CACHED for fast CPU reads) */
+    VkBuffer                        download_buf;
+    VkDeviceMemory                  download_mem;
+    VkDeviceSize                    download_capacity;
+    void                           *download_mapped;
+    bool                            download_needs_invalidate;
+
+    /* Pinned host allocations (cuMemAllocHost) */
+    CuvkHostAlloc                  *host_allocs;
+    uint32_t                        host_alloc_count;
+    uint32_t                        host_alloc_capacity;
+
     /* Default (NULL) stream */
     struct CUstream_st              default_stream;
 
@@ -158,6 +230,16 @@ struct CUfunc_st {
     bool                    use_bda;
 };
 
+/* A module-level global variable (e.g. .global .u64 lut_sp) */
+typedef struct CuvkModuleGlobal {
+    char                name[256];
+    uint32_t            size;
+    uint32_t            binding;
+    VkBuffer            buffer;
+    VkDeviceMemory      memory;
+    uint64_t            device_addr;
+} CuvkModuleGlobal;
+
 /* CUmodule */
 struct CUmod_st {
     struct CUctx_st    *ctx;
@@ -172,6 +254,13 @@ struct CUmod_st {
     /* Functions extracted from the module */
     struct CUfunc_st   *functions;
     uint32_t            function_count;
+
+    /* Module-level globals (descriptor-backed) */
+    CuvkModuleGlobal   *globals;
+    uint32_t            global_count;
+    VkDescriptorSetLayout globals_desc_layout;
+    VkDescriptorPool      globals_desc_pool;
+    VkDescriptorSet       globals_desc_set;
 };
 
 /* ============================================================================
@@ -182,10 +271,13 @@ struct CUmod_st {
 
 typedef struct CuvkGlobal {
     bool                initialized;
+    bool                has_validation;
+    bool                exiting;
     VkInstance          instance;
     VkPhysicalDevice    physical_devices[CUVK_MAX_PHYSICAL_DEVICES];
     uint32_t            physical_device_count;
     struct CUctx_st    *current_ctx;
+    VkDebugUtilsMessengerEXT debug_messenger;
 } CuvkGlobal;
 
 extern CuvkGlobal g_cuvk;
@@ -207,6 +299,13 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len);
 
 /* Submit whatever is recorded on the stream and wait for completion */
 CUresult cuvk_stream_submit_and_wait(struct CUstream_st *stream);
+
+#ifdef CUVK_NVJITLINK
+/* Compile LTO-IR sections from a fatbin via nvJitLink. Returns malloc'd PTX. */
+char *cuvk_jitlink_compile_ltoir(const void *fatbin_data, size_t *ptx_len);
+/* Compile raw LTO-IR blob via nvJitLink. Returns malloc'd PTX. */
+char *cuvk_jitlink_compile_raw(const void *data, size_t size, size_t *ptx_len);
+#endif
 
 /* Begin a one-shot command buffer (for synchronous memory ops, etc.) */
 CUresult cuvk_oneshot_begin(struct CUctx_st *ctx, VkCommandBuffer *out_cb);
