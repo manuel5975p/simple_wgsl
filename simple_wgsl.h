@@ -362,8 +362,34 @@ typedef enum WgslStage {
     WGSL_STAGE_COMPUTE
 } WgslStage;
 
-/* GLSL Parser */
-WgslAstNode *glsl_parse(const char *source, WgslStage stage);
+/* GLSL #include resolution ------------------------------------------------- */
+
+/* Callback that reads a file and returns its contents.
+ * Must return a NODE_MALLOC'd null-terminated string, or NULL on failure.
+ * simple_wgsl frees the returned string with NODE_FREE. */
+typedef struct GlslFileReader {
+    char *(*read)(void *userdata, const char *path); /* NULL → libc default */
+    void *userdata;
+} GlslFileReader;
+
+/* Options controlling #include expansion inside glsl_parse().
+ * All fields are optional; zero-initialise for reasonable defaults. */
+typedef struct GlslIncludeOptions {
+    /* Directories searched after the includer's own directory, in order. */
+    const char * const *search_dirs;
+    int                 search_dir_count;
+    /* How to open a file.  reader.read == NULL → default libc fopen/fread. */
+    GlslFileReader      reader;
+} GlslIncludeOptions;
+
+/* GLSL Parser.
+ * source_path: filesystem path of source (used to resolve relative #includes);
+ *              may be NULL if the source was not loaded from a file.
+ * includes:    #include expansion options.  Pass NULL to disable #include
+ *              expansion.  Zero-initialise for filesystem resolution relative
+ *              to source_path with no extra search directories. */
+WgslAstNode *glsl_parse(const char *source, const char *source_path,
+                        WgslStage stage, const GlslIncludeOptions *includes);
 
 /* Layout rule (used by resolver and SSIR) */
 typedef enum SsirLayoutRule {
