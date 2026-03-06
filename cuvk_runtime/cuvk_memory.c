@@ -27,11 +27,11 @@ static CUresult cuvk_ensure_staging(struct CUctx_st *ctx, VkDeviceSize size)
 
     /* Destroy old staging buffer if any */
     if (ctx->staging_buf) {
-        vkDestroyBuffer(ctx->device, ctx->staging_buf, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, ctx->staging_buf, NULL);
         ctx->staging_buf = VK_NULL_HANDLE;
     }
     if (ctx->staging_mem) {
-        vkFreeMemory(ctx->device, ctx->staging_mem, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, ctx->staging_mem, NULL);
         ctx->staging_mem = VK_NULL_HANDLE;
     }
     ctx->staging_mapped = NULL;
@@ -45,12 +45,12 @@ static CUresult cuvk_ensure_staging(struct CUctx_st *ctx, VkDeviceSize size)
     buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkResult vr = vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
+    VkResult vr = g_cuvk.vk.vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
     VkMemoryRequirements mem_reqs;
-    vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
+    g_cuvk.vk.vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
 
     int32_t mem_type = cuvk_find_memory_type(
         &ctx->mem_props, mem_reqs.memoryTypeBits,
@@ -58,7 +58,7 @@ static CUresult cuvk_ensure_staging(struct CUctx_st *ctx, VkDeviceSize size)
         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     if (mem_type < 0) {
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
 
@@ -68,24 +68,24 @@ static CUresult cuvk_ensure_staging(struct CUctx_st *ctx, VkDeviceSize size)
     alloc_info.memoryTypeIndex = (uint32_t)mem_type;
 
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    vr = vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
+    vr = g_cuvk.vk.vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
     if (vr != VK_SUCCESS) {
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
-    vr = vkBindBufferMemory(ctx->device, buffer, memory, 0);
+    vr = g_cuvk.vk.vkBindBufferMemory(ctx->device, buffer, memory, 0);
     if (vr != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, memory, NULL);
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
     void *mapped = NULL;
-    vr = vkMapMemory(ctx->device, memory, 0, size, 0, &mapped);
+    vr = g_cuvk.vk.vkMapMemory(ctx->device, memory, 0, size, 0, &mapped);
     if (vr != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, memory, NULL);
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
@@ -109,11 +109,11 @@ static CUresult cuvk_ensure_download_staging(struct CUctx_st *ctx,
 
     /* Destroy old download buffer if any */
     if (ctx->download_buf) {
-        vkDestroyBuffer(ctx->device, ctx->download_buf, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, ctx->download_buf, NULL);
         ctx->download_buf = VK_NULL_HANDLE;
     }
     if (ctx->download_mem) {
-        vkFreeMemory(ctx->device, ctx->download_mem, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, ctx->download_mem, NULL);
         ctx->download_mem = VK_NULL_HANDLE;
     }
     ctx->download_mapped = NULL;
@@ -126,12 +126,12 @@ static CUresult cuvk_ensure_download_staging(struct CUctx_st *ctx,
     buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkResult vr = vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
+    VkResult vr = g_cuvk.vk.vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
     VkMemoryRequirements mem_reqs;
-    vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
+    g_cuvk.vk.vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
 
     /* Try HOST_VISIBLE | HOST_CACHED | HOST_COHERENT first */
     int32_t mem_type = cuvk_find_memory_type(
@@ -161,7 +161,7 @@ static CUresult cuvk_ensure_download_staging(struct CUctx_st *ctx,
     }
 
     if (mem_type < 0) {
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
 
@@ -171,24 +171,24 @@ static CUresult cuvk_ensure_download_staging(struct CUctx_st *ctx,
     alloc_info.memoryTypeIndex = (uint32_t)mem_type;
 
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    vr = vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
+    vr = g_cuvk.vk.vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
     if (vr != VK_SUCCESS) {
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
-    vr = vkBindBufferMemory(ctx->device, buffer, memory, 0);
+    vr = g_cuvk.vk.vkBindBufferMemory(ctx->device, buffer, memory, 0);
     if (vr != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, memory, NULL);
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
     void *mapped = NULL;
-    vr = vkMapMemory(ctx->device, memory, 0, size, 0, &mapped);
+    vr = g_cuvk.vk.vkMapMemory(ctx->device, memory, 0, size, 0, &mapped);
     if (vr != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, memory, NULL);
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
@@ -279,13 +279,13 @@ CUresult CUDAAPI cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize)
     buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkResult vr = vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
+    VkResult vr = g_cuvk.vk.vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
     /* Get memory requirements */
     VkMemoryRequirements mem_reqs;
-    vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
+    g_cuvk.vk.vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
 
     /* Find device-local memory type */
     int32_t mem_type = cuvk_find_memory_type(
@@ -293,7 +293,7 @@ CUresult CUDAAPI cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize)
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
     if (mem_type < 0) {
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
 
@@ -311,17 +311,17 @@ CUresult CUDAAPI cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize)
     }
 
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    vr = vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
+    vr = g_cuvk.vk.vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
     if (vr != VK_SUCCESS) {
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
     /* Bind memory to buffer */
-    vr = vkBindBufferMemory(ctx->device, buffer, memory, 0);
+    vr = g_cuvk.vk.vkBindBufferMemory(ctx->device, buffer, memory, 0);
     if (vr != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, memory, NULL);
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
@@ -350,8 +350,8 @@ CUresult CUDAAPI cuMemAlloc_v2(CUdeviceptr *dptr, size_t bytesize)
         CuvkAlloc *new_allocs = (CuvkAlloc *)realloc(
             ctx->allocs, new_cap * sizeof(CuvkAlloc));
         if (!new_allocs) {
-            vkFreeMemory(ctx->device, memory, NULL);
-            vkDestroyBuffer(ctx->device, buffer, NULL);
+            g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+            g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
             return CUDA_ERROR_OUT_OF_MEMORY;
         }
         ctx->allocs = new_allocs;
@@ -403,8 +403,8 @@ CUresult CUDAAPI cuMemFree_v2(CUdeviceptr dptr)
     uint32_t idx = (uint32_t)(alloc - ctx->allocs);
 
     /* Destroy Vulkan resources */
-    vkDestroyBuffer(ctx->device, alloc->buffer, NULL);
-    vkFreeMemory(ctx->device, alloc->memory, NULL);
+    g_cuvk.vk.vkDestroyBuffer(ctx->device, alloc->buffer, NULL);
+    g_cuvk.vk.vkFreeMemory(ctx->device, alloc->memory, NULL);
 
     /* Remove from array by shifting left */
     if (idx + 1 < ctx->alloc_count) {
@@ -480,12 +480,12 @@ CUresult CUDAAPI cuMemAllocHost_v2(void **pp, size_t bytesize)
     buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VkBuffer buffer = VK_NULL_HANDLE;
-    VkResult vr = vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
+    VkResult vr = g_cuvk.vk.vkCreateBuffer(ctx->device, &buf_ci, NULL, &buffer);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
     VkMemoryRequirements mem_reqs;
-    vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
+    g_cuvk.vk.vkGetBufferMemoryRequirements(ctx->device, buffer, &mem_reqs);
 
     /* Prefer HOST_VISIBLE | HOST_CACHED | HOST_COHERENT (system RAM, cached) */
     int32_t mem_type = cuvk_find_memory_type(
@@ -513,7 +513,7 @@ CUresult CUDAAPI cuMemAllocHost_v2(void **pp, size_t bytesize)
     }
 
     if (mem_type < 0) {
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return CUDA_ERROR_OUT_OF_MEMORY;
     }
 
@@ -523,24 +523,24 @@ CUresult CUDAAPI cuMemAllocHost_v2(void **pp, size_t bytesize)
     alloc_info.memoryTypeIndex = (uint32_t)mem_type;
 
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    vr = vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
+    vr = g_cuvk.vk.vkAllocateMemory(ctx->device, &alloc_info, NULL, &memory);
     if (vr != VK_SUCCESS) {
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
-    vr = vkBindBufferMemory(ctx->device, buffer, memory, 0);
+    vr = g_cuvk.vk.vkBindBufferMemory(ctx->device, buffer, memory, 0);
     if (vr != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, memory, NULL);
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
     void *mapped = NULL;
-    vr = vkMapMemory(ctx->device, memory, 0, bytesize, 0, &mapped);
+    vr = g_cuvk.vk.vkMapMemory(ctx->device, memory, 0, bytesize, 0, &mapped);
     if (vr != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, memory, NULL);
-        vkDestroyBuffer(ctx->device, buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
         return cuvk_vk_to_cu(vr);
     }
 
@@ -551,8 +551,8 @@ CUresult CUDAAPI cuMemAllocHost_v2(void **pp, size_t bytesize)
         CuvkHostAlloc *new_allocs = (CuvkHostAlloc *)realloc(
             ctx->host_allocs, new_cap * sizeof(CuvkHostAlloc));
         if (!new_allocs) {
-            vkFreeMemory(ctx->device, memory, NULL);
-            vkDestroyBuffer(ctx->device, buffer, NULL);
+            g_cuvk.vk.vkFreeMemory(ctx->device, memory, NULL);
+            g_cuvk.vk.vkDestroyBuffer(ctx->device, buffer, NULL);
             return CUDA_ERROR_OUT_OF_MEMORY;
         }
         ctx->host_allocs = new_allocs;
@@ -595,8 +595,8 @@ CUresult CUDAAPI cuMemFreeHost(void *p)
 
     uint32_t idx = (uint32_t)(alloc - ctx->host_allocs);
 
-    vkDestroyBuffer(ctx->device, alloc->buffer, NULL);
-    vkFreeMemory(ctx->device, alloc->memory, NULL);
+    g_cuvk.vk.vkDestroyBuffer(ctx->device, alloc->buffer, NULL);
+    g_cuvk.vk.vkFreeMemory(ctx->device, alloc->memory, NULL);
 
     if (idx + 1 < ctx->host_alloc_count) {
         memmove(&ctx->host_allocs[idx], &ctx->host_allocs[idx + 1],
@@ -624,6 +624,9 @@ CUresult CUDAAPI cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
 
+    /* Flush default stream to ensure prior dispatches complete */
+    cuvk_stream_submit_and_wait(&ctx->default_stream);
+
     /* Look up destination alloc */
     CuvkAlloc *dst_alloc = cuvk_alloc_lookup(ctx, dstDevice);
     if (!dst_alloc)
@@ -645,7 +648,7 @@ CUresult CUDAAPI cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
             range.memory = host_alloc->memory;
             range.offset = 0;
             range.size = VK_WHOLE_SIZE;
-            vkFlushMappedMemoryRanges(ctx->device, 1, &range);
+            g_cuvk.vk.vkFlushMappedMemoryRanges(ctx->device, 1, &range);
         }
 
         VkCommandBuffer cb = VK_NULL_HANDLE;
@@ -658,7 +661,7 @@ CUresult CUDAAPI cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
         region.dstOffset = dst_offset;
         region.size = (VkDeviceSize)ByteCount;
 
-        vkCmdCopyBuffer(cb, host_alloc->buffer, dst_alloc->buffer, 1, &region);
+        g_cuvk.vk.vkCmdCopyBuffer(cb, host_alloc->buffer, dst_alloc->buffer, 1, &region);
         return cuvk_oneshot_end(ctx, cb);
     }
 
@@ -679,7 +682,7 @@ CUresult CUDAAPI cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
     region.dstOffset = dst_offset;
     region.size = (VkDeviceSize)ByteCount;
 
-    vkCmdCopyBuffer(cb, ctx->staging_buf, dst_alloc->buffer, 1, &region);
+    g_cuvk.vk.vkCmdCopyBuffer(cb, ctx->staging_buf, dst_alloc->buffer, 1, &region);
     return cuvk_oneshot_end(ctx, cb);
 }
 
@@ -699,6 +702,9 @@ CUresult CUDAAPI cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
     struct CUctx_st *ctx = g_cuvk.current_ctx;
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
+
+    /* Flush default stream to ensure prior dispatches complete */
+    cuvk_stream_submit_and_wait(&ctx->default_stream);
 
     /* Look up source alloc */
     CuvkAlloc *src_alloc = cuvk_alloc_lookup(ctx, srcDevice);
@@ -724,7 +730,7 @@ CUresult CUDAAPI cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
         region.dstOffset = dst_offset;
         region.size = (VkDeviceSize)ByteCount;
 
-        vkCmdCopyBuffer(cb, src_alloc->buffer, host_alloc->buffer, 1, &region);
+        g_cuvk.vk.vkCmdCopyBuffer(cb, src_alloc->buffer, host_alloc->buffer, 1, &region);
 
         res = cuvk_oneshot_end(ctx, cb);
         if (res != CUDA_SUCCESS)
@@ -737,7 +743,7 @@ CUresult CUDAAPI cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
             range.memory = host_alloc->memory;
             range.offset = 0;
             range.size = VK_WHOLE_SIZE;
-            vkInvalidateMappedMemoryRanges(ctx->device, 1, &range);
+            g_cuvk.vk.vkInvalidateMappedMemoryRanges(ctx->device, 1, &range);
         }
 
         return CUDA_SUCCESS;
@@ -758,7 +764,7 @@ CUresult CUDAAPI cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
     region.dstOffset = 0;
     region.size = (VkDeviceSize)ByteCount;
 
-    vkCmdCopyBuffer(cb, src_alloc->buffer, ctx->download_buf, 1, &region);
+    g_cuvk.vk.vkCmdCopyBuffer(cb, src_alloc->buffer, ctx->download_buf, 1, &region);
 
     res = cuvk_oneshot_end(ctx, cb);
     if (res != CUDA_SUCCESS)
@@ -770,7 +776,7 @@ CUresult CUDAAPI cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
         range.memory = ctx->download_mem;
         range.offset = 0;
         range.size = VK_WHOLE_SIZE;
-        vkInvalidateMappedMemoryRanges(ctx->device, 1, &range);
+        g_cuvk.vk.vkInvalidateMappedMemoryRanges(ctx->device, 1, &range);
     }
 
     memcpy(dstHost, ctx->download_mapped, ByteCount);
@@ -790,6 +796,9 @@ CUresult CUDAAPI cuMemcpyDtoD_v2(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
     struct CUctx_st *ctx = g_cuvk.current_ctx;
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
+
+    /* Flush default stream to ensure prior dispatches complete */
+    cuvk_stream_submit_and_wait(&ctx->default_stream);
 
     /* Look up both allocs */
     CuvkAlloc *src_alloc = cuvk_alloc_lookup(ctx, srcDevice);
@@ -813,7 +822,7 @@ CUresult CUDAAPI cuMemcpyDtoD_v2(CUdeviceptr dstDevice, CUdeviceptr srcDevice,
     region.dstOffset = dst_offset;
     region.size = (VkDeviceSize)ByteCount;
 
-    vkCmdCopyBuffer(cb, src_alloc->buffer, dst_alloc->buffer, 1, &region);
+    g_cuvk.vk.vkCmdCopyBuffer(cb, src_alloc->buffer, dst_alloc->buffer, 1, &region);
 
     return cuvk_oneshot_end(ctx, cb);
 }
@@ -826,7 +835,12 @@ CUresult CUDAAPI cuMemcpyHtoDAsync_v2(CUdeviceptr dstDevice,
                                        const void *srcHost,
                                        size_t ByteCount, CUstream hStream)
 {
-    (void)hStream;
+    /* Flush the target stream so any prior recorded work completes first */
+    if (hStream) {
+        CUresult res = cuvk_stream_submit_and_wait(hStream);
+        if (res != CUDA_SUCCESS)
+            return res;
+    }
     return cuMemcpyHtoD_v2(dstDevice, srcHost, ByteCount);
 }
 
@@ -837,7 +851,12 @@ CUresult CUDAAPI cuMemcpyHtoDAsync_v2(CUdeviceptr dstDevice,
 CUresult CUDAAPI cuMemcpyDtoHAsync_v2(void *dstHost, CUdeviceptr srcDevice,
                                        size_t ByteCount, CUstream hStream)
 {
-    (void)hStream;
+    /* Flush the target stream so any prior recorded work completes first */
+    if (hStream) {
+        CUresult res = cuvk_stream_submit_and_wait(hStream);
+        if (res != CUDA_SUCCESS)
+            return res;
+    }
     return cuMemcpyDtoH_v2(dstHost, srcDevice, ByteCount);
 }
 
@@ -855,6 +874,9 @@ CUresult CUDAAPI cuMemsetD32_v2(CUdeviceptr dstDevice, unsigned int ui,
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
 
+    /* Flush default stream to ensure prior dispatches complete */
+    cuvk_stream_submit_and_wait(&ctx->default_stream);
+
     CuvkAlloc *alloc = cuvk_alloc_lookup(ctx, dstDevice);
     if (!alloc)
         return CUDA_ERROR_INVALID_VALUE;
@@ -868,7 +890,7 @@ CUresult CUDAAPI cuMemsetD32_v2(CUdeviceptr dstDevice, unsigned int ui,
     if (res != CUDA_SUCCESS)
         return res;
 
-    vkCmdFillBuffer(cb, alloc->buffer, offset, byte_count, ui);
+    g_cuvk.vk.vkCmdFillBuffer(cb, alloc->buffer, offset, byte_count, ui);
 
     return cuvk_oneshot_end(ctx, cb);
 }
@@ -912,7 +934,7 @@ CUresult CUDAAPI cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc,
         if (res != CUDA_SUCCESS)
             return res;
 
-        vkCmdFillBuffer(cb, alloc->buffer, offset, aligned_count, pattern);
+        g_cuvk.vk.vkCmdFillBuffer(cb, alloc->buffer, offset, aligned_count, pattern);
 
         res = cuvk_oneshot_end(ctx, cb);
         if (res != CUDA_SUCCESS)
@@ -952,7 +974,7 @@ CUresult CUDAAPI cuMemsetD8_v2(CUdeviceptr dstDevice, unsigned char uc,
                        offset;
     region.size = staging_size;
 
-    vkCmdCopyBuffer(cb, ctx->staging_buf, alloc->buffer, 1, &region);
+    g_cuvk.vk.vkCmdCopyBuffer(cb, ctx->staging_buf, alloc->buffer, 1, &region);
 
     return cuvk_oneshot_end(ctx, cb);
 }
@@ -997,7 +1019,7 @@ CUresult CUDAAPI cuMemsetD16_v2(CUdeviceptr dstDevice, unsigned short us,
         if (res != CUDA_SUCCESS)
             return res;
 
-        vkCmdFillBuffer(cb, alloc->buffer, offset, aligned_bytes, pattern);
+        g_cuvk.vk.vkCmdFillBuffer(cb, alloc->buffer, offset, aligned_bytes, pattern);
 
         res = cuvk_oneshot_end(ctx, cb);
         if (res != CUDA_SUCCESS)
@@ -1041,7 +1063,7 @@ CUresult CUDAAPI cuMemsetD16_v2(CUdeviceptr dstDevice, unsigned short us,
                        offset;
     region.size = staging_size;
 
-    vkCmdCopyBuffer(cb, ctx->staging_buf, alloc->buffer, 1, &region);
+    g_cuvk.vk.vkCmdCopyBuffer(cb, ctx->staging_buf, alloc->buffer, 1, &region);
 
     return cuvk_oneshot_end(ctx, cb);
 }

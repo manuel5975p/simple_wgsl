@@ -73,10 +73,14 @@ Complete technical documentation for simple_wgsl: architecture, intermediate rep
 - [Memory Management](#memory-management)
 - [CUDA-on-Vulkan Runtime (cuvk_runtime)](#cuda-on-vulkan-runtime-cuvk_runtime)
   - [Architecture](#architecture-1)
+  - [Vulkan Function Loading](#vulkan-function-loading)
   - [Core Structures](#core-structures)
+  - [Stream and Command Buffer Model](#stream-and-command-buffer-model)
+  - [Events and Timing](#events-and-timing)
   - [Parameter Passing Modes](#parameter-passing-modes)
   - [Memory Management](#memory-management-1)
   - [Fatbin Parsing](#fatbin-parsing)
+  - [CUDA Graph API](#cuda-graph-api)
   - [Produced Libraries](#produced-libraries)
   - [Build Configuration](#build-configuration)
 - [Language Mapping Tables](#language-mapping-tables)
@@ -1491,7 +1495,7 @@ Default: `calloc`/`realloc`/`free` from the C standard library. Note that `NODE_
 
 ## CUDA-on-Vulkan Runtime (cuvk_runtime)
 
-The `cuvk_runtime/` directory contains a drop-in replacement for the NVIDIA CUDA driver API (`libcuda.so.1`) that runs CUDA compute kernels on any Vulkan-capable GPU. It uses simple_wgsl's PTX-to-SPIR-V pipeline at runtime.
+The `cuvk_runtime/` directory contains a drop-in replacement for the NVIDIA CUDA driver API (`libcuda.so.1`) that runs CUDA compute kernels on any Vulkan-capable GPU. It uses simple_wgsl's PTX-to-SPIR-V pipeline at runtime. Cross-platform: Linux, macOS (MoltenVK / Kosmickrisp), Windows.
 
 ### Architecture
 
@@ -1515,17 +1519,54 @@ VkShaderModule --> VkComputePipeline (cached per block dims)
   v
 cuLaunchKernel(grid, block, params)
   |  pack params as push constants (BDA) or descriptors
+  |  record into stream command buffer (deferred submission)
   v
 vkCmdDispatch(gridDimX, gridDimY, gridDimZ)
 ```
 
+### Vulkan Function Loading
+
+The runtime does **not** link directly against `libvulkan`. All Vulkan calls go through a function pointer table (`g_cuvk.vk.*`) loaded at runtime in three tiers via X-macros defined in `cuvk_internal.h`:
+
+1. **Bootstrap** (`cuvk_load_vk`): `dlsym` / `LoadLibraryA` + `GetProcAddress` to obtain `vkGetInstanceProcAddr`:
+   - Linux: `libvulkan.so.1`, fallback `libvulkan.so`
+   - macOS: `libvulkan.1.dylib`, fallback `libMoltenVK.dylib`
+   - Windows: `vulkan-1.dll`
+2. **Global functions** (`cuvk_load_instance(NULL)`): `vkCreateInstance`, `vkEnumerateInstance*` — loaded via `vkGetInstanceProcAddr(NULL, ...)`
+3. **Instance functions** (`cuvk_load_instance`): `vkCreateDevice`, `vkEnumeratePhysicalDevices`, `vkGetPhysicalDevice*`, etc. — loaded via `vkGetInstanceProcAddr(instance, ...)`
+4. **Device functions** (`cuvk_load_device`): all `vkCmd*`, `vkCreate*`, `vkAllocate*`, `vkDestroy*`, etc. — loaded via `vkGetDeviceProcAddr(device, ...)` for direct dispatch (bypasses the Vulkan loader trampoline)
+
+The X-macros (`CUVK_GLOBAL_FUNCS`, `CUVK_INSTANCE_FUNCS`, `CUVK_DEVICE_FUNCS`) generate both the `CuvkVk` struct fields and the loading code, ensuring the function list is defined in exactly one place.
+
 ### Core Structures
 
-**CUctx_st** (CUDA context): Vulkan device, queue, command/descriptor pools, timeline semaphore. Tracks all device allocations in a sorted array with binary-search lookup. Owns staging buffers (upload: `HOST_COHERENT`, download: `HOST_CACHED`, grow-only, persistently mapped).
+**CUctx_st** (CUDA context): Vulkan device, queue, command/descriptor pools, timeline semaphore. Tracks all device allocations in a sorted array with binary-search lookup. Owns staging buffers (upload: `HOST_COHERENT`, download: `HOST_CACHED`, grow-only, persistently mapped). Contains a default stream (`default_stream`) used when the application passes `NULL` for the stream parameter. Also owns a reusable one-shot command buffer + fence for synchronous operations (memcpy, memset).
 
 **CUmod_st** (CUDA module): SPIR-V word array + SsirModule for reflection. Per-module global variables backed by device buffers in a shared descriptor set.
 
 **CUfunc_st** (CUDA function): VkPipeline cache keyed by `(blockDimX, blockDimY, blockDimZ)`. On cache miss, the runtime copies the SPIR-V, patches the `OpExecutionMode LocalSize` words at `[i+3..i+5]` with the new block dimensions, creates a new `VkShaderModule` + `VkComputePipeline`, and caches it.
+
+**CUstream_st** (CUDA stream): Wraps a `VkCommandBuffer` and `VkFence`. Commands (dispatches, timestamps) are recorded into the command buffer. The stream tracks a `recording` flag; submission happens on synchronize or when a synchronous operation needs to read results.
+
+**CUevent_st** (CUDA event): Wraps a `VkQueryPool` with a single timestamp query. Records the stream it was inserted into for later synchronization.
+
+### Stream and Command Buffer Model
+
+Kernel dispatches and event timestamps are **recorded** into per-stream Vulkan command buffers rather than submitted immediately. This enables correct ordering of operations within a stream and accurate GPU-side timing.
+
+- **`cuLaunchKernel`**: Resolves `NULL` stream to the context's default stream, calls `cuvk_stream_ensure_recording` (begins recording if not already), then records `vkCmdBindPipeline` + `vkCmdBindDescriptorSets` + `vkCmdPushConstants` + `vkCmdDispatch`.
+- **`cuStreamSynchronize`**: If the stream has pending recorded commands, calls `cuvk_stream_submit_and_wait` which ends recording, submits the command buffer, and waits on the fence.
+- **`cuCtxSynchronize`**: Flushes the default stream, then calls `vkDeviceWaitIdle`.
+- **Synchronous memcpy** (`cuMemcpyHtoD_v2`, `cuMemcpyDtoH_v2`): Flushes the default stream first, then uses a separate one-shot command buffer for the staged copy.
+- **Async memcpy** (`cuMemcpyHtoDAsync_v2`, `cuMemcpyDtoHAsync_v2`): Flushes the target stream (so any prior recorded dispatches complete), then performs a synchronous staged copy. This ensures correct ordering when a kernel dispatch precedes a DtoH copy on the same stream.
+
+### Events and Timing
+
+Events use `vkCmdWriteTimestamp` inserted directly into the stream's command buffer alongside kernel dispatches, providing accurate GPU-side timing without separate command buffer submissions.
+
+- **`cuEventRecord`**: Calls `cuvk_stream_ensure_recording`, then records `vkCmdResetQueryPool` + `vkCmdWriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT)` into the stream's command buffer. Stores a reference to the stream on the event.
+- **`cuEventSynchronize`**: Flushes the stream the event was recorded on via `cuvk_stream_submit_and_wait`.
+- **`cuEventElapsedTime`**: Retrieves timestamps from both events' query pools via `vkGetQueryPoolResults` with `VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT`, computes the delta using `timestampPeriod` from `VkPhysicalDeviceProperties`.
 
 ### Parameter Passing Modes
 
@@ -1544,45 +1585,54 @@ vkCmdDispatch(gridDimX, gridDimY, gridDimZ)
 
 `cuMemAlloc` creates a `VkBuffer` with `DEVICE_LOCAL` memory. The device address (from `vkGetBufferDeviceAddress` in BDA mode, or a synthetic monotonic counter otherwise) is returned as `CUdeviceptr`. Allocations stored in a sorted array for O(log n) lookup by address.
 
-`cuMemcpyHtoD`/`cuMemcpyDtoH` use staging buffers. Upload: host -> `HOST_COHERENT` staging -> `vkCmdCopyBuffer` -> device. Download: device -> `vkCmdCopyBuffer` -> `HOST_CACHED` staging -> host.
+Synchronous memcpy uses staging buffers. Upload: host `memcpy` -> `HOST_COHERENT` staging -> `vkCmdCopyBuffer` -> device. Download: device -> `vkCmdCopyBuffer` -> `HOST_CACHED` staging -> host `memcpy`. Staging buffers are grow-only and persistently mapped. Pinned host memory (`cuMemAllocHost`) enables direct DMA without staging.
+
+Async memcpy currently serializes through the target stream: it flushes any pending work on the stream, then performs the synchronous staged copy. This ensures correct ordering (e.g., a kernel dispatch completes before a subsequent DtoH copy on the same stream) but does not overlap transfers with compute.
 
 ### Fatbin Parsing
 
 CUDA fatbinaries (magic `0xBA55ED50`) contain PTX text sections optionally compressed with ZSTD (magic `0x28B52FFD`) or LZ4. The parser iterates sections (kind=1 for PTX, kind=2 for cubin), decompresses the first PTX section found, and passes it to `ptx_to_ssir`.
 
+### CUDA Graph API
+
+The runtime supports the CUDA Graph API (`cuGraphCreate`, `cuGraphAddKernelNode`, `cuGraphAddMemcpyNode`, `cuGraphAddMemsetNode`, `cuGraphAddHostNode`, `cuGraphInstantiate`, `cuGraphLaunch`). Graphs are mutable templates (`CUgraph_st`) with heap-allocated nodes and adjacency lists. Instantiation (`cuGraphExec_st`) deep-copies nodes in topological order. Graph launch replays the node sequence using a timeline semaphore for inter-node ordering.
+
 ### Produced Libraries
 
-| Target | Linux | Windows |
-|--------|-------|---------|
-| CUDA driver | `libcuda.so.1` | `nvcuda.dll` |
-| CUDA runtime | `libcudart.so.1` | `cudart64_12.dll` |
-| cuBLAS | `libcublas.so.13` | `cublas64_12.dll` |
-| cuFFT | `libcufft.so.12` | `cufft64_12.dll` |
+| Target | Linux | macOS | Windows |
+|--------|-------|-------|---------|
+| CUDA driver | `libcuda.so.1` | `libcuda.1.dylib` | `nvcuda.dll` |
+| CUDA runtime | `libcudart.so.1` | `libcudart.1.dylib` | `cudart64_12.dll` |
+| cuBLAS | `libcublas.so.13` | `libcublas.13.dylib` | `cublas64_12.dll` |
+| cuFFT | `libcufft.so.12` | `libcufft.12.dylib` | `cufft64_12.dll` |
 
-The cuFFT library implements Cooley-Tukey FFT via WGSL compute shaders (bit-reversal permutation + log2(N) butterfly stages with precomputed twiddle factors).
+The cuFFT library implements both Cooley-Tukey (bit-reversal + butterfly stages) and Stockham (auto-sort, radix 2-32) FFT algorithms via WGSL compute shaders.
 
 ### Build Configuration
 
-Built automatically when Vulkan is found (Linux) or `VULKAN_LIBRARY` is set (Windows cross-compilation). Dependencies: Vulkan SDK, `wgsl_compiler`, zstd v1.5.7 (FetchContent), lz4.
+Built automatically when Vulkan is found (Linux/macOS) or `VULKAN_LIBRARY` is set (Windows cross-compilation). Dependencies: Vulkan SDK (or MoltenVK/Kosmickrisp on macOS), `wgsl_compiler`, zstd v1.5.7 (FetchContent), lz4.
 
 Optional: `-DCUVK_NVJITLINK=ON` enables `libnvJitLink.so` for compiling CUDA LTO-IR to PTX when no text PTX is available in the fatbin.
 
-### Source Files (~11k lines)
+### Source Files (~12.7k lines)
 
-| File | Purpose |
-|------|---------|
-| `cuvk_internal.h` | All internal structs and Vulkan-to-CUDA error mapping |
-| `cuvk_init.c` | Vulkan instance/device creation, feature detection |
-| `cuvk_module.c` | PTX loading, SPIR-V compilation, parameter reflection |
-| `cuvk_launch.c` | LocalSize patching, pipeline caching, kernel dispatch |
-| `cuvk_memory.c` | Device allocation, host/device memcpy via staging buffers |
-| `cuvk_fatbin.c` | Fatbin section parsing, ZSTD/LZ4 decompression |
-| `cuvk_stream.c` | Stream/event management, one-shot command buffers |
-| `cuvk_stubs.c` | Primary context management, device attributes, API stubs |
-| `cuvk_compat.c` | Unversioned API wrappers (cuMemAlloc -> cuMemAlloc_v2) |
-| `cuvk_cufft.c` | Cooley-Tukey FFT via WGSL compute shaders |
-| `cuvk_cublas.c` | cuBLAS stubs |
-| `cuvk_jitlink.c` | Optional nvJitLink integration for LTO-IR |
+| File | Lines | Purpose |
+|------|-------|---------|
+| `cuvk_internal.h` | 413 | Internal structs, Vulkan function table (X-macro), VkResult-to-CUresult mapping |
+| `cuvk_init.c` | 954 | Cross-platform Vulkan bootstrap (dlsym/LoadLibrary), context create/destroy |
+| `cuvk_module.c` | 1070 | PTX loading, SPIR-V compilation, parameter reflection, global variables |
+| `cuvk_launch.c` | 300 | LocalSize patching, pipeline caching, stream-based kernel dispatch |
+| `cuvk_memory.c` | 1069 | Device allocation, sync/async memcpy via staging buffers, pinned host memory |
+| `cuvk_stream.c` | 438 | Stream lifecycle, event record/sync/elapsed time, one-shot command buffers |
+| `cuvk_fatbin.c` | 161 | Fatbin section parsing, ZSTD/LZ4 decompression |
+| `cuvk_graph.c` | 838 | CUDA Graph API (create, add nodes, instantiate, launch) |
+| `cuvk_stubs.c` | 2529 | Primary context management, device attributes, 1600+ API entry points |
+| `cuvk_compat.c` | 308 | Unversioned API wrappers (cuMemAlloc -> cuMemAlloc_v2) |
+| `cuvk_cudart.c` | 726 | cudart shim (cudaMalloc, cudaMemcpy, cudaLaunchKernel, etc.) |
+| `cuvk_cublas.c` | 1015 | cuBLAS stubs |
+| `cuvk_jitlink.c` | 519 | Optional nvJitLink integration for LTO-IR |
+| `fft/cuvk_cufft.c` | 1622 | cuFFT shim: Cooley-Tukey + Stockham FFT via WGSL compute |
+| `fft/fft_stockham_gen.c` | 552 | Stockham FFT WGSL shader generator (radix 2-32) |
 
 ---
 

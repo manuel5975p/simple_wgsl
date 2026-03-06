@@ -25,7 +25,7 @@ CUresult cuvk_oneshot_begin(struct CUctx_st *ctx, VkCommandBuffer *out_cb)
         return CUDA_ERROR_INVALID_VALUE;
 
     /* Reuse the pre-allocated oneshot command buffer */
-    VkResult vr = vkResetCommandBuffer(ctx->oneshot_cb, 0);
+    VkResult vr = g_cuvk.vk.vkResetCommandBuffer(ctx->oneshot_cb, 0);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
@@ -33,7 +33,7 @@ CUresult cuvk_oneshot_begin(struct CUctx_st *ctx, VkCommandBuffer *out_cb)
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-    vr = vkBeginCommandBuffer(ctx->oneshot_cb, &begin_info);
+    vr = g_cuvk.vk.vkBeginCommandBuffer(ctx->oneshot_cb, &begin_info);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
@@ -50,12 +50,12 @@ CUresult cuvk_oneshot_end(struct CUctx_st *ctx, VkCommandBuffer cb)
     if (!ctx)
         return CUDA_ERROR_INVALID_VALUE;
 
-    VkResult vr = vkEndCommandBuffer(cb);
+    VkResult vr = g_cuvk.vk.vkEndCommandBuffer(cb);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
     /* Reset the reusable fence */
-    vr = vkResetFences(ctx->device, 1, &ctx->oneshot_fence);
+    vr = g_cuvk.vk.vkResetFences(ctx->device, 1, &ctx->oneshot_fence);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
@@ -65,13 +65,41 @@ CUresult cuvk_oneshot_end(struct CUctx_st *ctx, VkCommandBuffer cb)
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &cb;
 
-    vr = vkQueueSubmit(ctx->compute_queue, 1, &submit_info, ctx->oneshot_fence);
+    vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit_info, ctx->oneshot_fence);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
     /* Wait for completion */
-    vr = vkWaitForFences(ctx->device, 1, &ctx->oneshot_fence, VK_TRUE, UINT64_MAX);
+    vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &ctx->oneshot_fence, VK_TRUE, UINT64_MAX);
     return cuvk_vk_to_cu(vr);
+}
+
+/* ============================================================================
+ * Internal helper: ensure a stream's command buffer is recording
+ * ============================================================================ */
+
+CUresult cuvk_stream_ensure_recording(struct CUstream_st *stream)
+{
+    if (!stream)
+        return CUDA_ERROR_INVALID_VALUE;
+
+    if (stream->recording)
+        return CUDA_SUCCESS;
+
+    VkResult vr = g_cuvk.vk.vkResetCommandBuffer(stream->cmd_buf, 0);
+    if (vr != VK_SUCCESS)
+        return cuvk_vk_to_cu(vr);
+
+    VkCommandBufferBeginInfo begin_info = {0};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vr = g_cuvk.vk.vkBeginCommandBuffer(stream->cmd_buf, &begin_info);
+    if (vr != VK_SUCCESS)
+        return cuvk_vk_to_cu(vr);
+
+    stream->recording = true;
+    return CUDA_SUCCESS;
 }
 
 /* ============================================================================
@@ -89,12 +117,12 @@ CUresult cuvk_stream_submit_and_wait(struct CUstream_st *stream)
 
     struct CUctx_st *ctx = stream->ctx;
 
-    VkResult vr = vkEndCommandBuffer(stream->cmd_buf);
+    VkResult vr = g_cuvk.vk.vkEndCommandBuffer(stream->cmd_buf);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
     /* Reset fence before submission */
-    vr = vkResetFences(ctx->device, 1, &stream->fence);
+    vr = g_cuvk.vk.vkResetFences(ctx->device, 1, &stream->fence);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
@@ -104,18 +132,12 @@ CUresult cuvk_stream_submit_and_wait(struct CUstream_st *stream)
     submit_info.commandBufferCount = 1;
     submit_info.pCommandBuffers = &stream->cmd_buf;
 
-    vr = vkQueueSubmit(ctx->compute_queue, 1, &submit_info, stream->fence);
+    vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit_info, stream->fence);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
     /* Wait for completion */
-    vr = vkWaitForFences(ctx->device, 1, &stream->fence, VK_TRUE, UINT64_MAX);
-    if (vr != VK_SUCCESS)
-        return cuvk_vk_to_cu(vr);
-
-    /* Reset command buffer for reuse */
-    vr = vkResetCommandBuffer(stream->cmd_buf,
-                              VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
+    vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &stream->fence, VK_TRUE, UINT64_MAX);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
@@ -151,7 +173,7 @@ CUresult CUDAAPI cuStreamCreate(CUstream *phStream, unsigned int Flags)
     alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     alloc_info.commandBufferCount = 1;
 
-    VkResult vr = vkAllocateCommandBuffers(ctx->device, &alloc_info,
+    VkResult vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &alloc_info,
                                            &stream->cmd_buf);
     if (vr != VK_SUCCESS) {
         free(stream);
@@ -163,9 +185,9 @@ CUresult CUDAAPI cuStreamCreate(CUstream *phStream, unsigned int Flags)
     fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    vr = vkCreateFence(ctx->device, &fence_ci, NULL, &stream->fence);
+    vr = g_cuvk.vk.vkCreateFence(ctx->device, &fence_ci, NULL, &stream->fence);
     if (vr != VK_SUCCESS) {
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &stream->cmd_buf);
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &stream->cmd_buf);
         free(stream);
         return cuvk_vk_to_cu(vr);
     }
@@ -201,15 +223,15 @@ CUresult CUDAAPI cuStreamDestroy_v2(CUstream hStream)
         return CUDA_ERROR_INVALID_CONTEXT;
 
     /* Wait for any pending work */
-    vkWaitForFences(ctx->device, 1, &hStream->fence, VK_TRUE, UINT64_MAX);
+    g_cuvk.vk.vkWaitForFences(ctx->device, 1, &hStream->fence, VK_TRUE, UINT64_MAX);
 
     /* Free command buffer */
     if (hStream->cmd_buf)
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &hStream->cmd_buf);
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &hStream->cmd_buf);
 
     /* Destroy fence */
     if (hStream->fence)
-        vkDestroyFence(ctx->device, hStream->fence, NULL);
+        g_cuvk.vk.vkDestroyFence(ctx->device, hStream->fence, NULL);
 
     free(hStream);
     return CUDA_SUCCESS;
@@ -226,7 +248,7 @@ CUresult CUDAAPI cuStreamSynchronize(CUstream hStream)
         struct CUctx_st *ctx = g_cuvk.current_ctx;
         if (!ctx)
             return CUDA_ERROR_INVALID_CONTEXT;
-        VkResult vr = vkDeviceWaitIdle(ctx->device);
+        VkResult vr = g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
         return cuvk_vk_to_cu(vr);
     }
 
@@ -251,7 +273,7 @@ CUresult CUDAAPI cuStreamQuery(CUstream hStream)
         return CUDA_SUCCESS;
 
     /* Check if the fence is signaled */
-    VkResult vr = vkGetFenceStatus(hStream->ctx->device, hStream->fence);
+    VkResult vr = g_cuvk.vk.vkGetFenceStatus(hStream->ctx->device, hStream->fence);
     if (vr == VK_SUCCESS)
         return CUDA_SUCCESS;
     if (vr == VK_NOT_READY)
@@ -288,7 +310,7 @@ CUresult CUDAAPI cuEventCreate(CUevent *phEvent, unsigned int Flags)
     pool_ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
     pool_ci.queryCount = 1;
 
-    VkResult vr = vkCreateQueryPool(ctx->device, &pool_ci, NULL,
+    VkResult vr = g_cuvk.vk.vkCreateQueryPool(ctx->device, &pool_ci, NULL,
                                     &event->query_pool);
     if (vr != VK_SUCCESS) {
         free(event);
@@ -313,7 +335,7 @@ CUresult CUDAAPI cuEventDestroy_v2(CUevent hEvent)
         return CUDA_ERROR_INVALID_CONTEXT;
 
     if (hEvent->query_pool)
-        vkDestroyQueryPool(ctx->device, hEvent->query_pool, NULL);
+        g_cuvk.vk.vkDestroyQueryPool(ctx->device, hEvent->query_pool, NULL);
 
     free(hEvent);
     return CUDA_SUCCESS;
@@ -328,26 +350,24 @@ CUresult CUDAAPI cuEventRecord(CUevent hEvent, CUstream hStream)
     if (!hEvent)
         return CUDA_ERROR_INVALID_VALUE;
 
-    /* Get context: from stream if provided, else from global current */
     struct CUctx_st *ctx = hStream ? hStream->ctx : g_cuvk.current_ctx;
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
 
-    /* Use a one-shot command buffer to record the timestamp */
-    VkCommandBuffer cb = VK_NULL_HANDLE;
-    CUresult res = cuvk_oneshot_begin(ctx, &cb);
+    /* Resolve NULL stream to default stream */
+    struct CUstream_st *stream = hStream ? hStream : &ctx->default_stream;
+
+    /* Ensure the stream's command buffer is recording */
+    CUresult res = cuvk_stream_ensure_recording(stream);
     if (res != CUDA_SUCCESS)
         return res;
 
-    /* Reset query pool and write timestamp */
-    vkCmdResetQueryPool(cb, hEvent->query_pool, 0, 1);
-    vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+    /* Insert timestamp into the stream's command buffer */
+    g_cuvk.vk.vkCmdResetQueryPool(stream->cmd_buf, hEvent->query_pool, 0, 1);
+    g_cuvk.vk.vkCmdWriteTimestamp(stream->cmd_buf, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                         hEvent->query_pool, 0);
 
-    res = cuvk_oneshot_end(ctx, cb);
-    if (res != CUDA_SUCCESS)
-        return res;
-
+    hEvent->stream = stream;
     hEvent->recorded = true;
     return CUDA_SUCCESS;
 }
@@ -361,12 +381,12 @@ CUresult CUDAAPI cuEventSynchronize(CUevent hEvent)
     if (!hEvent)
         return CUDA_ERROR_INVALID_VALUE;
 
-    /*
-     * In our implementation, cuvk_oneshot_end already waits synchronously,
-     * so if the event was recorded, it has already completed.
-     */
     if (!hEvent->recorded)
         return CUDA_ERROR_INVALID_VALUE;
+
+    /* Flush the stream the event was recorded on (submit + wait) */
+    if (hEvent->stream)
+        return cuvk_stream_submit_and_wait(hEvent->stream);
 
     return CUDA_SUCCESS;
 }
@@ -390,7 +410,7 @@ CUresult CUDAAPI cuEventElapsedTime_v2(float *pMilliseconds,
 
     /* Retrieve timestamp values from both query pools */
     uint64_t start_ts = 0;
-    VkResult vr = vkGetQueryPoolResults(
+    VkResult vr = g_cuvk.vk.vkGetQueryPoolResults(
         ctx->device, hStart->query_pool,
         0, 1,
         sizeof(start_ts), &start_ts,
@@ -400,7 +420,7 @@ CUresult CUDAAPI cuEventElapsedTime_v2(float *pMilliseconds,
         return cuvk_vk_to_cu(vr);
 
     uint64_t end_ts = 0;
-    vr = vkGetQueryPoolResults(
+    vr = g_cuvk.vk.vkGetQueryPoolResults(
         ctx->device, hEnd->query_pool,
         0, 1,
         sizeof(end_ts), &end_ts,

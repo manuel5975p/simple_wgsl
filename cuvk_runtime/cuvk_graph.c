@@ -637,7 +637,7 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
                 wi.semaphoreCount = 1;
                 wi.pSemaphores = &ctx->timeline_sem;
                 wi.pValues = &wait_value;
-                vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
+                g_cuvk.vk.vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
             }
 
             r = cuLaunchKernel(kp->func,
@@ -651,7 +651,7 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
             sig.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
             sig.semaphore = ctx->timeline_sem;
             sig.value = signal_value;
-            vkSignalSemaphore(ctx->device, &sig);
+            g_cuvk.vk.vkSignalSemaphore(ctx->device, &sig);
             break;
         }
 
@@ -664,7 +664,7 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
                 wi.semaphoreCount = 1;
                 wi.pSemaphores = &ctx->timeline_sem;
                 wi.pValues = &wait_value;
-                vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
+                g_cuvk.vk.vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
             }
 
             size_t byte_count = mc->WidthInBytes * (mc->Height ? mc->Height : 1) *
@@ -694,7 +694,7 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
             sig.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
             sig.semaphore = ctx->timeline_sem;
             sig.value = signal_value;
-            vkSignalSemaphore(ctx->device, &sig);
+            g_cuvk.vk.vkSignalSemaphore(ctx->device, &sig);
             break;
         }
 
@@ -707,7 +707,7 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
                 wi.semaphoreCount = 1;
                 wi.pSemaphores = &ctx->timeline_sem;
                 wi.pValues = &wait_value;
-                vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
+                g_cuvk.vk.vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
             }
 
             size_t count = ms->width * (ms->height ? ms->height : 1);
@@ -731,7 +731,7 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
             sig.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
             sig.semaphore = ctx->timeline_sem;
             sig.value = signal_value;
-            vkSignalSemaphore(ctx->device, &sig);
+            g_cuvk.vk.vkSignalSemaphore(ctx->device, &sig);
             break;
         }
 
@@ -742,7 +742,7 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
                 wi.semaphoreCount = 1;
                 wi.pSemaphores = &ctx->timeline_sem;
                 wi.pValues = &wait_value;
-                vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
+                g_cuvk.vk.vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
             }
 
             cuCtxSynchronize();
@@ -754,7 +754,7 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
             sig.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
             sig.semaphore = ctx->timeline_sem;
             sig.value = signal_value;
-            vkSignalSemaphore(ctx->device, &sig);
+            g_cuvk.vk.vkSignalSemaphore(ctx->device, &sig);
             break;
         }
 
@@ -766,14 +766,14 @@ CUresult CUDAAPI cuGraphLaunch(CUgraphExec hGraphExec, CUstream hStream) {
                 wi.semaphoreCount = 1;
                 wi.pSemaphores = &ctx->timeline_sem;
                 wi.pValues = &wait_value;
-                vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
+                g_cuvk.vk.vkWaitSemaphores(ctx->device, &wi, UINT64_MAX);
             }
 
             VkSemaphoreSignalInfo sig = {0};
             sig.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO;
             sig.semaphore = ctx->timeline_sem;
             sig.value = signal_value;
-            vkSignalSemaphore(ctx->device, &sig);
+            g_cuvk.vk.vkSignalSemaphore(ctx->device, &sig);
             break;
         }
         }

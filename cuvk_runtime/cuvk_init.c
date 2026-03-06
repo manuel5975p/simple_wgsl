@@ -9,12 +9,75 @@
 
 #include "cuvk_internal.h"
 
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#else
+#  include <dlfcn.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* Global runtime singleton */
 CuvkGlobal g_cuvk = {0};
+
+/* ============================================================================
+ * Vulkan function pointer loading (bootstrap via dlsym)
+ * ============================================================================ */
+
+static VkResult cuvk_load_vk(void)
+{
+#ifdef _WIN32
+    HMODULE module = LoadLibraryA("vulkan-1.dll");
+    if (!module)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    g_cuvk.vk.vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)
+        GetProcAddress(module, "vkGetInstanceProcAddr");
+#elif defined(__APPLE__)
+    void *module = dlopen("libvulkan.1.dylib", RTLD_NOW | RTLD_LOCAL);
+    if (!module)
+        module = dlopen("libMoltenVK.dylib", RTLD_NOW | RTLD_LOCAL);
+    if (!module)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    g_cuvk.vk.vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)
+        dlsym(module, "vkGetInstanceProcAddr");
+#else
+    void *module = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!module)
+        module = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    if (!module)
+        return VK_ERROR_INITIALIZATION_FAILED;
+    g_cuvk.vk.vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)
+        dlsym(module, "vkGetInstanceProcAddr");
+#endif
+    if (!g_cuvk.vk.vkGetInstanceProcAddr)
+        return VK_ERROR_INITIALIZATION_FAILED;
+
+    /* Load pre-instance (global) functions */
+#define CUVK_VK_LOAD_GLOBAL(fn) \
+    g_cuvk.vk.fn = (PFN_##fn)g_cuvk.vk.vkGetInstanceProcAddr(NULL, #fn);
+    CUVK_GLOBAL_FUNCS(CUVK_VK_LOAD_GLOBAL)
+#undef CUVK_VK_LOAD_GLOBAL
+
+    return VK_SUCCESS;
+}
+
+static void cuvk_load_instance(VkInstance instance)
+{
+#define CUVK_VK_LOAD_INST(fn) \
+    g_cuvk.vk.fn = (PFN_##fn)g_cuvk.vk.vkGetInstanceProcAddr(instance, #fn);
+    CUVK_INSTANCE_FUNCS(CUVK_VK_LOAD_INST)
+#undef CUVK_VK_LOAD_INST
+}
+
+static void cuvk_load_device(VkDevice device)
+{
+#define CUVK_VK_LOAD_DEV(fn) \
+    g_cuvk.vk.fn = (PFN_##fn)g_cuvk.vk.vkGetDeviceProcAddr(device, #fn);
+    CUVK_DEVICE_FUNCS(CUVK_VK_LOAD_DEV)
+#undef CUVK_VK_LOAD_DEV
+}
 
 /* ============================================================================
  * Helper: find a Vulkan memory type matching filter + required property flags
@@ -64,6 +127,11 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
 
     if (g_cuvk.initialized)
         return CUDA_SUCCESS;
+
+    /* Bootstrap Vulkan function pointers via dlsym */
+    VkResult vr_load = cuvk_load_vk();
+    if (vr_load != VK_SUCCESS)
+        return cuvk_vk_to_cu(vr_load);
 
     bool want_validation = false;
 #ifndef NDEBUG
@@ -139,16 +207,19 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
         create_info.pNext = &dbg_ci;
     }
 
-    VkResult vr = vkCreateInstance(&create_info, NULL, &g_cuvk.instance);
+    VkResult vr = g_cuvk.vk.vkCreateInstance(&create_info, NULL, &g_cuvk.instance);
     if (vr != VK_SUCCESS) {
         CUVK_LOG("[cuvk] cuInit: vkCreateInstance failed vr=%d\n", vr);
         return cuvk_vk_to_cu(vr);
     }
 
+    /* Load instance-level function pointers */
+    cuvk_load_instance(g_cuvk.instance);
+
     g_cuvk.has_validation = want_validation;
     if (want_validation) {
         PFN_vkCreateDebugUtilsMessengerEXT fn =
-            (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+            (PFN_vkCreateDebugUtilsMessengerEXT)g_cuvk.vk.vkGetInstanceProcAddr(
                 g_cuvk.instance, "vkCreateDebugUtilsMessengerEXT");
         if (fn) {
             fn(g_cuvk.instance, &dbg_ci, NULL,
@@ -158,15 +229,15 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
 
     /* Enumerate physical devices */
     uint32_t count = 0;
-    vr = vkEnumeratePhysicalDevices(g_cuvk.instance, &count, NULL);
+    vr = g_cuvk.vk.vkEnumeratePhysicalDevices(g_cuvk.instance, &count, NULL);
     if (vr != VK_SUCCESS) {
-        vkDestroyInstance(g_cuvk.instance, NULL);
+        g_cuvk.vk.vkDestroyInstance(g_cuvk.instance, NULL);
         g_cuvk.instance = VK_NULL_HANDLE;
         return cuvk_vk_to_cu(vr);
     }
 
     if (count == 0) {
-        vkDestroyInstance(g_cuvk.instance, NULL);
+        g_cuvk.vk.vkDestroyInstance(g_cuvk.instance, NULL);
         g_cuvk.instance = VK_NULL_HANDLE;
         return CUDA_ERROR_NO_DEVICE;
     }
@@ -174,10 +245,10 @@ CUresult CUDAAPI cuInit(unsigned int Flags)
     if (count > CUVK_MAX_PHYSICAL_DEVICES)
         count = CUVK_MAX_PHYSICAL_DEVICES;
 
-    vr = vkEnumeratePhysicalDevices(g_cuvk.instance, &count,
+    vr = g_cuvk.vk.vkEnumeratePhysicalDevices(g_cuvk.instance, &count,
                                     g_cuvk.physical_devices);
     if (vr != VK_SUCCESS && vr != VK_INCOMPLETE) {
-        vkDestroyInstance(g_cuvk.instance, NULL);
+        g_cuvk.vk.vkDestroyInstance(g_cuvk.instance, NULL);
         g_cuvk.instance = VK_NULL_HANDLE;
         return cuvk_vk_to_cu(vr);
     }
@@ -247,7 +318,7 @@ CUresult CUDAAPI cuDeviceGetName(char *name, int len, CUdevice dev)
         return CUDA_ERROR_INVALID_DEVICE;
 
     VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(g_cuvk.physical_devices[dev], &props);
+    g_cuvk.vk.vkGetPhysicalDeviceProperties(g_cuvk.physical_devices[dev], &props);
 
     strncpy(name, props.deviceName, (size_t)len);
     name[len - 1] = '\0';
@@ -268,7 +339,7 @@ CUresult CUDAAPI cuDeviceTotalMem_v2(size_t *bytes, CUdevice dev)
         return CUDA_ERROR_INVALID_DEVICE;
 
     VkPhysicalDeviceMemoryProperties mem_props;
-    vkGetPhysicalDeviceMemoryProperties(g_cuvk.physical_devices[dev],
+    g_cuvk.vk.vkGetPhysicalDeviceMemoryProperties(g_cuvk.physical_devices[dev],
                                         &mem_props);
 
     /* Sum all device-local heap sizes */
@@ -299,7 +370,7 @@ CUresult CUDAAPI cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
 
     VkPhysicalDevice phys = g_cuvk.physical_devices[dev];
     VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(phys, &props);
+    g_cuvk.vk.vkGetPhysicalDeviceProperties(phys, &props);
 
     CUVK_LOG("[cuvk] cuDeviceGetAttribute(attrib=%d, dev=%d)\n", attrib, dev);
     switch (attrib) {
@@ -343,7 +414,7 @@ CUresult CUDAAPI cuDeviceGetAttribute(int *pi, CUdevice_attribute attrib,
         props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
         props2.pNext = &subgroup_props;
 
-        vkGetPhysicalDeviceProperties2(phys, &props2);
+        g_cuvk.vk.vkGetPhysicalDeviceProperties2(phys, &props2);
         *pi = (int)subgroup_props.subgroupSize;
         if (*pi == 0)
             *pi = 32; /* default fallback */
@@ -490,7 +561,7 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
 
     /* Find a queue family with compute support */
     uint32_t qf_count = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(phys, &qf_count, NULL);
+    g_cuvk.vk.vkGetPhysicalDeviceQueueFamilyProperties(phys, &qf_count, NULL);
 
     VkQueueFamilyProperties *qf_props = NULL;
     if (qf_count > 0) {
@@ -499,7 +570,7 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
             free(ctx);
             return CUDA_ERROR_OUT_OF_MEMORY;
         }
-        vkGetPhysicalDeviceQueueFamilyProperties(phys, &qf_count, qf_props);
+        g_cuvk.vk.vkGetPhysicalDeviceQueueFamilyProperties(phys, &qf_count, qf_props);
     }
 
     int32_t compute_family = -1;
@@ -526,7 +597,7 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     VkPhysicalDeviceFeatures2 features2 = {0};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features2.pNext = &bda_features;
-    vkGetPhysicalDeviceFeatures2(phys, &features2);
+    g_cuvk.vk.vkGetPhysicalDeviceFeatures2(phys, &features2);
 
     bool has_bda = (bda_features.bufferDeviceAddress == VK_TRUE);
 
@@ -538,7 +609,7 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     VkPhysicalDeviceFeatures2 features2_ts = {0};
     features2_ts.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     features2_ts.pNext = &ts_features;
-    vkGetPhysicalDeviceFeatures2(phys, &features2_ts);
+    g_cuvk.vk.vkGetPhysicalDeviceFeatures2(phys, &features2_ts);
 
     bool has_timeline = (ts_features.timelineSemaphore == VK_TRUE);
     bool has_f64 = (features2.features.shaderFloat64 == VK_TRUE);
@@ -589,24 +660,27 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     device_ci.enabledExtensionCount = ext_count;
     device_ci.ppEnabledExtensionNames = device_extensions;
 
-    VkResult vr = vkCreateDevice(phys, &device_ci, NULL, &ctx->device);
+    VkResult vr = g_cuvk.vk.vkCreateDevice(phys, &device_ci, NULL, &ctx->device);
     if (vr != VK_SUCCESS) {
         free(ctx);
         return cuvk_vk_to_cu(vr);
     }
 
+    /* Load device-level function pointers */
+    cuvk_load_device(ctx->device);
+
     /* Get compute queue */
-    vkGetDeviceQueue(ctx->device, ctx->compute_queue_family, 0,
+    g_cuvk.vk.vkGetDeviceQueue(ctx->device, ctx->compute_queue_family, 0,
                      &ctx->compute_queue);
 
     /* Get BDA function pointer */
     ctx->has_bda = has_bda;
     if (has_bda) {
         ctx->pfn_get_bda = (PFN_vkGetBufferDeviceAddress)
-            vkGetDeviceProcAddr(ctx->device, "vkGetBufferDeviceAddress");
+            g_cuvk.vk.vkGetDeviceProcAddr(ctx->device, "vkGetBufferDeviceAddress");
         if (!ctx->pfn_get_bda) {
             ctx->pfn_get_bda = (PFN_vkGetBufferDeviceAddress)
-                vkGetDeviceProcAddr(ctx->device, "vkGetBufferDeviceAddressKHR");
+                g_cuvk.vk.vkGetDeviceProcAddr(ctx->device, "vkGetBufferDeviceAddressKHR");
         }
     }
 
@@ -616,9 +690,9 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     pool_ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     pool_ci.queueFamilyIndex = ctx->compute_queue_family;
 
-    vr = vkCreateCommandPool(ctx->device, &pool_ci, NULL, &ctx->cmd_pool);
+    vr = g_cuvk.vk.vkCreateCommandPool(ctx->device, &pool_ci, NULL, &ctx->cmd_pool);
     if (vr != VK_SUCCESS) {
-        vkDestroyDevice(ctx->device, NULL);
+        g_cuvk.vk.vkDestroyDevice(ctx->device, NULL);
         free(ctx);
         return cuvk_vk_to_cu(vr);
     }
@@ -636,11 +710,11 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     desc_pool_ci.poolSizeCount = 2;
     desc_pool_ci.pPoolSizes = pool_sizes;
 
-    vr = vkCreateDescriptorPool(ctx->device, &desc_pool_ci, NULL,
+    vr = g_cuvk.vk.vkCreateDescriptorPool(ctx->device, &desc_pool_ci, NULL,
                                 &ctx->desc_pool);
     if (vr != VK_SUCCESS) {
-        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
-        vkDestroyDevice(ctx->device, NULL);
+        g_cuvk.vk.vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        g_cuvk.vk.vkDestroyDevice(ctx->device, NULL);
         free(ctx);
         return cuvk_vk_to_cu(vr);
     }
@@ -656,12 +730,12 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
         sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
         sem_ci.pNext = &ts_ci;
 
-        vr = vkCreateSemaphore(ctx->device, &sem_ci, NULL,
+        vr = g_cuvk.vk.vkCreateSemaphore(ctx->device, &sem_ci, NULL,
                                &ctx->timeline_sem);
         if (vr != VK_SUCCESS) {
-            vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
-            vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
-            vkDestroyDevice(ctx->device, NULL);
+            g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+            g_cuvk.vk.vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+            g_cuvk.vk.vkDestroyDevice(ctx->device, NULL);
             free(ctx);
             return cuvk_vk_to_cu(vr);
         }
@@ -675,14 +749,14 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     cb_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cb_ai.commandBufferCount = 1;
 
-    vr = vkAllocateCommandBuffers(ctx->device, &cb_ai,
+    vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &cb_ai,
                                   &ctx->default_stream.cmd_buf);
     if (vr != VK_SUCCESS) {
         if (ctx->timeline_sem)
-            vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
-        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
-        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
-        vkDestroyDevice(ctx->device, NULL);
+            g_cuvk.vk.vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        g_cuvk.vk.vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        g_cuvk.vk.vkDestroyDevice(ctx->device, NULL);
         free(ctx);
         return cuvk_vk_to_cu(vr);
     }
@@ -690,16 +764,16 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     VkFenceCreateInfo fence_ci = {0};
     fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 
-    vr = vkCreateFence(ctx->device, &fence_ci, NULL,
+    vr = g_cuvk.vk.vkCreateFence(ctx->device, &fence_ci, NULL,
                        &ctx->default_stream.fence);
     if (vr != VK_SUCCESS) {
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
                              &ctx->default_stream.cmd_buf);
         if (ctx->timeline_sem)
-            vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
-        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
-        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
-        vkDestroyDevice(ctx->device, NULL);
+            g_cuvk.vk.vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        g_cuvk.vk.vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        g_cuvk.vk.vkDestroyDevice(ctx->device, NULL);
         free(ctx);
         return cuvk_vk_to_cu(vr);
     }
@@ -714,16 +788,16 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     oneshot_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     oneshot_ai.commandBufferCount = 1;
 
-    vr = vkAllocateCommandBuffers(ctx->device, &oneshot_ai, &ctx->oneshot_cb);
+    vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &oneshot_ai, &ctx->oneshot_cb);
     if (vr != VK_SUCCESS) {
-        vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+        g_cuvk.vk.vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
                              &ctx->default_stream.cmd_buf);
         if (ctx->timeline_sem)
-            vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
-        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
-        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
-        vkDestroyDevice(ctx->device, NULL);
+            g_cuvk.vk.vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        g_cuvk.vk.vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        g_cuvk.vk.vkDestroyDevice(ctx->device, NULL);
         free(ctx);
         return cuvk_vk_to_cu(vr);
     }
@@ -733,25 +807,25 @@ CUresult CUDAAPI cuCtxCreate_v4(CUcontext *pctx,
     oneshot_fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     oneshot_fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-    vr = vkCreateFence(ctx->device, &oneshot_fence_ci, NULL,
+    vr = g_cuvk.vk.vkCreateFence(ctx->device, &oneshot_fence_ci, NULL,
                        &ctx->oneshot_fence);
     if (vr != VK_SUCCESS) {
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &ctx->oneshot_cb);
-        vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &ctx->oneshot_cb);
+        g_cuvk.vk.vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
                              &ctx->default_stream.cmd_buf);
         if (ctx->timeline_sem)
-            vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
-        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
-        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
-        vkDestroyDevice(ctx->device, NULL);
+            g_cuvk.vk.vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        g_cuvk.vk.vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        g_cuvk.vk.vkDestroyDevice(ctx->device, NULL);
         free(ctx);
         return cuvk_vk_to_cu(vr);
     }
 
     /* Cache memory and device properties */
-    vkGetPhysicalDeviceMemoryProperties(phys, &ctx->mem_props);
-    vkGetPhysicalDeviceProperties(phys, &ctx->dev_props);
+    g_cuvk.vk.vkGetPhysicalDeviceMemoryProperties(phys, &ctx->mem_props);
+    g_cuvk.vk.vkGetPhysicalDeviceProperties(phys, &ctx->dev_props);
 
     /* Set as current context */
     g_cuvk.current_ctx = ctx;
@@ -778,56 +852,56 @@ CUresult CUDAAPI cuCtxDestroy_v2(CUcontext ctx)
         return CUDA_SUCCESS;
     }
 
-    vkDeviceWaitIdle(ctx->device);
+    g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
 
     /* Destroy default stream resources */
     if (ctx->default_stream.fence)
-        vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
+        g_cuvk.vk.vkDestroyFence(ctx->device, ctx->default_stream.fence, NULL);
     if (ctx->default_stream.cmd_buf)
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
                              &ctx->default_stream.cmd_buf);
 
     /* Destroy reusable one-shot resources */
     if (ctx->oneshot_fence)
-        vkDestroyFence(ctx->device, ctx->oneshot_fence, NULL);
+        g_cuvk.vk.vkDestroyFence(ctx->device, ctx->oneshot_fence, NULL);
     if (ctx->oneshot_cb)
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1,
                              &ctx->oneshot_cb);
 
     /* Destroy cached staging buffer */
     if (ctx->staging_buf)
-        vkDestroyBuffer(ctx->device, ctx->staging_buf, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, ctx->staging_buf, NULL);
     if (ctx->staging_mem)
-        vkFreeMemory(ctx->device, ctx->staging_mem, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, ctx->staging_mem, NULL);
 
     /* Destroy download staging buffer */
     if (ctx->download_buf)
-        vkDestroyBuffer(ctx->device, ctx->download_buf, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, ctx->download_buf, NULL);
     if (ctx->download_mem)
-        vkFreeMemory(ctx->device, ctx->download_mem, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, ctx->download_mem, NULL);
 
     /* Destroy timeline semaphore */
     if (ctx->timeline_sem)
-        vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
+        g_cuvk.vk.vkDestroySemaphore(ctx->device, ctx->timeline_sem, NULL);
 
     /* Destroy descriptor pool */
     if (ctx->desc_pool)
-        vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
+        g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
 
     /* Destroy pinned host allocations */
     for (uint32_t i = 0; i < ctx->host_alloc_count; i++) {
-        vkDestroyBuffer(ctx->device, ctx->host_allocs[i].buffer, NULL);
-        vkFreeMemory(ctx->device, ctx->host_allocs[i].memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, ctx->host_allocs[i].buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, ctx->host_allocs[i].memory, NULL);
     }
     free(ctx->host_allocs);
     ctx->host_allocs = NULL;
 
     /* Destroy command pool */
     if (ctx->cmd_pool)
-        vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
+        g_cuvk.vk.vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
 
     /* Destroy device */
-    vkDestroyDevice(ctx->device, NULL);
+    g_cuvk.vk.vkDestroyDevice(ctx->device, NULL);
     ctx->device = VK_NULL_HANDLE;
 
     /* Free tracked allocations array */
@@ -872,6 +946,9 @@ CUresult CUDAAPI cuCtxSynchronize(void)
     if (!g_cuvk.current_ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
 
-    VkResult vr = vkDeviceWaitIdle(g_cuvk.current_ctx->device);
+    /* Flush default stream (submit any pending commands) */
+    cuvk_stream_submit_and_wait(&g_cuvk.current_ctx->default_stream);
+
+    VkResult vr = g_cuvk.vk.vkDeviceWaitIdle(g_cuvk.current_ctx->device);
     return cuvk_vk_to_cu(vr);
 }

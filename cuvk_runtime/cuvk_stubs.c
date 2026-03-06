@@ -255,7 +255,7 @@ CUresult CUDAAPI cuMemGetInfo(size_t *free, size_t *total) {
     struct CUctx_st *ctx = g_cuvk.current_ctx;
     if (!ctx) return CUDA_ERROR_INVALID_CONTEXT;
     VkPhysicalDeviceMemoryProperties mem;
-    vkGetPhysicalDeviceMemoryProperties(ctx->physical_device, &mem);
+    g_cuvk.vk.vkGetPhysicalDeviceMemoryProperties(ctx->physical_device, &mem);
     size_t total_mem = 0;
     for (uint32_t i = 0; i < mem.memoryHeapCount; i++) {
         if (mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)

@@ -167,6 +167,7 @@ set(NVCC_TESTS
     39_graph_api
     40_cublas_basic
     41_cufft_basic
+    42_events
 )
 
 set(NVCC_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc)

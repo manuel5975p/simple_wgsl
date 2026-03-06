@@ -209,17 +209,17 @@ static cufftResult create_device_buffer(struct CUctx_st *ctx,
     buf_ci.usage = usage;
     buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-    VkResult vr = vkCreateBuffer(ctx->device, &buf_ci, NULL, out_buf);
+    VkResult vr = g_cuvk.vk.vkCreateBuffer(ctx->device, &buf_ci, NULL, out_buf);
     if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
 
     VkMemoryRequirements mem_reqs;
-    vkGetBufferMemoryRequirements(ctx->device, *out_buf, &mem_reqs);
+    g_cuvk.vk.vkGetBufferMemoryRequirements(ctx->device, *out_buf, &mem_reqs);
 
     int32_t mem_type = cuvk_find_memory_type(
         &ctx->mem_props, mem_reqs.memoryTypeBits,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (mem_type < 0) {
-        vkDestroyBuffer(ctx->device, *out_buf, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, *out_buf, NULL);
         return CUFFT_ALLOC_FAILED;
     }
 
@@ -228,16 +228,16 @@ static cufftResult create_device_buffer(struct CUctx_st *ctx,
     alloc_info.allocationSize = mem_reqs.size;
     alloc_info.memoryTypeIndex = (uint32_t)mem_type;
 
-    vr = vkAllocateMemory(ctx->device, &alloc_info, NULL, out_mem);
+    vr = g_cuvk.vk.vkAllocateMemory(ctx->device, &alloc_info, NULL, out_mem);
     if (vr != VK_SUCCESS) {
-        vkDestroyBuffer(ctx->device, *out_buf, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, *out_buf, NULL);
         return CUFFT_ALLOC_FAILED;
     }
 
-    vr = vkBindBufferMemory(ctx->device, *out_buf, *out_mem, 0);
+    vr = g_cuvk.vk.vkBindBufferMemory(ctx->device, *out_buf, *out_mem, 0);
     if (vr != VK_SUCCESS) {
-        vkFreeMemory(ctx->device, *out_mem, NULL);
-        vkDestroyBuffer(ctx->device, *out_buf, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, *out_mem, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, *out_buf, NULL);
         return CUFFT_ALLOC_FAILED;
     }
 
@@ -271,7 +271,7 @@ static cufftResult create_stockham_layouts(struct CUctx_st *ctx,
     dsl_ci.bindingCount = 2;
     dsl_ci.pBindings = bindings;
 
-    VkResult vr = vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
+    VkResult vr = g_cuvk.vk.vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
                                                out_desc_layout);
     if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
 
@@ -280,9 +280,9 @@ static cufftResult create_stockham_layouts(struct CUctx_st *ctx,
     pl_ci.setLayoutCount = 1;
     pl_ci.pSetLayouts = out_desc_layout;
 
-    vr = vkCreatePipelineLayout(ctx->device, &pl_ci, NULL, out_pipe_layout);
+    vr = g_cuvk.vk.vkCreatePipelineLayout(ctx->device, &pl_ci, NULL, out_pipe_layout);
     if (vr != VK_SUCCESS) {
-        vkDestroyDescriptorSetLayout(ctx->device, *out_desc_layout, NULL);
+        g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, *out_desc_layout, NULL);
         return CUFFT_INTERNAL_ERROR;
     }
 
@@ -303,7 +303,7 @@ static cufftResult create_stage_pipeline(struct CUctx_st *ctx,
     sm_ci.codeSize = spirv_count * sizeof(uint32_t);
     sm_ci.pCode = spirv_words;
 
-    VkResult vr = vkCreateShaderModule(ctx->device, &sm_ci, NULL, out_shader);
+    VkResult vr = g_cuvk.vk.vkCreateShaderModule(ctx->device, &sm_ci, NULL, out_shader);
     if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
 
     VkComputePipelineCreateInfo pipe_ci = {0};
@@ -314,10 +314,10 @@ static cufftResult create_stage_pipeline(struct CUctx_st *ctx,
     pipe_ci.stage.pName = "main";
     pipe_ci.layout = pipe_layout;
 
-    vr = vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE,
+    vr = g_cuvk.vk.vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE,
                                   1, &pipe_ci, NULL, out_pipeline);
     if (vr != VK_SUCCESS) {
-        vkDestroyShaderModule(ctx->device, *out_shader, NULL);
+        g_cuvk.vk.vkDestroyShaderModule(ctx->device, *out_shader, NULL);
         return CUFFT_INTERNAL_ERROR;
     }
 
@@ -334,7 +334,7 @@ static void emit_barrier(VkCommandBuffer cb) {
     mem_bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     mem_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
                             VK_ACCESS_SHADER_WRITE_BIT;
-    vkCmdPipelineBarrier(cb,
+    g_cuvk.vk.vkCmdPipelineBarrier(cb,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 1, &mem_bar, 0, NULL, 0, NULL);
@@ -402,7 +402,7 @@ static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
     ds_ai.descriptorSetCount = (uint32_t)total_stages;
     ds_ai.pSetLayouts = layouts;
 
-    VkResult vr = vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
+    VkResult vr = g_cuvk.vk.vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
     free(layouts);
     if (vr != VK_SUCCESS) {
         free(read_bufs); free(write_bufs); free(desc_sets);
@@ -434,13 +434,13 @@ static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[1].pBufferInfo = &buf_infos[1];
 
-        vkUpdateDescriptorSets(ctx->device, 2, writes, 0, NULL);
+        g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, 2, writes, 0, NULL);
     }
 
     /* Begin command buffer */
     VkCommandBufferBeginInfo begin_info = {0};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vr = vkBeginCommandBuffer(cb, &begin_info);
+    vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin_info);
     if (vr != VK_SUCCESS) {
         free(read_bufs); free(write_bufs); free(desc_sets);
         return CUFFT_INTERNAL_ERROR;
@@ -454,12 +454,12 @@ static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
             if (global_stage > 0)
                 emit_barrier(cb);
 
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+            g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                               axis->pipelines[dir_idx][s]);
-            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+            g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     p->pipe_layout, 0, 1,
                                     &desc_sets[global_stage], 0, NULL);
-            vkCmdDispatch(cb, axis->dispatch_x[s],
+            g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s],
                           (uint32_t)axis->batch_count,
                           axis->batch_count2 > 0 ?
                               (uint32_t)axis->batch_count2 : 1);
@@ -473,17 +473,17 @@ static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
         copy_bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         copy_bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         copy_bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        vkCmdPipelineBarrier(cb,
+        g_cuvk.vk.vkCmdPipelineBarrier(cb,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 1, &copy_bar, 0, NULL, 0, NULL);
 
         VkBufferCopy region = {0};
         region.size = buf_size;
-        vkCmdCopyBuffer(cb, p->scratch_buf, dst_buf, 1, &region);
+        g_cuvk.vk.vkCmdCopyBuffer(cb, p->scratch_buf, dst_buf, 1, &region);
     }
 
-    vr = vkEndCommandBuffer(cb);
+    vr = g_cuvk.vk.vkEndCommandBuffer(cb);
     free(read_bufs); free(write_bufs); free(desc_sets);
     if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
 
@@ -602,7 +602,7 @@ static cufftResult alloc_plan_resources(CufftPlan *p)
     dp_ci.poolSizeCount = 1;
     dp_ci.pPoolSizes = &pool_size;
 
-    VkResult vr = vkCreateDescriptorPool(ctx->device, &dp_ci, NULL,
+    VkResult vr = g_cuvk.vk.vkCreateDescriptorPool(ctx->device, &dp_ci, NULL,
                                           &p->desc_pool);
     if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
 
@@ -613,15 +613,15 @@ static cufftResult alloc_plan_resources(CufftPlan *p)
     cb_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cb_ai.commandBufferCount = 1;
 
-    vr = vkAllocateCommandBuffers(ctx->device, &cb_ai, &p->cb_fwd);
+    vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &cb_ai, &p->cb_fwd);
     if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
-    vr = vkAllocateCommandBuffers(ctx->device, &cb_ai, &p->cb_inv);
+    vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &cb_ai, &p->cb_inv);
     if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
 
     /* Fence */
     VkFenceCreateInfo fence_ci = {0};
     fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    vr = vkCreateFence(ctx->device, &fence_ci, NULL, &p->fence);
+    vr = g_cuvk.vk.vkCreateFence(ctx->device, &fence_ci, NULL, &p->fence);
     if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
 
     p->cb_fwd_valid = 0;
@@ -827,10 +827,10 @@ cufftResult cufftExecC2C(cufftHandle plan_handle,
 
     if (!cache_hit) {
         /* Invalidate both CBs, re-record */
-        vkDeviceWaitIdle(ctx->device);
-        vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
-        vkResetCommandBuffer(p->cb_fwd, 0);
-        vkResetCommandBuffer(p->cb_inv, 0);
+        g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
+        g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
+        g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
+        g_cuvk.vk.vkResetCommandBuffer(p->cb_inv, 0);
         p->cb_fwd_valid = 0;
         p->cb_inv_valid = 0;
 
@@ -851,8 +851,8 @@ cufftResult cufftExecC2C(cufftHandle plan_handle,
 
         /* Better approach: reset pool, record requested direction only.
          * Record the other direction later if needed. */
-        vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
-        vkResetCommandBuffer(p->cb_fwd, 0);
+        g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
+        g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
         p->cb_fwd_valid = 0;
 
         cr = record_fft_cb(p, dir_idx, cb, effective_src, dst_buf);
@@ -869,17 +869,17 @@ cufftResult cufftExecC2C(cufftHandle plan_handle,
     }
 
     /* Submit */
-    vkResetFences(ctx->device, 1, &p->fence);
+    g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
 
     VkSubmitInfo submit = {0};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cb;
 
-    VkResult vr = vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
+    VkResult vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
     if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
 
-    vr = vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+    vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
     if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
 
     return CUFFT_SUCCESS;
@@ -953,7 +953,7 @@ static cufftResult record_r2c_cb(CufftPlan *p, VkCommandBuffer cb,
     ds_ai.descriptorSetCount = (uint32_t)total;
     ds_ai.pSetLayouts = layouts;
 
-    VkResult vr = vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
+    VkResult vr = g_cuvk.vk.vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
     free(layouts);
     if (vr != VK_SUCCESS) { free(desc_sets); return CUFFT_INTERNAL_ERROR; }
 
@@ -972,23 +972,23 @@ static cufftResult record_r2c_cb(CufftPlan *p, VkCommandBuffer cb,
             ws[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             ws[b].pBufferInfo = &bi[b];
         }
-        vkUpdateDescriptorSets(ctx->device, 2, ws, 0, NULL);
+        g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, 2, ws, 0, NULL);
     }
 
     /* Begin CB */
     VkCommandBufferBeginInfo begin = {0};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vr = vkBeginCommandBuffer(cb, &begin);
+    vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin);
     if (vr != VK_SUCCESS) { free(desc_sets); return CUFFT_INTERNAL_ERROR; }
 
     /* C2C stages */
     for (int s = 0; s < ns; s++) {
         if (s > 0) emit_barrier(cb);
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+        g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                           axis->pipelines[0][s]);
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+        g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 p->pipe_layout, 0, 1, &desc_sets[s], 0, NULL);
-        vkCmdDispatch(cb, axis->dispatch_x[s],
+        g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s],
                       (uint32_t)axis->batch_count,
                       axis->batch_count2 > 0 ?
                           (uint32_t)axis->batch_count2 : 1);
@@ -996,19 +996,19 @@ static cufftResult record_r2c_cb(CufftPlan *p, VkCommandBuffer cb,
 
     /* Post-process stage */
     emit_barrier(cb);
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+    g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                       p->r2c_post_pipeline);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+    g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                             p->pipe_layout, 0, 1, &desc_sets[ns], 0, NULL);
     {
         FftAxis *a0 = &p->axes[0];
         uint32_t total_batches = (uint32_t)a0->batch_count *
                                  (uint32_t)(a0->batch_count2 > 0 ?
                                             a0->batch_count2 : 1);
-        vkCmdDispatch(cb, p->r2c_dispatch_x, total_batches, 1);
+        g_cuvk.vk.vkCmdDispatch(cb, p->r2c_dispatch_x, total_batches, 1);
     }
 
-    vr = vkEndCommandBuffer(cb);
+    vr = g_cuvk.vk.vkEndCommandBuffer(cb);
     free(desc_sets);
     return (vr == VK_SUCCESS) ? CUFFT_SUCCESS : CUFFT_INTERNAL_ERROR;
 }
@@ -1071,7 +1071,7 @@ static cufftResult record_c2r_cb(CufftPlan *p, VkCommandBuffer cb,
     ds_ai.descriptorSetCount = (uint32_t)total;
     ds_ai.pSetLayouts = layouts;
 
-    VkResult vr = vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
+    VkResult vr = g_cuvk.vk.vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
     free(layouts);
     if (vr != VK_SUCCESS) { free(desc_sets); return CUFFT_INTERNAL_ERROR; }
 
@@ -1090,38 +1090,38 @@ static cufftResult record_c2r_cb(CufftPlan *p, VkCommandBuffer cb,
             ws[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             ws[b].pBufferInfo = &bi[b];
         }
-        vkUpdateDescriptorSets(ctx->device, 2, ws, 0, NULL);
+        g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, 2, ws, 0, NULL);
     }
 
     /* Begin CB */
     VkCommandBufferBeginInfo begin = {0};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vr = vkBeginCommandBuffer(cb, &begin);
+    vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin);
     if (vr != VK_SUCCESS) { free(desc_sets); return CUFFT_INTERNAL_ERROR; }
 
     /* Pre-process stage */
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+    g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                       p->c2r_pre_pipeline);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+    g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                             p->pipe_layout, 0, 1, &desc_sets[0], 0, NULL);
     {
         FftAxis *a0 = &p->axes[0];
         uint32_t total_batches = (uint32_t)a0->batch_count *
                                  (uint32_t)(a0->batch_count2 > 0 ?
                                             a0->batch_count2 : 1);
-        vkCmdDispatch(cb, ((uint32_t)half + FFT_WORKGROUP_SIZE - 1) /
+        g_cuvk.vk.vkCmdDispatch(cb, ((uint32_t)half + FFT_WORKGROUP_SIZE - 1) /
                       FFT_WORKGROUP_SIZE, total_batches, 1);
     }
 
     /* C2C inverse stages */
     for (int s = 0; s < ns; s++) {
         emit_barrier(cb);
-        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+        g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                           axis->pipelines[1][s]);  /* dir_idx=1 = inverse */
-        vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+        g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 p->pipe_layout, 0, 1,
                                 &desc_sets[1 + s], 0, NULL);
-        vkCmdDispatch(cb, axis->dispatch_x[s],
+        g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s],
                       (uint32_t)axis->batch_count,
                       axis->batch_count2 > 0 ?
                           (uint32_t)axis->batch_count2 : 1);
@@ -1133,16 +1133,16 @@ static cufftResult record_c2r_cb(CufftPlan *p, VkCommandBuffer cb,
         copy_bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
         copy_bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         copy_bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        vkCmdPipelineBarrier(cb,
+        g_cuvk.vk.vkCmdPipelineBarrier(cb,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              0, 1, &copy_bar, 0, NULL, 0, NULL);
         VkBufferCopy region = {0};
         region.size = c2c_buf_size;
-        vkCmdCopyBuffer(cb, p->scratch_buf, dst_buf, 1, &region);
+        g_cuvk.vk.vkCmdCopyBuffer(cb, p->scratch_buf, dst_buf, 1, &region);
     }
 
-    vr = vkEndCommandBuffer(cb);
+    vr = g_cuvk.vk.vkEndCommandBuffer(cb);
     free(desc_sets);
     return (vr == VK_SUCCESS) ? CUFFT_SUCCESS : CUFFT_INTERNAL_ERROR;
 }
@@ -1176,40 +1176,40 @@ cufftResult cufftExecR2C(cufftHandle plan_handle,
     VkBuffer dst_buf = alloc_out->buffer;
 
     /* Always re-record for R2C (different CB structure from C2C) */
-    vkDeviceWaitIdle(ctx->device);
-    vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
-    vkResetCommandBuffer(p->cb_fwd, 0);
+    g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
+    g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
+    g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
     p->cb_fwd_valid = 0;
 
     /* Phase 1: R2C on axis 0 (C2C stages + post-process) → dst_buf */
     cufftResult cr = record_r2c_cb(p, p->cb_fwd, src_buf, dst_buf);
     if (cr != CUFFT_SUCCESS) return cr;
 
-    vkResetFences(ctx->device, 1, &p->fence);
+    g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
     VkSubmitInfo submit = {0};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &p->cb_fwd;
 
-    VkResult vr = vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
+    VkResult vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
     if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
-    vr = vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+    vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
     if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
 
     /* Phase 2: C2C forward on remaining axes (in-place on dst_buf) */
     if (p->n_axes > 1) {
-        vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
-        vkResetCommandBuffer(p->cb_fwd, 0);
+        g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
+        g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
 
         cr = record_fft_cb_range(p, 0, p->cb_fwd, dst_buf, dst_buf,
                                  1, p->n_axes);
         if (cr != CUFFT_SUCCESS) return cr;
 
-        vkResetFences(ctx->device, 1, &p->fence);
+        g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
         submit.pCommandBuffers = &p->cb_fwd;
-        vr = vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
+        vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
         if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
-        vr = vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+        vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
         if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
     }
 
@@ -1230,7 +1230,7 @@ cufftResult cufftDestroy(cufftHandle plan_handle)
     if (!p->valid) return CUFFT_INVALID_PLAN;
 
     struct CUctx_st *ctx = p->ctx;
-    vkDeviceWaitIdle(ctx->device);
+    g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
 
     /* Destroy per-axis per-stage pipelines and shader modules */
     for (int a = 0; a < p->n_axes; a++) {
@@ -1238,48 +1238,48 @@ cufftResult cufftDestroy(cufftHandle plan_handle)
         for (int d = 0; d < 2; d++) {
             for (int s = 0; s < axis->n_stages; s++) {
                 if (axis->pipelines[d][s])
-                    vkDestroyPipeline(ctx->device, axis->pipelines[d][s], NULL);
+                    g_cuvk.vk.vkDestroyPipeline(ctx->device, axis->pipelines[d][s], NULL);
                 if (axis->shaders[d][s])
-                    vkDestroyShaderModule(ctx->device, axis->shaders[d][s], NULL);
+                    g_cuvk.vk.vkDestroyShaderModule(ctx->device, axis->shaders[d][s], NULL);
             }
         }
     }
 
     /* Destroy R2C/C2R pipelines */
     if (p->r2c_post_pipeline)
-        vkDestroyPipeline(ctx->device, p->r2c_post_pipeline, NULL);
+        g_cuvk.vk.vkDestroyPipeline(ctx->device, p->r2c_post_pipeline, NULL);
     if (p->r2c_post_shader)
-        vkDestroyShaderModule(ctx->device, p->r2c_post_shader, NULL);
+        g_cuvk.vk.vkDestroyShaderModule(ctx->device, p->r2c_post_shader, NULL);
     if (p->c2r_pre_pipeline)
-        vkDestroyPipeline(ctx->device, p->c2r_pre_pipeline, NULL);
+        g_cuvk.vk.vkDestroyPipeline(ctx->device, p->c2r_pre_pipeline, NULL);
     if (p->c2r_pre_shader)
-        vkDestroyShaderModule(ctx->device, p->c2r_pre_shader, NULL);
+        g_cuvk.vk.vkDestroyShaderModule(ctx->device, p->c2r_pre_shader, NULL);
 
     /* Destroy shared layouts */
     if (p->pipe_layout)
-        vkDestroyPipelineLayout(ctx->device, p->pipe_layout, NULL);
+        g_cuvk.vk.vkDestroyPipelineLayout(ctx->device, p->pipe_layout, NULL);
     if (p->desc_layout)
-        vkDestroyDescriptorSetLayout(ctx->device, p->desc_layout, NULL);
+        g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, p->desc_layout, NULL);
 
     /* Destroy scratch buffer */
     if (p->scratch_buf)
-        vkDestroyBuffer(ctx->device, p->scratch_buf, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, p->scratch_buf, NULL);
     if (p->scratch_mem)
-        vkFreeMemory(ctx->device, p->scratch_mem, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, p->scratch_mem, NULL);
 
     /* Destroy fence */
     if (p->fence)
-        vkDestroyFence(ctx->device, p->fence, NULL);
+        g_cuvk.vk.vkDestroyFence(ctx->device, p->fence, NULL);
 
     /* Free command buffers */
     if (p->cb_fwd)
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &p->cb_fwd);
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &p->cb_fwd);
     if (p->cb_inv)
-        vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &p->cb_inv);
+        g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &p->cb_inv);
 
     /* Destroy descriptor pool (frees all descriptor sets) */
     if (p->desc_pool)
-        vkDestroyDescriptorPool(ctx->device, p->desc_pool, NULL);
+        g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, p->desc_pool, NULL);
 
     p->valid = 0;
     return CUFFT_SUCCESS;
@@ -1537,9 +1537,9 @@ cufftResult cufftExecC2R(cufftHandle plan_handle, cufftComplex *idata,
     VkBuffer src_buf = alloc_in->buffer;
     VkBuffer dst_buf = alloc_out->buffer;
 
-    vkDeviceWaitIdle(ctx->device);
-    vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
-    vkResetCommandBuffer(p->cb_inv, 0);
+    g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
+    g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
+    g_cuvk.vk.vkResetCommandBuffer(p->cb_inv, 0);
     p->cb_inv_valid = 0;
 
     VkSubmitInfo submit = {0};
@@ -1555,24 +1555,24 @@ cufftResult cufftExecC2R(cufftHandle plan_handle, cufftComplex *idata,
                                  1, p->n_axes);
         if (cr != CUFFT_SUCCESS) return cr;
 
-        vkResetFences(ctx->device, 1, &p->fence);
-        vr = vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
+        g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
+        vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
         if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
-        vr = vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+        vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
         if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
 
-        vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
-        vkResetCommandBuffer(p->cb_inv, 0);
+        g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
+        g_cuvk.vk.vkResetCommandBuffer(p->cb_inv, 0);
     }
 
     /* Phase 2: C2R on axis 0 (pre-process + C2C inverse stages) → dst_buf */
     cr = record_c2r_cb(p, p->cb_inv, src_buf, dst_buf);
     if (cr != CUFFT_SUCCESS) return cr;
 
-    vkResetFences(ctx->device, 1, &p->fence);
-    vr = vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
+    g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
+    vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
     if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
-    vr = vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+    vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
     if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
 
     return CUFFT_SUCCESS;

@@ -70,7 +70,7 @@ static CUresult cuvk_get_or_create_pipeline(struct CUctx_st *ctx,
     sm_ci.pCode = patched;
 
     VkShaderModule patched_shader = VK_NULL_HANDLE;
-    VkResult vr = vkCreateShaderModule(ctx->device, &sm_ci, NULL, &patched_shader);
+    VkResult vr = g_cuvk.vk.vkCreateShaderModule(ctx->device, &sm_ci, NULL, &patched_shader);
     free(patched);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
@@ -84,9 +84,9 @@ static CUresult cuvk_get_or_create_pipeline(struct CUctx_st *ctx,
     pipe_ci.layout = f->pipeline_layout;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    vr = vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE,
+    vr = g_cuvk.vk.vkCreateComputePipelines(ctx->device, VK_NULL_HANDLE,
                                             1, &pipe_ci, NULL, &pipeline);
-    vkDestroyShaderModule(ctx->device, patched_shader, NULL);
+    g_cuvk.vk.vkDestroyShaderModule(ctx->device, patched_shader, NULL);
     if (vr != VK_SUCCESS)
         return cuvk_vk_to_cu(vr);
 
@@ -97,7 +97,7 @@ static CUresult cuvk_get_or_create_pipeline(struct CUctx_st *ctx,
         CuvkPipelineEntry *new_cache = (CuvkPipelineEntry *)realloc(
             f->pipeline_cache, new_cap * sizeof(CuvkPipelineEntry));
         if (!new_cache) {
-            vkDestroyPipeline(ctx->device, pipeline, NULL);
+            g_cuvk.vk.vkDestroyPipeline(ctx->device, pipeline, NULL);
             return CUDA_ERROR_OUT_OF_MEMORY;
         }
         f->pipeline_cache = new_cache;
@@ -131,7 +131,6 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
                                  void **extra)
 {
     (void)sharedMemBytes;
-    (void)hStream;
     (void)extra;
     CUVK_LOG("[cuvk] cuLaunchKernel: f=%p grid=(%u,%u,%u) block=(%u,%u,%u)\n",
             (void *)f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ);
@@ -143,6 +142,9 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
 
+    /* Resolve NULL stream to default stream */
+    struct CUstream_st *stream = hStream ? hStream : &ctx->default_stream;
+
     /* 1. Get or create the compute pipeline */
     VkPipeline pipeline = VK_NULL_HANDLE;
     CUresult res = cuvk_get_or_create_pipeline(ctx, f,
@@ -150,6 +152,13 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
                                                 &pipeline);
     if (res != CUDA_SUCCESS)
         return res;
+
+    /* Ensure the stream's command buffer is recording */
+    res = cuvk_stream_ensure_recording(stream);
+    if (res != CUDA_SUCCESS)
+        return res;
+
+    VkCommandBuffer cmd = stream->cmd_buf;
 
     if (f->use_bda) {
         /* ===== BDA mode: push constants ===== */
@@ -192,30 +201,22 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
             memcpy(pc_data + pc_offset, &blockDimZ, 4); pc_offset += 4;
         }
 
-        /* Record and dispatch */
-        VkCommandBuffer cmd = VK_NULL_HANDLE;
-        res = cuvk_oneshot_begin(ctx, &cmd);
-        if (res != CUDA_SUCCESS)
-            return res;
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        g_cuvk.vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
         if (f->module->global_count > 0) {
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            g_cuvk.vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     f->pipeline_layout, 0, 1,
                                     &f->module->globals_desc_set, 0, NULL);
         }
 
         if (f->push_constant_size > 0) {
-            vkCmdPushConstants(cmd, f->pipeline_layout,
+            g_cuvk.vk.vkCmdPushConstants(cmd, f->pipeline_layout,
                                VK_SHADER_STAGE_COMPUTE_BIT,
                                0, f->push_constant_size, pc_data);
         }
 
-        vkCmdDispatch(cmd, gridDimX, gridDimY, gridDimZ);
-
-        res = cuvk_oneshot_end(ctx, cmd);
-        return res;
+        g_cuvk.vk.vkCmdDispatch(cmd, gridDimX, gridDimY, gridDimZ);
+        return CUDA_SUCCESS;
 
     } else {
         /* ===== Descriptor mode (original) ===== */
@@ -230,7 +231,7 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
             ds_ai.descriptorSetCount = 1;
             ds_ai.pSetLayouts = &f->desc_layout;
 
-            VkResult vr = vkAllocateDescriptorSets(ctx->device, &ds_ai, &desc_set);
+            VkResult vr = g_cuvk.vk.vkAllocateDescriptorSets(ctx->device, &ds_ai, &desc_set);
             if (vr != VK_SUCCESS)
                 return cuvk_vk_to_cu(vr);
 
@@ -243,7 +244,7 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
             if (!writes || !buf_infos) {
                 free(writes);
                 free(buf_infos);
-                vkFreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &desc_set);
+                g_cuvk.vk.vkFreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &desc_set);
                 return CUDA_ERROR_OUT_OF_MEMORY;
             }
 
@@ -257,7 +258,7 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
                 if (!alloc) {
                     free(writes);
                     free(buf_infos);
-                    vkFreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &desc_set);
+                    g_cuvk.vk.vkFreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &desc_set);
                     return CUDA_ERROR_INVALID_VALUE;
                 }
 
@@ -278,36 +279,22 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
                 writes[i].pBufferInfo = &buf_infos[i];
             }
 
-            vkUpdateDescriptorSets(ctx->device, f->param_count, writes, 0, NULL);
+            g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, f->param_count, writes, 0, NULL);
             free(writes);
             free(buf_infos);
         }
 
-        /* 4. Record and dispatch */
-        VkCommandBuffer cmd = VK_NULL_HANDLE;
-        res = cuvk_oneshot_begin(ctx, &cmd);
-        if (res != CUDA_SUCCESS) {
-            if (desc_set)
-                vkFreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &desc_set);
-            return res;
-        }
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+        /* 4. Record dispatch into the stream */
+        g_cuvk.vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
 
         if (desc_set) {
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+            g_cuvk.vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     f->pipeline_layout, 0, 1, &desc_set,
                                     0, NULL);
         }
 
-        vkCmdDispatch(cmd, gridDimX, gridDimY, gridDimZ);
+        g_cuvk.vk.vkCmdDispatch(cmd, gridDimX, gridDimY, gridDimZ);
 
-        res = cuvk_oneshot_end(ctx, cmd);
-
-        /* Free the descriptor set after execution */
-        if (desc_set)
-            vkFreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &desc_set);
-
-        return res;
+        return CUDA_SUCCESS;
     }
 }

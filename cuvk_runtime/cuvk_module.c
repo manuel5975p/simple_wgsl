@@ -272,26 +272,26 @@ static CUresult extract_module_globals(struct CUmod_st *mod)
         buf_ci.usage = usage;
         buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        VkResult vr = vkCreateBuffer(ctx->device, &buf_ci, NULL, &mg->buffer);
+        VkResult vr = g_cuvk.vk.vkCreateBuffer(ctx->device, &buf_ci, NULL, &mg->buffer);
         if (vr != VK_SUCCESS) {
             for (uint32_t k = 0; k < idx; k++) {
-                vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
-                vkFreeMemory(ctx->device, globals[k].memory, NULL);
+                g_cuvk.vk.vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
+                g_cuvk.vk.vkFreeMemory(ctx->device, globals[k].memory, NULL);
             }
             free(globals);
             return cuvk_vk_to_cu(vr);
         }
 
         VkMemoryRequirements mem_reqs;
-        vkGetBufferMemoryRequirements(ctx->device, mg->buffer, &mem_reqs);
+        g_cuvk.vk.vkGetBufferMemoryRequirements(ctx->device, mg->buffer, &mem_reqs);
         int32_t mem_type = cuvk_find_memory_type(
             &ctx->mem_props, mem_reqs.memoryTypeBits,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (mem_type < 0) {
-            vkDestroyBuffer(ctx->device, mg->buffer, NULL);
+            g_cuvk.vk.vkDestroyBuffer(ctx->device, mg->buffer, NULL);
             for (uint32_t k = 0; k < idx; k++) {
-                vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
-                vkFreeMemory(ctx->device, globals[k].memory, NULL);
+                g_cuvk.vk.vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
+                g_cuvk.vk.vkFreeMemory(ctx->device, globals[k].memory, NULL);
             }
             free(globals);
             return CUDA_ERROR_OUT_OF_MEMORY;
@@ -309,24 +309,24 @@ static CUresult extract_module_globals(struct CUmod_st *mod)
             alloc_info.pNext = &flags_info;
         }
 
-        vr = vkAllocateMemory(ctx->device, &alloc_info, NULL, &mg->memory);
+        vr = g_cuvk.vk.vkAllocateMemory(ctx->device, &alloc_info, NULL, &mg->memory);
         if (vr != VK_SUCCESS) {
-            vkDestroyBuffer(ctx->device, mg->buffer, NULL);
+            g_cuvk.vk.vkDestroyBuffer(ctx->device, mg->buffer, NULL);
             for (uint32_t k = 0; k < idx; k++) {
-                vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
-                vkFreeMemory(ctx->device, globals[k].memory, NULL);
+                g_cuvk.vk.vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
+                g_cuvk.vk.vkFreeMemory(ctx->device, globals[k].memory, NULL);
             }
             free(globals);
             return cuvk_vk_to_cu(vr);
         }
 
-        vr = vkBindBufferMemory(ctx->device, mg->buffer, mg->memory, 0);
+        vr = g_cuvk.vk.vkBindBufferMemory(ctx->device, mg->buffer, mg->memory, 0);
         if (vr != VK_SUCCESS) {
-            vkFreeMemory(ctx->device, mg->memory, NULL);
-            vkDestroyBuffer(ctx->device, mg->buffer, NULL);
+            g_cuvk.vk.vkFreeMemory(ctx->device, mg->memory, NULL);
+            g_cuvk.vk.vkDestroyBuffer(ctx->device, mg->buffer, NULL);
             for (uint32_t k = 0; k < idx; k++) {
-                vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
-                vkFreeMemory(ctx->device, globals[k].memory, NULL);
+                g_cuvk.vk.vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
+                g_cuvk.vk.vkFreeMemory(ctx->device, globals[k].memory, NULL);
             }
             free(globals);
             return cuvk_vk_to_cu(vr);
@@ -350,11 +350,11 @@ static CUresult extract_module_globals(struct CUmod_st *mod)
             CuvkAlloc *new_allocs = (CuvkAlloc *)realloc(
                 ctx->allocs, new_cap * sizeof(CuvkAlloc));
             if (!new_allocs) {
-                vkFreeMemory(ctx->device, mg->memory, NULL);
-                vkDestroyBuffer(ctx->device, mg->buffer, NULL);
+                g_cuvk.vk.vkFreeMemory(ctx->device, mg->memory, NULL);
+                g_cuvk.vk.vkDestroyBuffer(ctx->device, mg->buffer, NULL);
                 for (uint32_t k = 0; k < idx; k++) {
-                    vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
-                    vkFreeMemory(ctx->device, globals[k].memory, NULL);
+                    g_cuvk.vk.vkDestroyBuffer(ctx->device, globals[k].buffer, NULL);
+                    g_cuvk.vk.vkFreeMemory(ctx->device, globals[k].memory, NULL);
                 }
                 free(globals);
                 return CUDA_ERROR_OUT_OF_MEMORY;
@@ -603,7 +603,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
         dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         dsl_ci.bindingCount = mod->global_count;
         dsl_ci.pBindings = bindings;
-        vr = vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
+        vr = g_cuvk.vk.vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
                                           &mod->globals_desc_layout);
         free(bindings);
         if (vr != VK_SUCCESS) {
@@ -622,10 +622,10 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
         dp_ci.maxSets = 1;
         dp_ci.poolSizeCount = 1;
         dp_ci.pPoolSizes = &pool_size;
-        vr = vkCreateDescriptorPool(ctx->device, &dp_ci, NULL,
+        vr = g_cuvk.vk.vkCreateDescriptorPool(ctx->device, &dp_ci, NULL,
                                      &mod->globals_desc_pool);
         if (vr != VK_SUCCESS) {
-            vkDestroyDescriptorSetLayout(ctx->device,
+            g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device,
                                           mod->globals_desc_layout, NULL);
             ssir_to_spirv_free(mod->spirv_words);
             ssir_module_destroy(ssir);
@@ -638,11 +638,11 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
         ds_ai.descriptorPool = mod->globals_desc_pool;
         ds_ai.descriptorSetCount = 1;
         ds_ai.pSetLayouts = &mod->globals_desc_layout;
-        vr = vkAllocateDescriptorSets(ctx->device, &ds_ai,
+        vr = g_cuvk.vk.vkAllocateDescriptorSets(ctx->device, &ds_ai,
                                        &mod->globals_desc_set);
         if (vr != VK_SUCCESS) {
-            vkDestroyDescriptorPool(ctx->device, mod->globals_desc_pool, NULL);
-            vkDestroyDescriptorSetLayout(ctx->device,
+            g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, mod->globals_desc_pool, NULL);
+            g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device,
                                           mod->globals_desc_layout, NULL);
             ssir_to_spirv_free(mod->spirv_words);
             ssir_module_destroy(ssir);
@@ -665,7 +665,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
             writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[i].pBufferInfo = &buf_infos[i];
         }
-        vkUpdateDescriptorSets(ctx->device, mod->global_count,
+        g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, mod->global_count,
                                 writes, 0, NULL);
         free(writes);
         free(buf_infos);
@@ -711,7 +711,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
 
     VkShaderModule shared_shader = VK_NULL_HANDLE;
     CUVK_LOG("[cuvk] creating VkShaderModule (%zu bytes)\n", sm_ci.codeSize);
-    vr = vkCreateShaderModule(ctx->device, &sm_ci, NULL, &shared_shader);
+    vr = g_cuvk.vk.vkCreateShaderModule(ctx->device, &sm_ci, NULL, &shared_shader);
     CUVK_LOG("[cuvk] vkCreateShaderModule -> %d\n", vr);
     if (vr != VK_SUCCESS) {
         free(funcs);
@@ -763,18 +763,18 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
             dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
             dsl_ci.bindingCount = 0;
             dsl_ci.pBindings = NULL;
-            vr = vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
+            vr = g_cuvk.vk.vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
                                              &f->desc_layout);
             if (vr != VK_SUCCESS) {
                 for (uint32_t k = 0; k <= i; k++) {
                     free(funcs[k].name);
                     free(funcs[k].params);
                     if (k < i && funcs[k].desc_layout)
-                        vkDestroyDescriptorSetLayout(ctx->device, funcs[k].desc_layout, NULL);
+                        g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, funcs[k].desc_layout, NULL);
                     if (k < i && funcs[k].pipeline_layout)
-                        vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
+                        g_cuvk.vk.vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
                 }
-                vkDestroyShaderModule(ctx->device, shared_shader, NULL);
+                g_cuvk.vk.vkDestroyShaderModule(ctx->device, shared_shader, NULL);
                 free(funcs); free(shared_params);
                 ssir_to_spirv_free(mod->spirv_words);
                 ssir_module_destroy(ssir); free(mod);
@@ -798,7 +798,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
             pl_ci.pushConstantRangeCount = 1;
             pl_ci.pPushConstantRanges = &pc_range;
 
-            vr = vkCreatePipelineLayout(ctx->device, &pl_ci, NULL,
+            vr = g_cuvk.vk.vkCreatePipelineLayout(ctx->device, &pl_ci, NULL,
                                         &f->pipeline_layout);
         } else {
             /* Descriptor mode: one storage buffer per pointer param */
@@ -819,7 +819,7 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
             dsl_ci.bindingCount = f->param_count;
             dsl_ci.pBindings = bindings;
 
-            vr = vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
+            vr = g_cuvk.vk.vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
                                              &f->desc_layout);
             free(bindings);
 
@@ -828,11 +828,11 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
                     free(funcs[k].name);
                     free(funcs[k].params);
                     if (k < i && funcs[k].desc_layout)
-                        vkDestroyDescriptorSetLayout(ctx->device, funcs[k].desc_layout, NULL);
+                        g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, funcs[k].desc_layout, NULL);
                     if (k < i && funcs[k].pipeline_layout)
-                        vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
+                        g_cuvk.vk.vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
                 }
-                vkDestroyShaderModule(ctx->device, shared_shader, NULL);
+                g_cuvk.vk.vkDestroyShaderModule(ctx->device, shared_shader, NULL);
                 free(funcs); free(shared_params);
                 ssir_to_spirv_free(mod->spirv_words);
                 ssir_module_destroy(ssir); free(mod);
@@ -844,22 +844,22 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
             pl_ci.setLayoutCount = 1;
             pl_ci.pSetLayouts = &f->desc_layout;
 
-            vr = vkCreatePipelineLayout(ctx->device, &pl_ci, NULL,
+            vr = g_cuvk.vk.vkCreatePipelineLayout(ctx->device, &pl_ci, NULL,
                                         &f->pipeline_layout);
         }
 
         if (vr != VK_SUCCESS) {
             if (f->desc_layout)
-                vkDestroyDescriptorSetLayout(ctx->device, f->desc_layout, NULL);
+                g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, f->desc_layout, NULL);
             for (uint32_t k = 0; k < i; k++) {
                 free(funcs[k].name);
                 free(funcs[k].params);
                 if (funcs[k].desc_layout)
-                    vkDestroyDescriptorSetLayout(ctx->device, funcs[k].desc_layout, NULL);
+                    g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, funcs[k].desc_layout, NULL);
                 if (funcs[k].pipeline_layout)
-                    vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
+                    g_cuvk.vk.vkDestroyPipelineLayout(ctx->device, funcs[k].pipeline_layout, NULL);
             }
-            vkDestroyShaderModule(ctx->device, shared_shader, NULL);
+            g_cuvk.vk.vkDestroyShaderModule(ctx->device, shared_shader, NULL);
             free(funcs); free(shared_params);
             ssir_to_spirv_free(mod->spirv_words);
             ssir_module_destroy(ssir); free(mod);
@@ -929,7 +929,7 @@ CUresult CUDAAPI cuModuleUnload(CUmodule hmod)
         return CUDA_SUCCESS;
     }
 
-    vkDeviceWaitIdle(ctx->device);
+    g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
 
     /* Track whether we've already destroyed the shared shader module */
     VkShaderModule shared_shader = VK_NULL_HANDLE;
@@ -940,20 +940,20 @@ CUresult CUDAAPI cuModuleUnload(CUmodule hmod)
         /* Destroy cached pipelines */
         for (uint32_t j = 0; j < f->pipeline_cache_count; j++) {
             if (f->pipeline_cache[j].pipeline)
-                vkDestroyPipeline(ctx->device,
+                g_cuvk.vk.vkDestroyPipeline(ctx->device,
                                   f->pipeline_cache[j].pipeline, NULL);
         }
         free(f->pipeline_cache);
 
         if (f->pipeline_layout)
-            vkDestroyPipelineLayout(ctx->device, f->pipeline_layout, NULL);
+            g_cuvk.vk.vkDestroyPipelineLayout(ctx->device, f->pipeline_layout, NULL);
 
         if (f->desc_layout)
-            vkDestroyDescriptorSetLayout(ctx->device, f->desc_layout, NULL);
+            g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, f->desc_layout, NULL);
 
         if (f->shader_module && f->shader_module != shared_shader) {
             shared_shader = f->shader_module;
-            vkDestroyShaderModule(ctx->device, f->shader_module, NULL);
+            g_cuvk.vk.vkDestroyShaderModule(ctx->device, f->shader_module, NULL);
         }
 
         free(f->name);
@@ -974,13 +974,13 @@ CUresult CUDAAPI cuModuleUnload(CUmodule hmod)
                 break;
             }
         }
-        vkDestroyBuffer(ctx->device, mg->buffer, NULL);
-        vkFreeMemory(ctx->device, mg->memory, NULL);
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, mg->buffer, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, mg->memory, NULL);
     }
     if (hmod->globals_desc_pool)
-        vkDestroyDescriptorPool(ctx->device, hmod->globals_desc_pool, NULL);
+        g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, hmod->globals_desc_pool, NULL);
     if (hmod->globals_desc_layout)
-        vkDestroyDescriptorSetLayout(ctx->device,
+        g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device,
                                       hmod->globals_desc_layout, NULL);
     free(hmod->globals);
 

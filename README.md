@@ -126,17 +126,17 @@ SSIR (Simple Shader Intermediate Representation) sits at the center. All source 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `simple_wgsl.h` | 1958 | Unified public API header |
-| `wgsl_parser.c` | 2430 | WGSL lexer + recursive-descent parser |
-| `glsl_parser.c` | 2443 | GLSL 450 lexer + recursive-descent parser |
+| `simple_wgsl.h` | 1985 | Unified public API header |
+| `wgsl_parser.c` | 2432 | WGSL lexer + recursive-descent parser |
+| `glsl_parser.c` | 2635 | GLSL 450 lexer + recursive-descent parser |
 | `msl_parser.c` | 2405 | MSL lexer + parser (produces SSIR directly) |
 | `ptx_parser.c` | 1879 | PTX assembly lexer + recursive-descent parser |
 | `ptx_lower.c` | 3099 | PTX to SSIR lowering (register tracking, BDA support, texture/surface ops) |
-| `wgsl_resolve.c` | 1234 | Semantic analysis and symbol resolution |
-| `wgsl_lower.c` | 7690 | AST to SSIR to SPIR-V compilation |
+| `wgsl_resolve.c` | 1266 | Semantic analysis and symbol resolution |
+| `wgsl_lower.c` | 8103 | AST to SSIR to SPIR-V compilation |
 | `wgsl_raise.c` | 2148 | SPIR-V to WGSL decompilation |
 | `ssir.c` | 3430 | SSIR module, type system, and builder API |
-| `ssir_to_spirv.c` | 3055 | SSIR to SPIR-V serialization |
+| `ssir_to_spirv.c` | 3056 | SSIR to SPIR-V serialization |
 | `ssir_to_wgsl.c` | 1603 | SSIR to WGSL text emission |
 | `ssir_to_glsl.c` | 1684 | SSIR to GLSL 450 text emission |
 | `ssir_to_msl.c` | 2068 | SSIR to Metal Shading Language emission |
@@ -161,17 +161,19 @@ See the [TUTORIAL.md](TUTORIAL.md) immediates section for usage details and the 
 
 ### CUDA-on-Vulkan Runtime (cuvk_runtime)
 
-When the Vulkan SDK is available, the build also produces `cuvk_runtime` -- a drop-in `libcuda.so.1` replacement that runs CUDA compute kernels on any Vulkan GPU. CUDA binaries compiled with `nvcc` link against this library at runtime (via `LD_PRELOAD` or direct linking), and their PTX kernels are cross-compiled to SPIR-V on the fly.
+When the Vulkan SDK is available, the build also produces `cuvk_runtime` -- a drop-in `libcuda.so.1` replacement that runs CUDA compute kernels on any Vulkan GPU. Cross-platform: Linux, macOS (MoltenVK / Kosmickrisp), Windows. CUDA binaries compiled with `nvcc` link against this library at runtime (via `LD_PRELOAD` or direct linking), and their PTX kernels are cross-compiled to SPIR-V on the fly.
 
 ```
 CUDA fatbin --> extract PTX (zstd/lz4) --> ptx_to_ssir --> ssir_to_spirv --> VkComputePipeline
 ```
 
-Two parameter-passing modes:
+Key features:
 - **BDA mode** (Vulkan 1.1+ with buffer device address): kernel parameters packed into push constants, pointers as 64-bit device addresses
 - **Descriptor mode** (fallback): each pointer parameter becomes a storage buffer descriptor binding
+- **Stream-based dispatch**: kernel launches and event timestamps are recorded into per-stream command buffers for correct ordering and accurate GPU-side timing
+- **No libvulkan link dependency**: all Vulkan functions loaded at runtime via X-macro function pointer table (`dlsym`/`LoadLibraryA` bootstrap)
 
-Includes stub implementations for `libcudart.so.1`, `libcublas.so.13`, and `libcufft.so.12`. The cuFFT stub implements Cooley-Tukey FFT via WGSL compute shaders. See `cuvk_runtime/` for source (~11k lines).
+Includes stub implementations for `libcudart.so.1`, `libcublas.so.13`, and `libcufft.so.12`. The cuFFT stub implements Cooley-Tukey and Stockham FFT via WGSL compute shaders. See `cuvk_runtime/` for source (~12.7k lines).
 
 ### Dependencies
 

@@ -27,6 +27,95 @@ extern "C" {
 #endif
 
 /* ============================================================================
+ * Vulkan function pointer tables (loaded via dlsym + vkGet*ProcAddr)
+ * ============================================================================ */
+
+/* Pre-instance functions (loaded via vkGetInstanceProcAddr(NULL, ...)) */
+#define CUVK_GLOBAL_FUNCS(X) \
+    X(vkCreateInstance) \
+    X(vkEnumerateInstanceExtensionProperties) \
+    X(vkEnumerateInstanceLayerProperties)
+
+/* Instance-level functions (loaded after vkCreateInstance) */
+#define CUVK_INSTANCE_FUNCS(X) \
+    X(vkCreateDevice) \
+    X(vkDestroyInstance) \
+    X(vkEnumeratePhysicalDevices) \
+    X(vkGetDeviceProcAddr) \
+    X(vkGetPhysicalDeviceFeatures2) \
+    X(vkGetPhysicalDeviceMemoryProperties) \
+    X(vkGetPhysicalDeviceProperties) \
+    X(vkGetPhysicalDeviceProperties2) \
+    X(vkGetPhysicalDeviceQueueFamilyProperties)
+
+/* Device-level functions (loaded after vkCreateDevice) */
+#define CUVK_DEVICE_FUNCS(X) \
+    X(vkAllocateCommandBuffers) \
+    X(vkAllocateDescriptorSets) \
+    X(vkAllocateMemory) \
+    X(vkBeginCommandBuffer) \
+    X(vkBindBufferMemory) \
+    X(vkCmdBindDescriptorSets) \
+    X(vkCmdBindPipeline) \
+    X(vkCmdCopyBuffer) \
+    X(vkCmdDispatch) \
+    X(vkCmdFillBuffer) \
+    X(vkCmdPipelineBarrier) \
+    X(vkCmdPushConstants) \
+    X(vkCmdResetQueryPool) \
+    X(vkCmdWriteTimestamp) \
+    X(vkCreateBuffer) \
+    X(vkCreateCommandPool) \
+    X(vkCreateComputePipelines) \
+    X(vkCreateDescriptorPool) \
+    X(vkCreateDescriptorSetLayout) \
+    X(vkCreateFence) \
+    X(vkCreatePipelineLayout) \
+    X(vkCreateQueryPool) \
+    X(vkCreateSemaphore) \
+    X(vkCreateShaderModule) \
+    X(vkDestroyBuffer) \
+    X(vkDestroyCommandPool) \
+    X(vkDestroyDescriptorPool) \
+    X(vkDestroyDescriptorSetLayout) \
+    X(vkDestroyDevice) \
+    X(vkDestroyFence) \
+    X(vkDestroyPipeline) \
+    X(vkDestroyPipelineLayout) \
+    X(vkDestroyQueryPool) \
+    X(vkDestroySemaphore) \
+    X(vkDestroyShaderModule) \
+    X(vkDeviceWaitIdle) \
+    X(vkEndCommandBuffer) \
+    X(vkFlushMappedMemoryRanges) \
+    X(vkFreeCommandBuffers) \
+    X(vkFreeDescriptorSets) \
+    X(vkFreeMemory) \
+    X(vkGetBufferMemoryRequirements) \
+    X(vkGetDeviceQueue) \
+    X(vkGetFenceStatus) \
+    X(vkGetQueryPoolResults) \
+    X(vkInvalidateMappedMemoryRanges) \
+    X(vkMapMemory) \
+    X(vkQueueSubmit) \
+    X(vkResetCommandBuffer) \
+    X(vkResetDescriptorPool) \
+    X(vkResetFences) \
+    X(vkSignalSemaphore) \
+    X(vkUpdateDescriptorSets) \
+    X(vkWaitForFences) \
+    X(vkWaitSemaphores)
+
+typedef struct CuvkVk {
+    PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
+#define CUVK_VK_FIELD(fn) PFN_##fn fn;
+    CUVK_GLOBAL_FUNCS(CUVK_VK_FIELD)
+    CUVK_INSTANCE_FUNCS(CUVK_VK_FIELD)
+    CUVK_DEVICE_FUNCS(CUVK_VK_FIELD)
+#undef CUVK_VK_FIELD
+} CuvkVk;
+
+/* ============================================================================
  * VkResult -> CUresult mapping
  * ============================================================================ */
 
@@ -141,9 +230,9 @@ struct CUstream_st {
 /* CUevent */
 struct CUevent_st {
     struct CUctx_st    *ctx;
+    struct CUstream_st *stream;     /* stream the event was recorded on */
     VkQueryPool         query_pool;
     bool                recorded;
-    uint64_t            timestamp_ns;
 };
 
 /* CUcontext */
@@ -278,6 +367,7 @@ typedef struct CuvkGlobal {
     uint32_t            physical_device_count;
     struct CUctx_st    *current_ctx;
     VkDebugUtilsMessengerEXT debug_messenger;
+    CuvkVk              vk;
 } CuvkGlobal;
 
 extern CuvkGlobal g_cuvk;
@@ -306,6 +396,9 @@ char *cuvk_jitlink_compile_ltoir(const void *fatbin_data, size_t *ptx_len);
 /* Compile raw LTO-IR blob via nvJitLink. Returns malloc'd PTX. */
 char *cuvk_jitlink_compile_raw(const void *data, size_t size, size_t *ptx_len);
 #endif
+
+/* Ensure a stream's command buffer is recording (begin if needed) */
+CUresult cuvk_stream_ensure_recording(struct CUstream_st *stream);
 
 /* Begin a one-shot command buffer (for synchronous memory ops, etc.) */
 CUresult cuvk_oneshot_begin(struct CUctx_st *ctx, VkCommandBuffer *out_cb);
