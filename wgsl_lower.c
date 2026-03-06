@@ -7854,7 +7854,31 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
 
                 // Set workgroup size for compute shaders
                 if (ssir_stage == SSIR_STAGE_COMPUTE) {
-                    ssir_entry_point_set_workgroup_size(l->ssir, ssir_ep, 1, 1, 1);
+                    uint32_t wgx = 1, wgy = 1, wgz = 1;
+                    // Extract @workgroup_size from the function attributes
+                    if (eps[i].function_node && eps[i].function_node->type == WGSL_NODE_FUNCTION) {
+                        const Function *fn_wg = &eps[i].function_node->function;
+                        for (int ai = 0; ai < fn_wg->attr_count; ai++) {
+                            const WgslAstNode *a = fn_wg->attrs[ai];
+                            if (a && a->type == WGSL_NODE_ATTRIBUTE &&
+                                a->attribute.name && strcmp(a->attribute.name, "workgroup_size") == 0) {
+                                if (a->attribute.arg_count >= 1 && a->attribute.args[0] &&
+                                    a->attribute.args[0]->type == WGSL_NODE_LITERAL &&
+                                    a->attribute.args[0]->literal.lexeme)
+                                    wgx = (uint32_t)atoi(a->attribute.args[0]->literal.lexeme);
+                                if (a->attribute.arg_count >= 2 && a->attribute.args[1] &&
+                                    a->attribute.args[1]->type == WGSL_NODE_LITERAL &&
+                                    a->attribute.args[1]->literal.lexeme)
+                                    wgy = (uint32_t)atoi(a->attribute.args[1]->literal.lexeme);
+                                if (a->attribute.arg_count >= 3 && a->attribute.args[2] &&
+                                    a->attribute.args[2]->type == WGSL_NODE_LITERAL &&
+                                    a->attribute.args[2]->literal.lexeme)
+                                    wgz = (uint32_t)atoi(a->attribute.args[2]->literal.lexeme);
+                                break;
+                            }
+                        }
+                    }
+                    ssir_entry_point_set_workgroup_size(l->ssir, ssir_ep, wgx, wgy, wgz);
                 }
             }
 
@@ -7863,10 +7887,32 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
                 emit_execution_mode(l, func_id, SpvExecutionModeOriginUpperLeft, NULL, 0);
             }
             if (model == SpvExecutionModelGLCompute) {
-                // Default workgroup size
+                // Extract workgroup size from @workgroup_size attribute
                 wg_size[0] = 1;
                 wg_size[1] = 1;
                 wg_size[2] = 1;
+                if (eps[i].function_node && eps[i].function_node->type == WGSL_NODE_FUNCTION) {
+                    const Function *fn_wg = &eps[i].function_node->function;
+                    for (int ai = 0; ai < fn_wg->attr_count; ai++) {
+                        const WgslAstNode *a = fn_wg->attrs[ai];
+                        if (a && a->type == WGSL_NODE_ATTRIBUTE &&
+                            a->attribute.name && strcmp(a->attribute.name, "workgroup_size") == 0) {
+                            if (a->attribute.arg_count >= 1 && a->attribute.args[0] &&
+                                a->attribute.args[0]->type == WGSL_NODE_LITERAL &&
+                                a->attribute.args[0]->literal.lexeme)
+                                wg_size[0] = (uint32_t)atoi(a->attribute.args[0]->literal.lexeme);
+                            if (a->attribute.arg_count >= 2 && a->attribute.args[1] &&
+                                a->attribute.args[1]->type == WGSL_NODE_LITERAL &&
+                                a->attribute.args[1]->literal.lexeme)
+                                wg_size[1] = (uint32_t)atoi(a->attribute.args[1]->literal.lexeme);
+                            if (a->attribute.arg_count >= 3 && a->attribute.args[2] &&
+                                a->attribute.args[2]->type == WGSL_NODE_LITERAL &&
+                                a->attribute.args[2]->literal.lexeme)
+                                wg_size[2] = (uint32_t)atoi(a->attribute.args[2]->literal.lexeme);
+                            break;
+                        }
+                    }
+                }
                 emit_execution_mode(l, func_id, SpvExecutionModeLocalSize, wg_size, 3);
             }
 

@@ -138,5 +138,33 @@ if(Vulkan_FOUND)
     target_link_libraries(cuvk_graph_test gtest_main cuvk_runtime_static)
     add_test(NAME cuvk_graph_test COMMAND cuvk_graph_test)
 
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FFTW3F QUIET fftw3f)
+    endif()
+    if(FFTW3F_FOUND)
+        add_executable(cufft_test
+            cufft_test.cpp
+            ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft/cuvk_cufft.c
+        )
+        target_link_libraries(cufft_test
+            gtest_main
+            cuvk_runtime_static
+            wgsl_compiler
+            fft_stockham_gen
+            ${FFTW3F_LIBRARIES}
+            m
+        )
+        target_include_directories(cufft_test PRIVATE
+            ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
+            ${CMAKE_SOURCE_DIR}/cuvk_runtime
+            ${CMAKE_SOURCE_DIR}
+            ${FFTW3F_INCLUDE_DIRS}
+        )
+        gtest_discover_tests(cufft_test
+            PROPERTIES LABELS "cudart"
+        )
+    endif()
+
     add_subdirectory(e2e)
 endif()

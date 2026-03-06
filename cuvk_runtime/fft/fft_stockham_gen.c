@@ -113,7 +113,9 @@ static void sb_cmul(StrBuf *sb, const char *a, double br, double bi) {
 /* ========================================================================== */
 
 static void emit_prologue(StrBuf *sb, int radix, int stride,
-                           int n_total, int workgroup_size) {
+                           int n_total, int workgroup_size,
+                           int element_stride, int batch_stride,
+                           int batch_stride2) {
   /* Storage bindings: use array<f32> (proven reliable) with vec2 locals.
    * Two separate struct types to avoid NonWritable decoration bleeding. */
   sb_printf(sb, "struct SrcBuf { d: array<f32> };\n");
@@ -127,24 +129,51 @@ static void emit_prologue(StrBuf *sb, int radix, int stride,
                 "gid: vec3<u32>) {\n");
 
   /* Butterfly and batch indexing.
-   * batch_offset and src_base are in units of complex elements.
-   * Multiply by 2 when indexing into the f32 array. */
+   * batch_offset and src_base are in units of f32 pairs (complex elements).
+   * Multiply by 2 when indexing into the f32 array.
+   * element_stride: physical distance between consecutive logical elements.
+   * batch_stride: physical distance between consecutive FFTs (gid.y).
+   * batch_stride2: physical distance for outer batch dimension (gid.z). */
   sb_printf(sb, "  let bf_id: u32 = gid.x;\n");
-  sb_printf(sb, "  let batch_offset: u32 = gid.y * %uu;\n", n_total);
+  sb_printf(sb, "  if (bf_id >= %uu) { return; }\n", n_total / radix);
+  if (batch_stride2 > 0) {
+    sb_printf(sb, "  let batch_offset: u32 = gid.y * %uu + gid.z * %uu;\n",
+              batch_stride, batch_stride2);
+  } else {
+    sb_printf(sb, "  let batch_offset: u32 = gid.y * %uu;\n", batch_stride);
+  }
 
-  /* Source indexing (strided read, in complex-element units) */
+  /* Stockham auto-sort source indexing (in complex-element units).
+   *
+   * bf_id = group * stride + pos, where:
+   *   group = bf_id / stride   (which sub-FFT block)
+   *   pos   = bf_id % stride   (position within the block)
+   *
+   * Read R elements at stride N/R (half-array distance for radix-2,
+   * generalised for arbitrary radix):
+   *   logical_base = group * stride + pos
+   *   v[k]  = src[(batch_offset + (logical_base + k * (N/R)) * E) * 2]
+   * where E = element_stride.
+   */
   sb_printf(sb, "  let group: u32 = bf_id / %uu;\n", stride);
   sb_printf(sb, "  let pos: u32 = bf_id %% %uu;\n", stride);
-  sb_printf(sb, "  let src_base: u32 = batch_offset + "
-                "group * %uu + pos;\n", stride * radix);
+  sb_printf(sb, "  let logical_base: u32 = group * %uu + pos;\n", stride);
 
-  /* Load radix elements with stride: read f32 pairs into vec2 locals */
+  /* Load radix elements at stride n_total/radix, scaled by element_stride */
+  int read_stride = n_total / radix;
   for (int k = 0; k < radix; k++) {
-    int off = k * stride;
-    sb_printf(sb, "  var v%d: vec2<f32> = vec2<f32>("
-                  "src.d[(src_base + %uu) * 2u], "
-                  "src.d[(src_base + %uu) * 2u + 1u]);\n",
-              k, off, off);
+    int logical_off = k * read_stride;
+    if (element_stride == 1) {
+      sb_printf(sb, "  var v%d: vec2<f32> = vec2<f32>("
+                    "src.d[(batch_offset + logical_base + %uu) * 2u], "
+                    "src.d[(batch_offset + logical_base + %uu) * 2u + 1u]);\n",
+                k, logical_off, logical_off);
+    } else {
+      sb_printf(sb, "  var v%d: vec2<f32> = vec2<f32>("
+                    "src.d[(batch_offset + (logical_base + %uu) * %uu) * 2u], "
+                    "src.d[(batch_offset + (logical_base + %uu) * %uu) * 2u + 1u]);\n",
+                k, logical_off, element_stride, logical_off, element_stride);
+    }
   }
 }
 
@@ -306,15 +335,31 @@ static void emit_fft_dft(StrBuf *sb, int radix, int direction) {
 /* Epilogue: Stockham output writes                                           */
 /* ========================================================================== */
 
-static void emit_epilogue(StrBuf *sb, int radix, int n_total) {
-  int dst_stride = n_total / radix;
+static void emit_epilogue(StrBuf *sb, int radix, int stride, int n_total,
+                          int element_stride) {
+  /* Stockham auto-sort output write.
+   *
+   * For a butterfly at (group, pos) with radix R and stride L:
+   *   logical_idx = group * L * R + pos + k * L   for k = 0..R-1
+   *   dst[(batch_offset + logical_idx * element_stride) * 2]
+   *
+   * This arranges the output so that the next stage (with stride L*R) reads
+   * its R elements at stride N/R_next from the correct positions. */
+  (void)n_total;
 
   for (int k = 0; k < radix; k++) {
-    int off = k * dst_stride;
-    sb_printf(sb, "  dst.d[(batch_offset + bf_id + %uu) * 2u] = v%d.x;\n",
-              off, k);
-    sb_printf(sb, "  dst.d[(batch_offset + bf_id + %uu) * 2u + 1u] = v%d.y;\n",
-              off, k);
+    int logical_off = k * stride;
+    if (element_stride == 1) {
+      sb_printf(sb, "  dst.d[(batch_offset + group * %uu + pos + %uu) * 2u] = v%d.x;\n",
+                stride * radix, logical_off, k);
+      sb_printf(sb, "  dst.d[(batch_offset + group * %uu + pos + %uu) * 2u + 1u] = v%d.y;\n",
+                stride * radix, logical_off, k);
+    } else {
+      sb_printf(sb, "  dst.d[(batch_offset + (group * %uu + pos + %uu) * %uu) * 2u] = v%d.x;\n",
+                stride * radix, logical_off, element_stride, k);
+      sb_printf(sb, "  dst.d[(batch_offset + (group * %uu + pos + %uu) * %uu) * 2u + 1u] = v%d.y;\n",
+                stride * radix, logical_off, element_stride, k);
+    }
   }
 
   sb_printf(sb, "}\n");
@@ -326,18 +371,36 @@ static void emit_epilogue(StrBuf *sb, int radix, int n_total) {
 
 char *gen_fft_stockham(int radix, int stride, int n_total,
                        int direction, int workgroup_size) {
-  /* Validate parameters */
+  return gen_fft_stockham_strided2(radix, stride, n_total, direction,
+                                   workgroup_size, 1, n_total, 0);
+}
+
+char *gen_fft_stockham_strided(int radix, int stride, int n_total,
+                               int direction, int workgroup_size,
+                               int element_stride, int batch_stride) {
+  return gen_fft_stockham_strided2(radix, stride, n_total, direction,
+                                   workgroup_size, element_stride,
+                                   batch_stride, 0);
+}
+
+char *gen_fft_stockham_strided2(int radix, int stride, int n_total,
+                                int direction, int workgroup_size,
+                                int element_stride, int batch_stride,
+                                int batch_stride2) {
   if (radix < 2 || radix > 32) return NULL;
   if (stride < 1) return NULL;
   if (n_total < radix) return NULL;
   if (n_total % radix != 0) return NULL;
   if (direction != 1 && direction != -1) return NULL;
   if (workgroup_size < 1) return NULL;
+  if (element_stride < 1) return NULL;
+  if (batch_stride < 1) return NULL;
 
   StrBuf sb;
   sb_init(&sb);
 
-  emit_prologue(&sb, radix, stride, n_total, workgroup_size);
+  emit_prologue(&sb, radix, stride, n_total, workgroup_size,
+                element_stride, batch_stride, batch_stride2);
   emit_inter_stage_twiddles(&sb, radix, stride, direction);
 
   if (is_po2(radix))
@@ -345,7 +408,145 @@ char *gen_fft_stockham(int radix, int stride, int n_total,
   else
     emit_fft_dft(&sb, radix, direction);
 
-  emit_epilogue(&sb, radix, n_total);
+  emit_epilogue(&sb, radix, stride, n_total, element_stride);
 
+  return sb_finish(&sb);
+}
+
+/* ========================================================================== */
+/* R2C post-processing shader                                                 */
+/* ========================================================================== */
+
+char *gen_fft_r2c_postprocess(int n, int workgroup_size) {
+  if (n < 2 || n % 2 != 0 || workgroup_size < 1) return NULL;
+  int half = n / 2;
+
+  StrBuf sb;
+  sb_init(&sb);
+
+  sb_printf(&sb, "struct SrcBuf { d: array<f32> };\n");
+  sb_printf(&sb, "struct DstBuf { d: array<f32> };\n");
+  sb_printf(&sb, "@group(0) @binding(0) var<storage, read> src: SrcBuf;\n");
+  sb_printf(&sb, "@group(0) @binding(1) var<storage, read_write> dst: DstBuf;\n\n");
+
+  sb_printf(&sb, "@compute @workgroup_size(%d)\n", workgroup_size);
+  sb_printf(&sb, "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n");
+  sb_printf(&sb, "  let k: u32 = gid.x;\n");
+  sb_printf(&sb, "  if (k >= %uu) { return; }\n", half);
+  /* batch_offset: src has N/2 complex values per batch, dst has N/2+1 */
+  sb_printf(&sb, "  let src_batch: u32 = gid.y * %uu;\n", half);
+  sb_printf(&sb, "  let dst_batch: u32 = gid.y * %uu;\n", half + 1);
+
+  /* DC and Nyquist bins */
+  sb_printf(&sb, "  if (k == 0u) {\n");
+  sb_printf(&sb, "    let z0r: f32 = src.d[src_batch * 2u];\n");
+  sb_printf(&sb, "    let z0i: f32 = src.d[src_batch * 2u + 1u];\n");
+  sb_printf(&sb, "    dst.d[dst_batch * 2u] = z0r + z0i;\n");
+  sb_printf(&sb, "    dst.d[dst_batch * 2u + 1u] = 0.0;\n");
+  sb_printf(&sb, "    dst.d[(dst_batch + %uu) * 2u] = z0r - z0i;\n", half);
+  sb_printf(&sb, "    dst.d[(dst_batch + %uu) * 2u + 1u] = 0.0;\n", half);
+  sb_printf(&sb, "    return;\n");
+  sb_printf(&sb, "  }\n");
+
+  /* General bin k: X[k] = 0.5*(Z[k]+conj(Z[N/2-k]))
+   *                      - 0.5i*W^k*(Z[k]-conj(Z[N/2-k]))
+   * where W = exp(-2*pi*i/N) */
+  sb_printf(&sb, "  let nk: u32 = %uu - k;\n", half);
+  sb_printf(&sb, "  let zk_r: f32 = src.d[(src_batch + k) * 2u];\n");
+  sb_printf(&sb, "  let zk_i: f32 = src.d[(src_batch + k) * 2u + 1u];\n");
+  sb_printf(&sb, "  let znk_r: f32 = src.d[(src_batch + nk) * 2u];\n");
+  sb_printf(&sb, "  let znk_i: f32 = -src.d[(src_batch + nk) * 2u + 1u];\n");
+  /* E = 0.5*(Z[k] + conj(Z[N/2-k])) */
+  sb_printf(&sb, "  let er: f32 = 0.5 * (zk_r + znk_r);\n");
+  sb_printf(&sb, "  let ei: f32 = 0.5 * (zk_i + znk_i);\n");
+  /* D = 0.5*(Z[k] - conj(Z[N/2-k])) */
+  sb_printf(&sb, "  let dr: f32 = 0.5 * (zk_r - znk_r);\n");
+  sb_printf(&sb, "  let di: f32 = 0.5 * (zk_i - znk_i);\n");
+  /* W^k = exp(-2*pi*i*k/N), compute as cos/sin */
+  sb_printf(&sb, "  let angle: f32 = ");
+  sb_float(&sb, -2.0 * M_PI / n);
+  sb_printf(&sb, " * f32(k);\n");
+  sb_printf(&sb, "  let wr: f32 = cos(angle);\n");
+  sb_printf(&sb, "  let wi: f32 = sin(angle);\n");
+  /* O = -i * W^k * D = (-i)*(wr+i*wi)*(dr+i*di)
+   *   = (-i)*(wr*dr - wi*di + i*(wr*di + wi*dr))
+   *   = (wr*di + wi*dr) + i*(-(wr*dr - wi*di))
+   *   = (wr*di + wi*dr) - i*(wr*dr - wi*di) */
+  sb_printf(&sb, "  let or_: f32 = wr * di + wi * dr;\n");
+  sb_printf(&sb, "  let oi: f32 = -(wr * dr - wi * di);\n");
+  /* X[k] = E + O */
+  sb_printf(&sb, "  dst.d[(dst_batch + k) * 2u] = er + or_;\n");
+  sb_printf(&sb, "  dst.d[(dst_batch + k) * 2u + 1u] = ei + oi;\n");
+
+  sb_printf(&sb, "}\n");
+  return sb_finish(&sb);
+}
+
+/* ========================================================================== */
+/* C2R pre-processing shader                                                  */
+/* ========================================================================== */
+
+char *gen_fft_c2r_preprocess(int n, int workgroup_size) {
+  if (n < 2 || n % 2 != 0 || workgroup_size < 1) return NULL;
+  int half = n / 2;
+
+  StrBuf sb;
+  sb_init(&sb);
+
+  sb_printf(&sb, "struct SrcBuf { d: array<f32> };\n");
+  sb_printf(&sb, "struct DstBuf { d: array<f32> };\n");
+  sb_printf(&sb, "@group(0) @binding(0) var<storage, read> src: SrcBuf;\n");
+  sb_printf(&sb, "@group(0) @binding(1) var<storage, read_write> dst: DstBuf;\n\n");
+
+  sb_printf(&sb, "@compute @workgroup_size(%d)\n", workgroup_size);
+  sb_printf(&sb, "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n");
+  sb_printf(&sb, "  let k: u32 = gid.x;\n");
+  sb_printf(&sb, "  if (k >= %uu) { return; }\n", half);
+  /* src has N/2+1 complex bins per batch, dst has N/2 complex values */
+  sb_printf(&sb, "  let src_batch: u32 = gid.y * %uu;\n", half + 1);
+  sb_printf(&sb, "  let dst_batch: u32 = gid.y * %uu;\n", half);
+
+  /* DC bin: Z[0] = (X[0].re + X[N/2].re, X[0].re - X[N/2].re)
+   * Note: no 0.5 factor — we need 2x scaling so that the N/2-point
+   * inverse C2C produces N*x (matching cuFFT's unnormalized convention). */
+  sb_printf(&sb, "  if (k == 0u) {\n");
+  sb_printf(&sb, "    let x0r: f32 = src.d[src_batch * 2u];\n");
+  sb_printf(&sb, "    let xnr: f32 = src.d[(src_batch + %uu) * 2u];\n", half);
+  sb_printf(&sb, "    dst.d[dst_batch * 2u] = x0r + xnr;\n");
+  sb_printf(&sb, "    dst.d[dst_batch * 2u + 1u] = x0r - xnr;\n");
+  sb_printf(&sb, "    return;\n");
+  sb_printf(&sb, "  }\n");
+
+  /* General bin k: Z[k] = (X[k]+conj(X[N/2-k]))
+   *                      + i*W^(-k)*(X[k]-conj(X[N/2-k]))
+   * where W = exp(-2*pi*i/N), so W^(-k) = exp(+2*pi*i*k/N)
+   * Note: no 0.5 — doubled to match cuFFT scaling. */
+  sb_printf(&sb, "  let nk: u32 = %uu - k;\n", half);
+  sb_printf(&sb, "  let xk_r: f32 = src.d[(src_batch + k) * 2u];\n");
+  sb_printf(&sb, "  let xk_i: f32 = src.d[(src_batch + k) * 2u + 1u];\n");
+  sb_printf(&sb, "  let xnk_r: f32 = src.d[(src_batch + nk) * 2u];\n");
+  sb_printf(&sb, "  let xnk_i: f32 = -src.d[(src_batch + nk) * 2u + 1u];\n");
+  /* E = X[k] + conj(X[N/2-k]) */
+  sb_printf(&sb, "  let er: f32 = xk_r + xnk_r;\n");
+  sb_printf(&sb, "  let ei: f32 = xk_i + xnk_i;\n");
+  /* D = X[k] - conj(X[N/2-k]) */
+  sb_printf(&sb, "  let dr: f32 = xk_r - xnk_r;\n");
+  sb_printf(&sb, "  let di: f32 = xk_i - xnk_i;\n");
+  /* W^(-k) = exp(+2*pi*i*k/N) */
+  sb_printf(&sb, "  let angle: f32 = ");
+  sb_float(&sb, 2.0 * M_PI / n);
+  sb_printf(&sb, " * f32(k);\n");
+  sb_printf(&sb, "  let wr: f32 = cos(angle);\n");
+  sb_printf(&sb, "  let wi: f32 = sin(angle);\n");
+  /* O = i * W^(-k) * D = i*(wr+i*wi)*(dr+i*di)
+   *   = i*(wr*dr - wi*di + i*(wr*di + wi*dr))
+   *   = -(wr*di + wi*dr) + i*(wr*dr - wi*di) */
+  sb_printf(&sb, "  let or_: f32 = -(wr * di + wi * dr);\n");
+  sb_printf(&sb, "  let oi: f32 = wr * dr - wi * di;\n");
+  /* Z[k] = E + O */
+  sb_printf(&sb, "  dst.d[(dst_batch + k) * 2u] = er + or_;\n");
+  sb_printf(&sb, "  dst.d[(dst_batch + k) * 2u + 1u] = ei + oi;\n");
+
+  sb_printf(&sb, "}\n");
   return sb_finish(&sb);
 }

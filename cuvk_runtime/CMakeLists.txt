@@ -111,23 +111,4 @@ else()
     )
 endif()
 
-# Shared library: cufft64_*.dll / libcufft.so.12
-# Links against cuvk_runtime_shared (libcuda.so) to share g_cuvk state.
-add_library(cuvk_cufft_shared SHARED cuvk_cufft.c)
-target_link_libraries(cuvk_cufft_shared PUBLIC cuvk_runtime_shared wgsl_compiler ${_VULKAN_LIB} m)
-target_include_directories(cuvk_cufft_shared PUBLIC ${CMAKE_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR} ${_VULKAN_INC})
-if(CUVK_DEBUG_LOG)
-    target_compile_definitions(cuvk_cufft_shared PRIVATE CUVK_DEBUG_LOG=1)
-endif()
-if(WIN32)
-    set_target_properties(cuvk_cufft_shared PROPERTIES
-        OUTPUT_NAME "cufft64_12"
-        PREFIX ""
-    )
-else()
-    set_target_properties(cuvk_cufft_shared PROPERTIES
-        OUTPUT_NAME "cufft"
-        SOVERSION 12
-        LINK_OPTIONS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cufft.map"
-    )
-endif()
+add_subdirectory(fft)

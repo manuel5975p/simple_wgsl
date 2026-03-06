@@ -171,7 +171,7 @@ static void bench_size(int n) {
     float rt_err = verify_roundtrip(n);
     const char *status = (imp_err < 1e-3f && rt_err < 1.0f) ? "OK" : "FAIL";
 
-    printf("  N=%-6d %s  exec=%8.3f ms  %7.2f GFLOP/s  imp_err=%.2e  rt_err=%.2e\n",
+    printf("  %-10d %4s  %10.3f  %10.2f  %10.2e  %10.2e\n",
            n, status, med, gflops, imp_err, rt_err);
 
     CHECK_CUFFT(cufftDestroy(plan));
@@ -194,11 +194,13 @@ int main() {
     printf("  Device: %s\n", prop.name);
     printf("================================================================\n\n");
 
-    int sizes[] = { 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384 };
-    int nsizes = sizeof(sizes) / sizeof(sizes[0]);
+    printf("  %-10s %4s  %10s  %10s  %10s  %10s\n",
+           "N", "stat", "exec(ms)", "GFLOP/s", "imp_err", "rt_err");
+    printf("  %-10s %4s  %10s  %10s  %10s  %10s\n",
+           "----------", "----", "----------", "----------", "----------", "----------");
 
-    for (int i = 0; i < nsizes; i++)
-        bench_size(sizes[i]);
+    for (int exp = 1; exp <= 20; exp++)
+        bench_size(1 << exp);
 
     printf("\n");
     return 0;

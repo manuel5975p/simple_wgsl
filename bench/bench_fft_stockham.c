@@ -606,7 +606,7 @@ int main(int argc, char **argv) {
   (void)argv;
 
   static const int radices[] = {
-    2, 3, 4, 5, 7, 8, 11, 13, 16, 17, 19, 23, 29, 31, 32
+    2, 3, 4, 5, 7, 8, 9, 11, 13, 16, 17, 19, 23, 25, 27, 29, 31, 32
   };
   int n_radices = (int)(sizeof(radices) / sizeof(radices[0]));
 
