@@ -16,7 +16,7 @@
 #include <zstd.h>
 
 #define FATBIN_MAGIC 0xBA55ED50
-#define FATBIN_SECTION_PTX  1
+#define FATBIN_SECTION_PTX 1
 #define FATBIN_SECTION_CUBIN 2
 
 typedef struct {
@@ -35,8 +35,7 @@ typedef struct {
     uint32_t compressed_size;
 } __attribute__((packed)) FatbinSectionHeader;
 
-char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len)
-{
+char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len) {
     if (!fatbin_data)
         return NULL;
 
@@ -57,18 +56,18 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len)
             break;
 
         CUVK_LOG("[cuvk] fatbin section: kind=%u attr=0x%x hdr_size=%u "
-                "padded=%u comp_size=%u\n",
-                sec->kind, sec->attr, sec->header_size,
-                sec->padded_payload_size, sec->compressed_size);
+                 "padded=%u comp_size=%u\n",
+            sec->kind, sec->attr, sec->header_size,
+            sec->padded_payload_size, sec->compressed_size);
 
         if (sec->kind == FATBIN_SECTION_PTX) {
             const uint8_t *payload = pos + sec->header_size;
             uint32_t comp_size = sec->compressed_size;
 
             CUVK_LOG("[cuvk] PTX section: comp=%u padded=%u "
-                    "first4=%02x%02x%02x%02x\n",
-                    comp_size, sec->padded_payload_size,
-                    payload[0], payload[1], payload[2], payload[3]);
+                     "first4=%02x%02x%02x%02x\n",
+                comp_size, sec->padded_payload_size,
+                payload[0], payload[1], payload[2], payload[3]);
 
             uint64_t decomp_size = 0;
             if (sec->header_size >= 0x40) {
@@ -76,8 +75,7 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len)
             }
 
             /* ZSTD compressed (magic 0x28B52FFD) */
-            if (comp_size >= 4 && payload[0] == 0x28 && payload[1] == 0xB5
-                && payload[2] == 0x2F && payload[3] == 0xFD) {
+            if (comp_size >= 4 && payload[0] == 0x28 && payload[1] == 0xB5 && payload[2] == 0x2F && payload[3] == 0xFD) {
                 if (decomp_size == 0) {
                     decomp_size =
                         ZSTD_getFrameContentSize(payload, comp_size);
@@ -123,7 +121,7 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len)
 
                 ptx[result] = '\0';
                 CUVK_LOG("[cuvk] LZ4 decompressed %u -> %d bytes\n",
-                         comp_size, result);
+                    comp_size, result);
                 {
                     const char *p = ptx;
                     while (*p) {
