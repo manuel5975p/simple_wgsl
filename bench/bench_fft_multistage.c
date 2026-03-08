@@ -10,12 +10,9 @@
 
 #include "fft_stockham_gen.h"
 #include "simple_wgsl.h"
-#include <vulkan/vulkan.h>
+#include "bench_vk_common.h"
 
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 #ifndef M_PI
@@ -92,114 +89,6 @@ static int compile_wgsl_to_spirv(const char *src, uint32_t **out_words,
   return lr == WGSL_LOWER_OK ? 0 : -1;
 }
 
-/* ========================================================================== */
-/* Vulkan setup (same as bench_fft_stockham.c)                                */
-/* ========================================================================== */
-
-typedef struct {
-  VkInstance instance;
-  VkPhysicalDevice phys_dev;
-  VkDevice device;
-  VkQueue queue;
-  uint32_t queue_family;
-  VkCommandPool cmd_pool;
-  VkDescriptorPool desc_pool;
-  VkPhysicalDeviceMemoryProperties mem_props;
-} VkCtx;
-
-static int32_t find_memory_type(VkPhysicalDeviceMemoryProperties *props,
-                                uint32_t type_bits,
-                                VkMemoryPropertyFlags flags) {
-  for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
-    if ((type_bits & (1u << i)) &&
-        (props->memoryTypes[i].propertyFlags & flags) == flags)
-      return (int32_t)i;
-  }
-  return -1;
-}
-
-static int vk_init(VkCtx *ctx) {
-  memset(ctx, 0, sizeof(*ctx));
-  VkApplicationInfo app_info = {0};
-  app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-  app_info.apiVersion = VK_API_VERSION_1_1;
-  VkInstanceCreateInfo ci = {0};
-  ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-  ci.pApplicationInfo = &app_info;
-  if (vkCreateInstance(&ci, NULL, &ctx->instance) != VK_SUCCESS) return -1;
-
-  uint32_t dev_count = 0;
-  vkEnumeratePhysicalDevices(ctx->instance, &dev_count, NULL);
-  if (dev_count == 0) return -1;
-  VkPhysicalDevice *devs = malloc(dev_count * sizeof(VkPhysicalDevice));
-  vkEnumeratePhysicalDevices(ctx->instance, &dev_count, devs);
-  ctx->phys_dev = devs[0];
-  for (uint32_t i = 0; i < dev_count; i++) {
-    VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(devs[i], &props);
-    if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-      ctx->phys_dev = devs[i]; break;
-    }
-  }
-  free(devs);
-
-  VkPhysicalDeviceProperties dev_props;
-  vkGetPhysicalDeviceProperties(ctx->phys_dev, &dev_props);
-  printf("  Device: %s\n", dev_props.deviceName);
-  vkGetPhysicalDeviceMemoryProperties(ctx->phys_dev, &ctx->mem_props);
-
-  uint32_t qf_count = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(ctx->phys_dev, &qf_count, NULL);
-  VkQueueFamilyProperties *qf = malloc(qf_count * sizeof(*qf));
-  vkGetPhysicalDeviceQueueFamilyProperties(ctx->phys_dev, &qf_count, qf);
-  ctx->queue_family = UINT32_MAX;
-  for (uint32_t i = 0; i < qf_count; i++)
-    if (qf[i].queueFlags & VK_QUEUE_COMPUTE_BIT) { ctx->queue_family = i; break; }
-  free(qf);
-  if (ctx->queue_family == UINT32_MAX) return -1;
-
-  float prio = 1.0f;
-  VkDeviceQueueCreateInfo qci = {0};
-  qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-  qci.queueFamilyIndex = ctx->queue_family;
-  qci.queueCount = 1;
-  qci.pQueuePriorities = &prio;
-  VkDeviceCreateInfo dci = {0};
-  dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  dci.queueCreateInfoCount = 1;
-  dci.pQueueCreateInfos = &qci;
-  if (vkCreateDevice(ctx->phys_dev, &dci, NULL, &ctx->device) != VK_SUCCESS)
-    return -1;
-  vkGetDeviceQueue(ctx->device, ctx->queue_family, 0, &ctx->queue);
-
-  VkCommandPoolCreateInfo cpci = {0};
-  cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-  cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-  cpci.queueFamilyIndex = ctx->queue_family;
-  if (vkCreateCommandPool(ctx->device, &cpci, NULL, &ctx->cmd_pool) != VK_SUCCESS)
-    return -1;
-
-  VkDescriptorPoolSize pool_sz = {0};
-  pool_sz.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  pool_sz.descriptorCount = 1024;
-  VkDescriptorPoolCreateInfo dpci = {0};
-  dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-  dpci.maxSets = 512;
-  dpci.poolSizeCount = 1;
-  dpci.pPoolSizes = &pool_sz;
-  if (vkCreateDescriptorPool(ctx->device, &dpci, NULL, &ctx->desc_pool) != VK_SUCCESS)
-    return -1;
-  return 0;
-}
-
-static void vk_destroy(VkCtx *ctx) {
-  vkDeviceWaitIdle(ctx->device);
-  vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
-  vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
-  vkDestroyDevice(ctx->device, NULL);
-  vkDestroyInstance(ctx->instance, NULL);
-}
 
 typedef struct {
   VkBuffer buffer;
@@ -484,7 +373,7 @@ int main(void) {
   printf("========================================================================\n");
 
   VkCtx ctx;
-  if (vk_init(&ctx) != 0) {
+  if (vk_init(&ctx, 512, 1024, 0) != 0) {
     fprintf(stderr, "Vulkan init failed\n");
     return 1;
   }

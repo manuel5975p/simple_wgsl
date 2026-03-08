@@ -51,9 +51,10 @@ char *gen_fft_bluestein(int n, const FftOptPlan *pow2_plan_table, int direction)
 #define FFT_PLAN_DFT       0  /* Direct DFT, O(N^2) */
 #define FFT_PLAN_CT        1  /* Cooley-Tukey: N = radix * (N/radix) */
 #define FFT_PLAN_BLUESTEIN 2  /* Bluestein chirp-z transform */
+#define FFT_PLAN_RADER     3  /* Rader's algorithm for primes */
 
 typedef struct {
-  int type;    /* FFT_PLAN_DFT, FFT_PLAN_CT, or FFT_PLAN_BLUESTEIN */
+  int type;    /* FFT_PLAN_DFT, FFT_PLAN_CT, FFT_PLAN_BLUESTEIN, or FFT_PLAN_RADER */
   int radix;   /* For FFT_PLAN_CT: R in N = R * M */
 } FftPlan;
 

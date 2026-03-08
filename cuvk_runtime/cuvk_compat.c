@@ -294,8 +294,13 @@ CUresult CUDAAPI cuMemcpy2DAsync(const CUDA_MEMCPY2D *pCopy,
 }
 
 /* _v2 aliases for the above (cuFFT dlsyms both names) */
-__asm__(".globl cuMemcpy2D_v2\ncuMemcpy2D_v2 = cuMemcpy2D");
-__asm__(".globl cuMemcpy2DAsync_v2\ncuMemcpy2DAsync_v2 = cuMemcpy2DAsync");
+CUresult CUDAAPI cuMemcpy2D_v2(const CUDA_MEMCPY2D *pCopy) {
+    return cuMemcpy2D(pCopy);
+}
+CUresult CUDAAPI cuMemcpy2DAsync_v2(const CUDA_MEMCPY2D *pCopy,
+                                    CUstream hStream) {
+    return cuMemcpy2DAsync(pCopy, hStream);
+}
 
 #undef cuMemcpyDtoDAsync
 CUresult CUDAAPI cuMemcpyDtoDAsync(CUdeviceptr dstDevice,
@@ -304,5 +309,8 @@ CUresult CUDAAPI cuMemcpyDtoDAsync(CUdeviceptr dstDevice,
     (void)dstDevice; (void)srcDevice; (void)ByteCount; (void)hStream;
     return CUDA_ERROR_NOT_SUPPORTED;
 }
-__asm__(".globl cuMemcpyDtoDAsync_v2\n"
-        "cuMemcpyDtoDAsync_v2 = cuMemcpyDtoDAsync");
+CUresult CUDAAPI cuMemcpyDtoDAsync_v2(CUdeviceptr dstDevice,
+                                      CUdeviceptr srcDevice,
+                                      size_t ByteCount, CUstream hStream) {
+    return cuMemcpyDtoDAsync(dstDevice, srcDevice, ByteCount, hStream);
+}

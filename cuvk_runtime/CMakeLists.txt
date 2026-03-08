@@ -2,16 +2,51 @@ option(CUVK_DEBUG_LOG "Enable cuvk debug logging to stderr" OFF)
 option(CUVK_NVJITLINK "Enable nvJitLink for LTO-IR compilation (requires libnvJitLink.so)" OFF)
 
 include(FetchContent)
-FetchContent_Declare(
-    zstd
-    URL https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.tar.gz
-    SOURCE_SUBDIR build/cmake
-)
-set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
-set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(zstd)
+find_package(PkgConfig QUIET)
+
+# Zstd: prefer system package via PkgConfig, fall back to FetchContent
+if(PkgConfig_FOUND)
+    pkg_check_modules(ZSTD IMPORTED_TARGET libzstd)
+endif()
+if(ZSTD_FOUND)
+    add_library(zstd_dep ALIAS PkgConfig::ZSTD)
+else()
+    message(STATUS "System zstd not found, fetching via FetchContent")
+    FetchContent_Declare(
+        zstd
+        URL https://github.com/facebook/zstd/archive/refs/tags/v1.5.7.tar.gz
+        SOURCE_SUBDIR build/cmake
+    )
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(zstd)
+    add_library(zstd_dep ALIAS libzstd_static)
+endif()
+
+# LZ4: prefer system package via PkgConfig, fall back to FetchContent
+if(PkgConfig_FOUND)
+    pkg_check_modules(LZ4 IMPORTED_TARGET liblz4)
+endif()
+if(LZ4_FOUND)
+    add_library(lz4_dep ALIAS PkgConfig::LZ4)
+else()
+    message(STATUS "System LZ4 not found, fetching via FetchContent")
+    FetchContent_Declare(
+        lz4
+        GIT_REPOSITORY https://github.com/lz4/lz4.git
+        GIT_TAG        v1.10.0
+        GIT_SHALLOW    TRUE
+        SOURCE_SUBDIR  build/cmake
+    )
+    set(LZ4_BUILD_CLI OFF CACHE BOOL "" FORCE)
+    set(LZ4_BUILD_LEGACY_LZ4C OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(BUILD_STATIC_LIBS ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(lz4)
+    add_library(lz4_dep ALIAS lz4_static)
+endif()
 
 if(WIN32)
     if(NOT VULKAN_LIBRARY)
@@ -43,7 +78,7 @@ endif()
 
 # Helper: apply common settings to a cuvk target
 function(cuvk_target_setup tgt)
-    target_link_libraries(${tgt} PUBLIC wgsl_compiler ${_VULKAN_LIB} libzstd_static lz4)
+    target_link_libraries(${tgt} PUBLIC wgsl_compiler ${_VULKAN_LIB} zstd_dep lz4_dep)
     target_include_directories(${tgt} PUBLIC ${CMAKE_SOURCE_DIR} ${_VULKAN_INC})
     if(CUVK_DEBUG_LOG)
         target_compile_definitions(${tgt} PRIVATE CUVK_DEBUG_LOG=1)
@@ -107,7 +142,7 @@ else()
     set_target_properties(cuvk_cublas_shared PROPERTIES
         OUTPUT_NAME "cublas"
         SOVERSION 13
-        LINK_OPTIONS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cublas.map"
+        LINK_OPTIONS "$<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cublas.map>"
     )
 endif()
 

@@ -11,12 +11,9 @@
 
 #include "fft_optimal_gen.h"
 #include "simple_wgsl.h"
-#include <vulkan/vulkan.h>
+#include "bench_vk_common.h"
 
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 #ifndef M_PI
@@ -26,140 +23,6 @@
 #define WARMUP_ITERS 3
 #define BENCH_ITERS  10
 
-/* ========================================================================== */
-/* Vulkan setup                                                               */
-/* ========================================================================== */
-
-typedef struct {
-  VkInstance instance;
-  VkPhysicalDevice phys_dev;
-  VkDevice device;
-  VkQueue queue;
-  uint32_t queue_family;
-  VkCommandPool cmd_pool;
-  VkDescriptorPool desc_pool;
-  VkPhysicalDeviceMemoryProperties mem_props;
-} VkCtx;
-
-static int32_t find_memory_type(VkPhysicalDeviceMemoryProperties *props,
-                                uint32_t type_bits,
-                                VkMemoryPropertyFlags flags) {
-  for (uint32_t i = 0; i < props->memoryTypeCount; i++) {
-    if ((type_bits & (1u << i)) &&
-        (props->memoryTypes[i].propertyFlags & flags) == flags)
-      return (int32_t)i;
-  }
-  return -1;
-}
-
-static int vk_init(VkCtx *ctx) {
-  memset(ctx, 0, sizeof(*ctx));
-
-  VkApplicationInfo app_info = {0};
-  app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-  app_info.apiVersion = VK_API_VERSION_1_1;
-
-  VkInstanceCreateInfo ci = {0};
-  ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-  ci.pApplicationInfo = &app_info;
-  if (vkCreateInstance(&ci, NULL, &ctx->instance) != VK_SUCCESS)
-    return -1;
-
-  uint32_t dev_count = 0;
-  vkEnumeratePhysicalDevices(ctx->instance, &dev_count, NULL);
-  if (dev_count == 0) {
-    fprintf(stderr, "No Vulkan devices\n");
-    return -1;
-  }
-
-  VkPhysicalDevice *devs = (VkPhysicalDevice *)malloc(
-      dev_count * sizeof(VkPhysicalDevice));
-  vkEnumeratePhysicalDevices(ctx->instance, &dev_count, devs);
-
-  ctx->phys_dev = devs[0];
-  for (uint32_t i = 0; i < dev_count; i++) {
-    VkPhysicalDeviceProperties props;
-    vkGetPhysicalDeviceProperties(devs[i], &props);
-    if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-      ctx->phys_dev = devs[i];
-      break;
-    }
-  }
-  free(devs);
-
-  VkPhysicalDeviceProperties dev_props;
-  vkGetPhysicalDeviceProperties(ctx->phys_dev, &dev_props);
-  printf("  Device: %s\n", dev_props.deviceName);
-
-  vkGetPhysicalDeviceMemoryProperties(ctx->phys_dev, &ctx->mem_props);
-
-  uint32_t qf_count = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(
-      ctx->phys_dev, &qf_count, NULL);
-  VkQueueFamilyProperties *qf_props = (VkQueueFamilyProperties *)malloc(
-      qf_count * sizeof(VkQueueFamilyProperties));
-  vkGetPhysicalDeviceQueueFamilyProperties(
-      ctx->phys_dev, &qf_count, qf_props);
-
-  ctx->queue_family = UINT32_MAX;
-  for (uint32_t i = 0; i < qf_count; i++) {
-    if (qf_props[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
-      ctx->queue_family = i;
-      break;
-    }
-  }
-  free(qf_props);
-  if (ctx->queue_family == UINT32_MAX) return -1;
-
-  float priority = 1.0f;
-  VkDeviceQueueCreateInfo qci = {0};
-  qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-  qci.queueFamilyIndex = ctx->queue_family;
-  qci.queueCount = 1;
-  qci.pQueuePriorities = &priority;
-
-  VkDeviceCreateInfo dci = {0};
-  dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  dci.queueCreateInfoCount = 1;
-  dci.pQueueCreateInfos = &qci;
-
-  if (vkCreateDevice(ctx->phys_dev, &dci, NULL, &ctx->device)
-      != VK_SUCCESS)
-    return -1;
-  vkGetDeviceQueue(ctx->device, ctx->queue_family, 0, &ctx->queue);
-
-  VkCommandPoolCreateInfo cpci = {0};
-  cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-  cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-  cpci.queueFamilyIndex = ctx->queue_family;
-  if (vkCreateCommandPool(ctx->device, &cpci, NULL, &ctx->cmd_pool)
-      != VK_SUCCESS)
-    return -1;
-
-  VkDescriptorPoolSize pool_sz = {0};
-  pool_sz.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  pool_sz.descriptorCount = 256;
-
-  VkDescriptorPoolCreateInfo dpci = {0};
-  dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  dpci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-  dpci.maxSets = 256;
-  dpci.poolSizeCount = 1;
-  dpci.pPoolSizes = &pool_sz;
-  if (vkCreateDescriptorPool(ctx->device, &dpci, NULL, &ctx->desc_pool)
-      != VK_SUCCESS)
-    return -1;
-
-  return 0;
-}
-
-static void vk_destroy(VkCtx *ctx) {
-  vkDeviceWaitIdle(ctx->device);
-  vkDestroyDescriptorPool(ctx->device, ctx->desc_pool, NULL);
-  vkDestroyCommandPool(ctx->device, ctx->cmd_pool, NULL);
-  vkDestroyDevice(ctx->device, NULL);
-  vkDestroyInstance(ctx->instance, NULL);
-}
 
 /* ========================================================================== */
 /* Pipeline creation from SPIR-V (1 binding, read_write)                      */
@@ -535,7 +398,14 @@ static double bench_wgsl(VkCtx *ctx, int n, const char *wgsl,
 /* Main                                                                       */
 /* ========================================================================== */
 
-static int is_pow2(int n) { return n >= 2 && (n & (n - 1)) == 0; }
+static int is_prime_bench(int n) {
+  if (n < 2) return 0;
+  if (n < 4) return 1;
+  if (n % 2 == 0 || n % 3 == 0) return 0;
+  for (int i = 5; i * i <= n; i += 6)
+    if (n % i == 0 || n % (i + 2) == 0) return 0;
+  return 1;
+}
 
 static int next_pow2_bench(int n) {
   int p = 1;
@@ -554,6 +424,10 @@ static void format_fft_plan(const FftPlan *plans, int n,
     format_fft_plan(plans, R, rbuf, sizeof(rbuf));
     format_fft_plan(plans, M, mbuf, sizeof(mbuf));
     snprintf(buf, buflen, "(%s x %s)", rbuf, mbuf);
+  } else if (p.type == FFT_PLAN_RADER) {
+    char mbuf[128];
+    format_fft_plan(plans, n - 1, mbuf, sizeof(mbuf));
+    snprintf(buf, buflen, "Rader%d(%s)", n, mbuf);
   } else {
     snprintf(buf, buflen, "Blue%d", n);
   }
@@ -566,6 +440,8 @@ static void format_fft_plan_short(const FftPlan *plans, int n,
     snprintf(buf, buflen, "DFT-%d", n);
   else if (p.type == FFT_PLAN_CT)
     snprintf(buf, buflen, "CT %dx%d", p.radix, n / p.radix);
+  else if (p.type == FFT_PLAN_RADER)
+    snprintf(buf, buflen, "Rader-%d", n);
   else
     snprintf(buf, buflen, "Blue-%d", n);
 }
@@ -581,7 +457,7 @@ int main(void) {
   printf("========================================================================\n");
 
   VkCtx ctx;
-  if (vk_init(&ctx) != 0) {
+  if (vk_init(&ctx, 256, 256, 0) != 0) {
     fprintf(stderr, "Vulkan init failed\n");
     return 1;
   }
@@ -592,96 +468,12 @@ int main(void) {
   for (int i = 0; i <= FFT_PLAN_MAX_N; i++) plan_times[i] = -1.0;
 
   /* ====================================================================== */
-  /* Hardcoded results from previous benchmark run (N=2..128, pow2 to 512) */
-  /* ====================================================================== */
-  {
-    static const struct { int n, type, radix; double time; } known[] = {
-      /* Power-of-2 (Pass 1) */
-      {2,FFT_PLAN_DFT,0,5.924}, {4,FFT_PLAN_DFT,0,2.136},
-      {8,FFT_PLAN_CT,2,1.760}, {16,FFT_PLAN_CT,2,1.586},
-      {32,FFT_PLAN_CT,2,2.119}, {64,FFT_PLAN_CT,16,2.625},
-      {128,FFT_PLAN_CT,2,1.671}, {256,FFT_PLAN_CT,128,4.638},
-      {512,FFT_PLAN_CT,32,6.859},
-      /* Non-pow2, N=3..127 */
-      {3,FFT_PLAN_BLUESTEIN,0,3.121}, {5,FFT_PLAN_BLUESTEIN,0,3.627},
-      {6,FFT_PLAN_BLUESTEIN,0,3.779}, {7,FFT_PLAN_DFT,0,3.599},
-      {9,FFT_PLAN_BLUESTEIN,0,2.800}, {10,FFT_PLAN_CT,5,2.077},
-      {11,FFT_PLAN_BLUESTEIN,0,3.226}, {12,FFT_PLAN_BLUESTEIN,0,2.717},
-      {13,FFT_PLAN_BLUESTEIN,0,3.721}, {14,FFT_PLAN_CT,7,3.174},
-      {15,FFT_PLAN_BLUESTEIN,0,2.650}, {17,FFT_PLAN_DFT,0,3.431},
-      {18,FFT_PLAN_CT,6,3.393}, {19,FFT_PLAN_BLUESTEIN,0,4.324},
-      {20,FFT_PLAN_CT,4,2.914}, {21,FFT_PLAN_DFT,0,3.694},
-      {22,FFT_PLAN_DFT,0,3.502}, {23,FFT_PLAN_DFT,0,3.804},
-      {24,FFT_PLAN_CT,8,2.035}, {25,FFT_PLAN_DFT,0,3.249},
-      {26,FFT_PLAN_CT,2,3.007}, {27,FFT_PLAN_CT,9,3.011},
-      {28,FFT_PLAN_CT,4,3.242}, {29,FFT_PLAN_BLUESTEIN,0,3.492},
-      {30,FFT_PLAN_CT,2,2.275}, {31,FFT_PLAN_BLUESTEIN,0,3.144},
-      {33,FFT_PLAN_CT,11,2.999}, {34,FFT_PLAN_BLUESTEIN,0,3.461},
-      {35,FFT_PLAN_CT,7,2.862}, {36,FFT_PLAN_CT,2,2.609},
-      {37,FFT_PLAN_BLUESTEIN,0,4.296}, {38,FFT_PLAN_CT,2,3.294},
-      {39,FFT_PLAN_BLUESTEIN,0,2.776}, {40,FFT_PLAN_CT,5,2.280},
-      {41,FFT_PLAN_BLUESTEIN,0,3.109}, {42,FFT_PLAN_CT,14,1.993},
-      {43,FFT_PLAN_BLUESTEIN,0,3.422}, {44,FFT_PLAN_CT,22,2.608},
-      {45,FFT_PLAN_BLUESTEIN,0,3.383}, {46,FFT_PLAN_CT,2,3.424},
-      {47,FFT_PLAN_BLUESTEIN,0,2.857}, {48,FFT_PLAN_CT,16,2.303},
-      {49,FFT_PLAN_BLUESTEIN,0,4.010}, {50,FFT_PLAN_BLUESTEIN,0,3.178},
-      {51,FFT_PLAN_BLUESTEIN,0,3.406}, {52,FFT_PLAN_CT,13,2.967},
-      {53,FFT_PLAN_BLUESTEIN,0,3.472}, {54,FFT_PLAN_CT,6,3.670},
-      {55,FFT_PLAN_BLUESTEIN,0,2.727}, {56,FFT_PLAN_CT,8,2.886},
-      {57,FFT_PLAN_CT,3,4.320}, {58,FFT_PLAN_BLUESTEIN,0,2.736},
-      {59,FFT_PLAN_BLUESTEIN,0,3.801}, {60,FFT_PLAN_CT,15,2.749},
-      {61,FFT_PLAN_BLUESTEIN,0,3.662}, {62,FFT_PLAN_BLUESTEIN,0,3.368},
-      {63,FFT_PLAN_CT,7,3.440}, {65,FFT_PLAN_CT,5,3.580},
-      {66,FFT_PLAN_CT,6,3.255}, {67,FFT_PLAN_BLUESTEIN,0,4.591},
-      {68,FFT_PLAN_CT,17,2.626}, {69,FFT_PLAN_CT,3,4.266},
-      {70,FFT_PLAN_CT,2,3.378}, {71,FFT_PLAN_BLUESTEIN,0,5.659},
-      {72,FFT_PLAN_CT,24,3.319}, {73,FFT_PLAN_BLUESTEIN,0,4.759},
-      {74,FFT_PLAN_BLUESTEIN,0,5.905}, {75,FFT_PLAN_CT,25,4.445},
-      {76,FFT_PLAN_CT,4,3.757}, {77,FFT_PLAN_CT,11,3.958},
-      {78,FFT_PLAN_CT,26,3.858}, {79,FFT_PLAN_BLUESTEIN,0,6.832},
-      {80,FFT_PLAN_CT,16,3.507}, {81,FFT_PLAN_CT,27,3.554},
-      {82,FFT_PLAN_BLUESTEIN,0,4.008}, {83,FFT_PLAN_BLUESTEIN,0,5.705},
-      {84,FFT_PLAN_CT,4,3.043}, {85,FFT_PLAN_CT,17,3.358},
-      {86,FFT_PLAN_CT,2,4.528}, {87,FFT_PLAN_CT,3,4.069},
-      {88,FFT_PLAN_CT,8,3.139}, {89,FFT_PLAN_BLUESTEIN,0,6.041},
-      {90,FFT_PLAN_CT,3,3.524}, {91,FFT_PLAN_CT,13,3.700},
-      {92,FFT_PLAN_CT,2,3.840}, {93,FFT_PLAN_CT,31,4.173},
-      {94,FFT_PLAN_BLUESTEIN,0,4.272}, {95,FFT_PLAN_CT,5,5.648},
-      {96,FFT_PLAN_CT,48,2.885}, {97,FFT_PLAN_BLUESTEIN,0,5.390},
-      {98,FFT_PLAN_CT,7,3.600}, {99,FFT_PLAN_CT,3,3.909},
-      {100,FFT_PLAN_CT,10,3.713}, {101,FFT_PLAN_BLUESTEIN,0,9.192},
-      {102,FFT_PLAN_CT,2,4.246}, {103,FFT_PLAN_BLUESTEIN,0,3.938},
-      {104,FFT_PLAN_CT,8,3.624}, {105,FFT_PLAN_CT,7,3.495},
-      {106,FFT_PLAN_BLUESTEIN,0,4.707}, {107,FFT_PLAN_BLUESTEIN,0,4.982},
-      {108,FFT_PLAN_BLUESTEIN,0,4.060}, {109,FFT_PLAN_BLUESTEIN,0,4.856},
-      {110,FFT_PLAN_CT,22,3.868}, {111,FFT_PLAN_CT,37,4.219},
-      {112,FFT_PLAN_CT,8,2.698}, {113,FFT_PLAN_BLUESTEIN,0,4.403},
-      {114,FFT_PLAN_CT,2,3.370}, {115,FFT_PLAN_BLUESTEIN,0,4.312},
-      {116,FFT_PLAN_CT,2,4.155}, {117,FFT_PLAN_CT,13,4.763},
-      {118,FFT_PLAN_CT,59,4.817}, {119,FFT_PLAN_BLUESTEIN,0,4.161},
-      {120,FFT_PLAN_CT,8,2.951}, {121,FFT_PLAN_BLUESTEIN,0,3.502},
-      {122,FFT_PLAN_CT,2,4.733}, {123,FFT_PLAN_BLUESTEIN,0,4.182},
-      {124,FFT_PLAN_BLUESTEIN,0,3.989}, {125,FFT_PLAN_BLUESTEIN,0,5.072},
-      {126,FFT_PLAN_CT,42,3.409}, {127,FFT_PLAN_BLUESTEIN,0,8.817},
-    };
-    int nknown = sizeof(known)/sizeof(known[0]);
-    for (int i = 0; i < nknown; i++) {
-      int idx = known[i].n;
-      plans[idx] = (FftPlan){known[i].type, known[i].radix};
-      plan_times[idx] = known[i].time;
-    }
-    printf("Loaded %d known optimal plans (N=2..128 + pow2 to 512).\n", nknown);
-  }
-
-  /* ====================================================================== */
-  /* Pass 2: Remaining sizes 129..256 (mixed-radix CT + DFT + Bluestein)    */
+  /* Benchmark all sizes N=2..MAX_BENCH_N incrementally                     */
   /* ====================================================================== */
 
-  printf("\n--- Pass 2: Sizes 129..%d (mixed-radix CT + DFT + Bluestein) ---\n",
-         MAX_BENCH_N);
+  printf("\n--- Benchmarking all sizes N=2..%d ---\n", MAX_BENCH_N);
 
-  for (int n = 129; n <= MAX_BENCH_N; n++) {
-    if (is_pow2(n)) continue;
+  for (int n = 2; n <= MAX_BENCH_N; n++) {
 
     int batch_size = 524288 / n;
     if (batch_size < 64) batch_size = 64;
@@ -755,8 +547,26 @@ int main(void) {
       }
     }
 
-    /* Strategy 3: Bluestein (needed for primes; skip if CT already works) */
-    if (!any_ok) {
+    /* Strategy 3: Rader (for primes where p-1 has a known plan) */
+    if (is_prime_bench(n) && plan_times[n - 1] >= 0) {
+      trial[n] = (FftPlan){FFT_PLAN_RADER, 0};
+      char *wgsl = gen_fft(n, trial, 1);
+      if (wgsl) {
+        int correct = 0;
+        double t = bench_wgsl(&ctx, n, wgsl, batch_size, &correct);
+        printf("  Rader (M=%d)  %7.3f ms  %s\n",
+               n - 1, t, correct ? "OK" : "FAIL");
+        if (correct && t > 0 && t < best_time) {
+          best_time = t;
+          best_plan = trial[n];
+          any_ok = 1;
+        }
+        free(wgsl);
+      }
+    }
+
+    /* Strategy 4: Bluestein (always try — competes with CT and Rader) */
+    {
       int M = next_pow2_bench(2 * n - 1);
       if (M <= FFT_PLAN_MAX_N && plan_times[M] > 0) {
         trial[n] = (FftPlan){FFT_PLAN_BLUESTEIN, 0};
@@ -819,6 +629,7 @@ int main(void) {
   for (int n = 0; n <= MAX_BENCH_N; n++) {
     const char *ts = plans[n].type == FFT_PLAN_DFT ? "FFT_PLAN_DFT"
                    : plans[n].type == FFT_PLAN_CT  ? "FFT_PLAN_CT"
+                   : plans[n].type == FFT_PLAN_RADER ? "FFT_PLAN_RADER"
                    : "FFT_PLAN_BLUESTEIN";
     printf("  [%3d] = {%s, %d},\n", n, ts, plans[n].radix);
   }

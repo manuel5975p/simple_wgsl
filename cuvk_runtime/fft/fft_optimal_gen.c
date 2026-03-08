@@ -451,13 +451,174 @@ char *gen_fft_bluestein(int n, const FftOptPlan *pow2_plan_table, int direction)
 }
 
 /* ========================================================================== */
-/* General FFT: mixed-radix CT + Bluestein + DFT for any size                 */
+/* General FFT: mixed-radix CT + Bluestein + Rader + DFT for any size         */
 /* ========================================================================== */
 
-/* Forward declaration (mutual recursion with emit_bluestein_inline) */
+/* Forward declaration (mutual recursion with emit_bluestein_inline/rader) */
 static void emit_general_fft(StrBuf *sb, int count, const int *vars,
                               const FftPlan *plans, int direction,
                               int *tc, int *next_var, int *perm_out);
+
+/* ========================================================================== */
+/* Number theory helpers for Rader's algorithm                                 */
+/* ========================================================================== */
+
+static int modpow_opt(int base, int exp, int m) {
+  long long result = 1, b = base % m;
+  while (exp > 0) {
+    if (exp & 1) result = result * b % m;
+    b = b * b % m;
+    exp >>= 1;
+  }
+  return (int)result;
+}
+
+static int primitive_root_opt(int p) {
+  if (p == 2) return 1;
+  int pm1 = p - 1;
+  int factors[32], nf = 0;
+  int tmp = pm1;
+  for (int d = 2; d * d <= tmp; d++) {
+    if (tmp % d == 0) {
+      factors[nf++] = d;
+      while (tmp % d == 0) tmp /= d;
+    }
+  }
+  if (tmp > 1) factors[nf++] = tmp;
+
+  for (int g = 2; g < p; g++) {
+    int ok = 1;
+    for (int i = 0; i < nf; i++) {
+      if (modpow_opt(g, pm1 / factors[i], p) == 1) { ok = 0; break; }
+    }
+    if (ok) return g;
+  }
+  return -1;
+}
+
+/* ========================================================================== */
+/* Rader's algorithm — prime p via cyclic convolution of length p-1            */
+/* ========================================================================== */
+
+static void emit_rader_inline(StrBuf *sb, int p, const int *vars,
+                               const FftPlan *plans, int direction,
+                               int *tc, int *next_var, int *perm_out) {
+  int M = p - 1;  /* convolution length */
+  int g = primitive_root_opt(p);
+
+  /* Compute g^j mod p for j=0..M-1 (permutation sequence) */
+  int g_pow[FFT_PLAN_MAX_N + 1];
+  g_pow[0] = 1;
+  for (int j = 1; j < M; j++)
+    g_pow[j] = (int)((long long)g_pow[j - 1] * g % p);
+
+  /* Compute g^{-j} mod p for j=0..M-1 (inverse permutation) */
+  int g_inv_pow[FFT_PLAN_MAX_N + 1];
+  int g_inv = modpow_opt(g, p - 2, p);  /* g^{-1} mod p */
+  g_inv_pow[0] = 1;
+  for (int j = 1; j < M; j++)
+    g_inv_pow[j] = (int)((long long)g_inv_pow[j - 1] * g_inv % p);
+
+  /* Precompute Rader kernel b[j] = W_p^{g^{-j}} and its DFT B[k] */
+  double b_re[FFT_PLAN_MAX_N + 1], b_im[FFT_PLAN_MAX_N + 1];
+  for (int j = 0; j < M; j++) {
+    double angle = (double)direction * -2.0 * M_PI * g_inv_pow[j] / (double)p;
+    b_re[j] = cos(angle);
+    b_im[j] = sin(angle);
+    if (fabs(b_re[j]) < 1e-15) b_re[j] = 0.0;
+    if (fabs(b_im[j]) < 1e-15) b_im[j] = 0.0;
+  }
+
+  /* DFT of kernel: B[k] = sum_j b[j] * W_M^{kj} */
+  double B_re[FFT_PLAN_MAX_N + 1], B_im[FFT_PLAN_MAX_N + 1];
+  for (int k = 0; k < M; k++) {
+    double sr = 0.0, si = 0.0;
+    for (int j = 0; j < M; j++) {
+      double angle = -2.0 * M_PI * (double)k * (double)j / (double)M;
+      double wr = cos(angle), wi = sin(angle);
+      sr += b_re[j] * wr - b_im[j] * wi;
+      si += b_re[j] * wi + b_im[j] * wr;
+    }
+    B_re[k] = sr;  B_im[k] = si;
+    if (fabs(B_re[k]) < 1e-12) B_re[k] = 0.0;
+    if (fabs(B_im[k]) < 1e-12) B_im[k] = 0.0;
+  }
+
+  sb_printf(sb, "  { // Rader prime=%d, g=%d\n", p, g);
+
+  /* Save x[0] (needed for non-DC outputs: X[k] = x[0] + conv[k]) */
+  int xinp0 = (*tc)++;
+  sb_printf(sb, "  let xinp%d: vec2<f32> = v%d;\n", xinp0, vars[0]);
+
+  /* Step 1: x0 = sum of all p inputs (DC component) */
+  int x0 = (*tc)++;
+  sb_printf(sb, "  var x0_%d: vec2<f32> = v%d;\n", x0, vars[0]);
+  for (int j = 1; j < p; j++)
+    sb_printf(sb, "  x0_%d = x0_%d + v%d;\n", x0, x0, vars[j]);
+
+  /* Step 2: Permute inputs by g^j: a[j] = input[g^j mod p], j=0..M-1 */
+  int a_base = *next_var;
+  *next_var += M;
+  for (int j = 0; j < M; j++)
+    sb_printf(sb, "  var v%d: vec2<f32> = v%d;\n", a_base + j, vars[g_pow[j]]);
+
+  /* Step 3: Forward DFT of length M on a[] */
+  int a_vars[FFT_PLAN_MAX_N + 1];
+  for (int j = 0; j < M; j++) a_vars[j] = a_base + j;
+  int perm_fwd[FFT_PLAN_MAX_N + 1];
+  emit_general_fft(sb, M, a_vars, plans, 1, tc, next_var, perm_fwd);
+
+  /* Step 4: Pointwise multiply with precomputed kernel B[] */
+  sb_printf(sb, "  // Pointwise multiply with Rader kernel\n");
+  for (int i = 0; i < M; i++) {
+    int k = perm_fwd[i];  /* a_vars[i] holds DFT bin k */
+    emit_twiddle(sb, a_vars[i], B_re[k], B_im[k], tc);
+  }
+
+  /* Step 5: Un-permute to natural order for inverse FFT */
+  int inv_perm[FFT_PLAN_MAX_N + 1];
+  for (int i = 0; i < M; i++) inv_perm[perm_fwd[i]] = i;
+  int tmp_base = *tc;
+  for (int k = 0; k < M; k++)
+    sb_printf(sb, "  let r%d: vec2<f32> = v%d;\n",
+              tmp_base + k, a_vars[inv_perm[k]]);
+  for (int k = 0; k < M; k++)
+    sb_printf(sb, "  v%d = r%d;\n", a_vars[k], tmp_base + k);
+  *tc = tmp_base + M;
+
+  /* Step 6: Inverse DFT of length M */
+  int perm_inv[FFT_PLAN_MAX_N + 1];
+  emit_general_fft(sb, M, a_vars, plans, -1, tc, next_var, perm_inv);
+
+  /* Step 7: Scale by 1/M, add x[0], and unpermute to output */
+  int inv_perm2[FFT_PLAN_MAX_N + 1];
+  for (int i = 0; i < M; i++) inv_perm2[perm_inv[i]] = i;
+  double inv_M = 1.0 / (double)M;
+
+  /* output[0] = x0 */
+  sb_printf(sb, "  v%d = x0_%d;\n", vars[0], x0);
+
+  /* output[g^j mod p] = x0 + IDFT[j] / M, j=0..M-1 */
+  for (int j = 0; j < M; j++) {
+    int src = a_vars[inv_perm2[j]];
+    int oid = (*tc)++;
+    sb_printf(sb, "  let ro%d: vec2<f32> = xinp%d + v%d * vec2<f32>(", oid, xinp0, src);
+    sb_float(sb, inv_M);
+    sb_printf(sb, ", ");
+    sb_float(sb, inv_M);
+    sb_printf(sb, ");\n");
+    sb_printf(sb, "  v%d = ro%d;\n", vars[g_inv_pow[j]], oid);
+  }
+
+  sb_printf(sb, "  } // end Rader prime=%d\n", p);
+
+  /* Rader produces natural order */
+  for (int i = 0; i < p; i++) perm_out[i] = i;
+}
+
+/* ========================================================================== */
+/* Bluestein (chirp-z) for arbitrary sizes                                     */
+/* ========================================================================== */
 
 static void emit_bluestein_inline(StrBuf *sb, int count, const int *vars,
                                    const FftPlan *plans, int direction,
@@ -576,6 +737,12 @@ static void emit_general_fft(StrBuf *sb, int count, const int *vars,
   if (plan.type == FFT_PLAN_BLUESTEIN) {
     emit_bluestein_inline(sb, count, vars, plans, direction,
                            tc, next_var, perm_out);
+    return;
+  }
+
+  if (plan.type == FFT_PLAN_RADER) {
+    emit_rader_inline(sb, count, vars, plans, direction,
+                       tc, next_var, perm_out);
     return;
   }
 

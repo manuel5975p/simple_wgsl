@@ -35,6 +35,6 @@ else()
     set_target_properties(cuvk_cufft_shared PROPERTIES
         OUTPUT_NAME "cufft"
         SOVERSION 12
-        LINK_OPTIONS "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cufft.map"
+        LINK_OPTIONS "$<$<NOT:$<PLATFORM_ID:Darwin>>:-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cufft.map>"
     )
 endif()
