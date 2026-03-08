@@ -153,5 +153,11 @@ else()
 
         add_executable(bench_fft_multistage bench/bench_fft_multistage.c)
         target_link_libraries(bench_fft_multistage fft_stockham_gen wgsl_compiler Vulkan::Vulkan m)
+
+        add_executable(bench_fft_optimal bench/bench_fft_optimal.c)
+        target_link_libraries(bench_fft_optimal fft_optimal_gen wgsl_compiler Vulkan::Vulkan m)
+
+        add_executable(bench_fft_fused bench/bench_fft_fused.c)
+        target_link_libraries(bench_fft_fused fft_fused_gen wgsl_compiler Vulkan::Vulkan m)
     endif()
 endif()
