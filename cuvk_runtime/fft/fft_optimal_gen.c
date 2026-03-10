@@ -9,71 +9,10 @@
  */
 
 #include "fft_optimal_gen.h"
+#include "fft_strbuf.h"
+#include "fft_bda.h"
 
 #include <math.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-/* ========================================================================== */
-/* String builder (copied from fft_stockham_gen.c)                            */
-/* ========================================================================== */
-
-typedef struct {
-  char *buf;
-  size_t len;
-  size_t cap;
-} StrBuf;
-
-static void sb_init(StrBuf *sb) {
-  sb->cap = 4096;
-  sb->buf = (char *)malloc(sb->cap);
-  sb->buf[0] = '\0';
-  sb->len = 0;
-}
-
-static void sb_printf(StrBuf *sb, const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  int needed = vsnprintf(NULL, 0, fmt, ap);
-  va_end(ap);
-  if (needed < 0) return;
-  while (sb->len + (size_t)needed + 1 > sb->cap) {
-    sb->cap *= 2;
-    sb->buf = (char *)realloc(sb->buf, sb->cap);
-  }
-  va_start(ap, fmt);
-  vsnprintf(sb->buf + sb->len, sb->cap - sb->len, fmt, ap);
-  va_end(ap);
-  sb->len += (size_t)needed;
-}
-
-static char *sb_finish(StrBuf *sb) { return sb->buf; }
-
-static void sb_float(StrBuf *sb, double v) {
-  char tmp[64];
-  snprintf(tmp, sizeof(tmp), "%.17g", v);
-  sb_printf(sb, "%s", tmp);
-  if (!strchr(tmp, '.') && !strchr(tmp, 'e') && !strchr(tmp, 'E'))
-    sb_printf(sb, ".0");
-}
-
-static void sb_cmul(StrBuf *sb, const char *a, double br, double bi) {
-  sb_printf(sb, "vec2<f32>(%s.x*", a);
-  sb_float(sb, br);
-  sb_printf(sb, " - %s.y*", a);
-  sb_float(sb, bi);
-  sb_printf(sb, ", %s.x*", a);
-  sb_float(sb, bi);
-  sb_printf(sb, " + %s.y*", a);
-  sb_float(sb, br);
-  sb_printf(sb, ")");
-}
 
 /* ========================================================================== */
 /* Helpers                                                                     */
@@ -252,8 +191,9 @@ char *gen_fft_optimal(int n, const FftOptPlan *plan_table, int direction) {
   sb_init(&sb);
 
   /* Prologue: buffer binding + main entry */
+  sb_printf(&sb, "enable device_address;\n");
   sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "@group(0) @binding(0) var<storage, read_write> data: Buf;\n\n");
+  sb_printf(&sb, "var<device, read_write> data: Buf;\n\n");
   sb_printf(&sb, "@compute @workgroup_size(1)\n");
   sb_printf(&sb, "fn main(@builtin(workgroup_id) wid: vec3<u32>) {\n");
   sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n", n * 2);
@@ -291,8 +231,9 @@ char *gen_fft_direct(int n, int direction) {
   StrBuf sb;
   sb_init(&sb);
 
+  sb_printf(&sb, "enable device_address;\n");
   sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "@group(0) @binding(0) var<storage, read_write> data: Buf;\n\n");
+  sb_printf(&sb, "var<device, read_write> data: Buf;\n\n");
   sb_printf(&sb, "@compute @workgroup_size(1)\n");
   sb_printf(&sb, "fn main(@builtin(workgroup_id) wid: vec3<u32>) {\n");
   sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n", n * 2);
@@ -379,8 +320,9 @@ char *gen_fft_bluestein(int n, const FftOptPlan *pow2_plan_table, int direction)
   int tc = 0;
 
   /* Prologue */
+  sb_printf(&sb, "enable device_address;\n");
   sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "@group(0) @binding(0) var<storage, read_write> data: Buf;\n\n");
+  sb_printf(&sb, "var<device, read_write> data: Buf;\n\n");
   sb_printf(&sb, "@compute @workgroup_size(1)\n");
   sb_printf(&sb, "fn main(@builtin(workgroup_id) wid: vec3<u32>) {\n");
   sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n", n * 2);
@@ -795,8 +737,9 @@ char *gen_fft(int n, const FftPlan *plans, int direction) {
   StrBuf sb;
   sb_init(&sb);
 
+  sb_printf(&sb, "enable device_address;\n");
   sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "@group(0) @binding(0) var<storage, read_write> data: Buf;\n\n");
+  sb_printf(&sb, "var<device, read_write> data: Buf;\n\n");
   sb_printf(&sb, "@compute @workgroup_size(1)\n");
   sb_printf(&sb, "fn main(@builtin(workgroup_id) wid: vec3<u32>) {\n");
   sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n", n * 2);

@@ -526,7 +526,8 @@ static void walk_expr(WgslResolver *r, FnInfo *fi, const WgslAstNode *e) {
                 bind_ident(r, e, id);
                 if (fi && id > 0 && id <= r->sym_count &&
                     (r->symbols[id - 1].kind == WGSL_SYM_GLOBAL ||
-                     r->symbols[id - 1].kind == WGSL_SYM_IMMEDIATE))
+                     r->symbols[id - 1].kind == WGSL_SYM_IMMEDIATE ||
+                     r->symbols[id - 1].kind == WGSL_SYM_DEVICE))
                     record_fn_ref(fi, id);
             }
         } break;
@@ -657,7 +658,10 @@ static void declare_global_from_globalvar(WgslResolver *r, const WgslAstNode *gv
     memset(&s, 0, sizeof(s));
     s.id = next_id(r);
     s.kind = (gv->global_var.address_space && str_eq(gv->global_var.address_space, "immediate"))
-        ? WGSL_SYM_IMMEDIATE : WGSL_SYM_GLOBAL;
+        ? WGSL_SYM_IMMEDIATE
+        : (gv->global_var.address_space && str_eq(gv->global_var.address_space, "device"))
+        ? WGSL_SYM_DEVICE
+        : WGSL_SYM_GLOBAL;
     s.name = gv->global_var.name;
     s.decl_node = gv;
 
@@ -833,7 +837,8 @@ const WgslSymbolInfo *wgsl_resolver_globals(const WgslResolver *r, int *out_coun
     int *ids = NULL, cap = 0, cnt = 0;
     for (int i = 0; i < r->sym_count; i++) {
         if (r->symbols[i].kind == WGSL_SYM_GLOBAL ||
-            r->symbols[i].kind == WGSL_SYM_IMMEDIATE) {
+            r->symbols[i].kind == WGSL_SYM_IMMEDIATE ||
+            r->symbols[i].kind == WGSL_SYM_DEVICE) {
             if (cnt >= cap)
                 vec_grow((void **)&ids, &cap, sizeof(int));
             ids[cnt++] = r->symbols[i].id;
@@ -1065,7 +1070,8 @@ static void dfs_collect(const WgslResolver *r, const FnInfo *fi, char *visited_f
         int id = fi->direct_syms[i];
         if (id > 0 && id <= r->sym_count &&
             (r->symbols[id - 1].kind == WGSL_SYM_GLOBAL ||
-             r->symbols[id - 1].kind == WGSL_SYM_IMMEDIATE))
+             r->symbols[id - 1].kind == WGSL_SYM_IMMEDIATE ||
+             r->symbols[id - 1].kind == WGSL_SYM_DEVICE))
             keep_sym[id] = 1;
     }
     for (int c = 0; c < fi->calls_count; c++) {
@@ -1094,7 +1100,7 @@ static const WgslSymbolInfo *entrypoint_syms(const WgslResolver *r, const char *
         if (!keep[id])
             continue;
         const WgslSymbolInfo *s = &r->symbols[id - 1];
-        if (s->kind != WGSL_SYM_GLOBAL && s->kind != WGSL_SYM_IMMEDIATE)
+        if (s->kind != WGSL_SYM_GLOBAL && s->kind != WGSL_SYM_IMMEDIATE && s->kind != WGSL_SYM_DEVICE)
             continue;
         if (only_binding && !(s->has_group && s->has_binding))
             continue;
@@ -1254,6 +1260,64 @@ const WgslImmediateInfo *wgsl_resolver_entrypoint_immediates(
 
     NODE_FREE(imm_ids);
     if (out_count) *out_count = icnt;
+    return arr;
+}
+
+const WgslDeviceVarInfo *wgsl_resolver_entrypoint_device_vars(
+    const WgslResolver *r,
+    const char *entry_name,
+    SsirLayoutRule layout,
+    int *out_count)
+{
+    (void)layout;
+    if (out_count) *out_count = 0;
+    if (!r || !entry_name) return NULL;
+
+    const FnInfo *root = find_fninfo_by_name(r, entry_name);
+    if (!root || !root->is_entry) return NULL;
+
+    /* collect transitive symbol set */
+    char *keep = (char *)NODE_MALLOC((size_t)(r->sym_count + 1));
+    memset(keep, 0, (size_t)r->sym_count + 1);
+    char *visited = (char *)NODE_MALLOC((size_t)r->fn_info_count + 1);
+    memset(visited, 0, (size_t)r->fn_info_count + 1);
+    dfs_collect(r, root, visited, keep);
+    NODE_FREE(visited);
+
+    /* filter to device symbols only, in declaration order */
+    int *dev_ids = NULL, dcap = 0, dcnt = 0;
+    for (int id = 1; id <= r->sym_count; id++) {
+        if (!keep[id]) continue;
+        if (r->symbols[id - 1].kind != WGSL_SYM_DEVICE) continue;
+        if (dcnt >= dcap)
+            vec_grow((void **)&dev_ids, &dcap, sizeof(int));
+        if (!dev_ids) break;
+        dev_ids[dcnt++] = id;
+    }
+    NODE_FREE(keep);
+
+    if (dcnt == 0) {
+        NODE_FREE(dev_ids);
+        return NULL;
+    }
+
+    WgslDeviceVarInfo *arr = (WgslDeviceVarInfo *)NODE_MALLOC(
+        sizeof(WgslDeviceVarInfo) * dcnt);
+    int offset = 0;
+
+    for (int i = 0; i < dcnt; i++) {
+        const WgslSymbolInfo *sym = &r->symbols[dev_ids[i] - 1];
+        offset = align_up(offset, 8); /* u64 alignment */
+
+        arr[i].name = sym->name;
+        arr[i].offset = offset;
+        arr[i].decl_node = sym->decl_node;
+
+        offset += 8; /* sizeof(u64) */
+    }
+
+    NODE_FREE(dev_ids);
+    if (out_count) *out_count = dcnt;
     return arr;
 }
 

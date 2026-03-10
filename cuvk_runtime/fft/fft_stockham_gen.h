@@ -87,6 +87,40 @@ char *gen_fft_r2c_postprocess(int n, int workgroup_size);
  */
 char *gen_fft_c2r_preprocess(int n, int workgroup_size);
 
+/* ========================================================================== */
+/* Extended API: planner-friendly multi-stage FFT                             */
+/* ========================================================================== */
+
+#define FFT_STOCKHAM_MAX_STAGES 20
+
+/*
+ * Factorize N into radices [2..max_radix], greedy largest-first.
+ *
+ *   max_radix - cap largest radix (2..32, 0 = default 32).
+ *               Smaller max_radix = more stages, fewer registers per stage.
+ *
+ * NOTE: Currently factorization is greedy largest-first with a radix cap.
+ * A future extension could accept an explicit radix sequence (e.g.
+ * [8,8,8,8] for N=4096) giving the planner full control over the
+ * decomposition, at the cost of a larger search space.
+ *
+ * Returns: number of stages, or 0 if N cannot be factorized.
+ */
+int fft_stockham_factorize(int n, int max_radix, int *radices);
+
+/*
+ * Query the number of stages for a given (N, max_radix) configuration.
+ */
+int fft_stockham_num_stages(int n, int max_radix);
+
+/*
+ * Compute dispatch_x for a given stage.
+ *   n_total        - FFT size
+ *   radix          - this stage's radix
+ *   workgroup_size - threads per workgroup
+ */
+int fft_stockham_dispatch_x(int n_total, int radix, int workgroup_size);
+
 #ifdef __cplusplus
 }
 #endif

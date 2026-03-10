@@ -223,13 +223,15 @@ static void staged_copy(VkCtx *ctx, VkBuffer src, VkBuffer dst,
   vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cmd);
 }
 
-static int bench_one(VkCtx *ctx, int n, int max_radix, int batch, int repeats,
+static int bench_one(VkCtx *ctx, int n, int max_radix, int wg_limit,
+                     int batch, int repeats,
                      double *out_ms, float *out_err) {
 
   /* Generate WGSL */
-  char *wgsl = gen_fft_fused_ex(n, 1, max_radix);
+  char *wgsl = gen_fft_fused_ex(n, 1, max_radix, wg_limit);
   if (!wgsl) {
-    fprintf(stderr, "  N=%d mr=%d: gen_fft_fused_ex failed\n", n, max_radix);
+    fprintf(stderr, "  N=%d mr=%d wg=%d: gen_fft_fused_ex failed\n",
+            n, max_radix, wg_limit);
     return -1;
   }
 
@@ -244,7 +246,7 @@ static int bench_one(VkCtx *ctx, int n, int max_radix, int batch, int repeats,
   free(wgsl);
 
   /* LUT */
-  int lut_count = fft_fused_lut_size_ex(n, 1, max_radix);
+  int lut_count = fft_fused_lut_size_ex(n, 1, max_radix); /* wg_limit doesn't affect LUT */
   int num_bindings = (lut_count > 0) ? 3 : 2;
 
   /* Create pipeline */
@@ -257,7 +259,7 @@ static int bench_one(VkCtx *ctx, int n, int max_radix, int batch, int repeats,
   wgsl_lower_free(spirv);
 
   /* Batching: pad batch count to multiple of B */
-  int B = fft_fused_batch_per_wg_ex(n, max_radix);
+  int B = fft_fused_batch_per_wg_ex(n, max_radix, wg_limit);
   if (B < 1) B = 1;
   int padded_batch = ((batch + B - 1) / B) * B;
   int dispatch_count = padded_batch / B;
@@ -454,7 +456,7 @@ int main(void) {
 
   /* Test sizes */
   int sizes[] = {
-    2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024,
+    2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
   };
   int n_sizes = sizeof(sizes) / sizeof(sizes[0]);
 
@@ -462,9 +464,13 @@ int main(void) {
   int mr_values[] = {0, 2, 4, 8, 16};
   int n_mr = sizeof(mr_values) / sizeof(mr_values[0]);
 
-  printf("\n%-8s  %3s  %4s  %4s  %6s  %6s  %8s  %6s\n",
-         "N", "mr", "B", "wg", "batch", "reps", "us/fft", "err");
-  printf("-------  ---  ----  ----  ------  ------  --------  ------\n");
+  /* wg_limit values to sweep (0 = default 256) */
+  int wgl_values[] = {0, 512, 1024};
+  int n_wgl = sizeof(wgl_values) / sizeof(wgl_values[0]);
+
+  printf("\n%-8s  %3s  %5s  %4s  %5s  %6s  %6s  %8s  %6s\n",
+         "N", "mr", "wglim", "B", "wg", "batch", "reps", "us/fft", "err");
+  printf("-------  ---  -----  ----  -----  ------  ------  --------  ------\n");
 
   for (int i = 0; i < n_sizes; i++) {
     int n = sizes[i];
@@ -473,34 +479,38 @@ int main(void) {
     for (int mi = 0; mi < n_mr; mi++) {
       int mr = mr_values[mi];
 
-      int wg = fft_fused_workgroup_size_ex(n, mr);
-      int B = fft_fused_batch_per_wg_ex(n, mr);
-      if (wg == 0) continue;  /* unsupported config */
+      for (int wi = 0; wi < n_wgl; wi++) {
+        int wgl = wgl_values[wi];
 
-      /* Verify correctness */
-      double ms;
-      float err;
-      if (bench_one(&ctx, n, mr, 1, 1, &ms, &err) != 0)
-        continue;
-      if (err > 1e-4f) continue;  /* skip broken configs */
+        int wg = fft_fused_workgroup_size_ex(n, mr, wgl);
+        int B = fft_fused_batch_per_wg_ex(n, mr, wgl);
+        if (wg == 0) continue;
 
-      /* Pilot + sustained benchmark */
-      double pilot_ms;
-      float pilot_err;
-      if (bench_one(&ctx, n, mr, batch, 1, &pilot_ms, &pilot_err) != 0)
-        continue;
-      int reps = (pilot_ms > 0.001) ? (int)(100.0 / pilot_ms) : 100000;
-      if (reps < 1) reps = 1;
-      if (reps > 200000) reps = 200000;
-      double ms_batch;
-      float err_batch;
-      if (bench_one(&ctx, n, mr, batch, reps, &ms_batch, &err_batch) != 0)
-        continue;
-      double us_per_fft = (ms_batch > 0) ? ms_batch * 1000.0 / batch : -1.0;
+        /* Verify correctness */
+        double ms;
+        float err;
+        if (bench_one(&ctx, n, mr, wgl, 1, 1, &ms, &err) != 0)
+          continue;
+        if (err > 1e-4f) continue;
 
-      printf("%-8d  %3d  %4d  %4d  %6d  %6d  %8.4f  %6.1e\n",
-             n, mr, B, wg, batch, reps, us_per_fft, err);
-      fflush(stdout);
+        /* Pilot + sustained benchmark */
+        double pilot_ms;
+        float pilot_err;
+        if (bench_one(&ctx, n, mr, wgl, batch, 1, &pilot_ms, &pilot_err) != 0)
+          continue;
+        int reps = (pilot_ms > 0.001) ? (int)(100.0 / pilot_ms) : 100000;
+        if (reps < 1) reps = 1;
+        if (reps > 200000) reps = 200000;
+        double ms_batch;
+        float err_batch;
+        if (bench_one(&ctx, n, mr, wgl, batch, reps, &ms_batch, &err_batch) != 0)
+          continue;
+        double us_per_fft = (ms_batch > 0) ? ms_batch * 1000.0 / batch : -1.0;
+
+        printf("%-8d  %3d  %5d  %4d  %5d  %6d  %6d  %8.4f  %6.1e\n",
+               n, mr, wgl, B, wg, batch, reps, us_per_fft, err);
+        fflush(stdout);
+      }
     }
   }
 

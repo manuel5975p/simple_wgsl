@@ -159,5 +159,26 @@ else()
 
         add_executable(bench_fft_fused bench/bench_fft_fused.c)
         target_link_libraries(bench_fft_fused fft_fused_gen wgsl_compiler Vulkan::Vulkan m)
+
+        add_executable(bench_fused_focused bench/bench_fused_focused.c)
+        target_link_libraries(bench_fused_focused fft_fused_gen wgsl_compiler Vulkan::Vulkan m)
+
+        add_executable(bench_fft_2d bench/bench_fft_2d.c)
+        target_link_libraries(bench_fft_2d cuvk_cufft_shared cuvk_runtime_shared m)
+
+        add_executable(bench_ours_batched bench/bench_ours_batched.c)
+        target_link_libraries(bench_ours_batched cuvk_cufft_shared cuvk_runtime_shared m)
+
+        add_executable(bench_128_explore bench/bench_128_explore.c)
+        target_link_libraries(bench_128_explore cuvk_cufft_shared cuvk_runtime_shared m)
+
+        add_executable(bench_plan_time bench/bench_plan_time.c)
+        target_link_libraries(bench_plan_time cuvk_cufft_shared cuvk_runtime_shared m)
+
+        find_library(FFTW3F_LIB fftw3f)
+        if(FFTW3F_LIB)
+            add_executable(bench_fftw_compare bench/bench_fftw_compare.c)
+            target_link_libraries(bench_fftw_compare fft_fused_gen wgsl_compiler Vulkan::Vulkan ${FFTW3F_LIB} m)
+        endif()
     endif()
 endif()

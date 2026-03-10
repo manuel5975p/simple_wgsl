@@ -949,6 +949,9 @@ CUresult CUDAAPI cuCtxSynchronize(void)
     /* Flush default stream (submit any pending commands) */
     cuvk_stream_submit_and_wait(&g_cuvk.current_ctx->default_stream);
 
+    /* Flush deferred cuFFT submissions */
+    cuvk_fft_flush(g_cuvk.current_ctx);
+
     VkResult vr = g_cuvk.vk.vkDeviceWaitIdle(g_cuvk.current_ctx->device);
     return cuvk_vk_to_cu(vr);
 }

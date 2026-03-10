@@ -13,10 +13,20 @@ add_library(fft_fused_gen STATIC fft_fused_gen.c)
 target_link_libraries(fft_fused_gen m)
 target_include_directories(fft_fused_gen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
+# FFT four-step (twiddle+transpose) kernel generator
+add_library(fft_fourstep_gen STATIC fft_fourstep_gen.c)
+target_link_libraries(fft_fourstep_gen m)
+target_include_directories(fft_fourstep_gen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# FFT 2D fused (single-dispatch 2D FFT + tiled transpose) shader generator
+add_library(fft_2d_gen STATIC fft_2d_gen.c)
+target_link_libraries(fft_2d_gen m)
+target_include_directories(fft_2d_gen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 # Shared library: cufft64_*.dll / libcufft.so.12
 # Links against cuvk_runtime_shared (libcuda.so) to share g_cuvk state.
 add_library(cuvk_cufft_shared SHARED cuvk_cufft.c)
-target_link_libraries(cuvk_cufft_shared PUBLIC cuvk_runtime_shared wgsl_compiler fft_stockham_gen ${_VULKAN_LIB} m)
+target_link_libraries(cuvk_cufft_shared PUBLIC cuvk_runtime_shared wgsl_compiler fft_stockham_gen fft_fused_gen fft_fourstep_gen fft_2d_gen ${_VULKAN_LIB} m)
 target_include_directories(cuvk_cufft_shared PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/..

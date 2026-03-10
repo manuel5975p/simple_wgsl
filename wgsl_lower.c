@@ -325,6 +325,7 @@ struct WgslLower {
     uint32_t id_u32;
     uint32_t id_f32;
     uint32_t id_f16;
+    uint32_t id_u64;
     uint32_t id_vec2f;
     uint32_t id_vec3f;
     uint32_t id_vec4f;
@@ -404,6 +405,17 @@ struct WgslLower {
         uint32_t ssir_member_type; // SSIR member type ID
     } imm_map[64];
     int imm_map_count;
+
+    // Device address variable mapping (name -> push constant struct member + pointee type)
+    struct {
+        const char *name;
+        uint32_t pc_var;           // push constant variable SPIR-V ID
+        uint32_t member_index;     // member index in the push constant struct
+        uint32_t pointee_type;     // SPIR-V type of what the pointer points to (e.g., SrcBuf struct)
+        uint32_t ssir_pc_var;      // SSIR push constant variable ID
+        uint32_t ssir_pointee_type; // SSIR pointee type
+    } dev_map[16];
+    int dev_map_count;
 
     // User-defined (non-entrypoint) function registry
     struct {
@@ -520,6 +532,7 @@ static SsirAddressSpace spv_sc_to_ssir_addr(SpvStorageClass sc) {
         case SpvStorageClassInput: return SSIR_ADDR_INPUT;
         case SpvStorageClassOutput: return SSIR_ADDR_OUTPUT;
         case SpvStorageClassPushConstant: return SSIR_ADDR_PUSH_CONSTANT;
+        case SpvStorageClassPhysicalStorageBuffer: return SSIR_ADDR_PHYSICAL_STORAGE_BUFFER;
         default: return SSIR_ADDR_FUNCTION;
     }
 }
@@ -553,6 +566,12 @@ static uint32_t spv_type_to_ssir(WgslLower *l, uint32_t spv_type) {
                 case TC_BOOL:
                     return l->ssir_bool;
                 case TC_INT:
+                    if (e->int_type.width == 64) {
+                        if (e->int_type.signedness)
+                            return ssir_type_i64(l->ssir);
+                        else
+                            return ssir_type_u64(l->ssir);
+                    }
                     if (e->int_type.signedness)
                         return l->ssir_i32;
                     else
@@ -847,8 +866,19 @@ static uint32_t emit_type_int(WgslLower *l, uint32_t width, uint32_t signedness)
 
     if (width == 32 && signedness == 1) l->id_i32 = id;
     if (width == 32 && signedness == 0) l->id_u32 = id;
+    if (width == 64 && signedness == 0) l->id_u64 = id;
 
     return id;
+}
+
+// Emit u64 type (unsigned 64-bit integer), caching result in l->id_u64.
+// Also emits SpvCapabilityInt64 if not already present.
+// l nonnull
+static uint32_t emit_type_u64(WgslLower *l) {
+    wgsl_compiler_assert(l != NULL, "emit_type_u64: l is NULL");
+    if (l->id_u64) return l->id_u64;
+    emit_capability(l, SpvCapabilityInt64);
+    return emit_type_int(l, 64, 0);
 }
 
 // l nonnull
@@ -2975,6 +3005,61 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
         }
     }
 
+    // Check device address variables — return PSB pointer (like storage buffer vars)
+    for (int i = 0; i < l->dev_map_count; i++) {
+        if (l->dev_map[i].name && strcmp(l->dev_map[i].name, name) == 0) {
+            /* Same sequence: load u64 → OpConvertUToPtr */
+            uint32_t idx = emit_const_u32(l, l->dev_map[i].member_index);
+            uint32_t u64_type = emit_type_u64(l);
+            uint32_t pc_ptr_type = emit_type_pointer(l, SpvStorageClassPushConstant, u64_type);
+            uint32_t chain_id = fresh_id(l);
+            {
+                WordBuf *wb = &l->sections.functions;
+                emit_op(wb, SpvOpAccessChain, 5);
+                wb_push_u32(wb, pc_ptr_type);
+                wb_push_u32(wb, chain_id);
+                wb_push_u32(wb, l->dev_map[i].pc_var);
+                wb_push_u32(wb, idx);
+            }
+            uint32_t addr_id = fresh_id(l);
+            {
+                WordBuf *wb = &l->sections.functions;
+                emit_op(wb, SpvOpLoad, 4);
+                wb_push_u32(wb, u64_type);
+                wb_push_u32(wb, addr_id);
+                wb_push_u32(wb, chain_id);
+            }
+            uint32_t psb_ptr_type = emit_type_pointer(l,
+                SpvStorageClassPhysicalStorageBuffer, l->dev_map[i].pointee_type);
+            uint32_t ptr_id = fresh_id(l);
+            {
+                WordBuf *wb = &l->sections.functions;
+                emit_op(wb, SpvOpConvertUToPtr, 4);
+                wb_push_u32(wb, psb_ptr_type);
+                wb_push_u32(wb, ptr_id);
+                wb_push_u32(wb, addr_id);
+            }
+
+            /* SSIR path */
+            if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                uint32_t ssir_u64 = ssir_type_u64(l->ssir);
+                uint32_t ssir_idx = ssir_const_u32(l->ssir, l->dev_map[i].member_index);
+                uint32_t ssir_pc_ptr_ty = ssir_type_ptr(l->ssir, ssir_u64, SSIR_ADDR_PUSH_CONSTANT);
+                uint32_t ssir_chain = ssir_build_access(WL_BCTX(l),
+                    ssir_pc_ptr_ty, l->dev_map[i].ssir_pc_var, &ssir_idx, 1);
+                uint32_t ssir_addr = ssir_build_load(WL_BCTX(l), ssir_u64, ssir_chain);
+                uint32_t ssir_psb_ptr_ty = ssir_type_ptr(l->ssir,
+                    l->dev_map[i].ssir_pointee_type, SSIR_ADDR_PHYSICAL_STORAGE_BUFFER);
+                uint32_t ssir_ptr = ssir_build_bitcast(WL_BCTX(l), ssir_psb_ptr_ty, ssir_addr);
+                ssir_id_map_set(l, ptr_id, ssir_ptr);
+            }
+
+            r.id = ptr_id;
+            r.type_id = l->dev_map[i].pointee_type;
+            return r;
+        }
+    }
+
     // Check global variables
     uint32_t var_id, elem_type_id;
     SpvStorageClass sc;
@@ -3054,6 +3139,66 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
                     r.id = chain_id;
                     r.type_id = l->imm_map[i].member_type;
                     if (out_sc) *out_sc = SpvStorageClassPushConstant;
+                    return r;
+                }
+            }
+
+            // Check device address variables (load BDA from push constants, convert to PSB pointer)
+            for (int i = 0; i < l->dev_map_count; i++) {
+                if (l->dev_map[i].name && strcmp(l->dev_map[i].name, name) == 0) {
+                    /* Step 1: AccessChain to get pointer to u64 member in push constants */
+                    uint32_t idx = emit_const_u32(l, l->dev_map[i].member_index);
+                    uint32_t u64_type = emit_type_u64(l);
+                    uint32_t pc_ptr_type = emit_type_pointer(l, SpvStorageClassPushConstant, u64_type);
+                    uint32_t chain_id = fresh_id(l);
+                    {
+                        WordBuf *wb = &l->sections.functions;
+                        emit_op(wb, SpvOpAccessChain, 5);
+                        wb_push_u32(wb, pc_ptr_type);
+                        wb_push_u32(wb, chain_id);
+                        wb_push_u32(wb, l->dev_map[i].pc_var);
+                        wb_push_u32(wb, idx);
+                    }
+
+                    /* Step 2: Load the u64 address */
+                    uint32_t addr_id = fresh_id(l);
+                    {
+                        WordBuf *wb = &l->sections.functions;
+                        emit_op(wb, SpvOpLoad, 4);
+                        wb_push_u32(wb, u64_type);
+                        wb_push_u32(wb, addr_id);
+                        wb_push_u32(wb, chain_id);
+                    }
+
+                    /* Step 3: OpConvertUToPtr — u64 → ptr<PhysicalStorageBuffer, T> */
+                    uint32_t psb_ptr_type = emit_type_pointer(l,
+                        SpvStorageClassPhysicalStorageBuffer, l->dev_map[i].pointee_type);
+                    uint32_t ptr_id = fresh_id(l);
+                    {
+                        WordBuf *wb = &l->sections.functions;
+                        emit_op(wb, SpvOpConvertUToPtr, 4);
+                        wb_push_u32(wb, psb_ptr_type);
+                        wb_push_u32(wb, ptr_id);
+                        wb_push_u32(wb, addr_id);
+                    }
+
+                    /* SSIR: same sequence */
+                    if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                        uint32_t ssir_u64 = ssir_type_u64(l->ssir);
+                        uint32_t ssir_idx = ssir_const_u32(l->ssir, l->dev_map[i].member_index);
+                        uint32_t ssir_pc_ptr_ty = ssir_type_ptr(l->ssir, ssir_u64, SSIR_ADDR_PUSH_CONSTANT);
+                        uint32_t ssir_chain = ssir_build_access(WL_BCTX(l),
+                            ssir_pc_ptr_ty, l->dev_map[i].ssir_pc_var, &ssir_idx, 1);
+                        uint32_t ssir_addr = ssir_build_load(WL_BCTX(l), ssir_u64, ssir_chain);
+                        uint32_t ssir_psb_ptr_ty = ssir_type_ptr(l->ssir,
+                            l->dev_map[i].ssir_pointee_type, SSIR_ADDR_PHYSICAL_STORAGE_BUFFER);
+                        uint32_t ssir_ptr = ssir_build_bitcast(WL_BCTX(l), ssir_psb_ptr_ty, ssir_addr);
+                        ssir_id_map_set(l, ptr_id, ssir_ptr);
+                    }
+
+                    r.id = ptr_id;
+                    r.type_id = l->dev_map[i].pointee_type;
+                    if (out_sc) *out_sc = SpvStorageClassPhysicalStorageBuffer;
                     return r;
                 }
             }
@@ -4848,7 +4993,8 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
             ExprResult ptr = lower_ptr_expr(l, node, &sc);
             if (ptr.id && (sc == SpvStorageClassStorageBuffer || sc == SpvStorageClassUniform ||
                               sc == SpvStorageClassInput || sc == SpvStorageClassOutput ||
-                              sc == SpvStorageClassFunction)) {
+                              sc == SpvStorageClassFunction ||
+                              sc == SpvStorageClassPhysicalStorageBuffer)) {
                 // This is struct member access - load from the pointer
                 uint32_t loaded;
                 if (emit_load(l, ptr.type_id, &loaded, ptr.id)) {
@@ -4943,7 +5089,8 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
             SpvStorageClass sc;
             ExprResult ptr = lower_ptr_expr(l, node, &sc);
             if (ptr.id && (sc == SpvStorageClassStorageBuffer || sc == SpvStorageClassUniform ||
-                           sc == SpvStorageClassWorkgroup || sc == SpvStorageClassFunction)) {
+                           sc == SpvStorageClassWorkgroup || sc == SpvStorageClassFunction ||
+                           sc == SpvStorageClassPhysicalStorageBuffer)) {
                 // This is pointer-based array access - load from the pointer
                 uint32_t loaded;
                 if (emit_load(l, ptr.type_id, &loaded, ptr.id)) {
@@ -7458,18 +7605,33 @@ static int lower_immediates_for_entry(WgslLower *l, const char *entry_name) {
     int imm_count = 0;
     const WgslImmediateInfo *imms = wgsl_resolver_entrypoint_immediates(
         l->resolver, entry_name, layout, &imm_count);
-    if (!imms || imm_count == 0) return 1; /* no immediates */
+
+    int dev_count = 0;
+    const WgslDeviceVarInfo *devs = wgsl_resolver_entrypoint_device_vars(
+        l->resolver, entry_name, layout, &dev_count);
+
+    if (!imm_count) imm_count = 0;
+    if (!dev_count) dev_count = 0;
+
+    int total_members = imm_count + dev_count;
+    if (total_members == 0) {
+        if (imms) wgsl_resolve_free((void *)imms);
+        if (devs) wgsl_resolve_free((void *)devs);
+        return 1; /* nothing to do */
+    }
 
     /* Build member type arrays for the push constant struct */
-    uint32_t *member_spv_types = (uint32_t *)WGSL_MALLOC(sizeof(uint32_t) * imm_count);
-    uint32_t *member_offsets = (uint32_t *)WGSL_MALLOC(sizeof(uint32_t) * imm_count);
+    uint32_t *member_spv_types = (uint32_t *)WGSL_MALLOC(sizeof(uint32_t) * total_members);
+    uint32_t *member_offsets = (uint32_t *)WGSL_MALLOC(sizeof(uint32_t) * total_members);
     if (!member_spv_types || !member_offsets) {
         WGSL_FREE(member_spv_types);
         WGSL_FREE(member_offsets);
-        wgsl_resolve_free((void *)imms);
+        if (imms) wgsl_resolve_free((void *)imms);
+        if (devs) wgsl_resolve_free((void *)devs);
         return 0;
     }
 
+    /* Fill immediate members (indices 0..imm_count-1) */
     for (int i = 0; i < imm_count; i++) {
         const WgslAstNode *decl = imms[i].decl_node;
         const WgslAstNode *type_node = (decl && decl->type == WGSL_NODE_GLOBAL_VAR)
@@ -7478,20 +7640,42 @@ static int lower_immediates_for_entry(WgslLower *l, const char *entry_name) {
         member_offsets[i] = (uint32_t)imms[i].offset;
     }
 
+    /* Fill device var members (indices imm_count..total_members-1).
+     * Each device address is a u64 in the push constant block. */
+    uint32_t id_u64 = 0;
+    if (dev_count > 0) {
+        id_u64 = emit_type_u64(l);
+    }
+    {
+        int dev_offset = 0;
+        if (imm_count > 0) {
+            int last_off = (int)member_offsets[imm_count - 1];
+            int last_size = imms[imm_count - 1].type_size;
+            dev_offset = (last_off + last_size + 7) & ~7; /* align to 8 */
+        }
+        for (int i = 0; i < dev_count; i++) {
+            int idx = imm_count + i;
+            member_spv_types[idx] = id_u64;
+            dev_offset = (dev_offset + 7) & ~7; /* align to 8 */
+            member_offsets[idx] = (uint32_t)dev_offset;
+            dev_offset += 8;
+        }
+    }
+
     /* Create the push constant struct type */
     uint32_t struct_type = fresh_id(l);
     {
         WordBuf *wb = &l->sections.types_constants;
-        emit_op(wb, SpvOpTypeStruct, 2 + imm_count);
+        emit_op(wb, SpvOpTypeStruct, 2 + total_members);
         wb_push_u32(wb, struct_type);
-        for (int i = 0; i < imm_count; i++)
+        for (int i = 0; i < total_members; i++)
             wb_push_u32(wb, member_spv_types[i]);
 
         /* Decorate struct with Block */
         emit_decorate(l, struct_type, SpvDecorationBlock, NULL, 0);
 
         /* Decorate each member offset */
-        for (int i = 0; i < imm_count; i++) {
+        for (int i = 0; i < total_members; i++) {
             WordBuf *wbd = &l->sections.annotations;
             emit_op(wbd, SpvOpMemberDecorate, 5);
             wb_push_u32(wbd, struct_type);
@@ -7507,6 +7691,10 @@ static int lower_immediates_for_entry(WgslLower *l, const char *entry_name) {
                 if (imms[i].name)
                     emit_member_name(l, struct_type, (uint32_t)i, imms[i].name);
             }
+            for (int i = 0; i < dev_count; i++) {
+                if (devs[i].name)
+                    emit_member_name(l, struct_type, (uint32_t)(imm_count + i), devs[i].name);
+            }
         }
     }
 
@@ -7519,11 +7707,17 @@ static int lower_immediates_for_entry(WgslLower *l, const char *entry_name) {
     uint32_t ssir_member_types[64];
     uint32_t ssir_member_offsets[64];
     const char *ssir_member_names[64];
-    int ssir_count = imm_count < 64 ? imm_count : 64;
-    for (int i = 0; i < ssir_count; i++) {
+    int ssir_count = total_members < 64 ? total_members : 64;
+    for (int i = 0; i < imm_count && i < ssir_count; i++) {
         ssir_member_types[i] = spv_type_to_ssir(l, member_spv_types[i]);
         ssir_member_offsets[i] = member_offsets[i];
         ssir_member_names[i] = imms[i].name;
+    }
+    for (int i = 0; i < dev_count && (imm_count + i) < ssir_count; i++) {
+        int idx = imm_count + i;
+        ssir_member_types[idx] = ssir_type_u64(l->ssir);
+        ssir_member_offsets[idx] = member_offsets[idx];
+        ssir_member_names[idx] = devs[i].name;
     }
     uint32_t ssir_struct = ssir_type_struct_named(l->ssir, "_PushConstants",
         ssir_member_types, ssir_count, ssir_member_offsets, ssir_member_names);
@@ -7550,9 +7744,35 @@ static int lower_immediates_for_entry(WgslLower *l, const char *entry_name) {
         l->imm_map_count++;
     }
 
+    /* For each device var, populate the dev_map for lower_ident/lower_ptr_expr.
+     * Each device var gets a u64 slot in the push constant struct; at use-site,
+     * the u64 is loaded and converted to a PhysicalStorageBuffer pointer. */
+    for (int i = 0; i < dev_count && l->dev_map_count < 16; i++) {
+        int idx = imm_count + i;
+        const WgslAstNode *decl = devs[i].decl_node;
+        const WgslAstNode *type_node = (decl && decl->type == WGSL_NODE_GLOBAL_VAR)
+            ? decl->global_var.type : NULL;
+        uint32_t pointee_type = type_node ? lower_type(l, type_node) : l->id_f32;
+
+        /* Create member pointer type for access chains (PushConstant -> u64) */
+        emit_type_pointer(l, SpvStorageClassPushConstant, id_u64);
+
+        /* Pre-emit the index constant for access chains */
+        emit_const_u32(l, (uint32_t)idx);
+
+        l->dev_map[l->dev_map_count].name = devs[i].name;
+        l->dev_map[l->dev_map_count].pc_var = pc_var;
+        l->dev_map[l->dev_map_count].member_index = (uint32_t)idx;
+        l->dev_map[l->dev_map_count].pointee_type = pointee_type;
+        l->dev_map[l->dev_map_count].ssir_pc_var = ssir_pc_var;
+        l->dev_map[l->dev_map_count].ssir_pointee_type = spv_type_to_ssir(l, pointee_type);
+        l->dev_map_count++;
+    }
+
     WGSL_FREE(member_spv_types);
     WGSL_FREE(member_offsets);
-    wgsl_resolve_free((void *)imms);
+    if (imms) wgsl_resolve_free((void *)imms);
+    if (devs) wgsl_resolve_free((void *)devs);
     return 1;
 }
 

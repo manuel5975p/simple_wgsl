@@ -9,14 +9,15 @@
 
 #include "cuvk_internal.h"
 #include "fft_stockham_gen.h"
+#include "fft_fused_gen.h"
+#include "fft_fourstep_gen.h"
+#include "fft_2d_gen.h"
+#include "fft_bda.h"
+#include "fft_butterfly.h"
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 /* ============================================================================
  * cuFFT types (must match cufft.h)
@@ -74,6 +75,24 @@ typedef enum {
 #define MAX_AXES           3
 #define FFT_WORKGROUP_SIZE 256
 
+/* Stage types for hybrid four-step FFT */
+typedef enum {
+    FFT_STAGE_STOCKHAM,           /* existing per-radix Stockham stage */
+    FFT_STAGE_FUSED,              /* single-dispatch fused sub-FFT */
+    FFT_STAGE_TWIDDLE_TRANSPOSE,  /* twiddle multiply + matrix transpose */
+    FFT_STAGE_TRANSPOSE,          /* plain matrix transpose */
+    FFT_STAGE_2D_FUSED,           /* single-dispatch 2D FFT (row + col in shared) */
+    FFT_STAGE_TILED_TRANSPOSE,    /* shared-memory tiled transpose */
+} FftStageType;
+
+typedef struct {
+    FftStageType type;
+    VkBuffer     lut_buf[2];      /* [fwd/inv] fused stage LUT (VK_NULL_HANDLE if none) */
+    VkDeviceMemory lut_mem[2];
+    VkDeviceAddress lut_bda[2];   /* [fwd/inv] device address for LUT */
+    uint32_t     dispatch_y;      /* per-stage gid.y dispatch count */
+} FftStageInfo;
+
 /* Per-axis FFT plan (one dimension of a multi-dimensional transform) */
 typedef struct {
     int n;                                              /* FFT size */
@@ -88,6 +107,7 @@ typedef struct {
 
     VkShaderModule   shaders[2][MAX_FFT_STAGES];        /* [fwd/inv][stage] */
     VkPipeline       pipelines[2][MAX_FFT_STAGES];      /* [fwd/inv][stage] */
+    FftStageInfo     stage_info[MAX_FFT_STAGES];        /* per-stage metadata */
 } FftAxis;
 
 typedef struct {
@@ -111,13 +131,11 @@ typedef struct {
     int              r2c_n;                 /* original N for R2C (axes store N/2) */
 
     /* Shared Vulkan resources */
-    VkDescriptorSetLayout desc_layout;
     VkPipelineLayout      pipe_layout;
 
     VkBuffer       scratch_buf;
     VkDeviceMemory scratch_mem;
-
-    VkDescriptorPool desc_pool;
+    VkDeviceAddress scratch_bda;
 
     VkCommandBuffer cb_fwd;
     VkCommandBuffer cb_inv;
@@ -126,31 +144,34 @@ typedef struct {
     VkBuffer bound_src;
     VkBuffer bound_dst;
     int      bound_inplace;
+    VkDeviceAddress bound_src_bda;
+    VkDeviceAddress bound_dst_bda;
     int      cb_fwd_valid;
     int      cb_inv_valid;
+
+    /* Deferred replay: accumulate repeated execs, record a single mega-CB
+     * with N dispatches at flush time.  Avoids per-exec vkQueueSubmit. */
+    int      replay_count;      /* number of deferred iterations */
+    int      replay_dir_idx;    /* direction index */
+
+    /* Looped pipeline: single-dispatch shader with control-buffer repeat
+     * count for in-place single-workgroup 2D fused FFTs. */
+    VkShaderModule        loop_shaders[2];    /* [fwd, inv] */
+    VkPipeline            loop_pipelines[2];  /* [fwd, inv] */
+    int                   has_loop_pipeline;
+    VkBuffer              ctl_buf;            /* 4-byte host-coherent control buffer */
+    VkDeviceMemory        ctl_mem;
+    void                 *ctl_mapped;         /* persistently mapped */
+    VkDeviceAddress       ctl_bda;
 } CufftPlan;
 
 static CufftPlan g_cufft_plans[MAX_CUFFT_PLANS];
 static int g_cufft_next_handle = 0;
 
-/* ============================================================================
- * Factorize N into radices [2..MAX_RADIX], greedy largest-first
- * ============================================================================ */
-
-static int factorize_fft(int n, int *radices, int max_stages)
-{
-    int count = 0;
-    int rem = n;
-    while (rem > 1 && count < max_stages) {
-        int best = 0;
-        for (int r = MAX_RADIX; r >= 2; r--) {
-            if (rem % r == 0) { best = r; break; }
-        }
-        if (best == 0) return 0; /* cannot factorize */
-        radices[count++] = best;
-        rem /= best;
-    }
-    return (rem == 1) ? count : 0;
+/* factorize_fft: thin wrapper around fft_stockham_factorize with max_radix=32 */
+static int factorize_fft(int n, int *radices, int max_stages) {
+    (void)max_stages;
+    return fft_stockham_factorize(n, MAX_RADIX, radices);
 }
 
 /* ============================================================================
@@ -207,6 +228,7 @@ static cufftResult create_device_buffer(struct CUctx_st *ctx,
     buf_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buf_ci.size = size;
     buf_ci.usage = usage;
+    buf_ci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VkResult vr = g_cuvk.vk.vkCreateBuffer(ctx->device, &buf_ci, NULL, out_buf);
@@ -228,6 +250,11 @@ static cufftResult create_device_buffer(struct CUctx_st *ctx,
     alloc_info.allocationSize = mem_reqs.size;
     alloc_info.memoryTypeIndex = (uint32_t)mem_type;
 
+    VkMemoryAllocateFlagsInfo flags_info = {0};
+    flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    alloc_info.pNext = &flags_info;
+
     vr = g_cuvk.vk.vkAllocateMemory(ctx->device, &alloc_info, NULL, out_mem);
     if (vr != VK_SUCCESS) {
         g_cuvk.vk.vkDestroyBuffer(ctx->device, *out_buf, NULL);
@@ -244,48 +271,96 @@ static cufftResult create_device_buffer(struct CUctx_st *ctx,
     return CUFFT_SUCCESS;
 }
 
+/* ============================================================================
+ * Helper: create a host-visible buffer for LUT data
+ * ============================================================================ */
+
+static cufftResult create_lut_buffer(struct CUctx_st *ctx,
+                                     const float *data, int float_count,
+                                     VkBuffer *out_buf, VkDeviceMemory *out_mem)
+{
+    VkDeviceSize size = (VkDeviceSize)float_count * sizeof(float);
+
+    VkBufferCreateInfo bci = {0};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = size;
+    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VkResult vr = g_cuvk.vk.vkCreateBuffer(ctx->device, &bci, NULL, out_buf);
+    if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
+
+    VkMemoryRequirements reqs;
+    g_cuvk.vk.vkGetBufferMemoryRequirements(ctx->device, *out_buf, &reqs);
+
+    /* Find host-visible, host-coherent memory type (use cached mem_props) */
+    int32_t mem_type = cuvk_find_memory_type(
+        &ctx->mem_props, reqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mem_type < 0) {
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, *out_buf, NULL);
+        return CUFFT_ALLOC_FAILED;
+    }
+
+    VkMemoryAllocateInfo mai = {0};
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = reqs.size;
+    mai.memoryTypeIndex = (uint32_t)mem_type;
+
+    VkMemoryAllocateFlagsInfo lut_flags_info = {0};
+    lut_flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+    lut_flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    mai.pNext = &lut_flags_info;
+
+    vr = g_cuvk.vk.vkAllocateMemory(ctx->device, &mai, NULL, out_mem);
+    if (vr != VK_SUCCESS) {
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, *out_buf, NULL);
+        return CUFFT_ALLOC_FAILED;
+    }
+
+    g_cuvk.vk.vkBindBufferMemory(ctx->device, *out_buf, *out_mem, 0);
+
+    /* Map and copy (leave mapped — memory is host-coherent) */
+    void *mapped;
+    vr = g_cuvk.vk.vkMapMemory(ctx->device, *out_mem, 0, size, 0, &mapped);
+    if (vr != VK_SUCCESS) {
+        g_cuvk.vk.vkDestroyBuffer(ctx->device, *out_buf, NULL);
+        g_cuvk.vk.vkFreeMemory(ctx->device, *out_mem, NULL);
+        *out_buf = VK_NULL_HANDLE;
+        *out_mem = VK_NULL_HANDLE;
+        return CUFFT_ALLOC_FAILED;
+    }
+    memcpy(mapped, data, (size_t)size);
+
+    return CUFFT_SUCCESS;
+}
+
 
 /* ============================================================================
  * Stockham pipeline helpers
  * ============================================================================ */
 
-/* Create the shared descriptor set layout and pipeline layout.
- * 2 bindings: binding 0 = storage buffer (src, read), binding 1 = storage
- * buffer (dst, read_write). */
-static cufftResult create_stockham_layouts(struct CUctx_st *ctx,
-                                           VkDescriptorSetLayout *out_desc_layout,
-                                           VkPipelineLayout *out_pipe_layout)
+/* Create a pipeline layout with push constants for BDA addresses.
+ * Max 24 bytes (3 x u64): src, dst, lut/ctl. */
+static cufftResult create_bda_layouts(struct CUctx_st *ctx,
+                                      VkPipelineLayout *out_pipe_layout)
 {
-    VkDescriptorSetLayoutBinding bindings[2] = {{0}};
-    bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[0].descriptorCount = 1;
-    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    bindings[1].binding = 1;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-    VkDescriptorSetLayoutCreateInfo dsl_ci = {0};
-    dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dsl_ci.bindingCount = 2;
-    dsl_ci.pBindings = bindings;
-
-    VkResult vr = g_cuvk.vk.vkCreateDescriptorSetLayout(ctx->device, &dsl_ci, NULL,
-                                               out_desc_layout);
-    if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
+    VkPushConstantRange pc_range = {0};
+    pc_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pc_range.offset = 0;
+    pc_range.size = FFT_BDA_PC_SIZE_3BUF;  /* 24 bytes max (3 x u64) */
 
     VkPipelineLayoutCreateInfo pl_ci = {0};
     pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pl_ci.setLayoutCount = 1;
-    pl_ci.pSetLayouts = out_desc_layout;
+    pl_ci.setLayoutCount = 0;
+    pl_ci.pSetLayouts = NULL;
+    pl_ci.pushConstantRangeCount = 1;
+    pl_ci.pPushConstantRanges = &pc_range;
 
-    vr = g_cuvk.vk.vkCreatePipelineLayout(ctx->device, &pl_ci, NULL, out_pipe_layout);
-    if (vr != VK_SUCCESS) {
-        g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, *out_desc_layout, NULL);
-        return CUFFT_INTERNAL_ERROR;
-    }
-
+    VkResult vr = g_cuvk.vk.vkCreatePipelineLayout(ctx->device, &pl_ci, NULL,
+                                          out_pipe_layout);
+    if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
     return CUFFT_SUCCESS;
 }
 
@@ -325,6 +400,230 @@ static cufftResult create_stage_pipeline(struct CUctx_st *ctx,
 }
 
 /* ============================================================================
+ * Deferred replay: record a mega-CB with N iterations of the same FFT
+ * ============================================================================ */
+
+static void flush_plan_replay(CufftPlan *p, struct CUctx_st *ctx)
+{
+    int n = p->replay_count;
+    if (n == 0) return;
+
+    int dir_idx = p->replay_dir_idx;
+    int inplace = p->bound_inplace;
+
+    /* Source CB provides the execution template */
+    VkCommandBuffer cached_cb = (dir_idx == 0) ? p->cb_fwd : p->cb_inv;
+    (void)cached_cb;
+
+    /* Use cb_inv for replay if exec is forward, or cb_fwd otherwise,
+     * so we don't clobber the cached CB.  For single-direction usage
+     * (the common benchmark case), the other CB is free. */
+    VkCommandBuffer replay_cb = (dir_idx == 0) ? p->cb_inv : p->cb_fwd;
+
+    g_cuvk.vk.vkResetCommandBuffer(replay_cb, 0);
+
+    /* Figure out buffer assignments for the single stage */
+    VkBuffer dst_buf = p->bound_dst;
+    VkDeviceAddress dst_bda = p->bound_dst_bda;
+    VkDeviceAddress read_bda, write_bda;
+    int need_copy = 0;
+
+    FftAxis *axis = &p->axes[0];
+    int total_stages = 0;
+    for (int a = 0; a < p->n_axes; a++)
+        total_stages += p->axes[a].n_stages;
+
+    /* Single-dispatch check: all loads happen before all stores (workgroup
+     * barrier separates them), so src == dst is safe — skip scratch copy. */
+    uint32_t dy0 = axis->stage_info[0].dispatch_y;
+    if (dy0 == 0) dy0 = (uint32_t)axis->batch_count;
+    uint32_t dz0 = axis->batch_count2 > 0 ? (uint32_t)axis->batch_count2 : 1;
+    int single_dispatch = (axis->dispatch_x[0] <= 1 && dy0 <= 1 && dz0 <= 1);
+
+    /* Fast path: looped pipeline — single dispatch, N iterations inside shader.
+     * Only worth it for n > 1 since the overhead is the same for n=1. */
+    if (p->has_loop_pipeline && n > 1 && total_stages == 1 && inplace && single_dispatch) {
+        /* Write repeat count to control buffer */
+        uint32_t repeat_count = (uint32_t)n;
+        memcpy(p->ctl_mapped, &repeat_count, sizeof(repeat_count));
+
+        /* Record: one barrier + one dispatch */
+        VkCommandBufferBeginInfo begin = {0};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        g_cuvk.vk.vkBeginCommandBuffer(replay_cb, &begin);
+
+        VkMemoryBarrier bar = {0};
+        bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT |
+                            VK_ACCESS_TRANSFER_WRITE_BIT;
+        bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                            VK_ACCESS_SHADER_WRITE_BIT;
+        g_cuvk.vk.vkCmdPipelineBarrier(replay_cb,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &bar, 0, NULL, 0, NULL);
+
+        g_cuvk.vk.vkCmdBindPipeline(replay_cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                     p->loop_pipelines[dir_idx]);
+
+        /* Push data + ctl addresses */
+        uint64_t pc[2];
+        pc[0] = dst_bda;       /* data buffer */
+        pc[1] = p->ctl_bda;   /* control buffer */
+        g_cuvk.vk.vkCmdPushConstants(replay_cb, p->pipe_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
+
+        g_cuvk.vk.vkCmdDispatch(replay_cb, axis->dispatch_x[0], dy0, dz0);
+
+        g_cuvk.vk.vkEndCommandBuffer(replay_cb);
+
+        g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
+        VkSubmitInfo submit = {0};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &replay_cb;
+        g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
+        g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+
+        p->replay_count = 0;
+        return;
+    }
+
+    /* For fused stages, each workgroup processes a disjoint set of FFTs
+     * (no cross-workgroup data dependencies), so self-aliasing is always
+     * safe regardless of dispatch count. */
+    int fused_stage = (total_stages == 1 &&
+                       axis->stage_info[0].type == FFT_STAGE_FUSED);
+
+    if (total_stages == 1 && inplace && (single_dispatch || fused_stage)) {
+        /* Self-aliasing: both bindings point to dst_buf, no copy needed */
+        read_bda = dst_bda;
+        write_bda = dst_bda;
+        need_copy = 0;
+    } else if (total_stages == 1 && inplace) {
+        read_bda = dst_bda;
+        write_bda = p->scratch_bda;
+        need_copy = 1;
+    } else {
+        /* Multi-stage or out-of-place: fall back to single submit */
+        VkCommandBuffer cb = (dir_idx == 0) ? p->cb_fwd : p->cb_inv;
+        for (int i = 0; i < n; i++) {
+            g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
+            VkSubmitInfo sub = {0};
+            sub.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            sub.commandBufferCount = 1;
+            sub.pCommandBuffers = &cb;
+            g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &sub, p->fence);
+            g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+        }
+        p->replay_count = 0;
+        return;
+    }
+
+    VkDeviceSize buf_size = (VkDeviceSize)p->total_elements * 2 * sizeof(float)
+                          * (VkDeviceSize)p->batch;
+
+    /* Record mega-CB */
+    VkCommandBufferBeginInfo begin = {0};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    g_cuvk.vk.vkBeginCommandBuffer(replay_cb, &begin);
+
+    g_cuvk.vk.vkCmdBindPipeline(replay_cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                 axis->pipelines[dir_idx][0]);
+
+    /* Push BDA addresses */
+    {
+        uint64_t pc[3];
+        pc[0] = read_bda;
+        pc[1] = write_bda;
+        VkDeviceAddress lut_bda_val = axis->stage_info[0].lut_bda[dir_idx];
+        pc[2] = lut_bda_val;
+        int npc = lut_bda_val ? 3 : 2;
+        g_cuvk.vk.vkCmdPushConstants(replay_cb, p->pipe_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)(npc * 8), pc);
+    }
+
+    uint32_t dy = axis->stage_info[0].dispatch_y;
+    if (dy == 0) dy = (uint32_t)axis->batch_count;
+    uint32_t dz = axis->batch_count2 > 0 ? (uint32_t)axis->batch_count2 : 1;
+
+    for (int i = 0; i < n; i++) {
+        if (!need_copy) {
+            /* Self-aliasing path: only barrier before first dispatch
+             * (to make prior memcpy visible).  Between self-aliasing
+             * dispatches of a single workgroup, NVIDIA L2 coherence
+             * ensures visibility without explicit barriers. */
+            if (i == 0) {
+                VkMemoryBarrier bar = {0};
+                bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT |
+                                    VK_ACCESS_TRANSFER_WRITE_BIT;
+                bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                    VK_ACCESS_SHADER_WRITE_BIT;
+                g_cuvk.vk.vkCmdPipelineBarrier(replay_cb,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    0, 1, &bar, 0, NULL, 0, NULL);
+            }
+        } else {
+            /* Standard path with copy: need barrier before each dispatch */
+            VkMemoryBarrier bar = {0};
+            bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT |
+                                VK_ACCESS_TRANSFER_WRITE_BIT;
+            bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                VK_ACCESS_SHADER_WRITE_BIT;
+            g_cuvk.vk.vkCmdPipelineBarrier(replay_cb,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 1, &bar, 0, NULL, 0, NULL);
+        }
+
+        g_cuvk.vk.vkCmdDispatch(replay_cb, axis->dispatch_x[0], dy, dz);
+
+        if (need_copy) {
+            VkMemoryBarrier copy_bar = {0};
+            copy_bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            copy_bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            copy_bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            g_cuvk.vk.vkCmdPipelineBarrier(replay_cb,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, 1, &copy_bar, 0, NULL, 0, NULL);
+
+            VkBufferCopy region = {0};
+            region.size = buf_size;
+            g_cuvk.vk.vkCmdCopyBuffer(replay_cb, p->scratch_buf, dst_buf,
+                                        1, &region);
+        }
+    }
+
+    g_cuvk.vk.vkEndCommandBuffer(replay_cb);
+
+    /* Submit + wait */
+    g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
+    VkSubmitInfo submit = {0};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &replay_cb;
+    g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
+    g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+
+    p->replay_count = 0;
+}
+
+static void cuvk_fft_flush_impl(struct CUctx_st *ctx)
+{
+    for (int i = 0; i < MAX_CUFFT_PLANS; i++) {
+        if (g_cufft_plans[i].valid && g_cufft_plans[i].replay_count > 0)
+            flush_plan_replay(&g_cufft_plans[i], ctx);
+    }
+}
+
+/* ============================================================================
  * Record all FFT stages (all axes) into a single command buffer
  * ============================================================================ */
 
@@ -343,15 +642,15 @@ static void emit_barrier(VkCommandBuffer cb) {
 static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
                                        VkCommandBuffer cb,
                                        VkBuffer src_buf, VkBuffer dst_buf,
+                                       VkDeviceAddress src_bda, VkDeviceAddress dst_bda,
                                        int start_axis, int end_axis)
 {
-    struct CUctx_st *ctx = p->ctx;
     int inplace = (src_buf == dst_buf);
 
     VkDeviceSize buf_size = (VkDeviceSize)p->total_elements * 2 * sizeof(float)
                           * (VkDeviceSize)p->batch;
 
-    /* Count total stages across selected axes for descriptor set allocation */
+    /* Count total stages across selected axes */
     int total_stages = 0;
     for (int a = start_axis; a < end_axis; a++)
         total_stages += p->axes[a].n_stages;
@@ -359,91 +658,70 @@ static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
     /* Determine per-stage read/write buffer assignments across ALL axes.
      * All stages across all axes form one linear sequence for ping-pong.
      * The result must end up in dst_buf. */
-    VkBuffer *read_bufs = (VkBuffer *)malloc(sizeof(VkBuffer) * (size_t)total_stages);
-    VkBuffer *write_bufs = (VkBuffer *)malloc(sizeof(VkBuffer) * (size_t)total_stages);
+    VkBuffer read_bufs[MAX_FFT_STAGES * MAX_AXES];
+    VkBuffer write_bufs[MAX_FFT_STAGES * MAX_AXES];
+    VkDeviceAddress read_bdas[MAX_FFT_STAGES * MAX_AXES];
+    VkDeviceAddress write_bdas[MAX_FFT_STAGES * MAX_AXES];
     int need_final_copy = 0;
 
     if (total_stages == 1 && inplace) {
-        read_bufs[0] = dst_buf;
-        write_bufs[0] = p->scratch_buf;
+        read_bufs[0] = dst_buf;        read_bdas[0] = dst_bda;
+        write_bufs[0] = p->scratch_buf; write_bdas[0] = p->scratch_bda;
         need_final_copy = 1;
     } else if (inplace) {
-        read_bufs[0] = dst_buf;
-        write_bufs[0] = p->scratch_buf;
+        read_bufs[0] = dst_buf;        read_bdas[0] = dst_bda;
+        write_bufs[0] = p->scratch_buf; write_bdas[0] = p->scratch_bda;
         for (int i = 1; i < total_stages; i++) {
             read_bufs[i] = write_bufs[i - 1];
-            write_bufs[i] = (read_bufs[i] == p->scratch_buf)
-                          ? dst_buf : p->scratch_buf;
+            read_bdas[i] = write_bdas[i - 1];
+            if (read_bufs[i] == p->scratch_buf) {
+                write_bufs[i] = dst_buf; write_bdas[i] = dst_bda;
+            } else {
+                write_bufs[i] = p->scratch_buf; write_bdas[i] = p->scratch_bda;
+            }
         }
         if (write_bufs[total_stages - 1] != dst_buf)
             need_final_copy = 1;
     } else {
         write_bufs[total_stages - 1] = dst_buf;
+        write_bdas[total_stages - 1] = dst_bda;
         for (int i = total_stages - 2; i >= 0; i--) {
-            write_bufs[i] = (write_bufs[i + 1] == dst_buf)
-                          ? p->scratch_buf : dst_buf;
+            if (write_bufs[i + 1] == dst_buf) {
+                write_bufs[i] = p->scratch_buf; write_bdas[i] = p->scratch_bda;
+            } else {
+                write_bufs[i] = dst_buf; write_bdas[i] = dst_bda;
+            }
         }
-        read_bufs[0] = src_buf;
-        for (int i = 1; i < total_stages; i++)
+        read_bufs[0] = src_buf;  read_bdas[0] = src_bda;
+        for (int i = 1; i < total_stages; i++) {
             read_bufs[i] = write_bufs[i - 1];
+            read_bdas[i] = write_bdas[i - 1];
+        }
     }
 
-    /* Allocate descriptor sets for all stages */
-    VkDescriptorSetLayout *layouts = (VkDescriptorSetLayout *)
-        malloc(sizeof(VkDescriptorSetLayout) * (size_t)total_stages);
-    for (int i = 0; i < total_stages; i++)
-        layouts[i] = p->desc_layout;
-
-    VkDescriptorSet *desc_sets = (VkDescriptorSet *)
-        malloc(sizeof(VkDescriptorSet) * (size_t)total_stages);
-    VkDescriptorSetAllocateInfo ds_ai = {0};
-    ds_ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ds_ai.descriptorPool = p->desc_pool;
-    ds_ai.descriptorSetCount = (uint32_t)total_stages;
-    ds_ai.pSetLayouts = layouts;
-
-    VkResult vr = g_cuvk.vk.vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
-    free(layouts);
-    if (vr != VK_SUCCESS) {
-        free(read_bufs); free(write_bufs); free(desc_sets);
-        return CUFFT_INTERNAL_ERROR;
-    }
-
-    /* Update descriptor sets with per-stage buffer bindings */
-    for (int i = 0; i < total_stages; i++) {
-        VkDescriptorBufferInfo buf_infos[2] = {{0}};
-        buf_infos[0].buffer = read_bufs[i];
-        buf_infos[0].offset = 0;
-        buf_infos[0].range = buf_size;
-        buf_infos[1].buffer = write_bufs[i];
-        buf_infos[1].offset = 0;
-        buf_infos[1].range = buf_size;
-
-        VkWriteDescriptorSet writes[2] = {{0}};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = desc_sets[i];
-        writes[0].dstBinding = 0;
-        writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].pBufferInfo = &buf_infos[0];
-
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = desc_sets[i];
-        writes[1].dstBinding = 1;
-        writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].pBufferInfo = &buf_infos[1];
-
-        g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, 2, writes, 0, NULL);
-    }
-
-    /* Begin command buffer */
+    /* Begin command buffer — SIMULTANEOUS_USE allows resubmission while
+     * a previous submission is still in flight (async exec path). */
     VkCommandBufferBeginInfo begin_info = {0};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin_info);
-    if (vr != VK_SUCCESS) {
-        free(read_bufs); free(write_bufs); free(desc_sets);
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+    VkResult vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin_info);
+    if (vr != VK_SUCCESS)
         return CUFFT_INTERNAL_ERROR;
+
+    /* Cross-submission barrier: ensure writes from a previous async
+     * submission (compute + transfer) are visible before we read. */
+    {
+        VkMemoryBarrier start_bar = {0};
+        start_bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        start_bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT |
+                                  VK_ACCESS_TRANSFER_WRITE_BIT;
+        start_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                  VK_ACCESS_SHADER_WRITE_BIT;
+        g_cuvk.vk.vkCmdPipelineBarrier(cb,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            0, 1, &start_bar, 0, NULL, 0, NULL);
     }
 
     /* Dispatch all stages across selected axes */
@@ -456,13 +734,22 @@ static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
 
             g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                               axis->pipelines[dir_idx][s]);
-            g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    p->pipe_layout, 0, 1,
-                                    &desc_sets[global_stage], 0, NULL);
-            g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s],
-                          (uint32_t)axis->batch_count,
-                          axis->batch_count2 > 0 ?
-                              (uint32_t)axis->batch_count2 : 1);
+
+            /* Push BDA addresses */
+            uint64_t pc[3];
+            pc[0] = read_bdas[global_stage];
+            pc[1] = write_bdas[global_stage];
+            VkDeviceAddress stage_lut = axis->stage_info[s].lut_bda[dir_idx];
+            pc[2] = stage_lut;
+            int npc = stage_lut ? 3 : 2;
+            g_cuvk.vk.vkCmdPushConstants(cb, p->pipe_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)(npc * 8), pc);
+
+            uint32_t dy = axis->stage_info[s].dispatch_y;
+            if (dy == 0) dy = (uint32_t)axis->batch_count;
+            uint32_t dz = axis->batch_count2 > 0 ?
+                              (uint32_t)axis->batch_count2 : 1;
+            g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s], dy, dz);
             global_stage++;
         }
     }
@@ -484,7 +771,6 @@ static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
     }
 
     vr = g_cuvk.vk.vkEndCommandBuffer(cb);
-    free(read_bufs); free(write_bufs); free(desc_sets);
     if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
 
     return CUFFT_SUCCESS;
@@ -492,9 +778,11 @@ static cufftResult record_fft_cb_range(CufftPlan *p, int dir_idx,
 
 static cufftResult record_fft_cb(CufftPlan *p, int dir_idx,
                                  VkCommandBuffer cb,
-                                 VkBuffer src_buf, VkBuffer dst_buf)
+                                 VkBuffer src_buf, VkBuffer dst_buf,
+                                 VkDeviceAddress src_bda, VkDeviceAddress dst_bda)
 {
-    return record_fft_cb_range(p, dir_idx, cb, src_buf, dst_buf, 0, p->n_axes);
+    return record_fft_cb_range(p, dir_idx, cb, src_buf, dst_buf,
+                               src_bda, dst_bda, 0, p->n_axes);
 }
 
 /* ============================================================================
@@ -556,6 +844,16 @@ static cufftResult build_axis2(struct CUctx_st *ctx, FftAxis *axis,
         stride *= radix;
     }
 
+    /* Initialize stage_info for Stockham stages */
+    for (int s = 0; s < axis->n_stages; s++) {
+        axis->stage_info[s].type = FFT_STAGE_STOCKHAM;
+        axis->stage_info[s].lut_buf[0] = VK_NULL_HANDLE;
+        axis->stage_info[s].lut_buf[1] = VK_NULL_HANDLE;
+        axis->stage_info[s].lut_mem[0] = VK_NULL_HANDLE;
+        axis->stage_info[s].lut_mem[1] = VK_NULL_HANDLE;
+        axis->stage_info[s].dispatch_y = (uint32_t)axis->batch_count;
+    }
+
     return CUFFT_SUCCESS;
 }
 
@@ -567,20 +865,451 @@ static cufftResult build_axis(struct CUctx_st *ctx, FftAxis *axis,
                        batch_count, 0, 0, pipe_layout);
 }
 
+static int aligned_wg_limit(int sub_n, int actual_batch);
+static void destroy_axis_resources(struct CUctx_st *ctx, FftAxis *axis);
+static double bench_axis_gpu(struct CUctx_st *ctx, FftAxis *axis,
+                              VkPipelineLayout pipe_layout, int total_elements);
+
 /* ============================================================================
- * Helper: allocate plan resources (scratch, desc pool, CBs, fence)
+ * Fused single-dispatch axis builder (1D batched FFT)
+ *
+ * Compiles a single fused FFT shader that executes all radix stages in one
+ * dispatch using workgroup shared memory / registers.  This gives n_stages=1,
+ * enabling mega-CB replay instead of the synchronous fallback.
+ * ============================================================================ */
+
+static cufftResult build_fused_axis_mr(struct CUctx_st *ctx, FftAxis *axis,
+                                       int n, int batch_count, int max_radix,
+                                       VkPipelineLayout pipe_layout)
+{
+    memset(axis, 0, sizeof(*axis));
+    axis->n = n;
+    axis->element_stride = 1;
+    axis->batch_stride = n;
+    axis->batch_count = batch_count;
+    axis->n_stages = 1;
+
+    int gen_dirs[2] = {1, -1};
+    cufftResult cr;
+
+    /* Check that the fused generator supports this max_radix for n */
+    int wg_size = fft_fused_workgroup_size_ex(n, max_radix, 0);
+    if (wg_size <= 0) return CUFFT_INTERNAL_ERROR;
+
+    /* Find wg_limit such that batch_per_wg divides batch_count */
+    int wpf = fft_fused_workgroup_size_ex(n, max_radix, 1);
+    if (wpf <= 0) return CUFFT_INTERNAL_ERROR;
+    int max_bpw = fft_fused_batch_per_wg_ex(n, max_radix, 0);
+    int best_b = 1;
+    for (int b = max_bpw; b >= 1; b--)
+        if (batch_count % b == 0) { best_b = b; break; }
+    int wg_limit = best_b * wpf;
+
+    int bpw = fft_fused_batch_per_wg_ex(n, max_radix, wg_limit);
+    if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
+
+    axis->stage_info[0].type = FFT_STAGE_FUSED;
+    axis->stage_info[0].dispatch_y = 1;
+    axis->dispatch_x[0] = (uint32_t)(batch_count / bpw);
+
+    CUVK_LOG("[cufft] fused axis: n=%d mr=%d batch=%d bpw=%d wg=%d dispatches=%u\n",
+             n, max_radix, batch_count, bpw, wg_limit, axis->dispatch_x[0]);
+
+    /* Compile fused shader for each direction */
+    for (int d = 0; d < 2; d++) {
+        char *wgsl = gen_fft_fused_ex(n, gen_dirs[d], max_radix, wg_limit);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[d][0], &axis->pipelines[d][0]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+    }
+
+    /* Build LUT buffers if needed */
+    for (int d = 0; d < 2; d++) {
+        int lut_count = fft_fused_lut_size_ex(n, gen_dirs[d], max_radix);
+        if (lut_count > 0) {
+            float *lut_data = fft_fused_compute_lut_ex(n, gen_dirs[d], max_radix);
+            if (!lut_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                    &axis->stage_info[0].lut_buf[d],
+                                    &axis->stage_info[0].lut_mem[d]);
+            free(lut_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            VkBufferDeviceAddressInfo ai = {0};
+            ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+            ai.buffer = axis->stage_info[0].lut_buf[d];
+            axis->stage_info[0].lut_bda[d] = ctx->pfn_get_bda(ctx->device, &ai);
+        }
+    }
+
+    /* Store radices for logging */
+    {
+        int radices[MAX_FFT_STAGES];
+        int ns = factorize_mr(n, radices, max_radix);
+        for (int i = 0; i < ns && i < MAX_FFT_STAGES; i++)
+            axis->radices[i] = radices[i];
+    }
+
+    return CUFFT_SUCCESS;
+}
+
+/* Build a fused axis with auto-tuning: sweep max_radix candidates, GPU-benchmark
+ * each, and pick the fastest.  Falls back to max_radix=0 if benchmarking fails. */
+static cufftResult build_fused_axis(struct CUctx_st *ctx, FftAxis *axis,
+                                    int n, int batch_count,
+                                    VkPipelineLayout pipe_layout)
+{
+    /* Candidate max_radix values to try.  0 = auto (radix_cap heuristic). */
+    static const int candidates[] = {0, 4, 8, 16};
+    static const int n_candidates = sizeof(candidates) / sizeof(candidates[0]);
+
+    FftAxis best_axis;
+    memset(&best_axis, 0, sizeof(best_axis));
+    double best_time = -1.0;
+    int best_mr = -1;
+
+    for (int c = 0; c < n_candidates; c++) {
+        FftAxis trial;
+        cufftResult cr = build_fused_axis_mr(ctx, &trial, n, batch_count,
+                                              candidates[c], pipe_layout);
+        if (cr != CUFFT_SUCCESS) continue;
+
+        double t = bench_axis_gpu(ctx, &trial, pipe_layout, n * batch_count);
+        CUVK_LOG("[cufft] 1D tune n=%d mr=%d: %.0f ns\n",
+                 n, candidates[c], t);
+
+        if (t >= 0 && (best_time < 0 || t < best_time)) {
+            /* New winner — destroy previous best */
+            if (best_mr >= 0)
+                destroy_axis_resources(ctx, &best_axis);
+            best_axis = trial;
+            best_time = t;
+            best_mr = candidates[c];
+        } else {
+            /* Loser — destroy this trial */
+            destroy_axis_resources(ctx, &trial);
+        }
+    }
+
+    if (best_mr < 0)
+        return CUFFT_INTERNAL_ERROR;
+
+    CUVK_LOG("[cufft] 1D tune n=%d: winner mr=%d (%.0f ns)\n",
+             n, best_mr, best_time);
+    *axis = best_axis;
+    return CUFFT_SUCCESS;
+}
+
+/* ============================================================================
+ * Four-step hybrid FFT builder
+ * ============================================================================ */
+
+#define FOURSTEP_THRESHOLD 4096  /* max N for single fused dispatch */
+
+/*
+ * Find wg_limit for fused sub-FFT such that batch_per_wg divides actual_batch.
+ * This eliminates excess threads in the last workgroup, preventing OOB access.
+ */
+static int aligned_wg_limit(int sub_n, int actual_batch) {
+    /* wpf = threads per FFT (B=1 gives workgroup_size = wpf) */
+    int wpf = fft_fused_workgroup_size_ex(sub_n, 0, 1);
+    if (wpf <= 0) return 0;
+
+    /* Default max batch-per-wg */
+    int max_bpw = fft_fused_batch_per_wg(sub_n);
+
+    /* Find largest B <= max_bpw that divides actual_batch */
+    int best_b = 1;
+    for (int b = max_bpw; b >= 1; b--) {
+        if (actual_batch % b == 0) {
+            best_b = b;
+            break;
+        }
+    }
+
+    return best_b * wpf;
+}
+
+/*
+ * Two-pass four-step FFT for batch=1: strided fused kernels eliminate
+ * all 3 transpose stages (5 stages → 2 stages).
+ *
+ * Stage 0: Column DFTs — read columns (stride N2), write contiguous blocks
+ * Stage 1: Twiddle + Row DFTs — read/write with stride N1, inline twiddle
+ */
+static cufftResult build_fourstep_2pass(struct CUctx_st *ctx, FftAxis *axis,
+                                         int n, int n1, int n2,
+                                         VkPipelineLayout pipe_layout)
+{
+    memset(axis, 0, sizeof(*axis));
+    axis->n = n;
+    axis->element_stride = 1;
+    axis->batch_stride = n;
+    axis->batch_count = 1;
+    axis->n_stages = 2;
+
+    int gen_dirs[2] = {1, -1};
+    cufftResult cr;
+
+    CUVK_LOG("[cufft] fourstep 2-pass: N=%d = %d x %d\n", n, n1, n2);
+
+    /* --- Stage 0: Column DFTs (strided fused) --- */
+    axis->stage_info[0].type = FFT_STAGE_FUSED;
+    axis->stage_info[0].dispatch_y = 1;
+
+    int wg_limit_0 = aligned_wg_limit(n1, n2);
+    if (wg_limit_0 <= 0) return CUFFT_INTERNAL_ERROR;
+    int bpw_0 = fft_fused_batch_per_wg_ex(n1, 0, wg_limit_0);
+    if (bpw_0 <= 0) return CUFFT_INTERNAL_ERROR;
+    axis->dispatch_x[0] = (uint32_t)(n2 / bpw_0);
+
+    for (int d = 0; d < 2; d++) {
+        /* Column DFTs: in_bs=1, in_es=N2, out_bs=N1, out_es=1, no twiddle */
+        char *wgsl = gen_fft_fused_strided(n1, gen_dirs[d], 0, wg_limit_0,
+                                            n2, 1, n2, n1, 1, 0);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[d][0], &axis->pipelines[d][0]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+    }
+
+    /* LUT for N1-point fused sub-FFT */
+    for (int d = 0; d < 2; d++) {
+        int lut_count = fft_fused_lut_size(n1, gen_dirs[d]);
+        if (lut_count > 0) {
+            float *lut_data = fft_fused_compute_lut(n1, gen_dirs[d]);
+            if (!lut_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                    &axis->stage_info[0].lut_buf[d],
+                                    &axis->stage_info[0].lut_mem[d]);
+            free(lut_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[0].lut_buf[d]; axis->stage_info[0].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+        }
+    }
+
+    /* --- Stage 1: Twiddle + Row DFTs (strided fused) --- */
+    axis->stage_info[1].type = FFT_STAGE_FUSED;
+    axis->stage_info[1].dispatch_y = 1;
+
+    int wg_limit_1 = aligned_wg_limit(n2, n1);
+    if (wg_limit_1 <= 0) return CUFFT_INTERNAL_ERROR;
+    int bpw_1 = fft_fused_batch_per_wg_ex(n2, 0, wg_limit_1);
+    if (bpw_1 <= 0) return CUFFT_INTERNAL_ERROR;
+    axis->dispatch_x[1] = (uint32_t)(n1 / bpw_1);
+
+    for (int d = 0; d < 2; d++) {
+        /* Row DFTs: in_bs=1, in_es=N1, out_bs=1, out_es=N1, twiddle=N */
+        char *wgsl = gen_fft_fused_strided(n2, gen_dirs[d], 0, wg_limit_1,
+                                            n1, 1, n1, 1, n1, n);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[d][1], &axis->pipelines[d][1]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+    }
+
+    /* LUT for N2-point fused sub-FFT */
+    for (int d = 0; d < 2; d++) {
+        int lut_count = fft_fused_lut_size(n2, gen_dirs[d]);
+        if (lut_count > 0) {
+            float *lut_data = fft_fused_compute_lut(n2, gen_dirs[d]);
+            if (!lut_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                    &axis->stage_info[1].lut_buf[d],
+                                    &axis->stage_info[1].lut_mem[d]);
+            free(lut_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[1].lut_buf[d]; axis->stage_info[1].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+        }
+    }
+
+    return CUFFT_SUCCESS;
+}
+
+/*
+ * Five-stage four-step FFT for batch>1 (multi-dimensional inner axes):
+ *   Stage 0: Transpose N1×N2 → N2×N1
+ *   Stage 1: N2 fused FFTs of size N1 (column DFTs)
+ *   Stage 2: Twiddle + Transpose N2×N1 → N1×N2
+ *   Stage 3: N1 fused FFTs of size N2 (row DFTs)
+ *   Stage 4: Transpose N1×N2 → N2×N1 (natural output order)
+ */
+static cufftResult build_fourstep_5pass(struct CUctx_st *ctx, FftAxis *axis,
+                                         int n, int n1, int n2, int batch,
+                                         VkPipelineLayout pipe_layout)
+{
+    memset(axis, 0, sizeof(*axis));
+    axis->n = n;
+    axis->element_stride = 1;
+    axis->batch_stride = n;
+    axis->batch_count = batch;
+    axis->n_stages = 5;
+
+    int gen_dirs[2] = {1, -1};
+    cufftResult cr;
+
+    /* --- Stage 0: Transpose N1×N2 → N2×N1 --- */
+    axis->stage_info[0].type = FFT_STAGE_TRANSPOSE;
+    axis->stage_info[0].dispatch_y = (uint32_t)batch;
+    axis->dispatch_x[0] = (uint32_t)((n + FFT_WORKGROUP_SIZE - 1) / FFT_WORKGROUP_SIZE);
+
+    /* Transpose is direction-independent: compile once, reuse for both dirs */
+    {
+        char *wgsl = gen_fft_transpose(n1, n2, FFT_WORKGROUP_SIZE);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[0][0], &axis->pipelines[0][0]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+        axis->shaders[1][0]  = axis->shaders[0][0];
+        axis->pipelines[1][0] = axis->pipelines[0][0];
+    }
+
+    /* --- Stage 1: N2 batches of N1-point fused FFTs --- */
+    axis->stage_info[1].type = FFT_STAGE_FUSED;
+    axis->stage_info[1].dispatch_y = 1;
+
+    int fused_batch_1 = n2 * batch;
+    int wg_limit_1 = aligned_wg_limit(n1, fused_batch_1);
+    if (wg_limit_1 <= 0) return CUFFT_INTERNAL_ERROR;
+    int bpw_1 = fft_fused_batch_per_wg_ex(n1, 0, wg_limit_1);
+    if (bpw_1 <= 0) return CUFFT_INTERNAL_ERROR;
+    axis->dispatch_x[1] = (uint32_t)(fused_batch_1 / bpw_1);
+
+    for (int d = 0; d < 2; d++) {
+        char *wgsl = gen_fft_fused_ex(n1, gen_dirs[d], 0, wg_limit_1);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[d][1], &axis->pipelines[d][1]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+    }
+
+    for (int d = 0; d < 2; d++) {
+        int lut1_count = fft_fused_lut_size(n1, gen_dirs[d]);
+        if (lut1_count > 0) {
+            float *lut1_data = fft_fused_compute_lut(n1, gen_dirs[d]);
+            if (!lut1_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut1_data, lut1_count * 2,
+                                    &axis->stage_info[1].lut_buf[d],
+                                    &axis->stage_info[1].lut_mem[d]);
+            free(lut1_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[1].lut_buf[d]; axis->stage_info[1].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+        }
+    }
+
+    /* --- Stage 2: Twiddle + Transpose --- */
+    axis->stage_info[2].type = FFT_STAGE_TWIDDLE_TRANSPOSE;
+    axis->stage_info[2].dispatch_y = (uint32_t)batch;
+    axis->dispatch_x[2] = (uint32_t)((n + FFT_WORKGROUP_SIZE - 1) / FFT_WORKGROUP_SIZE);
+
+    for (int d = 0; d < 2; d++) {
+        char *wgsl = gen_fft_twiddle_transpose(n2, n1, gen_dirs[d], FFT_WORKGROUP_SIZE);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[d][2], &axis->pipelines[d][2]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+    }
+
+    /* --- Stage 3: N1 batches of N2-point fused FFTs --- */
+    axis->stage_info[3].type = FFT_STAGE_FUSED;
+    axis->stage_info[3].dispatch_y = 1;
+
+    int fused_batch_3 = n1 * batch;
+    int wg_limit_3 = aligned_wg_limit(n2, fused_batch_3);
+    if (wg_limit_3 <= 0) return CUFFT_INTERNAL_ERROR;
+    int bpw_3 = fft_fused_batch_per_wg_ex(n2, 0, wg_limit_3);
+    if (bpw_3 <= 0) return CUFFT_INTERNAL_ERROR;
+    axis->dispatch_x[3] = (uint32_t)(fused_batch_3 / bpw_3);
+
+    for (int d = 0; d < 2; d++) {
+        char *wgsl = gen_fft_fused_ex(n2, gen_dirs[d], 0, wg_limit_3);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[d][3], &axis->pipelines[d][3]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+    }
+
+    for (int d = 0; d < 2; d++) {
+        int lut3_count = fft_fused_lut_size(n2, gen_dirs[d]);
+        if (lut3_count > 0) {
+            float *lut3_data = fft_fused_compute_lut(n2, gen_dirs[d]);
+            if (!lut3_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut3_data, lut3_count * 2,
+                                    &axis->stage_info[3].lut_buf[d],
+                                    &axis->stage_info[3].lut_mem[d]);
+            free(lut3_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[3].lut_buf[d]; axis->stage_info[3].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+        }
+    }
+
+    /* --- Stage 4: Transpose N1×N2 → N2×N1 (reuse Stage 0's pipeline) --- */
+    axis->stage_info[4].type = FFT_STAGE_TRANSPOSE;
+    axis->stage_info[4].dispatch_y = (uint32_t)batch;
+    axis->dispatch_x[4] = axis->dispatch_x[0];
+
+    for (int d = 0; d < 2; d++) {
+        axis->shaders[d][4]  = axis->shaders[0][0];
+        axis->pipelines[d][4] = axis->pipelines[0][0];
+    }
+
+    return CUFFT_SUCCESS;
+}
+
+static cufftResult build_fourstep_axis(struct CUctx_st *ctx, FftAxis *axis,
+                                        int n, int n1, int n2, int batch,
+                                        VkPipelineLayout pipe_layout)
+{
+    /* For batch=1 (1D FFT), use 2-pass strided approach (no transposes).
+     * For batch>1 (multi-dim inner axes), use 5-pass with explicit transposes. */
+    if (batch == 1)
+        return build_fourstep_2pass(ctx, axis, n, n1, n2, pipe_layout);
+    else
+        return build_fourstep_5pass(ctx, axis, n, n1, n2, batch, pipe_layout);
+}
+
+/* ============================================================================
+ * Helper: allocate plan resources (scratch, CBs, fence)
  * ============================================================================ */
 
 static cufftResult alloc_plan_resources(CufftPlan *p)
 {
     struct CUctx_st *ctx = p->ctx;
-
-    /* Total stages across all axes + R2C/C2R extra stages */
-    int total_stages = 0;
-    for (int a = 0; a < p->n_axes; a++)
-        total_stages += p->axes[a].n_stages;
-    int extra = (p->r2c_post_pipeline ? 1 : 0) + (p->c2r_pre_pipeline ? 1 : 0);
-    total_stages += extra;
 
     /* Scratch buffer */
     VkDeviceSize scratch_size = (VkDeviceSize)p->total_elements * 2 *
@@ -591,20 +1320,13 @@ static cufftResult alloc_plan_resources(CufftPlan *p)
                               &p->scratch_buf, &p->scratch_mem);
     if (cr != CUFFT_SUCCESS) return cr;
 
-    /* Descriptor pool */
-    VkDescriptorPoolSize pool_size = {0};
-    pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    pool_size.descriptorCount = (uint32_t)(total_stages * 2 * 2);
-
-    VkDescriptorPoolCreateInfo dp_ci = {0};
-    dp_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dp_ci.maxSets = (uint32_t)(total_stages * 2);
-    dp_ci.poolSizeCount = 1;
-    dp_ci.pPoolSizes = &pool_size;
-
-    VkResult vr = g_cuvk.vk.vkCreateDescriptorPool(ctx->device, &dp_ci, NULL,
-                                          &p->desc_pool);
-    if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
+    /* Get BDA for scratch buffer */
+    {
+        VkBufferDeviceAddressInfo ai = {0};
+        ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        ai.buffer = p->scratch_buf;
+        p->scratch_bda = ctx->pfn_get_bda(ctx->device, &ai);
+    }
 
     /* Command buffers */
     VkCommandBufferAllocateInfo cb_ai = {0};
@@ -613,7 +1335,7 @@ static cufftResult alloc_plan_resources(CufftPlan *p)
     cb_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cb_ai.commandBufferCount = 1;
 
-    vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &cb_ai, &p->cb_fwd);
+    VkResult vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &cb_ai, &p->cb_fwd);
     if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
     vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &cb_ai, &p->cb_inv);
     if (vr != VK_SUCCESS) return CUFFT_ALLOC_FAILED;
@@ -652,6 +1374,11 @@ static cufftResult plan_init(CufftPlan **out_plan, int *out_handle,
     struct CUctx_st *ctx = g_cuvk.current_ctx;
     if (!ctx) return CUFFT_SETUP_FAILED;
 
+    if (!ctx->has_bda) {
+        fprintf(stderr, "[cufft] BDA (VK_KHR_buffer_device_address) required for FFT\n");
+        return CUFFT_INTERNAL_ERROR;
+    }
+
     int handle = -1;
     if (g_cufft_next_handle < MAX_CUFFT_PLANS) {
         handle = g_cufft_next_handle++;
@@ -667,8 +1394,7 @@ static cufftResult plan_init(CufftPlan **out_plan, int *out_handle,
     p->type = type;
     p->batch = (batch < 1) ? 1 : batch;
 
-    cufftResult cr = create_stockham_layouts(ctx, &p->desc_layout,
-                                             &p->pipe_layout);
+    cufftResult cr = create_bda_layouts(ctx, &p->pipe_layout);
     if (cr != CUFFT_SUCCESS) return cr;
 
     *out_plan = p;
@@ -702,8 +1428,34 @@ cufftResult cufftPlan1d(cufftHandle *plan, int nx, cufftType type, int batch)
     if (type == CUFFT_C2C) {
         p->total_elements = nx;
         p->n_axes = 1;
-        cr = build_axis(ctx, &p->axes[0], nx, 1, nx,
-                         p->batch, p->pipe_layout);
+
+        int fs_n1, fs_n2;
+        if (nx > FOURSTEP_THRESHOLD &&
+            fft_fourstep_decompose(nx, FOURSTEP_THRESHOLD, &fs_n1, &fs_n2) &&
+            fs_n1 > 1) {
+            /* Four-step hybrid: fused sub-FFTs + twiddle/transpose */
+            CUVK_LOG("[cufft] using four-step: %d = %d x %d\n", nx, fs_n1, fs_n2);
+            cr = build_fourstep_axis(ctx, &p->axes[0], nx, fs_n1, fs_n2,
+                                      p->batch, p->pipe_layout);
+        } else if (nx >= 4 && (nx & (nx - 1)) == 0 &&
+                   fft_fused_workgroup_size(nx) > 0) {
+            /* Fused single-dispatch path for power-of-2 sizes:
+             * all radix stages in one shader, enables mega-CB replay.
+             * N≤128: GPU-autotuned max_radix sweep.
+             * N>128: default max_radix (skip tuning overhead). */
+            CUVK_LOG("[cufft] using fused 1D: nx=%d batch=%d\n", nx, p->batch);
+            if (nx <= 128) {
+                cr = build_fused_axis(ctx, &p->axes[0], nx, p->batch,
+                                       p->pipe_layout);
+            } else {
+                cr = build_fused_axis_mr(ctx, &p->axes[0], nx, p->batch,
+                                          0, p->pipe_layout);
+            }
+        } else {
+            /* Fallback: multi-stage Stockham */
+            cr = build_axis(ctx, &p->axes[0], nx, 1, nx,
+                             p->batch, p->pipe_layout);
+        }
         if (cr != CUFFT_SUCCESS) return cr;
     } else if (type == CUFFT_R2C || type == CUFFT_C2R) {
         /* R2C: N/2-point C2C forward + post-processing
@@ -806,6 +1558,8 @@ cufftResult cufftExecC2C(cufftHandle plan_handle,
 
     VkBuffer src_buf = alloc_in->buffer;
     VkBuffer dst_buf = alloc_out->buffer;
+    VkDeviceAddress src_bda = alloc_in->device_addr;
+    VkDeviceAddress dst_bda = alloc_out->device_addr;
 
     /* Map direction: CUFFT_FORWARD(-1) -> dir_idx=0, CUFFT_INVERSE(1) -> dir_idx=1 */
     int dir_idx = (direction == CUFFT_FORWARD) ? 0 : 1;
@@ -826,36 +1580,22 @@ cufftResult cufftExecC2C(cufftHandle plan_handle,
     VkCommandBuffer cb = (dir_idx == 0) ? p->cb_fwd : p->cb_inv;
 
     if (!cache_hit) {
-        /* Invalidate both CBs, re-record */
+        /* Flush any deferred submissions that reference the old CBs
+         * before we reset and re-record them. */
+        cuvk_fft_flush(ctx);
+        /* Reset both CBs, record only the requested direction.
+         * The other direction will be recorded on demand if needed. */
         g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
-        g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
         g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
         g_cuvk.vk.vkResetCommandBuffer(p->cb_inv, 0);
         p->cb_fwd_valid = 0;
         p->cb_inv_valid = 0;
 
-        /* For in-place: first stage reads from dst_buf (same as src_buf). */
         VkBuffer effective_src = inplace ? dst_buf : src_buf;
+        VkDeviceAddress effective_src_bda = inplace ? dst_bda : src_bda;
 
-        /* Record forward */
-        cufftResult cr = record_fft_cb(p, 0, p->cb_fwd, effective_src, dst_buf);
-        if (cr != CUFFT_SUCCESS) return cr;
-        p->cb_fwd_valid = 1;
-
-        /* Need to re-allocate descriptor sets from the pool for inverse.
-         * But we already used some from the pool for forward.
-         * Reset the pool and re-record both. */
-        /* Actually, we need a bigger pool or separate recording.
-         * Let's reset and only record what we need, then record the other
-         * direction on demand. */
-
-        /* Better approach: reset pool, record requested direction only.
-         * Record the other direction later if needed. */
-        g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
-        g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
-        p->cb_fwd_valid = 0;
-
-        cr = record_fft_cb(p, dir_idx, cb, effective_src, dst_buf);
+        cufftResult cr = record_fft_cb(p, dir_idx, cb, effective_src, dst_buf,
+                                        effective_src_bda, dst_bda);
         if (cr != CUFFT_SUCCESS) return cr;
 
         if (dir_idx == 0)
@@ -866,21 +1606,28 @@ cufftResult cufftExecC2C(cufftHandle plan_handle,
         p->bound_src = src_buf;
         p->bound_dst = dst_buf;
         p->bound_inplace = inplace;
+        p->bound_src_bda = src_bda;
+        p->bound_dst_bda = dst_bda;
     }
 
-    /* Submit */
-    g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
+    /* Register the flush callback if not yet set */
+    if (!ctx->fft_flush_fn)
+        ctx->fft_flush_fn = cuvk_fft_flush_impl;
 
-    VkSubmitInfo submit = {0};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &cb;
+    /* Deferred replay: if same plan + direction, just increment counter.
+     * At flush time, we record ONE command buffer with N dispatches.
+     * This avoids per-exec vkQueueSubmit overhead (~25 µs on NVIDIA). */
+    if (p->replay_count > 0 && p->replay_dir_idx == dir_idx) {
+        p->replay_count++;
+        return CUFFT_SUCCESS;
+    }
 
-    VkResult vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
-    if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
+    /* Different direction or first call: flush any existing replay first */
+    if (p->replay_count > 0)
+        flush_plan_replay(p, ctx);
 
-    vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
-    if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
+    p->replay_count   = 1;
+    p->replay_dir_idx = dir_idx;
 
     return CUFFT_SUCCESS;
 }
@@ -890,104 +1637,53 @@ cufftResult cufftExecC2C(cufftHandle plan_handle,
  * ============================================================================ */
 
 static cufftResult record_r2c_cb(CufftPlan *p, VkCommandBuffer cb,
-                                  VkBuffer src_buf, VkBuffer dst_buf)
+                                  VkBuffer src_buf, VkBuffer dst_buf,
+                                  VkDeviceAddress src_bda, VkDeviceAddress dst_bda)
 {
-    /* R2C pipeline: N/2-point forward C2C on src, then post-process to dst.
-     * Input: N reals = N/2 complex pairs (reinterpret src buffer).
-     * src_buf: N reals (N/2 complex), dst_buf: N/2+1 complex output.
-     *
-     * Stage flow:
-     *   src → [C2C stages, ping-pong with scratch] → intermediate
-     *   intermediate → [R2C post-process] → dst
-     *
-     * C2C result lands in scratch or src (depending on stage count).
-     * Post-process reads from that and writes to dst. */
+    (void)src_buf; (void)dst_buf;
 
-    struct CUctx_st *ctx = p->ctx;
-    int half = p->r2c_n / 2;
     FftAxis *axis = &p->axes[0];
     int ns = axis->n_stages;
 
-    /* Total batch count for R2C (axis 0) */
-    int total_batches = axis->batch_count *
-                        (axis->batch_count2 > 0 ? axis->batch_count2 : 1);
-    VkDeviceSize c2c_buf_size = (VkDeviceSize)half * 2 * sizeof(float) *
-                                (VkDeviceSize)total_batches;
-    VkDeviceSize out_buf_size = (VkDeviceSize)(half + 1) * 2 * sizeof(float) *
-                                (VkDeviceSize)total_batches;
-
     /* Ping-pong for C2C stages: forward from src through scratch.
      * Post-process reads from wherever the last C2C stage wrote. */
-    VkBuffer read_bufs[MAX_FFT_STAGES + 1];
-    VkBuffer write_bufs[MAX_FFT_STAGES + 1];
+    VkDeviceAddress read_bdas[MAX_FFT_STAGES + 1];
+    VkDeviceAddress write_bdas[MAX_FFT_STAGES + 1];
 
     if (ns == 0) {
         /* No C2C stages (half=1): post-process reads src directly */
-        read_bufs[0] = src_buf;
-        write_bufs[0] = dst_buf;
+        read_bdas[0] = src_bda;
+        write_bdas[0] = dst_bda;
     } else {
-        read_bufs[0] = src_buf;
-        write_bufs[0] = p->scratch_buf;
+        read_bdas[0] = src_bda;
+        write_bdas[0] = p->scratch_bda;
         for (int i = 1; i < ns; i++) {
-            read_bufs[i] = write_bufs[i - 1];
-            write_bufs[i] = (read_bufs[i] == p->scratch_buf)
-                           ? src_buf : p->scratch_buf;
+            read_bdas[i] = write_bdas[i - 1];
+            write_bdas[i] = (read_bdas[i] == p->scratch_bda)
+                           ? src_bda : p->scratch_bda;
         }
         /* Post-process: read from last C2C output, write to dst */
-        read_bufs[ns] = write_bufs[ns - 1];
-        write_bufs[ns] = dst_buf;
-    }
-
-    int total = ns + 1;
-
-    /* Allocate descriptor sets */
-    VkDescriptorSetLayout *layouts = (VkDescriptorSetLayout *)
-        malloc(sizeof(VkDescriptorSetLayout) * (size_t)total);
-    for (int i = 0; i < total; i++) layouts[i] = p->desc_layout;
-
-    VkDescriptorSet *desc_sets = (VkDescriptorSet *)
-        malloc(sizeof(VkDescriptorSet) * (size_t)total);
-    VkDescriptorSetAllocateInfo ds_ai = {0};
-    ds_ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ds_ai.descriptorPool = p->desc_pool;
-    ds_ai.descriptorSetCount = (uint32_t)total;
-    ds_ai.pSetLayouts = layouts;
-
-    VkResult vr = g_cuvk.vk.vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
-    free(layouts);
-    if (vr != VK_SUCCESS) { free(desc_sets); return CUFFT_INTERNAL_ERROR; }
-
-    /* Update descriptor sets */
-    for (int i = 0; i < total; i++) {
-        VkDeviceSize rd_size = c2c_buf_size;
-        VkDeviceSize wr_size = (i < ns) ? c2c_buf_size : out_buf_size;
-        VkDescriptorBufferInfo bi[2] = {{0}};
-        bi[0].buffer = read_bufs[i]; bi[0].range = rd_size;
-        bi[1].buffer = write_bufs[i]; bi[1].range = wr_size;
-        VkWriteDescriptorSet ws[2] = {{0}};
-        for (int b = 0; b < 2; b++) {
-            ws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            ws[b].dstSet = desc_sets[i]; ws[b].dstBinding = (uint32_t)b;
-            ws[b].descriptorCount = 1;
-            ws[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            ws[b].pBufferInfo = &bi[b];
-        }
-        g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, 2, ws, 0, NULL);
+        read_bdas[ns] = write_bdas[ns - 1];
+        write_bdas[ns] = dst_bda;
     }
 
     /* Begin CB */
     VkCommandBufferBeginInfo begin = {0};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin);
-    if (vr != VK_SUCCESS) { free(desc_sets); return CUFFT_INTERNAL_ERROR; }
+    VkResult vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin);
+    if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
 
     /* C2C stages */
     for (int s = 0; s < ns; s++) {
         if (s > 0) emit_barrier(cb);
         g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                           axis->pipelines[0][s]);
-        g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                p->pipe_layout, 0, 1, &desc_sets[s], 0, NULL);
+        uint64_t pc[3];
+        pc[0] = read_bdas[s];
+        pc[1] = write_bdas[s];
+        pc[2] = 0;
+        g_cuvk.vk.vkCmdPushConstants(cb, p->pipe_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
         g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s],
                       (uint32_t)axis->batch_count,
                       axis->batch_count2 > 0 ?
@@ -998,119 +1694,97 @@ static cufftResult record_r2c_cb(CufftPlan *p, VkCommandBuffer cb,
     emit_barrier(cb);
     g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                       p->r2c_post_pipeline);
-    g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            p->pipe_layout, 0, 1, &desc_sets[ns], 0, NULL);
+    {
+        uint64_t pc[3];
+        pc[0] = read_bdas[ns];
+        pc[1] = write_bdas[ns];
+        pc[2] = 0;
+        g_cuvk.vk.vkCmdPushConstants(cb, p->pipe_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
+    }
     {
         FftAxis *a0 = &p->axes[0];
-        uint32_t total_batches = (uint32_t)a0->batch_count *
+        uint32_t total_batches_r2c = (uint32_t)a0->batch_count *
                                  (uint32_t)(a0->batch_count2 > 0 ?
                                             a0->batch_count2 : 1);
-        g_cuvk.vk.vkCmdDispatch(cb, p->r2c_dispatch_x, total_batches, 1);
+        g_cuvk.vk.vkCmdDispatch(cb, p->r2c_dispatch_x, total_batches_r2c, 1);
     }
 
     vr = g_cuvk.vk.vkEndCommandBuffer(cb);
-    free(desc_sets);
     return (vr == VK_SUCCESS) ? CUFFT_SUCCESS : CUFFT_INTERNAL_ERROR;
 }
 
 static cufftResult record_c2r_cb(CufftPlan *p, VkCommandBuffer cb,
-                                  VkBuffer src_buf, VkBuffer dst_buf)
+                                  VkBuffer src_buf, VkBuffer dst_buf,
+                                  VkDeviceAddress src_bda, VkDeviceAddress dst_bda)
 {
-    /* C2R pipeline: pre-process src → scratch, then N/2-point inverse C2C.
+    (void)src_buf;
+    /* C2R pipeline: pre-process src -> scratch, then N/2-point inverse C2C.
      * Input: N/2+1 complex bins, Output: N reals (= N/2 complex pairs). */
 
-    struct CUctx_st *ctx = p->ctx;
     int half = p->r2c_n / 2;
     FftAxis *axis = &p->axes[0];
     int ns = axis->n_stages;
 
     int total_batches = axis->batch_count *
                         (axis->batch_count2 > 0 ? axis->batch_count2 : 1);
-    VkDeviceSize in_buf_size = (VkDeviceSize)(half + 1) * 2 * sizeof(float) *
-                               (VkDeviceSize)total_batches;
     VkDeviceSize c2c_buf_size = (VkDeviceSize)half * 2 * sizeof(float) *
                                 (VkDeviceSize)total_batches;
 
-    /* Stage 0: pre-process (src → scratch or dst)
+    /* Stage 0: pre-process (src -> scratch or dst)
      * Stages 1..ns: C2C inverse, ping-pong scratch/dst */
     int total = 1 + ns;
-    VkBuffer read_bufs[MAX_FFT_STAGES + 1];
-    VkBuffer write_bufs[MAX_FFT_STAGES + 1];
+    VkDeviceAddress read_bdas[MAX_FFT_STAGES + 1];
+    VkDeviceAddress write_bdas[MAX_FFT_STAGES + 1];
+    VkBuffer write_bufs_last = VK_NULL_HANDLE;
     int need_final_copy = 0;
 
     if (ns == 0) {
         /* No C2C stages (half=1): pre-process writes directly to dst */
-        read_bufs[0] = src_buf;
-        write_bufs[0] = dst_buf;
+        read_bdas[0] = src_bda;
+        write_bdas[0] = dst_bda;
+        write_bufs_last = dst_buf;
     } else {
         /* Pre-process: read src, write scratch */
-        read_bufs[0] = src_buf;
-        write_bufs[0] = p->scratch_buf;
+        read_bdas[0] = src_bda;
+        write_bdas[0] = p->scratch_bda;
 
         /* C2C stages: ping-pong between scratch and dst_buf */
-        read_bufs[1] = p->scratch_buf;
-        write_bufs[1] = dst_buf;
+        read_bdas[1] = p->scratch_bda;
+        write_bdas[1] = dst_bda;
         for (int i = 2; i < total; i++) {
-            read_bufs[i] = write_bufs[i - 1];
-            write_bufs[i] = (read_bufs[i] == dst_buf)
-                           ? p->scratch_buf : dst_buf;
+            read_bdas[i] = write_bdas[i - 1];
+            write_bdas[i] = (read_bdas[i] == dst_bda)
+                           ? p->scratch_bda : dst_bda;
         }
-        need_final_copy = (write_bufs[total - 1] != dst_buf);
-    }
-
-    /* Allocate descriptor sets */
-    VkDescriptorSetLayout *layouts = (VkDescriptorSetLayout *)
-        malloc(sizeof(VkDescriptorSetLayout) * (size_t)total);
-    for (int i = 0; i < total; i++) layouts[i] = p->desc_layout;
-
-    VkDescriptorSet *desc_sets = (VkDescriptorSet *)
-        malloc(sizeof(VkDescriptorSet) * (size_t)total);
-    VkDescriptorSetAllocateInfo ds_ai = {0};
-    ds_ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ds_ai.descriptorPool = p->desc_pool;
-    ds_ai.descriptorSetCount = (uint32_t)total;
-    ds_ai.pSetLayouts = layouts;
-
-    VkResult vr = g_cuvk.vk.vkAllocateDescriptorSets(ctx->device, &ds_ai, desc_sets);
-    free(layouts);
-    if (vr != VK_SUCCESS) { free(desc_sets); return CUFFT_INTERNAL_ERROR; }
-
-    /* Update descriptor sets */
-    for (int i = 0; i < total; i++) {
-        VkDeviceSize rd_size = (i == 0) ? in_buf_size : c2c_buf_size;
-        VkDeviceSize wr_size = c2c_buf_size;
-        VkDescriptorBufferInfo bi[2] = {{0}};
-        bi[0].buffer = read_bufs[i]; bi[0].range = rd_size;
-        bi[1].buffer = write_bufs[i]; bi[1].range = wr_size;
-        VkWriteDescriptorSet ws[2] = {{0}};
-        for (int b = 0; b < 2; b++) {
-            ws[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            ws[b].dstSet = desc_sets[i]; ws[b].dstBinding = (uint32_t)b;
-            ws[b].descriptorCount = 1;
-            ws[b].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            ws[b].pBufferInfo = &bi[b];
-        }
-        g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, 2, ws, 0, NULL);
+        write_bufs_last = (write_bdas[total - 1] == dst_bda) ? dst_buf : p->scratch_buf;
+        need_final_copy = (write_bdas[total - 1] != dst_bda);
     }
 
     /* Begin CB */
     VkCommandBufferBeginInfo begin = {0};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin);
-    if (vr != VK_SUCCESS) { free(desc_sets); return CUFFT_INTERNAL_ERROR; }
+    VkResult vr = g_cuvk.vk.vkBeginCommandBuffer(cb, &begin);
+    if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
 
     /* Pre-process stage */
     g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                       p->c2r_pre_pipeline);
-    g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            p->pipe_layout, 0, 1, &desc_sets[0], 0, NULL);
+    {
+        uint64_t pc[3];
+        pc[0] = read_bdas[0];
+        pc[1] = write_bdas[0];
+        pc[2] = 0;
+        g_cuvk.vk.vkCmdPushConstants(cb, p->pipe_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
+    }
     {
         FftAxis *a0 = &p->axes[0];
-        uint32_t total_batches = (uint32_t)a0->batch_count *
+        uint32_t total_batches_c2r = (uint32_t)a0->batch_count *
                                  (uint32_t)(a0->batch_count2 > 0 ?
                                             a0->batch_count2 : 1);
         g_cuvk.vk.vkCmdDispatch(cb, ((uint32_t)half + FFT_WORKGROUP_SIZE - 1) /
-                      FFT_WORKGROUP_SIZE, total_batches, 1);
+                      FFT_WORKGROUP_SIZE, total_batches_c2r, 1);
     }
 
     /* C2C inverse stages */
@@ -1118,9 +1792,12 @@ static cufftResult record_c2r_cb(CufftPlan *p, VkCommandBuffer cb,
         emit_barrier(cb);
         g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
                           axis->pipelines[1][s]);  /* dir_idx=1 = inverse */
-        g_cuvk.vk.vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                p->pipe_layout, 0, 1,
-                                &desc_sets[1 + s], 0, NULL);
+        uint64_t pc[3];
+        pc[0] = read_bdas[1 + s];
+        pc[1] = write_bdas[1 + s];
+        pc[2] = 0;
+        g_cuvk.vk.vkCmdPushConstants(cb, p->pipe_layout,
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
         g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s],
                       (uint32_t)axis->batch_count,
                       axis->batch_count2 > 0 ?
@@ -1142,8 +1819,8 @@ static cufftResult record_c2r_cb(CufftPlan *p, VkCommandBuffer cb,
         g_cuvk.vk.vkCmdCopyBuffer(cb, p->scratch_buf, dst_buf, 1, &region);
     }
 
+    (void)write_bufs_last;
     vr = g_cuvk.vk.vkEndCommandBuffer(cb);
-    free(desc_sets);
     return (vr == VK_SUCCESS) ? CUFFT_SUCCESS : CUFFT_INTERNAL_ERROR;
 }
 
@@ -1174,15 +1851,18 @@ cufftResult cufftExecR2C(cufftHandle plan_handle,
 
     VkBuffer src_buf = alloc_in->buffer;
     VkBuffer dst_buf = alloc_out->buffer;
+    VkDeviceAddress src_bda = alloc_in->device_addr;
+    VkDeviceAddress dst_bda = alloc_out->device_addr;
 
     /* Always re-record for R2C (different CB structure from C2C) */
+    cuvk_fft_flush(ctx);
     g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
-    g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
     g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
     p->cb_fwd_valid = 0;
 
-    /* Phase 1: R2C on axis 0 (C2C stages + post-process) → dst_buf */
-    cufftResult cr = record_r2c_cb(p, p->cb_fwd, src_buf, dst_buf);
+    /* Phase 1: R2C on axis 0 (C2C stages + post-process) -> dst_buf */
+    cufftResult cr = record_r2c_cb(p, p->cb_fwd, src_buf, dst_buf,
+                                    src_bda, dst_bda);
     if (cr != CUFFT_SUCCESS) return cr;
 
     g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
@@ -1198,11 +1878,10 @@ cufftResult cufftExecR2C(cufftHandle plan_handle,
 
     /* Phase 2: C2C forward on remaining axes (in-place on dst_buf) */
     if (p->n_axes > 1) {
-        g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
         g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
 
         cr = record_fft_cb_range(p, 0, p->cb_fwd, dst_buf, dst_buf,
-                                 1, p->n_axes);
+                                 dst_bda, dst_bda, 1, p->n_axes);
         if (cr != CUFFT_SUCCESS) return cr;
 
         g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
@@ -1232,15 +1911,39 @@ cufftResult cufftDestroy(cufftHandle plan_handle)
     struct CUctx_st *ctx = p->ctx;
     g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
 
-    /* Destroy per-axis per-stage pipelines and shader modules */
+    /* Destroy per-axis per-stage pipelines, shader modules, and LUT buffers.
+     * Some stages may share handles (e.g. direction-independent transposes),
+     * so null out after destroying to avoid double-free. */
     for (int a = 0; a < p->n_axes; a++) {
         FftAxis *axis = &p->axes[a];
         for (int d = 0; d < 2; d++) {
             for (int s = 0; s < axis->n_stages; s++) {
-                if (axis->pipelines[d][s])
-                    g_cuvk.vk.vkDestroyPipeline(ctx->device, axis->pipelines[d][s], NULL);
-                if (axis->shaders[d][s])
-                    g_cuvk.vk.vkDestroyShaderModule(ctx->device, axis->shaders[d][s], NULL);
+                if (axis->pipelines[d][s]) {
+                    VkPipeline pl = axis->pipelines[d][s];
+                    g_cuvk.vk.vkDestroyPipeline(ctx->device, pl, NULL);
+                    /* Null out all matching handles to prevent double-free */
+                    for (int dd = d; dd < 2; dd++)
+                        for (int ss = (dd == d ? s : 0); ss < axis->n_stages; ss++)
+                            if (axis->pipelines[dd][ss] == pl)
+                                axis->pipelines[dd][ss] = VK_NULL_HANDLE;
+                }
+                if (axis->shaders[d][s]) {
+                    VkShaderModule sm = axis->shaders[d][s];
+                    g_cuvk.vk.vkDestroyShaderModule(ctx->device, sm, NULL);
+                    for (int dd = d; dd < 2; dd++)
+                        for (int ss = (dd == d ? s : 0); ss < axis->n_stages; ss++)
+                            if (axis->shaders[dd][ss] == sm)
+                                axis->shaders[dd][ss] = VK_NULL_HANDLE;
+                }
+            }
+        }
+        /* LUT buffers (per-direction) */
+        for (int s = 0; s < axis->n_stages; s++) {
+            for (int d = 0; d < 2; d++) {
+                if (axis->stage_info[s].lut_buf[d]) {
+                    g_cuvk.vk.vkDestroyBuffer(ctx->device, axis->stage_info[s].lut_buf[d], NULL);
+                    g_cuvk.vk.vkFreeMemory(ctx->device, axis->stage_info[s].lut_mem[d], NULL);
+                }
             }
         }
     }
@@ -1255,11 +1958,23 @@ cufftResult cufftDestroy(cufftHandle plan_handle)
     if (p->c2r_pre_shader)
         g_cuvk.vk.vkDestroyShaderModule(ctx->device, p->c2r_pre_shader, NULL);
 
+    /* Destroy looped pipeline resources */
+    if (p->has_loop_pipeline) {
+        for (int d = 0; d < 2; d++) {
+            if (p->loop_pipelines[d])
+                g_cuvk.vk.vkDestroyPipeline(ctx->device, p->loop_pipelines[d], NULL);
+            if (p->loop_shaders[d])
+                g_cuvk.vk.vkDestroyShaderModule(ctx->device, p->loop_shaders[d], NULL);
+        }
+        if (p->ctl_buf)
+            g_cuvk.vk.vkDestroyBuffer(ctx->device, p->ctl_buf, NULL);
+        if (p->ctl_mem)
+            g_cuvk.vk.vkFreeMemory(ctx->device, p->ctl_mem, NULL);
+    }
+
     /* Destroy shared layouts */
     if (p->pipe_layout)
         g_cuvk.vk.vkDestroyPipelineLayout(ctx->device, p->pipe_layout, NULL);
-    if (p->desc_layout)
-        g_cuvk.vk.vkDestroyDescriptorSetLayout(ctx->device, p->desc_layout, NULL);
 
     /* Destroy scratch buffer */
     if (p->scratch_buf)
@@ -1276,10 +1991,6 @@ cufftResult cufftDestroy(cufftHandle plan_handle)
         g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &p->cb_fwd);
     if (p->cb_inv)
         g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &p->cb_inv);
-
-    /* Destroy descriptor pool (frees all descriptor sets) */
-    if (p->desc_pool)
-        g_cuvk.vk.vkDestroyDescriptorPool(ctx->device, p->desc_pool, NULL);
 
     p->valid = 0;
     return CUFFT_SUCCESS;
@@ -1326,6 +2037,516 @@ cufftResult cufftSetCompatibilityMode(cufftHandle plan,
  * ============================================================================ */
 
 /* ============================================================================
+ * 2D plan builders
+ * ============================================================================ */
+
+/*
+ * Build a single-axis plan with 1 stage: complete 2D FFT in one dispatch.
+ * Uses gen_fft_2d_fused() — entire NxM DFT in workgroup shared memory.
+ */
+static cufftResult build_2d_fused(struct CUctx_st *ctx, FftAxis *axis,
+                                   int nx, int ny, int max_radix,
+                                   VkPipelineLayout pipe_layout)
+{
+    memset(axis, 0, sizeof(*axis));
+    axis->n = nx * ny;
+    axis->element_stride = 1;
+    axis->batch_stride = nx * ny;
+    axis->batch_count = 1;
+    axis->n_stages = 1;
+
+    int gen_dirs[2] = {1, -1};
+    cufftResult cr;
+
+    axis->stage_info[0].type = FFT_STAGE_2D_FUSED;
+    axis->stage_info[0].dispatch_y = 1;
+    axis->dispatch_x[0] = 1; /* one workgroup per 2D FFT */
+
+    for (int d = 0; d < 2; d++) {
+        char *wgsl = gen_fft_2d_fused(nx, ny, gen_dirs[d], max_radix);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[d][0], &axis->pipelines[d][0]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+    }
+
+    /* LUT */
+    for (int d = 0; d < 2; d++) {
+        int lut_count = fft_2d_fused_lut_size(nx, ny, gen_dirs[d], max_radix);
+        if (lut_count > 0) {
+            float *lut_data = fft_2d_fused_compute_lut(nx, ny, gen_dirs[d], max_radix);
+            if (!lut_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                    &axis->stage_info[0].lut_buf[d],
+                                    &axis->stage_info[0].lut_mem[d]);
+            free(lut_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[0].lut_buf[d]; axis->stage_info[0].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+        }
+    }
+
+    return CUFFT_SUCCESS;
+}
+
+/*
+ * Build a multi-axis plan using transpose-based approach:
+ *   Axis 0: fused row FFTs (ny-point, batch=nx)
+ *   Axis 1: tiled transpose nx×ny → ny×nx
+ *   Axis 2: fused row FFTs (nx-point, batch=ny) on transposed data
+ *   Axis 3: tiled transpose ny×nx → nx×ny (back to original layout)
+ *
+ * This uses 4 dispatches but all with coalesced memory access.
+ * We build this as a single axis with 4 stages for ping-pong to work.
+ */
+static cufftResult build_2d_transpose_based(struct CUctx_st *ctx, FftAxis *axis,
+                                             int nx, int ny, int tile_dim,
+                                             VkPipelineLayout pipe_layout)
+{
+    memset(axis, 0, sizeof(*axis));
+    axis->n = nx * ny;
+    axis->element_stride = 1;
+    axis->batch_stride = nx * ny;
+    axis->batch_count = 1;
+    axis->n_stages = 4;
+
+    int gen_dirs[2] = {1, -1};
+    cufftResult cr;
+
+    /* Stage 0: row FFTs — ny-point on nx rows (fused, batch=nx) */
+    {
+        axis->stage_info[0].type = FFT_STAGE_FUSED;
+        axis->stage_info[0].dispatch_y = 1;
+
+        int wg_limit = aligned_wg_limit(ny, nx);
+        if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
+        int bpw = fft_fused_batch_per_wg_ex(ny, 0, wg_limit);
+        if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
+        axis->dispatch_x[0] = (uint32_t)(nx / bpw);
+
+        for (int d = 0; d < 2; d++) {
+            char *wgsl = gen_fft_fused_ex(ny, gen_dirs[d], 0, wg_limit);
+            if (!wgsl) return CUFFT_INTERNAL_ERROR;
+            uint32_t *spirv = NULL; size_t sc = 0;
+            cr = compile_wgsl(wgsl, &spirv, &sc);
+            free(wgsl);
+            if (cr != CUFFT_SUCCESS) return cr;
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                        &axis->shaders[d][0], &axis->pipelines[d][0]);
+            wgsl_lower_free(spirv);
+            if (cr != CUFFT_SUCCESS) return cr;
+        }
+
+        for (int d = 0; d < 2; d++) {
+            int lut_count = fft_fused_lut_size(ny, gen_dirs[d]);
+            if (lut_count > 0) {
+                float *lut_data = fft_fused_compute_lut(ny, gen_dirs[d]);
+                if (!lut_data) return CUFFT_INTERNAL_ERROR;
+                cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                        &axis->stage_info[0].lut_buf[d],
+                                        &axis->stage_info[0].lut_mem[d]);
+                free(lut_data);
+                if (cr != CUFFT_SUCCESS) return cr;
+                { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[0].lut_buf[d]; axis->stage_info[0].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+            }
+        }
+    }
+
+    /* Stage 1: tiled transpose nx×ny → ny×nx
+     * Dispatch: (ceil(ny/tile), ceil(nx/tile), 1)
+     * wid.x = column tile, wid.y = row tile, wid.z = batch */
+    {
+        axis->stage_info[1].type = FFT_STAGE_TILED_TRANSPOSE;
+        axis->stage_info[1].dispatch_y = (uint32_t)((nx + tile_dim - 1) / tile_dim);
+        axis->dispatch_x[1] = (uint32_t)((ny + tile_dim - 1) / tile_dim);
+
+        /* Transpose doesn't depend on direction — same kernel for fwd/inv */
+        char *wgsl = gen_transpose_tiled(nx, ny, tile_dim);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        for (int d = 0; d < 2; d++) {
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                        &axis->shaders[d][1], &axis->pipelines[d][1]);
+            if (cr != CUFFT_SUCCESS) { wgsl_lower_free(spirv); return cr; }
+        }
+        wgsl_lower_free(spirv);
+    }
+
+    /* Stage 2: row FFTs — nx-point on ny rows (fused, batch=ny)
+     * Now data is ny×nx after transpose. */
+    {
+        axis->stage_info[2].type = FFT_STAGE_FUSED;
+        axis->stage_info[2].dispatch_y = 1;
+
+        int wg_limit = aligned_wg_limit(nx, ny);
+        if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
+        int bpw = fft_fused_batch_per_wg_ex(nx, 0, wg_limit);
+        if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
+        axis->dispatch_x[2] = (uint32_t)(ny / bpw);
+
+        for (int d = 0; d < 2; d++) {
+            char *wgsl = gen_fft_fused_ex(nx, gen_dirs[d], 0, wg_limit);
+            if (!wgsl) return CUFFT_INTERNAL_ERROR;
+            uint32_t *spirv = NULL; size_t sc = 0;
+            cr = compile_wgsl(wgsl, &spirv, &sc);
+            free(wgsl);
+            if (cr != CUFFT_SUCCESS) return cr;
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                        &axis->shaders[d][2], &axis->pipelines[d][2]);
+            wgsl_lower_free(spirv);
+            if (cr != CUFFT_SUCCESS) return cr;
+        }
+
+        for (int d = 0; d < 2; d++) {
+            int lut_count = fft_fused_lut_size(nx, gen_dirs[d]);
+            if (lut_count > 0) {
+                float *lut_data = fft_fused_compute_lut(nx, gen_dirs[d]);
+                if (!lut_data) return CUFFT_INTERNAL_ERROR;
+                cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                        &axis->stage_info[2].lut_buf[d],
+                                        &axis->stage_info[2].lut_mem[d]);
+                free(lut_data);
+                if (cr != CUFFT_SUCCESS) return cr;
+                { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[2].lut_buf[d]; axis->stage_info[2].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+            }
+        }
+    }
+
+    /* Stage 3: tiled transpose ny×nx → nx×ny (back to original layout)
+     * Now input is ny×nx, so dispatch: (ceil(nx/tile), ceil(ny/tile), 1) */
+    {
+        axis->stage_info[3].type = FFT_STAGE_TILED_TRANSPOSE;
+        axis->stage_info[3].dispatch_y = (uint32_t)((ny + tile_dim - 1) / tile_dim);
+        axis->dispatch_x[3] = (uint32_t)((nx + tile_dim - 1) / tile_dim);
+
+        char *wgsl = gen_transpose_tiled(ny, nx, tile_dim);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        for (int d = 0; d < 2; d++) {
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                        &axis->shaders[d][3], &axis->pipelines[d][3]);
+            if (cr != CUFFT_SUCCESS) { wgsl_lower_free(spirv); return cr; }
+        }
+        wgsl_lower_free(spirv);
+    }
+
+    return CUFFT_SUCCESS;
+}
+
+/*
+ * Build a 2-stage strided plan: FFT+transpose in each dispatch.
+ *   Stage 0: ny-point row FFTs with transposed write (nx×ny → ny×nx)
+ *   Stage 1: nx-point row FFTs with transposed write (ny×nx → nx×ny)
+ * Only 2 dispatches, but writes are strided (non-coalesced).
+ */
+static cufftResult build_2d_strided(struct CUctx_st *ctx, FftAxis *axis,
+                                     int nx, int ny,
+                                     VkPipelineLayout pipe_layout)
+{
+    memset(axis, 0, sizeof(*axis));
+    axis->n = nx * ny;
+    axis->element_stride = 1;
+    axis->batch_stride = nx * ny;
+    axis->batch_count = 1;
+    axis->n_stages = 2;
+
+    int gen_dirs[2] = {1, -1};
+    cufftResult cr;
+
+    /* Stage 0: row FFTs (ny-point, batch=nx) with transposed write
+     * Read row-major: in_bs=ny, in_es=1
+     * Write col-major: out_bs=1, out_es=nx (transpose) */
+    {
+        int wg_limit = aligned_wg_limit(ny, nx);
+        if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
+        int bpw = fft_fused_batch_per_wg_ex(ny, 0, wg_limit);
+        if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
+
+        axis->stage_info[0].type = FFT_STAGE_FUSED;
+        axis->stage_info[0].dispatch_y = 1;
+        axis->dispatch_x[0] = (uint32_t)(nx / bpw);
+
+        for (int d = 0; d < 2; d++) {
+            char *wgsl = gen_fft_fused_strided(ny, gen_dirs[d], 0, wg_limit,
+                                                nx, ny, 1, 1, nx, 0);
+            if (!wgsl) return CUFFT_INTERNAL_ERROR;
+            uint32_t *spirv = NULL; size_t sc = 0;
+            cr = compile_wgsl(wgsl, &spirv, &sc);
+            free(wgsl);
+            if (cr != CUFFT_SUCCESS) return cr;
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                        &axis->shaders[d][0], &axis->pipelines[d][0]);
+            wgsl_lower_free(spirv);
+            if (cr != CUFFT_SUCCESS) return cr;
+        }
+
+        for (int d = 0; d < 2; d++) {
+            int lut_count = fft_fused_lut_size(ny, gen_dirs[d]);
+            if (lut_count > 0) {
+                float *lut_data = fft_fused_compute_lut(ny, gen_dirs[d]);
+                if (!lut_data) return CUFFT_INTERNAL_ERROR;
+                cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                        &axis->stage_info[0].lut_buf[d],
+                                        &axis->stage_info[0].lut_mem[d]);
+                free(lut_data);
+                if (cr != CUFFT_SUCCESS) return cr;
+                { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[0].lut_buf[d]; axis->stage_info[0].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+            }
+        }
+    }
+
+    /* Stage 1: row FFTs (nx-point, batch=ny) on transposed data,
+     * with transposed write back to original layout.
+     * Read row-major from ny×nx: in_bs=nx, in_es=1
+     * Write col-major: out_bs=1, out_es=ny (transpose back to nx×ny) */
+    {
+        int wg_limit = aligned_wg_limit(nx, ny);
+        if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
+        int bpw = fft_fused_batch_per_wg_ex(nx, 0, wg_limit);
+        if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
+
+        axis->stage_info[1].type = FFT_STAGE_FUSED;
+        axis->stage_info[1].dispatch_y = 1;
+        axis->dispatch_x[1] = (uint32_t)(ny / bpw);
+
+        for (int d = 0; d < 2; d++) {
+            char *wgsl = gen_fft_fused_strided(nx, gen_dirs[d], 0, wg_limit,
+                                                ny, nx, 1, 1, ny, 0);
+            if (!wgsl) return CUFFT_INTERNAL_ERROR;
+            uint32_t *spirv = NULL; size_t sc = 0;
+            cr = compile_wgsl(wgsl, &spirv, &sc);
+            free(wgsl);
+            if (cr != CUFFT_SUCCESS) return cr;
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                        &axis->shaders[d][1], &axis->pipelines[d][1]);
+            wgsl_lower_free(spirv);
+            if (cr != CUFFT_SUCCESS) return cr;
+        }
+
+        for (int d = 0; d < 2; d++) {
+            int lut_count = fft_fused_lut_size(nx, gen_dirs[d]);
+            if (lut_count > 0) {
+                float *lut_data = fft_fused_compute_lut(nx, gen_dirs[d]);
+                if (!lut_data) return CUFFT_INTERNAL_ERROR;
+                cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                        &axis->stage_info[1].lut_buf[d],
+                                        &axis->stage_info[1].lut_mem[d]);
+                free(lut_data);
+                if (cr != CUFFT_SUCCESS) return cr;
+                { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[1].lut_buf[d]; axis->stage_info[1].lut_bda[d]=ctx->pfn_get_bda(ctx->device,&ai); }
+            }
+        }
+    }
+
+    return CUFFT_SUCCESS;
+}
+
+/* ============================================================================
+ * Axis resource cleanup (for discarding losing benchmark candidate)
+ * ============================================================================ */
+
+static void destroy_axis_resources(struct CUctx_st *ctx, FftAxis *axis)
+{
+    for (int d = 0; d < 2; d++) {
+        for (int s = 0; s < axis->n_stages; s++) {
+            if (axis->pipelines[d][s]) {
+                VkPipeline pl = axis->pipelines[d][s];
+                g_cuvk.vk.vkDestroyPipeline(ctx->device, pl, NULL);
+                for (int dd = d; dd < 2; dd++)
+                    for (int ss = (dd == d ? s : 0); ss < axis->n_stages; ss++)
+                        if (axis->pipelines[dd][ss] == pl)
+                            axis->pipelines[dd][ss] = VK_NULL_HANDLE;
+            }
+            if (axis->shaders[d][s]) {
+                VkShaderModule sm = axis->shaders[d][s];
+                g_cuvk.vk.vkDestroyShaderModule(ctx->device, sm, NULL);
+                for (int dd = d; dd < 2; dd++)
+                    for (int ss = (dd == d ? s : 0); ss < axis->n_stages; ss++)
+                        if (axis->shaders[dd][ss] == sm)
+                            axis->shaders[dd][ss] = VK_NULL_HANDLE;
+            }
+        }
+    }
+    for (int s = 0; s < axis->n_stages; s++) {
+        for (int d = 0; d < 2; d++) {
+            if (axis->stage_info[s].lut_buf[d]) {
+                g_cuvk.vk.vkDestroyBuffer(ctx->device, axis->stage_info[s].lut_buf[d], NULL);
+                g_cuvk.vk.vkFreeMemory(ctx->device, axis->stage_info[s].lut_mem[d], NULL);
+            }
+        }
+    }
+}
+
+/* ============================================================================
+ * Benchmark an axis with GPU timestamps (forward direction only)
+ * Returns median GPU time in nanoseconds, or -1.0 on failure.
+ * ============================================================================ */
+
+#define PLAN_BENCH_WARMUP 3
+#define PLAN_BENCH_ITERS  5
+
+static double bench_axis_gpu(struct CUctx_st *ctx, FftAxis *axis,
+                              VkPipelineLayout pipe_layout,
+                              int total_elements)
+{
+    int ns = axis->n_stages;
+    VkDeviceSize buf_size = (VkDeviceSize)total_elements * 2 * sizeof(float);
+    VkResult vr;
+    double result = -1.0;
+
+    /* Declare all Vulkan handles upfront to avoid goto-past-declaration */
+    VkBuffer bufs[3] = {0};
+    VkDeviceMemory mems[3] = {0};
+    VkQueryPool ts_pool = VK_NULL_HANDLE;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+
+    /* Temp buffers: src, dst, scratch */
+    for (int i = 0; i < 3; i++) {
+        cufftResult cr = create_device_buffer(ctx, buf_size,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &bufs[i], &mems[i]);
+        if (cr != CUFFT_SUCCESS) goto cleanup;
+    }
+
+    /* Get BDA addresses for temp buffers */
+    VkDeviceAddress buf_bdas[3];
+    for (int i = 0; i < 3; i++) {
+        VkBufferDeviceAddressInfo ai = {0};
+        ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        ai.buffer = bufs[i];
+        buf_bdas[i] = ctx->pfn_get_bda(ctx->device, &ai);
+    }
+
+    /* Timestamp query pool */
+    {
+        VkQueryPoolCreateInfo qpci = {0};
+        qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qpci.queryCount = 2;
+        vr = g_cuvk.vk.vkCreateQueryPool(ctx->device, &qpci, NULL, &ts_pool);
+        if (vr != VK_SUCCESS) goto cleanup;
+    }
+
+    /* Ping-pong BDA arrays: last stage writes to dst (buf_bdas[1]) */
+    VkDeviceAddress read_bdas_arr[MAX_FFT_STAGES], write_bdas_arr[MAX_FFT_STAGES];
+    {
+        VkDeviceAddress src_bda_ = buf_bdas[0], dst_bda_ = buf_bdas[1], scratch_bda_ = buf_bdas[2];
+        write_bdas_arr[ns - 1] = dst_bda_;
+        for (int i = ns - 2; i >= 0; i--)
+            write_bdas_arr[i] = (write_bdas_arr[i + 1] == dst_bda_) ? scratch_bda_ : dst_bda_;
+        read_bdas_arr[0] = src_bda_;
+        for (int i = 1; i < ns; i++)
+            read_bdas_arr[i] = write_bdas_arr[i - 1];
+    }
+
+    /* Command buffer + fence */
+    {
+        VkCommandBufferAllocateInfo cbai = {0};
+        cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.commandPool = ctx->cmd_pool;
+        cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandBufferCount = 1;
+        vr = g_cuvk.vk.vkAllocateCommandBuffers(ctx->device, &cbai, &cb);
+        if (vr != VK_SUCCESS) goto cleanup;
+
+        VkFenceCreateInfo fci = {0};
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        vr = g_cuvk.vk.vkCreateFence(ctx->device, &fci, NULL, &fence);
+        if (vr != VK_SUCCESS) goto cleanup;
+    }
+
+    VkCommandBufferBeginInfo cbbi = {0};
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    /* Helper: record and submit the dispatch sequence */
+    #define RECORD_DISPATCH(use_timestamps) do { \
+        g_cuvk.vk.vkResetCommandBuffer(cb, 0); \
+        g_cuvk.vk.vkBeginCommandBuffer(cb, &cbbi); \
+        if (use_timestamps) { \
+            g_cuvk.vk.vkCmdResetQueryPool(cb, ts_pool, 0, 2); \
+            g_cuvk.vk.vkCmdWriteTimestamp(cb, \
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, ts_pool, 0); \
+        } \
+        for (int s_ = 0; s_ < ns; s_++) { \
+            if (s_ > 0) emit_barrier(cb); \
+            g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, \
+                              axis->pipelines[0][s_]); \
+            uint64_t pc_[3]; \
+            pc_[0] = read_bdas_arr[s_]; \
+            pc_[1] = write_bdas_arr[s_]; \
+            VkDeviceAddress slut_ = axis->stage_info[s_].lut_bda[0]; \
+            pc_[2] = slut_; \
+            int npc_ = slut_ ? 3 : 2; \
+            g_cuvk.vk.vkCmdPushConstants(cb, pipe_layout, \
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)(npc_ * 8), pc_); \
+            uint32_t dy_ = axis->stage_info[s_].dispatch_y; \
+            if (dy_ == 0) dy_ = 1; \
+            g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s_], dy_, 1); \
+        } \
+        if (use_timestamps) \
+            g_cuvk.vk.vkCmdWriteTimestamp(cb, \
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, ts_pool, 1); \
+        g_cuvk.vk.vkEndCommandBuffer(cb); \
+    } while (0)
+
+    #define SUBMIT_AND_WAIT() do { \
+        g_cuvk.vk.vkResetFences(ctx->device, 1, &fence); \
+        VkSubmitInfo si_ = {0}; \
+        si_.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO; \
+        si_.commandBufferCount = 1; si_.pCommandBuffers = &cb; \
+        g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &si_, fence); \
+        g_cuvk.vk.vkWaitForFences(ctx->device, 1, &fence, VK_TRUE, UINT64_MAX); \
+    } while (0)
+
+    /* Warmup */
+    RECORD_DISPATCH(0);
+    for (int w = 0; w < PLAN_BENCH_WARMUP; w++)
+        SUBMIT_AND_WAIT();
+
+    /* Timed runs */
+    double times[PLAN_BENCH_ITERS];
+    for (int it = 0; it < PLAN_BENCH_ITERS; it++) {
+        RECORD_DISPATCH(1);
+        SUBMIT_AND_WAIT();
+        uint64_t ts[2];
+        g_cuvk.vk.vkGetQueryPoolResults(ctx->device, ts_pool, 0, 2,
+                              sizeof(ts), ts, sizeof(uint64_t),
+                              VK_QUERY_RESULT_64_BIT);
+        times[it] = (double)(ts[1] - ts[0]) *
+                    (double)ctx->dev_props.limits.timestampPeriod;
+    }
+
+    #undef RECORD_DISPATCH
+    #undef SUBMIT_AND_WAIT
+
+    /* Median */
+    for (int i = 0; i < PLAN_BENCH_ITERS - 1; i++)
+        for (int j = i + 1; j < PLAN_BENCH_ITERS; j++)
+            if (times[j] < times[i]) { double t = times[i]; times[i] = times[j]; times[j] = t; }
+    result = times[PLAN_BENCH_ITERS / 2];
+
+cleanup:
+    if (fence) g_cuvk.vk.vkDestroyFence(ctx->device, fence, NULL);
+    if (cb) g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
+    if (ts_pool) g_cuvk.vk.vkDestroyQueryPool(ctx->device, ts_pool, NULL);
+    for (int i = 0; i < 3; i++) {
+        if (bufs[i]) g_cuvk.vk.vkDestroyBuffer(ctx->device, bufs[i], NULL);
+        if (mems[i]) g_cuvk.vk.vkFreeMemory(ctx->device, mems[i], NULL);
+    }
+    return result;
+}
+
+/* ============================================================================
  * cufftPlan2d
  * ============================================================================ */
 
@@ -1347,18 +2568,150 @@ cufftResult cufftPlan2d(cufftHandle *plan, int nx, int ny, cufftType type)
     p->rank = 2;
     p->dims[0] = nx; p->dims[1] = ny;
     p->total_elements = nx * ny;
-    p->n_axes = 2;
 
-    /* Axis 0: row-wise FFTs — ny-point FFTs on each of nx rows.
-     * Data is row-major: element (r,c) = r*ny + c.
-     * Row FFT: element_stride=1, batch_stride=ny, batch_count=nx */
-    cr = build_axis(ctx, &p->axes[0], ny, 1, ny, nx, p->pipe_layout);
-    if (cr != CUFFT_SUCCESS) return cr;
+    /* Strategy selection:
+     * 1. 2D fused: both dims fit in shared memory (nx*ny ≤ 2048)
+     * 2. Transpose-based: both dims ≤ FOURSTEP_THRESHOLD (fused handles each)
+     * 3. Fallback: old per-axis approach (row Stockham/four-step + col Stockham) */
+    if (nx * ny * 16 <= 32768 && fft_2d_fused_workgroup_size(nx, ny, 0) > 0) {
+        CUVK_LOG("[cufft] 2D: using fused 2D kernel %dx%d\n", nx, ny);
+        p->n_axes = 1;
+        cr = build_2d_fused(ctx, &p->axes[0], nx, ny, 0, p->pipe_layout);
 
-    /* Axis 1: column-wise FFTs — nx-point FFTs on each of ny columns.
-     * Column c: elements at c, c+ny, c+2*ny, ...
-     * element_stride=ny, batch_stride=1, batch_count=ny */
-    cr = build_axis(ctx, &p->axes[1], nx, ny, 1, ny, p->pipe_layout);
+        /* Build looped variant for deferred replay (control-buffer repeat) */
+        if (cr == CUFFT_SUCCESS) {
+            int gen_dirs[2] = {1, -1};
+            p->has_loop_pipeline = 1;
+            for (int d = 0; d < 2; d++) {
+                char *wgsl = gen_fft_2d_fused_looped(nx, ny, gen_dirs[d], 0);
+                if (!wgsl) { p->has_loop_pipeline = 0; break; }
+                uint32_t *spirv = NULL; size_t sc = 0;
+                cufftResult lr = compile_wgsl(wgsl, &spirv, &sc);
+                free(wgsl);
+                if (lr != CUFFT_SUCCESS) { p->has_loop_pipeline = 0; break; }
+                lr = create_stage_pipeline(ctx, spirv, sc, p->pipe_layout,
+                                           &p->loop_shaders[d],
+                                           &p->loop_pipelines[d]);
+                wgsl_lower_free(spirv);
+                if (lr != CUFFT_SUCCESS) {
+                    p->has_loop_pipeline = 0; break;
+                }
+            }
+            /* Create 4-byte host-coherent control buffer for repeat count */
+            if (p->has_loop_pipeline) {
+                VkBufferCreateInfo bci = {0};
+                bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bci.size = sizeof(uint32_t);
+                bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+                bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+                VkResult cvr = g_cuvk.vk.vkCreateBuffer(ctx->device, &bci,
+                                                          NULL, &p->ctl_buf);
+                if (cvr == VK_SUCCESS) {
+                    VkMemoryRequirements reqs;
+                    g_cuvk.vk.vkGetBufferMemoryRequirements(ctx->device,
+                                                             p->ctl_buf, &reqs);
+                    int32_t mt = cuvk_find_memory_type(&ctx->mem_props,
+                        reqs.memoryTypeBits,
+                        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                    VkMemoryAllocateInfo mai = {0};
+                    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+                    mai.allocationSize = reqs.size;
+                    mai.memoryTypeIndex = (uint32_t)mt;
+                    VkMemoryAllocateFlagsInfo ctl_flags = {0};
+                    ctl_flags.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+                    ctl_flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+                    mai.pNext = &ctl_flags;
+                    cvr = (mt >= 0) ? g_cuvk.vk.vkAllocateMemory(
+                        ctx->device, &mai, NULL, &p->ctl_mem) : VK_ERROR_UNKNOWN;
+                }
+                if (cvr == VK_SUCCESS)
+                    cvr = g_cuvk.vk.vkBindBufferMemory(ctx->device, p->ctl_buf,
+                                                        p->ctl_mem, 0);
+                if (cvr == VK_SUCCESS)
+                    cvr = g_cuvk.vk.vkMapMemory(ctx->device, p->ctl_mem, 0,
+                                                 sizeof(uint32_t), 0,
+                                                 &p->ctl_mapped);
+                if (cvr == VK_SUCCESS) {
+                    VkBufferDeviceAddressInfo ai = {0};
+                    ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+                    ai.buffer = p->ctl_buf;
+                    p->ctl_bda = ctx->pfn_get_bda(ctx->device, &ai);
+                }
+                if (cvr != VK_SUCCESS)
+                    p->has_loop_pipeline = 0;
+            }
+        }
+    } else if (nx <= FOURSTEP_THRESHOLD && ny <= FOURSTEP_THRESHOLD) {
+        /* Benchmark two strategies and pick the faster one:
+         *   A: 4-dispatch transpose-based (coalesced reads+writes)
+         *   B: 2-dispatch strided (FFT+transpose fused, non-coalesced writes) */
+        int tile_dim = 32;
+        while (tile_dim > nx || tile_dim > ny) tile_dim /= 2;
+        if (tile_dim < 2) tile_dim = 2;
+
+        FftAxis axis_transpose, axis_strided;
+        cufftResult cr_t = build_2d_transpose_based(ctx, &axis_transpose,
+                                                      nx, ny, tile_dim,
+                                                      p->pipe_layout);
+        cufftResult cr_s = build_2d_strided(ctx, &axis_strided, nx, ny,
+                                             p->pipe_layout);
+
+        int use_strided = 0;
+        if (cr_t == CUFFT_SUCCESS && cr_s == CUFFT_SUCCESS) {
+            double t_transpose = bench_axis_gpu(ctx, &axis_transpose,
+                                                 p->pipe_layout,
+                                                 nx * ny);
+            double t_strided   = bench_axis_gpu(ctx, &axis_strided,
+                                                 p->pipe_layout,
+                                                 nx * ny);
+            CUVK_LOG("[cufft] 2D bench %dx%d: transpose=%.0fns strided=%.0fns\n",
+                     nx, ny, t_transpose, t_strided);
+            if (t_strided >= 0 && (t_transpose < 0 || t_strided < t_transpose))
+                use_strided = 1;
+        } else if (cr_s == CUFFT_SUCCESS) {
+            use_strided = 1;
+        }
+
+        if (use_strided) {
+            CUVK_LOG("[cufft] 2D: using strided %dx%d (2 dispatches)\n", nx, ny);
+            if (cr_t == CUFFT_SUCCESS)
+                destroy_axis_resources(ctx, &axis_transpose);
+            p->n_axes = 1;
+            p->axes[0] = axis_strided;
+            cr = CUFFT_SUCCESS;
+        } else {
+            CUVK_LOG("[cufft] 2D: using transpose-based %dx%d tile=%d (4 dispatches)\n",
+                     nx, ny, tile_dim);
+            if (cr_s == CUFFT_SUCCESS)
+                destroy_axis_resources(ctx, &axis_strided);
+            p->n_axes = 1;
+            p->axes[0] = axis_transpose;
+            cr = cr_t;
+        }
+    } else {
+        /* Fallback: separate row + column axes (handles four-step for large dims) */
+        CUVK_LOG("[cufft] 2D: using per-axis approach %dx%d\n", nx, ny);
+        p->n_axes = 2;
+
+        /* Axis 0: row FFTs — ny-point on nx rows */
+        {
+            int fs_n1, fs_n2;
+            if (ny > FOURSTEP_THRESHOLD &&
+                fft_fourstep_decompose(ny, FOURSTEP_THRESHOLD, &fs_n1, &fs_n2) &&
+                fs_n1 > 1) {
+                cr = build_fourstep_axis(ctx, &p->axes[0], ny, fs_n1, fs_n2,
+                                          nx, p->pipe_layout);
+            } else {
+                cr = build_axis(ctx, &p->axes[0], ny, 1, ny, nx, p->pipe_layout);
+            }
+        }
+        if (cr != CUFFT_SUCCESS) return cr;
+
+        /* Axis 1: column FFTs — nx-point on ny columns */
+        cr = build_axis(ctx, &p->axes[1], nx, ny, 1, ny, p->pipe_layout);
+    }
     if (cr != CUFFT_SUCCESS) return cr;
 
     cr = alloc_plan_resources(p);
@@ -1401,9 +2754,24 @@ cufftResult cufftPlan3d(cufftHandle *plan, int nx, int ny, int nz,
 
         /* Axis 0: z-direction FFTs — nz-point, contiguous.
          * gid.y = iy (0..ny-1), gid.z = ix (0..nx-1)
-         * batch_offset = iy * nz + ix * ny*nz */
-        cr = build_axis2(ctx, &p->axes[0], nz, 1, nz, ny, slice, nx,
-                          p->pipe_layout);
+         * batch_offset = iy * nz + ix * ny*nz
+         * Data is flat: batch b at offset b*nz, so four-step works
+         * with total_batch = ny*nx. */
+        {
+            int fs_n1, fs_n2;
+            if (nz > FOURSTEP_THRESHOLD &&
+                fft_fourstep_decompose(nz, FOURSTEP_THRESHOLD,
+                                        &fs_n1, &fs_n2) &&
+                fs_n1 > 1) {
+                CUVK_LOG("[cufft] 3D axis0: four-step %d = %d x %d\n",
+                         nz, fs_n1, fs_n2);
+                cr = build_fourstep_axis(ctx, &p->axes[0], nz, fs_n1, fs_n2,
+                                          ny * nx, p->pipe_layout);
+            } else {
+                cr = build_axis2(ctx, &p->axes[0], nz, 1, nz, ny, slice, nx,
+                                  p->pipe_layout);
+            }
+        }
         if (cr != CUFFT_SUCCESS) return cr;
 
         /* Axis 1: y-direction FFTs — ny-point, strided.
@@ -1536,9 +2904,11 @@ cufftResult cufftExecC2R(cufftHandle plan_handle, cufftComplex *idata,
 
     VkBuffer src_buf = alloc_in->buffer;
     VkBuffer dst_buf = alloc_out->buffer;
+    VkDeviceAddress src_bda = alloc_in->device_addr;
+    VkDeviceAddress dst_bda = alloc_out->device_addr;
 
+    cuvk_fft_flush(ctx);
     g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
-    g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
     g_cuvk.vk.vkResetCommandBuffer(p->cb_inv, 0);
     p->cb_inv_valid = 0;
 
@@ -1552,7 +2922,7 @@ cufftResult cufftExecC2R(cufftHandle plan_handle, cufftComplex *idata,
     /* Phase 1: C2C inverse on remaining axes (in-place on src_buf) */
     if (p->n_axes > 1) {
         cr = record_fft_cb_range(p, 1, p->cb_inv, src_buf, src_buf,
-                                 1, p->n_axes);
+                                 src_bda, src_bda, 1, p->n_axes);
         if (cr != CUFFT_SUCCESS) return cr;
 
         g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
@@ -1561,12 +2931,11 @@ cufftResult cufftExecC2R(cufftHandle plan_handle, cufftComplex *idata,
         vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
         if (vr != VK_SUCCESS) return CUFFT_EXEC_FAILED;
 
-        g_cuvk.vk.vkResetDescriptorPool(ctx->device, p->desc_pool, 0);
         g_cuvk.vk.vkResetCommandBuffer(p->cb_inv, 0);
     }
 
-    /* Phase 2: C2R on axis 0 (pre-process + C2C inverse stages) → dst_buf */
-    cr = record_c2r_cb(p, p->cb_inv, src_buf, dst_buf);
+    /* Phase 2: C2R on axis 0 (pre-process + C2C inverse stages) -> dst_buf */
+    cr = record_c2r_cb(p, p->cb_inv, src_buf, dst_buf, src_bda, dst_bda);
     if (cr != CUFFT_SUCCESS) return cr;
 
     g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);

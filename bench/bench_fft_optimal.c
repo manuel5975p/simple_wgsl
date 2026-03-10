@@ -30,7 +30,6 @@
 
 typedef struct {
   VkShaderModule shader;
-  VkDescriptorSetLayout desc_layout;
   VkPipelineLayout pipe_layout;
   VkPipeline pipeline;
 } FftPipeline;
@@ -47,24 +46,16 @@ static int create_pipeline(VkCtx *ctx, uint32_t *spirv,
       != VK_SUCCESS)
     return -1;
 
-  VkDescriptorSetLayoutBinding binding = {0};
-  binding.binding = 0;
-  binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  binding.descriptorCount = 1;
-  binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
-  VkDescriptorSetLayoutCreateInfo dslci = {0};
-  dslci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-  dslci.bindingCount = 1;
-  dslci.pBindings = &binding;
-  if (vkCreateDescriptorSetLayout(ctx->device, &dslci, NULL,
-                                   &out->desc_layout) != VK_SUCCESS)
-    return -1;
+  /* Push constant layout: 1 x u64 (data buffer BDA address) */
+  VkPushConstantRange pc_range = {0};
+  pc_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  pc_range.offset = 0;
+  pc_range.size = 8; /* sizeof(u64) */
 
   VkPipelineLayoutCreateInfo plci = {0};
   plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  plci.setLayoutCount = 1;
-  plci.pSetLayouts = &out->desc_layout;
+  plci.pushConstantRangeCount = 1;
+  plci.pPushConstantRanges = &pc_range;
   if (vkCreatePipelineLayout(ctx->device, &plci, NULL,
                               &out->pipe_layout) != VK_SUCCESS)
     return -1;
@@ -89,7 +80,6 @@ static int create_pipeline(VkCtx *ctx, uint32_t *spirv,
 static void destroy_pipeline(VkCtx *ctx, FftPipeline *p) {
   vkDestroyPipeline(ctx->device, p->pipeline, NULL);
   vkDestroyPipelineLayout(ctx->device, p->pipe_layout, NULL);
-  vkDestroyDescriptorSetLayout(ctx->device, p->desc_layout, NULL);
   vkDestroyShaderModule(ctx->device, p->shader, NULL);
 }
 
@@ -102,6 +92,7 @@ typedef struct {
   VkDeviceMemory memory;
   VkDeviceSize size;
   void *mapped;
+  VkDeviceAddress bda;
 } GpuBuffer;
 
 static int create_buffer(VkCtx *ctx, VkDeviceSize size,
@@ -114,7 +105,7 @@ static int create_buffer(VkCtx *ctx, VkDeviceSize size,
   VkBufferCreateInfo bci = {0};
   bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   bci.size = size;
-  bci.usage = usage;
+  bci.usage = usage | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
   bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   if (vkCreateBuffer(ctx->device, &bci, NULL, &out->buffer)
       != VK_SUCCESS)
@@ -127,8 +118,13 @@ static int create_buffer(VkCtx *ctx, VkDeviceSize size,
                                 reqs.memoryTypeBits, mem_flags);
   if (mt < 0) return -1;
 
+  VkMemoryAllocateFlagsInfo flags_info = {0};
+  flags_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+  flags_info.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+
   VkMemoryAllocateInfo ai = {0};
   ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+  ai.pNext = &flags_info;
   ai.allocationSize = reqs.size;
   ai.memoryTypeIndex = (uint32_t)mt;
   if (vkAllocateMemory(ctx->device, &ai, NULL, &out->memory)
@@ -139,6 +135,13 @@ static int create_buffer(VkCtx *ctx, VkDeviceSize size,
 
   if (mem_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
     vkMapMemory(ctx->device, out->memory, 0, size, 0, &out->mapped);
+
+  if (ctx->pfn_get_bda) {
+    VkBufferDeviceAddressInfo addr_info = {0};
+    addr_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    addr_info.buffer = out->buffer;
+    out->bda = ctx->pfn_get_bda(ctx->device, &addr_info);
+  }
 
   return 0;
 }
@@ -265,26 +268,8 @@ static double bench_wgsl(VkCtx *ctx, int n, const char *wgsl,
   for (int i = 0; i < batch_size * n * 2; i++)
     host_data[i] = (float)(rand() % 1000) / 500.0f - 1.0f;
 
-  /* Descriptor set */
-  VkDescriptorSetAllocateInfo dsai = {0};
-  dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  dsai.descriptorPool = ctx->desc_pool;
-  dsai.descriptorSetCount = 1;
-  dsai.pSetLayouts = &pipe.desc_layout;
-  VkDescriptorSet ds;
-  vkAllocateDescriptorSets(ctx->device, &dsai, &ds);
-
-  VkDescriptorBufferInfo dbi = {0};
-  dbi.buffer = gpu_buf.buffer;
-  dbi.range = buf_bytes;
-  VkWriteDescriptorSet wds = {0};
-  wds.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  wds.dstSet = ds;
-  wds.dstBinding = 0;
-  wds.descriptorCount = 1;
-  wds.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  wds.pBufferInfo = &dbi;
-  vkUpdateDescriptorSets(ctx->device, 1, &wds, 0, NULL);
+  /* BDA address for push constants */
+  uint64_t buf_bda = gpu_buf.bda;
 
   /* Command buffer + fence */
   VkCommandBufferAllocateInfo cbai = {0};
@@ -320,8 +305,8 @@ static double bench_wgsl(VkCtx *ctx, int n, const char *wgsl,
   vkResetCommandBuffer(cb, 0);
   vkBeginCommandBuffer(cb, &cbbi);
   vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe.pipeline);
-  vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          pipe.pipe_layout, 0, 1, &ds, 0, NULL);
+  vkCmdPushConstants(cb, pipe.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                     0, 8, &buf_bda);
   vkCmdDispatch(cb, (uint32_t)batch_size, 1, 1);
   vkEndCommandBuffer(cb);
   vkResetFences(ctx->device, 1, &fence);
@@ -342,7 +327,6 @@ static double bench_wgsl(VkCtx *ctx, int n, const char *wgsl,
   if (!*out_correct) {
     vkDestroyFence(ctx->device, fence, NULL);
     vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
-    vkFreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &ds);
     destroy_buffer(ctx, &gpu_buf);
     destroy_pipeline(ctx, &pipe);
     return -1.0;
@@ -357,8 +341,8 @@ static double bench_wgsl(VkCtx *ctx, int n, const char *wgsl,
     vkResetCommandBuffer(cb, 0);
     vkBeginCommandBuffer(cb, &cbbi);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe.pipeline);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            pipe.pipe_layout, 0, 1, &ds, 0, NULL);
+    vkCmdPushConstants(cb, pipe.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, 8, &buf_bda);
     vkCmdDispatch(cb, (uint32_t)batch_size, 1, 1);
     vkEndCommandBuffer(cb);
     vkResetFences(ctx->device, 1, &fence);
@@ -371,8 +355,8 @@ static double bench_wgsl(VkCtx *ctx, int n, const char *wgsl,
     vkResetCommandBuffer(cb, 0);
     vkBeginCommandBuffer(cb, &cbbi);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe.pipeline);
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            pipe.pipe_layout, 0, 1, &ds, 0, NULL);
+    vkCmdPushConstants(cb, pipe.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+                       0, 8, &buf_bda);
     vkCmdDispatch(cb, (uint32_t)batch_size, 1, 1);
     vkEndCommandBuffer(cb);
 
@@ -387,7 +371,6 @@ static double bench_wgsl(VkCtx *ctx, int n, const char *wgsl,
 
   vkDestroyFence(ctx->device, fence, NULL);
   vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
-  vkFreeDescriptorSets(ctx->device, ctx->desc_pool, 1, &ds);
   destroy_buffer(ctx, &gpu_buf);
   destroy_pipeline(ctx, &pipe);
 

@@ -829,9 +829,16 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             uint32_t pointee_spv = sts_emit_type(c, t->ptr.pointee);
             SpvStorageClass sc = addr_space_to_storage_class(t->ptr.space);
             spv_id = sts_emit_type_pointer(c, sc, pointee_spv);
-            if (t->ptr.space == SSIR_ADDR_PHYSICAL_STORAGE_BUFFER && !c->has_psb_cap) {
-                sts_emit_capability(c, SpvCapabilityPhysicalStorageBufferAddresses);
-                c->has_psb_cap = 1;
+            if (t->ptr.space == SSIR_ADDR_PHYSICAL_STORAGE_BUFFER) {
+                if (!c->has_psb_cap) {
+                    sts_emit_capability(c, SpvCapabilityPhysicalStorageBufferAddresses);
+                    c->has_psb_cap = 1;
+                }
+                /* Block decoration for PSB pointee structs (required for runtime arrays) */
+                SsirType *pointee_t = ssir_get_type((SsirModule *)c->mod, t->ptr.pointee);
+                if (pointee_t && pointee_t->kind == SSIR_TYPE_STRUCT) {
+                    sts_emit_decorate(c, pointee_spv, SpvDecorationBlock, NULL, 0);
+                }
             }
             break;
         }

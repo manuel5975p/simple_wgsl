@@ -17,209 +17,15 @@
  */
 
 #include "fft_fused_gen.h"
+#include "fft_strbuf.h"
+#include "fft_bda.h"
 
 #include <math.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-#define MAX_STAGES 20
 #define MAX_SHARED_BYTES 32768 /* conservative shared memory limit */
 #define DIRECT_MAX_N 64 /* sizes ≤ this use register-only path (no shared mem) */
 
-/* ========================================================================== */
-/* String builder                                                             */
-/* ========================================================================== */
-
-typedef struct {
-  char *buf;
-  size_t len;
-  size_t cap;
-} StrBuf;
-
-static void sb_init(StrBuf *sb) {
-  sb->cap = 131072;
-  sb->buf = (char *)malloc(sb->cap);
-  sb->buf[0] = '\0';
-  sb->len = 0;
-}
-
-static void sb_printf(StrBuf *sb, const char *fmt, ...) {
-  va_list ap;
-  va_start(ap, fmt);
-  int needed = vsnprintf(NULL, 0, fmt, ap);
-  va_end(ap);
-  if (needed < 0) return;
-  while (sb->len + (size_t)needed + 1 > sb->cap) {
-    sb->cap *= 2;
-    sb->buf = (char *)realloc(sb->buf, sb->cap);
-  }
-  va_start(ap, fmt);
-  vsnprintf(sb->buf + sb->len, sb->cap - sb->len, fmt, ap);
-  va_end(ap);
-  sb->len += (size_t)needed;
-}
-
-static char *sb_finish(StrBuf *sb) { return sb->buf; }
-
-static void sb_float(StrBuf *sb, double v) {
-  char tmp[64];
-  snprintf(tmp, sizeof(tmp), "%.17g", v);
-  sb_printf(sb, "%s", tmp);
-  if (!strchr(tmp, '.') && !strchr(tmp, 'e') && !strchr(tmp, 'E'))
-    sb_printf(sb, ".0");
-}
-
-/* ========================================================================== */
-/* Primality / primitive root                                                 */
-/* ========================================================================== */
-
-static int is_prime(int n) {
-  if (n < 2) return 0;
-  if (n < 4) return 1;
-  if (n % 2 == 0 || n % 3 == 0) return 0;
-  for (int i = 5; i * i <= n; i += 6)
-    if (n % i == 0 || n % (i + 2) == 0) return 0;
-  return 1;
-}
-
-/* modular exponentiation: base^exp mod m */
-static int modpow(int base, int exp, int m) {
-  long long result = 1, b = base % m;
-  while (exp > 0) {
-    if (exp & 1) result = result * b % m;
-    b = b * b % m;
-    exp >>= 1;
-  }
-  return (int)result;
-}
-
-/* Find smallest primitive root modulo prime p */
-static int primitive_root(int p) {
-  if (p == 2) return 1;
-  /* Factor p-1 */
-  int pm1 = p - 1;
-  int factors[32], nf = 0;
-  int tmp = pm1;
-  for (int d = 2; d * d <= tmp; d++) {
-    if (tmp % d == 0) {
-      factors[nf++] = d;
-      while (tmp % d == 0) tmp /= d;
-    }
-  }
-  if (tmp > 1) factors[nf++] = tmp;
-
-  for (int g = 2; g < p; g++) {
-    int ok = 1;
-    for (int i = 0; i < nf; i++) {
-      if (modpow(g, pm1 / factors[i], p) == 1) { ok = 0; break; }
-    }
-    if (ok) return g;
-  }
-  return -1;
-}
-
-/* ========================================================================== */
-/* Factorization                                                              */
-/* ========================================================================== */
-
-static const int preferred_radices[] = {16, 8, 7, 5, 4, 3, 2};
-static const int n_preferred = 7;
-
-/* Check if m factors into our base radices (no Rader needed) */
-static int factors_into_base(int m) {
-  int rem = m;
-  for (int count = 0; rem > 1 && count < MAX_STAGES; count++) {
-    int found = 0;
-    for (int i = 0; i < n_preferred; i++) {
-      if (rem % preferred_radices[i] == 0) {
-        rem /= preferred_radices[i];
-        found = 1;
-        break;
-      }
-    }
-    if (!found) return 0;
-  }
-  return rem == 1;
-}
-
-/* Check if prime p can be used as Rader radix (p-1 must factor into base) */
-static int rader_supported(int p) {
-  return is_prime(p) && p > 7 && factors_into_base(p - 1);
-}
-
-/* Factorize n into radices with optional radix cap.
- * Returns stage count, 0 on failure.
- * Tries base radices first (up to max_r), then Rader-supported primes. */
-static int factorize_ex(int n, int *radices, int max_r) {
-  int count = 0;
-  int rem = n;
-  while (rem > 1 && count < MAX_STAGES) {
-    int found = 0;
-    /* Try base radices first (skip those > max_r) */
-    for (int i = 0; i < n_preferred; i++) {
-      if (preferred_radices[i] <= max_r && rem % preferred_radices[i] == 0) {
-        radices[count++] = preferred_radices[i];
-        rem /= preferred_radices[i];
-        found = 1;
-        break;
-      }
-    }
-    if (found) continue;
-    /* Try Rader primes */
-    for (int p = 11; p <= rem; p += 2) {
-      if (p <= max_r && rem % p == 0 && rader_supported(p)) {
-        radices[count++] = p;
-        rem /= p;
-        found = 1;
-        break;
-      }
-    }
-    if (!found) return 0;
-  }
-  return (rem == 1) ? count : 0;
-}
-
-/* Radix cap for cooperative shared-memory processing of small N.
- * Smaller radices → more threads per FFT → better memory coalescing. */
-static int radix_cap(int n) {
-  if (n <= 4) return 2;    /* N=4: [2,2] → 2 threads/FFT */
-  if (n <= 64) return 4;   /* N=8-64: radix-4 stages → more threads/FFT */
-  return 16;               /* default */
-}
-
-/* Resolve effective max radix: 0 = auto (use heuristic), else as given. */
-static int effective_max_r(int n, int max_r) {
-  return (max_r > 0) ? max_r : radix_cap(n);
-}
-
-static int factorize_mr(int n, int *radices, int max_r) {
-  return factorize_ex(n, radices, effective_max_r(n, max_r));
-}
-
-
-/* ========================================================================== */
-/* Bank-conflict padded stride                                                */
-/* ========================================================================== */
-
-static int uses_direct_path_mr(int n, int max_r) {
-  int eff = effective_max_r(n, max_r);
-  /* If radix cap < n, the shared-memory path gives multiple threads/FFT */
-  if (eff < n) return 0;
-  return n <= DIRECT_MAX_N && factors_into_base(n);
-}
-
-static int padded_stride(int n) {
-  if (n < 32 || n > 4096) return n;
-  if ((n & (n - 1)) == 0)
-    return n + (n / 16);
-  return n;
-}
+#include "fft_butterfly.h"
 
 /* ========================================================================== */
 /* Workgroup size / batching                                                  */
@@ -245,14 +51,14 @@ static int wg_per_fft_mr(int n, int max_r) {
   return wg;
 }
 
-static int batch_per_wg_mr(int n, int max_r) {
-  if (uses_direct_path_mr(n, max_r)) return 256;
+static int batch_per_wg_impl(int n, int max_r, int wg_limit) {
+  if (uses_direct_path_mr(n, max_r)) return wg_limit;
 
   int wpf = wg_per_fft_mr(n, max_r);
   if (wpf == 0) return 0;
 
   int shr = padded_stride(n);
-  int max_by_threads = 256 / wpf;
+  int max_by_threads = wg_limit / wpf;
   int max_by_shmem = MAX_SHARED_BYTES / (shr * 8);
   if (max_by_shmem < 1) max_by_shmem = 1;
 
@@ -262,21 +68,27 @@ static int batch_per_wg_mr(int n, int max_r) {
   return B;
 }
 
-static int workgroup_size_mr(int n, int max_r) {
-  if (uses_direct_path_mr(n, max_r)) return 256;
+static int workgroup_size_impl(int n, int max_r, int wg_limit) {
+  if (uses_direct_path_mr(n, max_r)) return wg_limit;
 
   int wpf = wg_per_fft_mr(n, max_r);
   if (wpf == 0) return 0;
-  return wpf * batch_per_wg_mr(n, max_r);
+  return wpf * batch_per_wg_impl(n, max_r, wg_limit);
 }
 
-/* Public API — default (auto) */
-int fft_fused_batch_per_wg(int n) { return batch_per_wg_mr(n, 0); }
-int fft_fused_workgroup_size(int n) { return workgroup_size_mr(n, 0); }
+#define DEFAULT_WG_LIMIT 256
 
-/* Public API — explicit max_radix */
-int fft_fused_batch_per_wg_ex(int n, int max_r) { return batch_per_wg_mr(n, max_r); }
-int fft_fused_workgroup_size_ex(int n, int max_r) { return workgroup_size_mr(n, max_r); }
+/* Public API — default (auto) */
+int fft_fused_batch_per_wg(int n) { return batch_per_wg_impl(n, 0, DEFAULT_WG_LIMIT); }
+int fft_fused_workgroup_size(int n) { return workgroup_size_impl(n, 0, DEFAULT_WG_LIMIT); }
+
+/* Public API — explicit max_radix + wg_limit */
+int fft_fused_batch_per_wg_ex(int n, int max_r, int wg_lim) {
+  return batch_per_wg_impl(n, max_r, wg_lim > 0 ? wg_lim : DEFAULT_WG_LIMIT);
+}
+int fft_fused_workgroup_size_ex(int n, int max_r, int wg_lim) {
+  return workgroup_size_impl(n, max_r, wg_lim > 0 ? wg_lim : DEFAULT_WG_LIMIT);
+}
 
 /* ========================================================================== */
 /* Twiddle LUT computation (host-side)                                        */
@@ -298,6 +110,7 @@ static int rader_lut_count_mr(int n, int max_r) {
 
 static int lut_size_mr(int n, int direction, int max_r) {
   (void)direction;
+  if (uses_direct_path_mr(n, max_r)) return 0; /* direct path bakes twiddles inline */
   int radices[MAX_STAGES];
   int ns = factorize_mr(n, radices, max_r);
   if (ns == 0) return 0;
@@ -411,437 +224,11 @@ float *fft_fused_compute_lut(int n, int direction) { return compute_lut_mr(n, di
 float *fft_fused_compute_lut_ex(int n, int direction, int max_r) { return compute_lut_mr(n, direction, max_r); }
 
 /* ========================================================================== */
-/* Specialized radix butterflies                                              */
-/* ========================================================================== */
-
-static void emit_radix2(StrBuf *sb, const char *p, int b, int uid) {
-  #define R(k) p, b + (k)
-  sb_printf(sb, "      { let bt_%d = %s%d; %s%d = bt_%d + %s%d; "
-                "%s%d = bt_%d - %s%d; }\n",
-            uid, R(0), R(0), uid, R(1), R(1), uid, R(1));
-  #undef R
-}
-
-static void emit_radix3(StrBuf *sb, int dir, const char *p, int b, int uid) {
-  #define R(k) p, b + (k)
-  double s3 = 0.86602540378443864676;
-  sb_printf(sb, "      {\n");
-  sb_printf(sb, "        let s_%d = %s%d + %s%d;\n", uid, R(1), R(2));
-  sb_printf(sb, "        let d_%d = %s%d - %s%d;\n", uid, R(1), R(2));
-  sb_printf(sb, "        let t_%d = %s%d;\n", uid, R(0));
-  sb_printf(sb, "        %s%d = t_%d + s_%d;\n", R(0), uid, uid);
-  sb_printf(sb, "        %s%d = vec2<f32>(t_%d.x - 0.5*s_%d.x %c ",
-            R(1), uid, uid, dir == 1 ? '+' : '-');
-  sb_float(sb, s3); sb_printf(sb, "*d_%d.y, t_%d.y - 0.5*s_%d.y %c ",
-                               uid, uid, uid, dir == 1 ? '-' : '+');
-  sb_float(sb, s3); sb_printf(sb, "*d_%d.x);\n", uid);
-  sb_printf(sb, "        %s%d = vec2<f32>(t_%d.x - 0.5*s_%d.x %c ",
-            R(2), uid, uid, dir == 1 ? '-' : '+');
-  sb_float(sb, s3); sb_printf(sb, "*d_%d.y, t_%d.y - 0.5*s_%d.y %c ",
-                               uid, uid, uid, dir == 1 ? '+' : '-');
-  sb_float(sb, s3); sb_printf(sb, "*d_%d.x);\n", uid);
-  sb_printf(sb, "      }\n");
-  #undef R
-}
-
-static void emit_radix4(StrBuf *sb, int dir, const char *p, int b, int uid) {
-  #define R(k) p, b + (k)
-  sb_printf(sb, "      {\n");
-  sb_printf(sb, "        let a_%d = %s%d + %s%d;\n", uid, R(0), R(2));
-  sb_printf(sb, "        let b_%d = %s%d - %s%d;\n", uid, R(0), R(2));
-  sb_printf(sb, "        let c_%d = %s%d + %s%d;\n", uid, R(1), R(3));
-  if (dir == 1)
-    sb_printf(sb, "        let d_%d = vec2<f32>(%s%d.y - %s%d.y, "
-                  "%s%d.x - %s%d.x);\n", uid, R(1), R(3), R(3), R(1));
-  else
-    sb_printf(sb, "        let d_%d = vec2<f32>(%s%d.y - %s%d.y, "
-                  "%s%d.x - %s%d.x);\n", uid, R(3), R(1), R(1), R(3));
-  sb_printf(sb, "        %s%d = a_%d + c_%d;\n", R(0), uid, uid);
-  sb_printf(sb, "        %s%d = b_%d + d_%d;\n", R(1), uid, uid);
-  sb_printf(sb, "        %s%d = a_%d - c_%d;\n", R(2), uid, uid);
-  sb_printf(sb, "        %s%d = b_%d - d_%d;\n", R(3), uid, uid);
-  sb_printf(sb, "      }\n");
-  #undef R
-}
-
-static void emit_radix5(StrBuf *sb, int dir, const char *p, int b, int uid) {
-  #define R(k) p, b + (k)
-  double c1 = 0.30901699437494742410, c2 = -0.80901699437494742410;
-  double s1 = 0.95105651629515357212, s2 = 0.58778525229247312917;
-  sb_printf(sb, "      {\n");
-  sb_printf(sb, "        let a1_%d = %s%d + %s%d;\n", uid, R(1), R(4));
-  sb_printf(sb, "        let a2_%d = %s%d + %s%d;\n", uid, R(2), R(3));
-  sb_printf(sb, "        let b1_%d = %s%d - %s%d;\n", uid, R(1), R(4));
-  sb_printf(sb, "        let b2_%d = %s%d - %s%d;\n", uid, R(2), R(3));
-  sb_printf(sb, "        %s%d = %s%d + a1_%d + a2_%d;\n", R(0), R(0), uid, uid);
-
-  /* outputs 1-4: x0 + c*a + j*dir*(s*b) with conjugate pairs */
-  double ca[4][2] = {{c1,c2},{c2,c1},{c2,c1},{c1,c2}};
-  double sa[4][2] = {{s1,s2},{s2,-s1},{-s2,s1},{-s1,-s2}};
-  for (int out = 0; out < 4; out++) {
-    sb_printf(sb, "        %s%d = vec2<f32>(%s%d.x", R(out+1), R(0));
-    sb_printf(sb, " + "); sb_float(sb, ca[out][0]); sb_printf(sb, "*a1_%d.x", uid);
-    sb_printf(sb, " + "); sb_float(sb, ca[out][1]); sb_printf(sb, "*a2_%d.x", uid);
-    double ds1 = (dir == 1) ? sa[out][0] : -sa[out][0];
-    double ds2 = (dir == 1) ? sa[out][1] : -sa[out][1];
-    if (ds1 >= 0) { sb_printf(sb, " + "); sb_float(sb, ds1); }
-    else { sb_printf(sb, " - "); sb_float(sb, -ds1); }
-    sb_printf(sb, "*b1_%d.y", uid);
-    if (ds2 >= 0) { sb_printf(sb, " + "); sb_float(sb, ds2); }
-    else { sb_printf(sb, " - "); sb_float(sb, -ds2); }
-    sb_printf(sb, "*b2_%d.y, %s%d.y", uid, R(0));
-    sb_printf(sb, " + "); sb_float(sb, ca[out][0]); sb_printf(sb, "*a1_%d.y", uid);
-    sb_printf(sb, " + "); sb_float(sb, ca[out][1]); sb_printf(sb, "*a2_%d.y", uid);
-    if (-ds1 >= 0) { sb_printf(sb, " + "); sb_float(sb, -ds1); }
-    else { sb_printf(sb, " - "); sb_float(sb, ds1); }
-    sb_printf(sb, "*b1_%d.x", uid);
-    if (-ds2 >= 0) { sb_printf(sb, " + "); sb_float(sb, -ds2); }
-    else { sb_printf(sb, " - "); sb_float(sb, ds2); }
-    sb_printf(sb, "*b2_%d.x);\n", uid);
-  }
-  sb_printf(sb, "      }\n");
-  #undef R
-}
-
-static void emit_radix7(StrBuf *sb, int dir, const char *p, int b, int uid) {
-  #define R(k) p, b + (k)
-  double cc[3] = {cos(2*M_PI/7), cos(4*M_PI/7), cos(6*M_PI/7)};
-  double ss[3] = {sin(2*M_PI/7), sin(4*M_PI/7), sin(6*M_PI/7)};
-  sb_printf(sb, "      {\n");
-  sb_printf(sb, "        let a1_%d = %s%d + %s%d;\n", uid, R(1), R(6));
-  sb_printf(sb, "        let a2_%d = %s%d + %s%d;\n", uid, R(2), R(5));
-  sb_printf(sb, "        let a3_%d = %s%d + %s%d;\n", uid, R(3), R(4));
-  sb_printf(sb, "        let b1_%d = %s%d - %s%d;\n", uid, R(1), R(6));
-  sb_printf(sb, "        let b2_%d = %s%d - %s%d;\n", uid, R(2), R(5));
-  sb_printf(sb, "        let b3_%d = %s%d - %s%d;\n", uid, R(3), R(4));
-  sb_printf(sb, "        %s%d = %s%d + a1_%d + a2_%d + a3_%d;\n",
-            R(0), R(0), uid, uid, uid);
-  int ci[6][3] = {{0,1,2},{1,2,0},{2,0,1},{2,0,1},{1,2,0},{0,1,2}};
-  int sign_s[6] = {1,1,1,-1,-1,-1};
-  for (int out = 0; out < 6; out++) {
-    int k = out + 1;
-    int si = (dir == 1) ? sign_s[out] : -sign_s[out];
-    sb_printf(sb, "        %s%d = vec2<f32>(%s%d.x", R(k), R(0));
-    for (int j = 0; j < 3; j++) {
-      sb_printf(sb, " + "); sb_float(sb, cc[ci[out][j]]);
-      sb_printf(sb, "*a%d_%d.x", j+1, uid);
-    }
-    for (int j = 0; j < 3; j++) {
-      sb_printf(sb, " %c ", si > 0 ? '+' : '-');
-      sb_float(sb, ss[ci[out][j]]);
-      sb_printf(sb, "*b%d_%d.y", j+1, uid);
-    }
-    sb_printf(sb, ", %s%d.y", R(0));
-    for (int j = 0; j < 3; j++) {
-      sb_printf(sb, " + "); sb_float(sb, cc[ci[out][j]]);
-      sb_printf(sb, "*a%d_%d.y", j+1, uid);
-    }
-    for (int j = 0; j < 3; j++) {
-      sb_printf(sb, " %c ", si > 0 ? '-' : '+');
-      sb_float(sb, ss[ci[out][j]]);
-      sb_printf(sb, "*b%d_%d.x", j+1, uid);
-    }
-    sb_printf(sb, ");\n");
-  }
-  sb_printf(sb, "      }\n");
-  #undef R
-}
-
-static void emit_radix8(StrBuf *sb, int dir, const char *p, int b, int uid) {
-  #define R(k) p, b + (k)
-  double sq = 0.70710678118654752440;
-  sb_printf(sb, "      {\n");
-  sb_printf(sb, "        var e0_%d = %s%d + %s%d;\n", uid, R(0), R(4));
-  sb_printf(sb, "        var e1_%d = %s%d - %s%d;\n", uid, R(0), R(4));
-  sb_printf(sb, "        var e2_%d = %s%d + %s%d;\n", uid, R(2), R(6));
-  sb_printf(sb, "        var e3_%d = %s%d - %s%d;\n", uid, R(2), R(6));
-  if (dir == 1)
-    sb_printf(sb, "        e3_%d = vec2<f32>(e3_%d.y, -e3_%d.x);\n", uid,uid,uid);
-  else
-    sb_printf(sb, "        e3_%d = vec2<f32>(-e3_%d.y, e3_%d.x);\n", uid,uid,uid);
-  sb_printf(sb, "        let f0_%d = e0_%d + e2_%d;\n", uid, uid, uid);
-  sb_printf(sb, "        let f1_%d = e1_%d + e3_%d;\n", uid, uid, uid);
-  sb_printf(sb, "        let f2_%d = e0_%d - e2_%d;\n", uid, uid, uid);
-  sb_printf(sb, "        let f3_%d = e1_%d - e3_%d;\n", uid, uid, uid);
-  sb_printf(sb, "        var o0_%d = %s%d + %s%d;\n", uid, R(1), R(5));
-  sb_printf(sb, "        var o1_%d = %s%d - %s%d;\n", uid, R(1), R(5));
-  sb_printf(sb, "        var o2_%d = %s%d + %s%d;\n", uid, R(3), R(7));
-  sb_printf(sb, "        var o3_%d = %s%d - %s%d;\n", uid, R(3), R(7));
-  if (dir == 1)
-    sb_printf(sb, "        o3_%d = vec2<f32>(o3_%d.y, -o3_%d.x);\n", uid,uid,uid);
-  else
-    sb_printf(sb, "        o3_%d = vec2<f32>(-o3_%d.y, o3_%d.x);\n", uid,uid,uid);
-  sb_printf(sb, "        let g0_%d = o0_%d + o2_%d;\n", uid, uid, uid);
-  sb_printf(sb, "        var g1_%d = o1_%d + o3_%d;\n", uid, uid, uid);
-  sb_printf(sb, "        let g2_%d = o0_%d - o2_%d;\n", uid, uid, uid);
-  sb_printf(sb, "        var g3_%d = o1_%d - o3_%d;\n", uid, uid, uid);
-  if (dir == 1) {
-    sb_printf(sb, "        g1_%d = vec2<f32>(", uid);
-    sb_float(sb, sq); sb_printf(sb, "*(g1_%d.x+g1_%d.y), ", uid, uid);
-    sb_float(sb, sq); sb_printf(sb, "*(g1_%d.y-g1_%d.x));\n", uid, uid);
-    sb_printf(sb, "        g3_%d = vec2<f32>(", uid);
-    sb_float(sb, -sq); sb_printf(sb, "*(g3_%d.x-g3_%d.y), ", uid, uid);
-    sb_float(sb, -sq); sb_printf(sb, "*(g3_%d.x+g3_%d.y));\n", uid, uid);
-  } else {
-    sb_printf(sb, "        g1_%d = vec2<f32>(", uid);
-    sb_float(sb, sq); sb_printf(sb, "*(g1_%d.x-g1_%d.y), ", uid, uid);
-    sb_float(sb, sq); sb_printf(sb, "*(g1_%d.y+g1_%d.x));\n", uid, uid);
-    sb_printf(sb, "        g3_%d = vec2<f32>(", uid);
-    sb_float(sb, -sq); sb_printf(sb, "*(g3_%d.x+g3_%d.y), ", uid, uid);
-    sb_float(sb, -sq); sb_printf(sb, "*(g3_%d.y-g3_%d.x));\n", uid, uid);
-  }
-  if (dir == 1)
-    sb_printf(sb, "        let g2r_%d = vec2<f32>(g2_%d.y, -g2_%d.x);\n", uid,uid,uid);
-  else
-    sb_printf(sb, "        let g2r_%d = vec2<f32>(-g2_%d.y, g2_%d.x);\n", uid,uid,uid);
-  sb_printf(sb, "        %s%d = f0_%d + g0_%d;\n", R(0), uid, uid);
-  sb_printf(sb, "        %s%d = f1_%d + g1_%d;\n", R(1), uid, uid);
-  sb_printf(sb, "        %s%d = f2_%d + g2r_%d;\n", R(2), uid, uid);
-  sb_printf(sb, "        %s%d = f3_%d + g3_%d;\n", R(3), uid, uid);
-  sb_printf(sb, "        %s%d = f0_%d - g0_%d;\n", R(4), uid, uid);
-  sb_printf(sb, "        %s%d = f1_%d - g1_%d;\n", R(5), uid, uid);
-  sb_printf(sb, "        %s%d = f2_%d - g2r_%d;\n", R(6), uid, uid);
-  sb_printf(sb, "        %s%d = f3_%d - g3_%d;\n", R(7), uid, uid);
-  sb_printf(sb, "      }\n");
-  #undef R
-}
-
-static void emit_radix16(StrBuf *sb, int dir, const char *p, int b, int uid) {
-  (void)uid;
-  #define R(k) p, b + (k)
-  double sq = 0.70710678118654752440;
-  sb_printf(sb, "      {\n");
-  for (int col = 0; col < 4; col++) {
-    int i0=col,i1=col+4,i2=col+8,i3=col+12;
-    sb_printf(sb, "        { let a_ = %s%d + %s%d; let b_ = %s%d - %s%d; "
-              "let c_ = %s%d + %s%d; ", R(i0),R(i2), R(i0),R(i2), R(i1),R(i3));
-    if (dir==1) sb_printf(sb, "let d_ = vec2<f32>(%s%d.y-%s%d.y, %s%d.x-%s%d.x); ",
-                           R(i1),R(i3),R(i3),R(i1));
-    else sb_printf(sb, "let d_ = vec2<f32>(%s%d.y-%s%d.y, %s%d.x-%s%d.x); ",
-                   R(i3),R(i1),R(i1),R(i3));
-    sb_printf(sb, "%s%d = a_+c_; %s%d = b_+d_; %s%d = a_-c_; %s%d = b_-d_; }\n",
-              R(i0),R(i1),R(i2),R(i3));
-  }
-  /* Intermediate twiddles */
-  if (dir==1) {
-    sb_printf(sb, "        %s%d = vec2<f32>(", R(5));
-    sb_float(sb,sq); sb_printf(sb, "*(%s%d.x+%s%d.y), ", R(5),R(5));
-    sb_float(sb,sq); sb_printf(sb, "*(%s%d.y-%s%d.x));\n", R(5),R(5));
-  } else {
-    sb_printf(sb, "        %s%d = vec2<f32>(", R(5));
-    sb_float(sb,sq); sb_printf(sb, "*(%s%d.x-%s%d.y), ", R(5),R(5));
-    sb_float(sb,sq); sb_printf(sb, "*(%s%d.y+%s%d.x));\n", R(5),R(5));
-  }
-  if (dir==1) sb_printf(sb, "        %s%d = vec2<f32>(%s%d.y, -%s%d.x);\n", R(6),R(6),R(6));
-  else sb_printf(sb, "        %s%d = vec2<f32>(-%s%d.y, %s%d.x);\n", R(6),R(6),R(6));
-  if (dir==1) {
-    sb_printf(sb, "        %s%d = vec2<f32>(", R(7));
-    sb_float(sb,-sq); sb_printf(sb, "*(%s%d.x-%s%d.y), ", R(7),R(7));
-    sb_float(sb,-sq); sb_printf(sb, "*(%s%d.x+%s%d.y));\n", R(7),R(7));
-  } else {
-    sb_printf(sb, "        %s%d = vec2<f32>(", R(7));
-    sb_float(sb,-sq); sb_printf(sb, "*(%s%d.x+%s%d.y), ", R(7),R(7));
-    sb_float(sb, sq); sb_printf(sb, "*(%s%d.x-%s%d.y));\n", R(7),R(7));
-  }
-  if (dir==1) sb_printf(sb, "        %s%d = vec2<f32>(%s%d.y, -%s%d.x);\n", R(9),R(9),R(9));
-  else sb_printf(sb, "        %s%d = vec2<f32>(-%s%d.y, %s%d.x);\n", R(9),R(9),R(9));
-  sb_printf(sb, "        %s%d = vec2<f32>(-%s%d.x, -%s%d.y);\n", R(10),R(10),R(10));
-  if (dir==1) sb_printf(sb, "        %s%d = vec2<f32>(-%s%d.y, %s%d.x);\n", R(11),R(11),R(11));
-  else sb_printf(sb, "        %s%d = vec2<f32>(%s%d.y, -%s%d.x);\n", R(11),R(11),R(11));
-  if (dir==1) {
-    sb_printf(sb, "        %s%d = vec2<f32>(", R(13));
-    sb_float(sb,-sq); sb_printf(sb, "*(%s%d.x-%s%d.y), ", R(13),R(13));
-    sb_float(sb,-sq); sb_printf(sb, "*(%s%d.x+%s%d.y));\n", R(13),R(13));
-  } else {
-    sb_printf(sb, "        %s%d = vec2<f32>(", R(13));
-    sb_float(sb,-sq); sb_printf(sb, "*(%s%d.x+%s%d.y), ", R(13),R(13));
-    sb_float(sb, sq); sb_printf(sb, "*(%s%d.x-%s%d.y));\n", R(13),R(13));
-  }
-  if (dir==1) sb_printf(sb, "        %s%d = vec2<f32>(-%s%d.y, %s%d.x);\n", R(14),R(14),R(14));
-  else sb_printf(sb, "        %s%d = vec2<f32>(%s%d.y, -%s%d.x);\n", R(14),R(14),R(14));
-  if (dir==1) {
-    sb_printf(sb, "        %s%d = vec2<f32>(", R(15));
-    sb_float(sb, sq); sb_printf(sb, "*(%s%d.x-%s%d.y), ", R(15),R(15));
-    sb_float(sb, sq); sb_printf(sb, "*(%s%d.y+%s%d.x));\n", R(15),R(15));
-  } else {
-    sb_printf(sb, "        %s%d = vec2<f32>(", R(15));
-    sb_float(sb, sq); sb_printf(sb, "*(%s%d.x+%s%d.y), ", R(15),R(15));
-    sb_float(sb, sq); sb_printf(sb, "*(%s%d.y-%s%d.x));\n", R(15),R(15));
-  }
-  for (int row = 0; row < 4; row++) {
-    int i0=row*4,i1=row*4+1,i2=row*4+2,i3=row*4+3;
-    sb_printf(sb, "        { let a_ = %s%d + %s%d; let b_ = %s%d - %s%d; "
-              "let c_ = %s%d + %s%d; ", R(i0),R(i2), R(i0),R(i2), R(i1),R(i3));
-    if (dir==1) sb_printf(sb, "let d_ = vec2<f32>(%s%d.y-%s%d.y, %s%d.x-%s%d.x); ",
-                           R(i1),R(i3),R(i3),R(i1));
-    else sb_printf(sb, "let d_ = vec2<f32>(%s%d.y-%s%d.y, %s%d.x-%s%d.x); ",
-                   R(i3),R(i1),R(i1),R(i3));
-    sb_printf(sb, "%s%d = a_+c_; %s%d = b_+d_; %s%d = a_-c_; %s%d = b_-d_; }\n",
-              R(i0),R(i1),R(i2),R(i3));
-  }
-  /* Final permutation: swap (1,4),(2,8),(3,12),(6,9),(7,13),(11,14) */
-  int swaps[][2] = {{1,4},{2,8},{3,12},{6,9},{7,13},{11,14}};
-  for (int s = 0; s < 6; s++)
-    sb_printf(sb, "        { let t_ = %s%d; %s%d = %s%d; %s%d = t_; }\n",
-              R(swaps[s][0]),R(swaps[s][0]),R(swaps[s][1]),R(swaps[s][1]));
-  sb_printf(sb, "      }\n");
-  #undef R
-}
-
-/* ========================================================================== */
-/* Rader butterfly — prime p via cyclic convolution                           */
-/* ========================================================================== */
-
-/* Emit in-register DFT of length M using O(M^2) with baked twiddles.
- * Operates on registers prefix[base..base+M-1].
- * Uses temp registers prefix[tmp..tmp+M-1]. */
-static void emit_register_dft(StrBuf *sb, int M, int direction,
-                               const char *pfx, int base, int tmp, int uid) {
-  (void)uid;
-  /* Direct DFT: O[k] = sum_{j=0}^{M-1} I[j] * W_M^{kj} */
-  for (int k = 0; k < M; k++) {
-    sb_printf(sb, "        %s%d = vec2<f32>(0.0, 0.0);\n", pfx, tmp + k);
-    for (int j = 0; j < M; j++) {
-      double angle = (double)direction * -2.0 * M_PI * k * j / M;
-      double wr = cos(angle), wi = sin(angle);
-      if (fabs(wr) < 1e-15) wr = 0;
-      if (fabs(wi) < 1e-15) wi = 0;
-      if (wr == 1.0 && wi == 0.0) {
-        sb_printf(sb, "        %s%d = %s%d + %s%d;\n",
-                  pfx, tmp+k, pfx, tmp+k, pfx, base+j);
-      } else if (wr == -1.0 && wi == 0.0) {
-        sb_printf(sb, "        %s%d = %s%d - %s%d;\n",
-                  pfx, tmp+k, pfx, tmp+k, pfx, base+j);
-      } else if (wr == 0.0 && wi == -1.0) {
-        sb_printf(sb, "        %s%d = %s%d + vec2<f32>(%s%d.y, -%s%d.x);\n",
-                  pfx,tmp+k,pfx,tmp+k,pfx,base+j,pfx,base+j);
-      } else if (wr == 0.0 && wi == 1.0) {
-        sb_printf(sb, "        %s%d = %s%d + vec2<f32>(-%s%d.y, %s%d.x);\n",
-                  pfx,tmp+k,pfx,tmp+k,pfx,base+j,pfx,base+j);
-      } else {
-        sb_printf(sb, "        %s%d = %s%d + vec2<f32>(%s%d.x*",
-                  pfx,tmp+k,pfx,tmp+k,pfx,base+j);
-        sb_float(sb, wr);
-        sb_printf(sb, " - %s%d.y*", pfx, base+j);
-        sb_float(sb, wi);
-        sb_printf(sb, ", %s%d.x*", pfx, base+j);
-        sb_float(sb, wi);
-        sb_printf(sb, " + %s%d.y*", pfx, base+j);
-        sb_float(sb, wr);
-        sb_printf(sb, ");\n");
-      }
-    }
-  }
-  /* Copy results back: base[k] = tmp[k] */
-  for (int k = 0; k < M; k++)
-    sb_printf(sb, "        %s%d = %s%d;\n", pfx, base+k, pfx, tmp+k);
-}
-
-static void emit_rader_butterfly(StrBuf *sb, int p, int direction,
-                                  const char *pfx, int base, int uid,
-                                  int rader_lut_offset) {
-  (void)direction;
-  int M = p - 1;
-  int g = primitive_root(p);
-
-  /* Compute g^j mod p for j=0..M-1 */
-  int *g_pow = (int *)malloc(M * sizeof(int));
-  g_pow[0] = 1;
-  for (int j = 1; j < M; j++)
-    g_pow[j] = (int)((long long)g_pow[j-1] * g % p);
-
-  sb_printf(sb, "      { // Rader prime=%d, g=%d\n", p, g);
-
-  /* Step 1: x0 = sum of all p inputs */
-  sb_printf(sb, "        var x0_%d: vec2<f32> = %s%d;\n", uid, pfx, base);
-  for (int j = 1; j < p; j++)
-    sb_printf(sb, "        x0_%d = x0_%d + %s%d;\n", uid, uid, pfx, base+j);
-
-  /* Step 2: Permute by g^j: a[j] = input[g^j mod p], j=0..M-1
-   * Note: input[0] is the DC term, input[1..p-1] are the non-zero indices.
-   * We store into the SAME registers starting at base. */
-  /* First, save to temp vars */
-  for (int j = 0; j < M; j++)
-    sb_printf(sb, "        let ra_%d_%d = %s%d;\n", uid, j, pfx, base + g_pow[j]);
-
-  /* Copy permuted values back into base registers */
-  for (int j = 0; j < M; j++)
-    sb_printf(sb, "        %s%d = ra_%d_%d;\n", pfx, base + j, uid, j);
-
-  /* Step 3: Forward DFT of length M on registers base[0..M-1]
-   * We use base[M] (= base[p-1]) and beyond as temp space.
-   * Total temp needed: M registers starting at base+M */
-  int tmp_base = base + M;
-  sb_printf(sb, "        // Sub-FFT(%d) forward\n", M);
-  emit_register_dft(sb, M, 1, pfx, base, tmp_base, uid * 1000);
-
-  /* Step 4: Pointwise multiply with precomputed kernel from LUT */
-  sb_printf(sb, "        // Pointwise multiply with Rader kernel\n");
-  for (int k = 0; k < M; k++) {
-    int li = rader_lut_offset + k;
-    sb_printf(sb, "        { let kk: vec2<f32> = vec2<f32>("
-              "lut.d[%du], lut.d[%du]);\n", li*2, li*2+1);
-    sb_printf(sb, "          %s%d = vec2<f32>("
-              "%s%d.x*kk.x - %s%d.y*kk.y, "
-              "%s%d.x*kk.y + %s%d.y*kk.x); }\n",
-              pfx, base+k, pfx, base+k, pfx, base+k,
-              pfx, base+k, pfx, base+k);
-  }
-
-  /* Step 5: Inverse DFT of length M */
-  sb_printf(sb, "        // Sub-FFT(%d) inverse\n", M);
-  emit_register_dft(sb, M, -1, pfx, base, tmp_base, uid * 1000 + 500);
-
-  /* Step 6: Scale by 1/M and add x0, then unpermute */
-  double inv_M = 1.0 / M;
-  sb_printf(sb, "        // Scale + unpermute\n");
-  /* Save scaled results to temps */
-  for (int j = 0; j < M; j++) {
-    sb_printf(sb, "        let rb_%d_%d = x0_%d + %s%d * vec2<f32>(",
-              uid, j, uid, pfx, base + j);
-    sb_float(sb, inv_M);
-    sb_printf(sb, ", ");
-    sb_float(sb, inv_M);
-    sb_printf(sb, ");\n");
-  }
-
-  /* Unpermute: output[g^j mod p] = result[j], output[0] = x0 */
-  sb_printf(sb, "        %s%d = x0_%d;\n", pfx, base, uid);
-  for (int j = 0; j < M; j++)
-    sb_printf(sb, "        %s%d = rb_%d_%d;\n", pfx, base + g_pow[j], uid, j);
-
-  sb_printf(sb, "      }\n");
-  free(g_pow);
-}
-
-/* ========================================================================== */
-/* Butterfly dispatch                                                         */
-/* ========================================================================== */
-
-static void emit_radix_butterfly(StrBuf *sb, int radix, int direction,
-                                 const char *prefix, int base, int uid,
-                                 int rader_lut_offset) {
-  switch (radix) {
-    case 2:  emit_radix2(sb, prefix, base, uid); break;
-    case 3:  emit_radix3(sb, direction, prefix, base, uid); break;
-    case 4:  emit_radix4(sb, direction, prefix, base, uid); break;
-    case 5:  emit_radix5(sb, direction, prefix, base, uid); break;
-    case 7:  emit_radix7(sb, direction, prefix, base, uid); break;
-    case 8:  emit_radix8(sb, direction, prefix, base, uid); break;
-    case 16: emit_radix16(sb, direction, prefix, base, uid); break;
-    default:
-      if (is_prime(radix) && rader_supported(radix))
-        emit_rader_butterfly(sb, radix, direction, prefix, base, uid,
-                             rader_lut_offset);
-      break;
-  }
-}
-
-/* ========================================================================== */
 /* Main generator                                                             */
 /* ========================================================================== */
 
-static char *gen_fft_fused_mr(int n, int direction, int max_r) {
+static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int total_batch,
+                               int in_bs, int in_es, int out_bs, int out_es, int tw_n) {
   int radices[MAX_STAGES];
   int n_stages;
 
@@ -855,44 +242,85 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r) {
   for (int i = 0; i < n_stages; i++)
     if (radices[i] > max_radix) max_radix = radices[i];
 
-  /* ===== Direct register path: all stages in one thread, no shared mem ===== */
+  /* ===== Direct register path: all stages in one thread ===== */
   if (uses_direct_path_mr(n, max_r)) {
-    int B_dir = 256; /* 1 thread per FFT */
+    int B_dir = wg_limit; /* 1 thread per FFT */
     StrBuf sb;
-    sb_init(&sb);
+    sb_init_cap(&sb, 65536);
 
-    sb_printf(&sb, "struct SrcBuf { d: array<f32> };\n");
-    sb_printf(&sb, "struct DstBuf { d: array<f32> };\n");
-    sb_printf(&sb, "@group(0) @binding(0) var<storage, read> src: SrcBuf;\n");
-    sb_printf(&sb, "@group(0) @binding(1) var<storage, read_write> dst: DstBuf;\n\n");
+    /* When batching (B_dir > 1) and data is contiguous, use shared memory
+     * for coalesced global I/O but do the FFT entirely in registers.
+     * This gives coalesced loads/stores (like shared-memory path) with
+     * minimal barriers (2 total, vs 5+ for multi-stage shared-memory). */
+    int use_hybrid = B_dir > 1 && in_es == 1 && in_bs == n &&
+                     out_es == 1 && out_bs == n && total_batch == 0;
+    int shr_stride_dir = n; /* no padding for small N */
+
+    sb_emit_bda_src_dst(&sb, 0);
+    sb_printf(&sb, "\n");
+
+    if (use_hybrid) {
+      sb_printf(&sb, "var<workgroup> s_re: array<f32, %d>;\n", B_dir * shr_stride_dir);
+      sb_printf(&sb, "var<workgroup> s_im: array<f32, %d>;\n\n", B_dir * shr_stride_dir);
+    }
+
     sb_printf(&sb, "@compute @workgroup_size(%d)\n", B_dir);
     sb_printf(&sb, "fn main(\n");
     sb_printf(&sb, "  @builtin(local_invocation_id) lid: vec3<u32>,\n");
     sb_printf(&sb, "  @builtin(workgroup_id) wid: vec3<u32>\n");
     sb_printf(&sb, ") {\n");
     sb_printf(&sb, "  let t: u32 = lid.x;\n");
-    sb_printf(&sb, "  let base: u32 = (wid.x * %uu + t) * %uu;\n", B_dir, n);
+    if (total_batch > 0) {
+      sb_printf(&sb, "  let global_id: u32 = wid.x * %uu + t;\n", B_dir);
+      sb_printf(&sb, "  if (global_id >= %uu) { return; }\n", total_batch);
+    }
 
-    if (n_stages == 1) {
-      /* Single stage: just load → butterfly → store */
+    if (use_hybrid) {
+      /* ---- Coalesced load: global → shared memory ---- */
+      int is_po2 = (n & (n - 1)) == 0;
+      int log2n = 0;
+      if (is_po2) { int tmp = n; while (tmp > 1) { log2n++; tmp >>= 1; } }
+      sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B_dir * n);
+      for (int e = 0; e < n; e++) {
+        int off = e * B_dir;
+        sb_printf(&sb, "    { let gi: u32 = t");
+        if (off > 0) sb_printf(&sb, " + %uu", off);
+        sb_printf(&sb, ";\n");
+        if (is_po2) {
+          sb_printf(&sb, "      let f: u32 = gi >> %du; let k: u32 = gi & %uu;\n",
+                    log2n, n - 1);
+        } else {
+          sb_printf(&sb, "      let f: u32 = gi / %uu; let k: u32 = gi %% %uu;\n", n, n);
+        }
+        sb_printf(&sb, "      s_re[f * %uu + k] = src.d[(wg_base + gi) * 2u];\n",
+                  shr_stride_dir);
+        sb_printf(&sb, "      s_im[f * %uu + k] = src.d[(wg_base + gi) * 2u + 1u]; }\n",
+                  shr_stride_dir);
+      }
+      sb_printf(&sb, "  }\n");
+      sb_printf(&sb, "  workgroupBarrier();\n\n");
+
+      /* ---- Read own FFT from shared → registers ---- */
+      for (int k = 0; k < n; k++)
+        sb_printf(&sb, "  var v%d: vec2<f32> = vec2<f32>("
+                  "s_re[t * %uu + %uu], s_im[t * %uu + %uu]);\n",
+                  k, shr_stride_dir, k, shr_stride_dir, k);
+    } else {
+      /* ---- Direct global load → registers ---- */
+      sb_printf(&sb, "  let base: u32 = (wid.x * %uu + t) * %uu;\n", B_dir, n);
       for (int k = 0; k < n; k++)
         sb_printf(&sb, "  var v%d: vec2<f32> = vec2<f32>("
                   "src.d[(base + %uu) * 2u], src.d[(base + %uu) * 2u + 1u]);\n",
                   k, k, k);
+    }
+
+    /* ---- In-register FFT ---- */
+    if (n_stages == 1) {
       sb_printf(&sb, "\n");
       emit_radix_butterfly(&sb, n, direction, "v", 0, 0, 0);
-      sb_printf(&sb, "\n");
-      for (int k = 0; k < n; k++) {
-        sb_printf(&sb, "  dst.d[(base + %uu) * 2u] = v%d.x;\n", k, k);
-        sb_printf(&sb, "  dst.d[(base + %uu) * 2u + 1u] = v%d.y;\n", k, k);
-      }
     } else {
       /* Multi-stage: two register arrays (v, w) + temp (r) for butterflies.
        * Stockham reorder happens via scatter-read/scatter-write between arrays. */
-      for (int k = 0; k < n; k++)
-        sb_printf(&sb, "  var v%d: vec2<f32> = vec2<f32>("
-                  "src.d[(base + %uu) * 2u], src.d[(base + %uu) * 2u + 1u]);\n",
-                  k, k, k);
       for (int k = 0; k < n; k++)
         sb_printf(&sb, "  var w%d: vec2<f32> = vec2<f32>(0.0, 0.0);\n", k);
       for (int k = 0; k < max_radix; k++)
@@ -964,9 +392,52 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r) {
         stride *= R;
         src_is_v = !src_is_v;
       }
+    }
 
-      /* Store final result (whichever array is now "src") */
-      const char *final_pfx = src_is_v ? "v" : "w";
+    /* ---- Store results ---- */
+    /* For single-stage, result is in v. For multi-stage, track the toggle. */
+    const char *final_pfx = "v";
+    if (n_stages > 1) {
+      int src_is_v_final = 1;
+      for (int s = 0; s < n_stages; s++) src_is_v_final = !src_is_v_final;
+      final_pfx = src_is_v_final ? "v" : "w";
+    }
+
+    if (use_hybrid) {
+      /* ---- Write registers → shared memory ---- */
+      sb_printf(&sb, "\n");
+      for (int k = 0; k < n; k++) {
+        sb_printf(&sb, "  s_re[t * %uu + %uu] = %s%d.x;\n",
+                  shr_stride_dir, k, final_pfx, k);
+        sb_printf(&sb, "  s_im[t * %uu + %uu] = %s%d.y;\n",
+                  shr_stride_dir, k, final_pfx, k);
+      }
+      sb_printf(&sb, "  workgroupBarrier();\n\n");
+
+      /* ---- Coalesced store: shared memory → global ---- */
+      int is_po2 = (n & (n - 1)) == 0;
+      int log2n = 0;
+      if (is_po2) { int tmp = n; while (tmp > 1) { log2n++; tmp >>= 1; } }
+      sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B_dir * n);
+      for (int e = 0; e < n; e++) {
+        int off = e * B_dir;
+        sb_printf(&sb, "    { let gi: u32 = t");
+        if (off > 0) sb_printf(&sb, " + %uu", off);
+        sb_printf(&sb, ";\n");
+        if (is_po2) {
+          sb_printf(&sb, "      let f: u32 = gi >> %du; let k: u32 = gi & %uu;\n",
+                    log2n, n - 1);
+        } else {
+          sb_printf(&sb, "      let f: u32 = gi / %uu; let k: u32 = gi %% %uu;\n", n, n);
+        }
+        sb_printf(&sb, "      dst.d[(wg_base + gi) * 2u] = s_re[f * %uu + k];\n",
+                  shr_stride_dir);
+        sb_printf(&sb, "      dst.d[(wg_base + gi) * 2u + 1u] = s_im[f * %uu + k]; }\n",
+                  shr_stride_dir);
+      }
+      sb_printf(&sb, "  }\n");
+    } else {
+      /* ---- Direct global store ---- */
       sb_printf(&sb, "\n");
       for (int k = 0; k < n; k++) {
         sb_printf(&sb, "  dst.d[(base + %uu) * 2u] = %s%d.x;\n",
@@ -980,10 +451,195 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r) {
     return sb.buf;
   }
 
+  /* ===== Register-exchange path: multi-thread, all-register FFT =====
+   * For 2-stage factorizations [R0, R1] where R0 = elements/thread and
+   * R1 = threads/FFT, both stages can be computed entirely in registers:
+   *   Stage 0: radix-R0 butterfly (all R0 elements in one thread)
+   *   Stage 1: R0/R1 radix-R1 butterflies on interleaved register subsets
+   * Shared memory is used only for coalesced I/O (2 barriers vs 5+).
+   * Twiddle factors computed inline with cos/sin (no LUT buffer needed). */
+  if (n_stages == 2 && !uses_direct_path_mr(n, max_r) &&
+      in_es == 1 && out_es == 1 && tw_n == 0 &&
+      in_bs == n && out_bs == n && total_batch == 0) {
+    int R0 = radices[0], R1 = radices[1];
+    int wpf_rx = wg_per_fft_mr(n, max_r);
+    int B_rx = batch_per_wg_impl(n, max_r, wg_limit);
+
+    if (wpf_rx == R1 && R0 >= R1 && R0 % R1 == 0 && B_rx > 1) {
+      int total_wg_rx = wpf_rx * B_rx;
+      int shr_stride_rx = padded_stride(n);
+      int total_shr_rx = B_rx * shr_stride_rx;
+      int regx_step = R0 / R1;
+      int has_pad = (shr_stride_rx != n);
+      int is_po2 = (n & (n - 1)) == 0;
+      int log2n_rx = 0;
+      if (is_po2) { int tmp = n; while (tmp > 1) { log2n_rx++; tmp >>= 1; } }
+
+      StrBuf sb;
+      sb_init_cap(&sb, 65536);
+
+      /* Bindings — include LUT declaration for pipeline layout compatibility */
+      int has_lut_rx = (lut_size_mr(n, direction, max_r) > 0);
+      sb_emit_bda_src_dst(&sb, has_lut_rx);
+      sb_printf(&sb, "\n");
+
+      sb_printf(&sb, "var<workgroup> s_re: array<f32, %d>;\n", total_shr_rx);
+      sb_printf(&sb, "var<workgroup> s_im: array<f32, %d>;\n\n", total_shr_rx);
+
+      sb_printf(&sb, "@compute @workgroup_size(%d)\n", total_wg_rx);
+      sb_printf(&sb, "fn main(\n");
+      sb_printf(&sb, "  @builtin(local_invocation_id) lid: vec3<u32>,\n");
+      sb_printf(&sb, "  @builtin(workgroup_id) wid: vec3<u32>\n");
+      sb_printf(&sb, ") {\n");
+      sb_printf(&sb, "  let t: u32 = lid.x;\n");
+      sb_printf(&sb, "  let fft_t: u32 = t %% %uu;\n", wpf_rx);
+      sb_printf(&sb, "  let fft_id: u32 = t / %uu;\n", wpf_rx);
+      sb_printf(&sb, "  let shr_off: u32 = fft_id * %uu;\n\n", shr_stride_rx);
+
+      /* ---- Coalesced load: global -> shared ---- */
+      sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B_rx * n);
+      for (int e = 0; e < R0; e++) {
+        int off = e * total_wg_rx;
+        sb_printf(&sb, "    let gi%d: u32 = t", e);
+        if (off > 0) sb_printf(&sb, " + %uu", off);
+        sb_printf(&sb, ";\n");
+        if (is_po2) {
+          sb_printf(&sb, "    let f%d: u32 = gi%d >> %du;\n", e, e, log2n_rx);
+          sb_printf(&sb, "    let k%d: u32 = gi%d & %uu;\n", e, e, n - 1);
+        } else {
+          sb_printf(&sb, "    let f%d: u32 = gi%d / %uu;\n", e, e, n);
+          sb_printf(&sb, "    let k%d: u32 = gi%d %% %uu;\n", e, e, n);
+        }
+        if (!has_pad) {
+          sb_printf(&sb, "    s_re[f%d * %uu + k%d] = src.d[(wg_base + gi%d) * 2u];\n",
+                    e, shr_stride_rx, e, e);
+          sb_printf(&sb, "    s_im[f%d * %uu + k%d] = src.d[(wg_base + gi%d) * 2u + 1u];\n",
+                    e, shr_stride_rx, e, e);
+        } else {
+          sb_printf(&sb, "    { let pi%d: u32 = k%d + k%d / 16u;\n", e, e, e);
+          sb_printf(&sb, "      s_re[f%d * %uu + pi%d] = src.d[(wg_base + gi%d) * 2u];\n",
+                    e, shr_stride_rx, e, e);
+          sb_printf(&sb, "      s_im[f%d * %uu + pi%d] = src.d[(wg_base + gi%d) * 2u + 1u]; }\n",
+                    e, shr_stride_rx, e, e);
+        }
+      }
+      sb_printf(&sb, "  }\n");
+      sb_printf(&sb, "  workgroupBarrier();\n");
+
+      /* ---- Shared -> registers (R0 consecutive elements per thread) ---- */
+      sb_printf(&sb, "\n");
+      for (int k = 0; k < R0; k++) {
+        if (!has_pad) {
+          sb_printf(&sb, "  var v%d: vec2<f32> = vec2<f32>("
+                    "s_re[shr_off + fft_t * %uu + %uu], "
+                    "s_im[shr_off + fft_t * %uu + %uu]);\n",
+                    k, R0, k, R0, k);
+        } else {
+          sb_printf(&sb, "  var v%d: vec2<f32>;\n", k);
+          sb_printf(&sb, "  { let li: u32 = fft_t * %uu + %uu; "
+                    "let pi: u32 = li + li / 16u;\n", R0, k);
+          sb_printf(&sb, "    v%d = vec2<f32>("
+                    "s_re[shr_off + pi], s_im[shr_off + pi]); }\n", k);
+        }
+      }
+
+      /* ---- Stage 0: radix-R0 butterfly (thread-local) ---- */
+      sb_printf(&sb, "\n  // Stage 0: radix-%d (thread-local)\n", R0);
+      emit_radix_butterfly(&sb, R0, direction, "v", 0, 0, 0);
+
+      /* ---- Stage 1: radix-R1 on interleaved register subsets ---- */
+      sb_printf(&sb, "\n  // Stage 1: %d x radix-%d (thread-local)\n", regx_step, R1);
+      for (int k = 0; k < R1; k++)
+        sb_printf(&sb, "  var r%d: vec2<f32>;\n", k);
+
+      /* LUT offset for stage 1 twiddles: stage 0 (stride=1) contributes 0
+       * entries, so stage 1 twiddles start at LUT index 0.
+       * Layout: for k=1..R1-1, pos=0..R0-1: lut[(k-1)*R0 + pos]. */
+
+      for (int g = 0; g < regx_step; g++) {
+        int gbase = g * R1;
+
+        /* Gather: r[m] = v[g + m*step] */
+        for (int m = 0; m < R1; m++)
+          sb_printf(&sb, "  r%d = v%d;\n", m, g + m * regx_step);
+
+        /* Twiddle r[1..R1-1] via LUT: W_N^(m * (gbase + fft_t))
+         * LUT entry index = (m-1)*R0 + gbase + fft_t */
+        for (int m = 1; m < R1; m++) {
+          int lut_base_f = ((m - 1) * R0 + gbase) * 2; /* float offset */
+          sb_printf(&sb, "  { let tw: vec2<f32> = vec2<f32>("
+                    "lut.d[%du + fft_t * 2u], lut.d[%du + fft_t * 2u + 1u]);\n",
+                    lut_base_f, lut_base_f);
+          sb_printf(&sb, "    r%d = vec2<f32>("
+                    "r%d.x*tw.x - r%d.y*tw.y, "
+                    "r%d.x*tw.y + r%d.y*tw.x); }\n", m, m, m, m, m);
+        }
+
+        /* Butterfly */
+        emit_radix_butterfly(&sb, R1, direction, "r", 0, 100 + g, 0);
+
+        /* Scatter: v[g + m*step] = r[m] */
+        for (int m = 0; m < R1; m++)
+          sb_printf(&sb, "  v%d = r%d;\n", g + m * regx_step, m);
+      }
+
+      /* ---- Registers -> shared (Stockham natural order) ---- */
+      sb_printf(&sb, "\n");
+      for (int g = 0; g < regx_step; g++) {
+        for (int m = 0; m < R1; m++) {
+          int ri = g + m * regx_step;
+          int pos_const = g * R1 + m * R0;
+          if (!has_pad) {
+            sb_printf(&sb, "  s_re[shr_off + fft_t + %du] = v%d.x;\n", pos_const, ri);
+            sb_printf(&sb, "  s_im[shr_off + fft_t + %du] = v%d.y;\n", pos_const, ri);
+          } else {
+            sb_printf(&sb, "  { let li: u32 = fft_t + %du; "
+                      "let pi: u32 = li + li / 16u;\n", pos_const);
+            sb_printf(&sb, "    s_re[shr_off + pi] = v%d.x; "
+                      "s_im[shr_off + pi] = v%d.y; }\n", ri, ri);
+          }
+        }
+      }
+      sb_printf(&sb, "  workgroupBarrier();\n\n");
+
+      /* ---- Coalesced store: shared -> global ---- */
+      sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B_rx * n);
+      for (int e = 0; e < R0; e++) {
+        int off = e * total_wg_rx;
+        sb_printf(&sb, "    let gi%d: u32 = t", e);
+        if (off > 0) sb_printf(&sb, " + %uu", off);
+        sb_printf(&sb, ";\n");
+        if (is_po2) {
+          sb_printf(&sb, "    let f%d: u32 = gi%d >> %du;\n", e, e, log2n_rx);
+          sb_printf(&sb, "    let k%d: u32 = gi%d & %uu;\n", e, e, n - 1);
+        } else {
+          sb_printf(&sb, "    let f%d: u32 = gi%d / %uu;\n", e, e, n);
+          sb_printf(&sb, "    let k%d: u32 = gi%d %% %uu;\n", e, e, n);
+        }
+        if (!has_pad) {
+          sb_printf(&sb, "    dst.d[(wg_base + gi%d) * 2u] = s_re[f%d * %uu + k%d];\n",
+                    e, e, shr_stride_rx, e);
+          sb_printf(&sb, "    dst.d[(wg_base + gi%d) * 2u + 1u] = s_im[f%d * %uu + k%d];\n",
+                    e, e, shr_stride_rx, e);
+        } else {
+          sb_printf(&sb, "    { let pi%d: u32 = k%d + k%d / 16u;\n", e, e, e);
+          sb_printf(&sb, "      dst.d[(wg_base + gi%d) * 2u] = s_re[f%d * %uu + pi%d];\n",
+                    e, e, shr_stride_rx, e);
+          sb_printf(&sb, "      dst.d[(wg_base + gi%d) * 2u + 1u] = s_im[f%d * %uu + pi%d]; }\n",
+                    e, e, shr_stride_rx, e);
+        }
+      }
+      sb_printf(&sb, "  }\n");
+
+      sb_printf(&sb, "}\n");
+      return sb_finish(&sb);
+    }
+  }
+
   /* ===== Shared-memory path: multi-stage ===== */
   int wpf = wg_per_fft_mr(n, max_r);
   if (wpf < 1) return NULL;
-  int B = batch_per_wg_mr(n, max_r);
+  int B = batch_per_wg_impl(n, max_r, wg_limit);
   int total_wg = wpf * B;
 
   int epr = n / wpf;
@@ -1029,17 +685,10 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r) {
   }
 
   StrBuf sb;
-  sb_init(&sb);
+  sb_init_cap(&sb, 131072);
 
   /* Bindings */
-  sb_printf(&sb, "struct SrcBuf { d: array<f32> };\n");
-  sb_printf(&sb, "struct DstBuf { d: array<f32> };\n");
-  sb_printf(&sb, "@group(0) @binding(0) var<storage, read> src: SrcBuf;\n");
-  sb_printf(&sb, "@group(0) @binding(1) var<storage, read_write> dst: DstBuf;\n");
-  if (has_lut) {
-    sb_printf(&sb, "struct LutBuf { d: array<f32> };\n");
-    sb_printf(&sb, "@group(0) @binding(2) var<storage, read> lut: LutBuf;\n");
-  }
+  sb_emit_bda_src_dst(&sb, has_lut);
   sb_printf(&sb, "\n");
 
   /* Shared memory */
@@ -1057,28 +706,124 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r) {
   if (B > 1) {
     sb_printf(&sb, "  let fft_t: u32 = t %% %uu;\n", wpf);
     sb_printf(&sb, "  let fft_id: u32 = t / %uu;\n", wpf);
+    if (total_batch > 0) {
+      sb_printf(&sb, "  let global_fft: u32 = wid.x * %uu + fft_id;\n", B);
+      sb_printf(&sb, "  if (global_fft >= %uu) { return; }\n", total_batch);
+    }
     sb_printf(&sb, "  let shr_off: u32 = fft_id * %uu;\n", shr_stride);
-    sb_printf(&sb, "  let base: u32 = (wid.x * %uu + fft_id) * %uu;\n\n", B, n);
+    sb_printf(&sb, "  let fft_idx: u32 = wid.x * %uu + fft_id;\n", B);
+    sb_printf(&sb, "  let base_in: u32 = fft_idx * %uu;\n", in_bs);
+    sb_printf(&sb, "  let base_out: u32 = fft_idx * %uu;\n\n", out_bs);
   } else {
     sb_printf(&sb, "  let fft_t: u32 = t;\n");
     sb_printf(&sb, "  let shr_off: u32 = 0u;\n");
-    sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n\n", n);
+    if (total_batch > 0) {
+      sb_printf(&sb, "  if (wid.x >= %uu) { return; }\n", total_batch);
+    }
+    sb_printf(&sb, "  let fft_idx: u32 = wid.x;\n");
+    sb_printf(&sb, "  let base_in: u32 = fft_idx * %uu;\n", in_bs);
+    sb_printf(&sb, "  let base_out: u32 = fft_idx * %uu;\n\n", out_bs);
   }
 
   /* ---- Global load -> shared ---- */
-  if (shr_stride == n) {
+  if (tw_n > 0) {
+    /* Load with inline twiddle: W_{tw_n}^(fft_idx * k) */
+    double tw_scale = direction * -2.0 * M_PI / tw_n;
     for (int e = 0; e < epr; e++) {
-      sb_printf(&sb, "  s_re[shr_off + fft_t + %uu] = "
-                "src.d[(base + fft_t + %uu) * 2u];\n", e*wpf, e*wpf);
-      sb_printf(&sb, "  s_im[shr_off + fft_t + %uu] = "
-                "src.d[(base + fft_t + %uu) * 2u + 1u];\n", e*wpf, e*wpf);
+      sb_printf(&sb, "  {\n");
+      sb_printf(&sb, "    let k: u32 = fft_t + %uu;\n", e*wpf);
+      if (in_es == 1)
+        sb_printf(&sb, "    let ga: u32 = (base_in + k) * 2u;\n");
+      else
+        sb_printf(&sb, "    let ga: u32 = (base_in + k * %uu) * 2u;\n", in_es);
+      sb_printf(&sb, "    let re: f32 = src.d[ga];\n");
+      sb_printf(&sb, "    let im: f32 = src.d[ga + 1u];\n");
+      sb_printf(&sb, "    let a: f32 = ");
+      sb_float(&sb, tw_scale);
+      sb_printf(&sb, " * f32(fft_idx) * f32(k);\n");
+      sb_printf(&sb, "    let tw_re: f32 = cos(a);\n");
+      sb_printf(&sb, "    let tw_im: f32 = sin(a);\n");
+      if (shr_stride == n) {
+        sb_printf(&sb, "    s_re[shr_off + k] = re * tw_re - im * tw_im;\n");
+        sb_printf(&sb, "    s_im[shr_off + k] = re * tw_im + im * tw_re;\n");
+      } else {
+        sb_printf(&sb, "    let pi: u32 = k + k / 16u;\n");
+        sb_printf(&sb, "    s_re[shr_off + pi] = re * tw_re - im * tw_im;\n");
+        sb_printf(&sb, "    s_im[shr_off + pi] = re * tw_im + im * tw_re;\n");
+      }
+      sb_printf(&sb, "  }\n");
+    }
+  } else if (in_es == 1) {
+    /* Default contiguous load */
+    if (B > 1 && in_bs == n && total_batch == 0) {
+      /* Coalesced load: consecutive threads access consecutive global elements,
+       * then scatter to per-FFT shared memory positions.
+       * gi = t + e*wg_size indexes linearly into B*N contiguous elements.
+       * f = gi/N (which FFT), k = gi%N (which element within FFT). */
+      int is_po2 = (n & (n - 1)) == 0;
+      int log2n = 0;
+      if (is_po2) { int tmp = n; while (tmp > 1) { log2n++; tmp >>= 1; } }
+      sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B * n);
+      for (int e = 0; e < epr; e++) {
+        int off = e * total_wg;
+        if (off == 0)
+          sb_printf(&sb, "    let gi%d: u32 = t;\n", e);
+        else
+          sb_printf(&sb, "    let gi%d: u32 = t + %uu;\n", e, off);
+        if (is_po2) {
+          sb_printf(&sb, "    let f%d: u32 = gi%d >> %du;\n", e, e, log2n);
+          sb_printf(&sb, "    let k%d: u32 = gi%d & %uu;\n", e, e, n - 1);
+        } else {
+          sb_printf(&sb, "    let f%d: u32 = gi%d / %uu;\n", e, e, n);
+          sb_printf(&sb, "    let k%d: u32 = gi%d %% %uu;\n", e, e, n);
+        }
+        if (shr_stride == n) {
+          sb_printf(&sb, "    s_re[f%d * %uu + k%d] = src.d[(wg_base + gi%d) * 2u];\n",
+                    e, shr_stride, e, e);
+          sb_printf(&sb, "    s_im[f%d * %uu + k%d] = src.d[(wg_base + gi%d) * 2u + 1u];\n",
+                    e, shr_stride, e, e);
+        } else {
+          sb_printf(&sb, "    { let pi%d: u32 = k%d + k%d / 16u;\n", e, e, e);
+          sb_printf(&sb, "      s_re[f%d * %uu + pi%d] = src.d[(wg_base + gi%d) * 2u];\n",
+                    e, shr_stride, e, e);
+          sb_printf(&sb, "      s_im[f%d * %uu + pi%d] = src.d[(wg_base + gi%d) * 2u + 1u]; }\n",
+                    e, shr_stride, e, e);
+        }
+      }
+      sb_printf(&sb, "  }\n");
+    } else if (shr_stride == n) {
+      for (int e = 0; e < epr; e++) {
+        sb_printf(&sb, "  s_re[shr_off + fft_t + %uu] = "
+                  "src.d[(base_in + fft_t + %uu) * 2u];\n", e*wpf, e*wpf);
+        sb_printf(&sb, "  s_im[shr_off + fft_t + %uu] = "
+                  "src.d[(base_in + fft_t + %uu) * 2u + 1u];\n", e*wpf, e*wpf);
+      }
+    } else {
+      for (int e = 0; e < epr; e++) {
+        sb_printf(&sb, "  { let li: u32 = fft_t + %uu; "
+                  "let pi: u32 = li + li / 16u;\n", e*wpf);
+        sb_printf(&sb, "    s_re[shr_off + pi] = src.d[(base_in + li) * 2u];\n");
+        sb_printf(&sb, "    s_im[shr_off + pi] = src.d[(base_in + li) * 2u + 1u]; }\n");
+      }
     }
   } else {
+    /* Strided load (no twiddle) */
     for (int e = 0; e < epr; e++) {
-      sb_printf(&sb, "  { let li: u32 = fft_t + %uu; "
-                "let pi: u32 = li + li / 16u;\n", e*wpf);
-      sb_printf(&sb, "    s_re[shr_off + pi] = src.d[(base + li) * 2u];\n");
-      sb_printf(&sb, "    s_im[shr_off + pi] = src.d[(base + li) * 2u + 1u]; }\n");
+      sb_printf(&sb, "  {\n");
+      sb_printf(&sb, "    let k: u32 = fft_t + %uu;\n", e*wpf);
+      if (shr_stride == n) {
+        sb_printf(&sb, "    s_re[shr_off + k] = "
+                  "src.d[(base_in + k * %uu) * 2u];\n", in_es);
+        sb_printf(&sb, "    s_im[shr_off + k] = "
+                  "src.d[(base_in + k * %uu) * 2u + 1u];\n", in_es);
+      } else {
+        sb_printf(&sb, "    let pi: u32 = k + k / 16u;\n");
+        sb_printf(&sb, "    s_re[shr_off + pi] = "
+                  "src.d[(base_in + k * %uu) * 2u];\n", in_es);
+        sb_printf(&sb, "    s_im[shr_off + pi] = "
+                  "src.d[(base_in + k * %uu) * 2u + 1u];\n", in_es);
+      }
+      sb_printf(&sb, "  }\n");
     }
   }
   sb_printf(&sb, "  workgroupBarrier();\n");
@@ -1250,19 +995,72 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r) {
 
   /* ---- Shared -> global store ---- */
   sb_printf(&sb, "\n");
-  if (shr_stride == n) {
-    for (int e = 0; e < epr; e++) {
-      sb_printf(&sb, "  dst.d[(base + fft_t + %uu) * 2u] = "
-                "s_re[shr_off + fft_t + %uu];\n", e*wpf, e*wpf);
-      sb_printf(&sb, "  dst.d[(base + fft_t + %uu) * 2u + 1u] = "
-                "s_im[shr_off + fft_t + %uu];\n", e*wpf, e*wpf);
+  if (out_es == 1) {
+    if (B > 1 && out_bs == n && total_batch == 0) {
+      /* Coalesced store: consecutive threads write consecutive global elements */
+      int is_po2 = (n & (n - 1)) == 0;
+      int log2n = 0;
+      if (is_po2) { int tmp = n; while (tmp > 1) { log2n++; tmp >>= 1; } }
+      sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B * n);
+      for (int e = 0; e < epr; e++) {
+        int off = e * total_wg;
+        if (off == 0)
+          sb_printf(&sb, "    let gi%d: u32 = t;\n", e);
+        else
+          sb_printf(&sb, "    let gi%d: u32 = t + %uu;\n", e, off);
+        if (is_po2) {
+          sb_printf(&sb, "    let f%d: u32 = gi%d >> %du;\n", e, e, log2n);
+          sb_printf(&sb, "    let k%d: u32 = gi%d & %uu;\n", e, e, n - 1);
+        } else {
+          sb_printf(&sb, "    let f%d: u32 = gi%d / %uu;\n", e, e, n);
+          sb_printf(&sb, "    let k%d: u32 = gi%d %% %uu;\n", e, e, n);
+        }
+        if (shr_stride == n) {
+          sb_printf(&sb, "    dst.d[(wg_base + gi%d) * 2u] = s_re[f%d * %uu + k%d];\n",
+                    e, e, shr_stride, e);
+          sb_printf(&sb, "    dst.d[(wg_base + gi%d) * 2u + 1u] = s_im[f%d * %uu + k%d];\n",
+                    e, e, shr_stride, e);
+        } else {
+          sb_printf(&sb, "    { let pi%d: u32 = k%d + k%d / 16u;\n", e, e, e);
+          sb_printf(&sb, "      dst.d[(wg_base + gi%d) * 2u] = s_re[f%d * %uu + pi%d];\n",
+                    e, e, shr_stride, e);
+          sb_printf(&sb, "      dst.d[(wg_base + gi%d) * 2u + 1u] = s_im[f%d * %uu + pi%d]; }\n",
+                    e, e, shr_stride, e);
+        }
+      }
+      sb_printf(&sb, "  }\n");
+    } else if (shr_stride == n) {
+      for (int e = 0; e < epr; e++) {
+        sb_printf(&sb, "  dst.d[(base_out + fft_t + %uu) * 2u] = "
+                  "s_re[shr_off + fft_t + %uu];\n", e*wpf, e*wpf);
+        sb_printf(&sb, "  dst.d[(base_out + fft_t + %uu) * 2u + 1u] = "
+                  "s_im[shr_off + fft_t + %uu];\n", e*wpf, e*wpf);
+      }
+    } else {
+      for (int e = 0; e < epr; e++) {
+        sb_printf(&sb, "  { let li: u32 = fft_t + %uu; "
+                  "let pi: u32 = li + li / 16u;\n", e*wpf);
+        sb_printf(&sb, "    dst.d[(base_out + li) * 2u] = s_re[shr_off + pi];\n");
+        sb_printf(&sb, "    dst.d[(base_out + li) * 2u + 1u] = s_im[shr_off + pi]; }\n");
+      }
     }
   } else {
     for (int e = 0; e < epr; e++) {
-      sb_printf(&sb, "  { let li: u32 = fft_t + %uu; "
-                "let pi: u32 = li + li / 16u;\n", e*wpf);
-      sb_printf(&sb, "    dst.d[(base + li) * 2u] = s_re[shr_off + pi];\n");
-      sb_printf(&sb, "    dst.d[(base + li) * 2u + 1u] = s_im[shr_off + pi]; }\n");
+      sb_printf(&sb, "  {\n");
+      sb_printf(&sb, "    let k: u32 = fft_t + %uu;\n", e*wpf);
+      if (shr_stride == n) {
+        sb_printf(&sb, "    dst.d[(base_out + k * %uu) * 2u] = "
+                  "s_re[shr_off + k];\n", out_es);
+        sb_printf(&sb, "    dst.d[(base_out + k * %uu) * 2u + 1u] = "
+                  "s_im[shr_off + k];\n", out_es);
+      } else {
+        sb_printf(&sb, "    let pi: u32 = k + k / 16u;\n");
+        sb_printf(&sb, "    dst.d[(base_out + k * %uu) * 2u] = "
+                  "s_re[shr_off + pi];\n", out_es);
+        sb_printf(&sb, "    dst.d[(base_out + k * %uu) * 2u + 1u] = "
+                  "s_im[shr_off + pi];\n", out_es);
+      }
+      sb_printf(&sb, "  }\n");
     }
   }
 
@@ -1271,7 +1069,49 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r) {
 }
 
 /* Public API — default (auto) */
-char *gen_fft_fused(int n, int direction) { return gen_fft_fused_mr(n, direction, 0); }
+char *gen_fft_fused(int n, int direction) {
+  return gen_fft_fused_mr(n, direction, 0, DEFAULT_WG_LIMIT, 0, n, 1, n, 1, 0);
+}
 
-/* Public API — explicit max_radix */
-char *gen_fft_fused_ex(int n, int direction, int max_r) { return gen_fft_fused_mr(n, direction, max_r); }
+/* Public API — explicit max_radix + wg_limit */
+char *gen_fft_fused_ex(int n, int direction, int max_r, int wg_lim) {
+  return gen_fft_fused_mr(n, direction, max_r, wg_lim > 0 ? wg_lim : DEFAULT_WG_LIMIT, 0,
+                           n, 1, n, 1, 0);
+}
+
+/* Public API — with bounds guard for sub-batch dispatches (four-step FFT) */
+char *gen_fft_fused_bounded(int n, int direction, int total_batch) {
+  return gen_fft_fused_mr(n, direction, 0, DEFAULT_WG_LIMIT, total_batch, n, 1, n, 1, 0);
+}
+
+/*
+ * Public API — strided I/O for two-pass four-step FFT.
+ *
+ * Generates a fused FFT kernel with strided global memory access and
+ * optional inline twiddle application.  This eliminates transpose stages
+ * in the four-step FFT decomposition (5 stages → 2 stages).
+ *
+ * For N = N1 × N2 four-step FFT:
+ *   Pass 1 (column DFTs): gen_fft_fused_strided(N1, dir, 0, wg, N2, 1, N2, N1, 1, 0)
+ *   Pass 2 (twiddle+row): gen_fft_fused_strided(N2, dir, 0, wg, N1, 1, N1, 1, N1, N)
+ *
+ * Parameters:
+ *   n            - sub-FFT size (N1 or N2)
+ *   direction    - 1=forward, -1=inverse
+ *   max_radix    - 0=auto, 2..16=cap
+ *   wg_limit     - workgroup size limit (0=default)
+ *   total_batch  - number of sub-FFTs (for bounds guard; 0=no guard)
+ *   in_bs        - input batch stride (spacing between consecutive sub-FFT inputs)
+ *   in_es        - input element stride (spacing between elements within a sub-FFT)
+ *   out_bs       - output batch stride
+ *   out_es       - output element stride
+ *   tw_n         - twiddle modulus (0=no twiddle; >0: apply W_{tw_n}^(fft_index*k))
+ */
+char *gen_fft_fused_strided(int n, int direction, int max_radix, int wg_limit,
+                             int total_batch,
+                             int in_bs, int in_es, int out_bs, int out_es,
+                             int tw_n) {
+  return gen_fft_fused_mr(n, direction, max_radix,
+                           wg_limit > 0 ? wg_limit : DEFAULT_WG_LIMIT,
+                           total_batch, in_bs, in_es, out_bs, out_es, tw_n);
+}

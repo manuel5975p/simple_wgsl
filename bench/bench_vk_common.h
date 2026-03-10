@@ -20,6 +20,7 @@ typedef struct {
   VkPhysicalDeviceMemoryProperties mem_props;
   VkQueryPool timestamp_pool;
   float timestamp_period; /* ns per tick */
+  PFN_vkGetBufferDeviceAddress pfn_get_bda;
 } VkCtx;
 
 static inline int32_t find_memory_type(VkPhysicalDeviceMemoryProperties *props,
@@ -39,7 +40,7 @@ static inline int vk_init(VkCtx *ctx, uint32_t max_sets,
 
   VkApplicationInfo app_info = {0};
   app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-  app_info.apiVersion = VK_API_VERSION_1_1;
+  app_info.apiVersion = VK_API_VERSION_1_2;
 
   const char *inst_exts[] = {
     "VK_KHR_portability_enumeration",
@@ -104,13 +105,22 @@ static inline int vk_init(VkCtx *ctx, uint32_t max_sets,
   qci.queueCount = 1;
   qci.pQueuePriorities = &priority;
 
+  /* Enable BDA (required for var<device> FFT shaders) */
+  VkPhysicalDeviceBufferDeviceAddressFeatures bda_features = {0};
+  bda_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+  bda_features.bufferDeviceAddress = VK_TRUE;
+
   VkDeviceCreateInfo dci = {0};
   dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+  dci.pNext = &bda_features;
   dci.queueCreateInfoCount = 1;
   dci.pQueueCreateInfos = &qci;
   if (vkCreateDevice(ctx->phys_dev, &dci, NULL, &ctx->device) != VK_SUCCESS)
     return -1;
   vkGetDeviceQueue(ctx->device, ctx->queue_family, 0, &ctx->queue);
+
+  ctx->pfn_get_bda = (PFN_vkGetBufferDeviceAddress)
+      vkGetDeviceProcAddr(ctx->device, "vkGetBufferDeviceAddress");
 
   VkCommandPoolCreateInfo cpci = {0};
   cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;

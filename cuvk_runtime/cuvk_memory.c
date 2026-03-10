@@ -626,6 +626,9 @@ CUresult CUDAAPI cuMemcpyHtoD_v2(CUdeviceptr dstDevice, const void *srcHost,
 
     /* Flush default stream to ensure prior dispatches complete */
     cuvk_stream_submit_and_wait(&ctx->default_stream);
+    /* Flush deferred cuFFT submissions + wait for all GPU work */
+    cuvk_fft_flush(ctx);
+    g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
 
     /* Look up destination alloc */
     CuvkAlloc *dst_alloc = cuvk_alloc_lookup(ctx, dstDevice);
@@ -705,6 +708,9 @@ CUresult CUDAAPI cuMemcpyDtoH_v2(void *dstHost, CUdeviceptr srcDevice,
 
     /* Flush default stream to ensure prior dispatches complete */
     cuvk_stream_submit_and_wait(&ctx->default_stream);
+    /* Flush deferred cuFFT submissions + wait for all GPU work */
+    cuvk_fft_flush(ctx);
+    g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
 
     /* Look up source alloc */
     CuvkAlloc *src_alloc = cuvk_alloc_lookup(ctx, srcDevice);

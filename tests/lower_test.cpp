@@ -1,6 +1,12 @@
 #include <gtest/gtest.h>
 #include "test_utils.h"
 #include "fft_stockham_gen.h"
+extern "C" {
+#include "fft_fused_gen.h"
+#include "fft_2d_gen.h"
+#include "fft_fourstep_gen.h"
+#include "fft_optimal_gen.h"
+}
 
 TEST(LowerTest, EmitMinimalSpirv) {
     const char *source = "fn main() {}";
@@ -2365,4 +2371,155 @@ TEST(UserFunctionTest, IntegerParams) {
     )";
     auto result = wgsl_test::CompileWgsl(source);
     EXPECT_TRUE(result.success) << "Validation error: " << result.error;
+}
+
+TEST(DeviceAddressFftTest, FusedStyleShader) {
+    auto r = wgsl_test::CompileWgsl(R"(
+enable device_address;
+struct SrcBuf { d: array<f32> };
+struct DstBuf { d: array<f32> };
+struct LutBuf { d: array<f32> };
+var<device, read> src: SrcBuf;
+var<device, read_write> dst: DstBuf;
+var<device, read> lut: LutBuf;
+var<workgroup> smem: array<f32, 1024>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>) {
+    smem[lid.x] = src.d[gid.x];
+    workgroupBarrier();
+    dst.d[gid.x] = smem[lid.x] * lut.d[lid.x];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, StockhamStyleShader) {
+    auto r = wgsl_test::CompileWgsl(R"(
+enable device_address;
+struct SrcBuf { d: array<f32> };
+struct DstBuf { d: array<f32> };
+var<device, read> src: SrcBuf;
+var<device, read_write> dst: DstBuf;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    dst.d[gid.x * 2u] = src.d[gid.x * 2u];
+    dst.d[gid.x * 2u + 1u] = src.d[gid.x * 2u + 1u];
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, InPlaceStyleShader) {
+    auto r = wgsl_test::CompileWgsl(R"(
+enable device_address;
+struct DataBuf { d: array<f32> };
+var<device, read_write> data: DataBuf;
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let re = data.d[gid.x * 2u];
+    let im = data.d[gid.x * 2u + 1u];
+    data.d[gid.x * 2u] = re;
+    data.d[gid.x * 2u + 1u] = -im;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, FusedGenN64_BDA) {
+    char *wgsl = gen_fft_fused(64, 1);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr)
+        << "Expected var<device> in generated WGSL";
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr)
+        << "Should NOT have @binding declarations";
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, FusedGenN8_BDA) {
+    char *wgsl = gen_fft_fused(8, 1);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, StockhamGenRadix4_BDA) {
+    char *wgsl = gen_fft_stockham(4, 1, 1024, 1, 256);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, StockhamGenR2C_BDA) {
+    char *wgsl = gen_fft_r2c_postprocess(1024, 256);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, TransposeTiled_BDA) {
+    char *wgsl = gen_transpose_tiled(16, 16, 8);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, Fft2dFused_BDA) {
+    char *wgsl = gen_fft_2d_fused(8, 8, 1, 0);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, Fft2dFusedLooped_BDA) {
+    char *wgsl = gen_fft_2d_fused_looped(8, 8, 1, 0);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, FourStepTwiddleTranspose_BDA) {
+    char *wgsl = gen_fft_twiddle_transpose(32, 32, 1, 256);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, FourStepTranspose_BDA) {
+    char *wgsl = gen_fft_transpose(32, 32, 256);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(DeviceAddressFftTest, FftDirect_BDA) {
+    char *wgsl = gen_fft_direct(8, 1);
+    ASSERT_NE(wgsl, nullptr);
+    EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
+    EXPECT_EQ(strstr(wgsl, "@binding"), nullptr);
+    auto r = wgsl_test::CompileWgsl(wgsl);
+    free(wgsl);
+    EXPECT_TRUE(r.success) << r.error;
 }

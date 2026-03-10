@@ -764,7 +764,7 @@ static WgslAstNode *parse_struct(Parser *P, WgslAstNode **opt_attrs,
         vec_push_node(&fields, &count, &cap, F);
     }
     expect(P, TOK_RBRACE, "expected '}'");
-    expect(P, TOK_SEMI, "expected ';'");
+    match(P, TOK_SEMI); /* optional trailing semicolon */
     S->struct_decl.field_count = count;
     S->struct_decl.fields = fields;
     return S;
@@ -795,12 +795,12 @@ static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
         int first_addr =
             (!strcmp(first, "uniform") || !strcmp(first, "storage") ||
                 !strcmp(first, "workgroup") || !strcmp(first, "private") ||
-                !strcmp(first, "immediate"));
+                !strcmp(first, "immediate") || !strcmp(first, "device"));
         int second_addr =
             second
                 ? (!strcmp(second, "uniform") || !strcmp(second, "storage") ||
                       !strcmp(second, "workgroup") || !strcmp(second, "private") ||
-                      !strcmp(second, "immediate"))
+                      !strcmp(second, "immediate") || !strcmp(second, "device"))
                 : 0;
         if (second && second_addr && !first_addr) {
             addr_space = second;
@@ -1859,6 +1859,8 @@ static WgslAstNode *parse_program(Parser *P) {
                 extensions |= WGSL_EXT_IMMEDIATE_ADDRESS_SPACE;
             else if (ext_name && strcmp(ext_name, "immediate_arrays") == 0)
                 extensions |= WGSL_EXT_IMMEDIATE_ARRAYS | WGSL_EXT_IMMEDIATE_ADDRESS_SPACE;
+            else if (ext_name && strcmp(ext_name, "device_address") == 0)
+                extensions |= WGSL_EXT_DEVICE_ADDRESS;
             free_node(decls[i]);
             decls[i] = NULL;
         } else {

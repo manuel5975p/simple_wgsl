@@ -148,6 +148,8 @@ TEST_P(CufftC2CForwardTest, MatchesFftw) {
 INSTANTIATE_TEST_SUITE_P(Sizes, CufftC2CForwardTest,
     ::testing::Values(2, 4, 8, 16, 32, 64, 128, 256, 512, 1024,
                       2048, 4096, 8192, 16384,
+                      /* four-step (> 4096) */
+                      32768, 65536,
                       /* mixed radix */
                       6, 10, 12, 14, 15, 18, 20, 24, 30, 48, 60,
                       96, 120, 210, 480, 720, 1536, 2310));
@@ -518,7 +520,12 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DC2CForwardTest,
         std::make_pair(32, 4),
         std::make_pair(16, 64),
         std::make_pair(64, 16),
-        std::make_pair(128, 128)
+        std::make_pair(128, 128),
+        std::make_pair(256, 256),
+        /* Four-step on innermost axis (ny > 4096) */
+        std::make_pair(4, 8192),
+        std::make_pair(8, 8192),
+        std::make_pair(2, 16384)
     ));
 
 /* ========================================================================== */
@@ -568,7 +575,11 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DC2CRoundtripTest,
         std::make_pair(64, 64),
         std::make_pair(8, 16),
         std::make_pair(16, 8),
-        std::make_pair(128, 128)
+        std::make_pair(128, 128),
+        std::make_pair(256, 256),
+        /* Four-step on innermost axis */
+        std::make_pair(4, 8192),
+        std::make_pair(8, 8192)
     ));
 
 /* ========================================================================== */
@@ -616,7 +627,11 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DImpulseTest,
         std::make_pair(8, 16),
         std::make_pair(16, 8),
         std::make_pair(4, 32),
-        std::make_pair(32, 4)
+        std::make_pair(32, 4),
+        std::make_pair(128, 128),
+        std::make_pair(256, 256),
+        /* Four-step on innermost axis */
+        std::make_pair(4, 8192)
     ));
 
 /* ========================================================================== */
@@ -673,7 +688,10 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft3DC2CForwardTest,
         Dim3{4, 8, 16},
         Dim3{16, 4, 8},
         Dim3{8, 16, 4},
-        Dim3{32, 32, 32}
+        Dim3{32, 32, 32},
+        /* Four-step on innermost axis (nz > 4096) */
+        Dim3{2, 2, 8192},
+        Dim3{4, 2, 8192}
     ));
 
 /* ========================================================================== */
@@ -722,7 +740,9 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft3DC2CRoundtripTest,
         Dim3{16, 16, 16},
         Dim3{4, 8, 16},
         Dim3{16, 4, 8},
-        Dim3{32, 32, 32}
+        Dim3{32, 32, 32},
+        /* Four-step on innermost axis */
+        Dim3{2, 2, 8192}
     ));
 
 /* ========================================================================== */

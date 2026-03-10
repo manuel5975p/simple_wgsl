@@ -1,14 +1,13 @@
 /*
- * bench_cufft_compare.cu - Benchmark real cuFFT for comparison with fused FFT
+ * bench_cufft_compare.cu - Benchmark real NVIDIA cuFFT, batch=1
  *
- * Compiled with: nvcc -o bench_cufft_compare bench_cufft_compare.cu -lcufft
- * Uses GPU timestamp events for accurate measurement.
+ * Build: nvcc -O2 -o bench_cufft_compare bench/bench_cufft_compare.cu -lcufft
  */
 
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
-#include <cstring>
+#include <algorithm>
 #include <cuda_runtime.h>
 #include <cufft.h>
 
@@ -28,109 +27,76 @@
     } \
 } while(0)
 
-#define WARMUP_ITERS 10
-#define BENCH_ITERS  50
+#define WARMUP 10
+#define ITERS  50
 
-static int cmp_double(const void *a, const void *b) {
-    double da = *(const double *)a, db = *(const double *)b;
-    return (da > db) - (da < db);
-}
-
-static double median_d(double *arr, int n) {
-    qsort(arr, n, sizeof(double), cmp_double);
+static double median(double *arr, int n) {
+    std::sort(arr, arr + n);
     if (n % 2 == 0) return (arr[n/2 - 1] + arr[n/2]) / 2.0;
     return arr[n/2];
 }
 
-static double bench_cufft(int n, int batch, int repeats) {
-    cufftComplex *h_in = (cufftComplex *)calloc((size_t)n * batch, sizeof(cufftComplex));
-    h_in[0].x = 1.0f;
-
-    cufftComplex *d_in, *d_out;
-    CHECK_CUDA(cudaMalloc(&d_in, (size_t)n * batch * sizeof(cufftComplex)));
-    CHECK_CUDA(cudaMalloc(&d_out, (size_t)n * batch * sizeof(cufftComplex)));
-    CHECK_CUDA(cudaMemcpy(d_in, h_in, (size_t)n * batch * sizeof(cufftComplex),
-                           cudaMemcpyHostToDevice));
-
-    cufftHandle plan;
-    CHECK_CUFFT(cufftPlan1d(&plan, n, CUFFT_C2C, batch));
-
-    cudaEvent_t start, stop;
-    CHECK_CUDA(cudaEventCreate(&start));
-    CHECK_CUDA(cudaEventCreate(&stop));
-
-    /* Warmup */
-    for (int i = 0; i < WARMUP_ITERS; i++) {
-        CHECK_CUFFT(cufftExecC2C(plan, d_in, d_out, CUFFT_FORWARD));
-    }
-    CHECK_CUDA(cudaDeviceSynchronize());
-
-    /* Timed runs — repeat `repeats` execs between events */
-    double times[BENCH_ITERS];
-    for (int i = 0; i < BENCH_ITERS; i++) {
-        CHECK_CUDA(cudaEventRecord(start));
-        for (int r = 0; r < repeats; r++)
-            CHECK_CUFFT(cufftExecC2C(plan, d_in, d_out, CUFFT_FORWARD));
-        CHECK_CUDA(cudaEventRecord(stop));
-        CHECK_CUDA(cudaEventSynchronize(stop));
-        float ms;
-        CHECK_CUDA(cudaEventElapsedTime(&ms, start, stop));
-        times[i] = (double)ms / repeats;
-    }
-
-    CHECK_CUFFT(cufftDestroy(plan));
-    CHECK_CUDA(cudaEventDestroy(start));
-    CHECK_CUDA(cudaEventDestroy(stop));
-    CHECK_CUDA(cudaFree(d_in));
-    CHECK_CUDA(cudaFree(d_out));
-    free(h_in);
-
-    return median_d(times, BENCH_ITERS);
-}
-
-int main(void) {
+int main() {
     cudaDeviceProp prop;
     CHECK_CUDA(cudaGetDeviceProperties(&prop, 0));
     printf("Device: %s\n\n", prop.name);
 
-    /* Batched throughput test: small sizes */
-    int small_sizes[] = {2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024};
-    int n_small = sizeof(small_sizes) / sizeof(small_sizes[0]);
+    printf("%-10s  %10s  %6s\n", "N", "ms/exec", "reps");
+    printf("---------  ----------  ------\n");
 
-    printf("%-8s  %6s  %6s  %10s  %10s\n", "N", "batch", "reps", "total_ms", "us/fft");
-    printf("-------  ------  ------  ----------  ----------\n");
+    for (int exp = 1; exp <= 12; exp++) {
+        int n = 1 << exp;
 
-    for (int i = 0; i < n_small; i++) {
-        int n = small_sizes[i];
-        int batch = (n <= 64) ? 65536 : (n <= 512) ? 16384 : 4096;
-        /* First estimate with reps=1, then scale to ~100ms */
-        double est = bench_cufft(n, batch, 1);
-        int reps = (est > 0.001) ? (int)(100.0 / est) : 100000;
-        if (reps < 1) reps = 1;
-        if (reps > 200000) reps = 200000;
-        double ms = bench_cufft(n, batch, reps);
-        double us_per = ms * 1000.0 / batch;
-        printf("%-8d  %6d  %6d  %10.4f  %10.4f\n", n, batch, reps, ms, us_per);
+        cufftComplex *d_data;
+        CHECK_CUDA(cudaMalloc(&d_data, sizeof(cufftComplex) * n));
+        CHECK_CUDA(cudaMemset(d_data, 0, sizeof(cufftComplex) * n));
+
+        cufftHandle plan;
+        CHECK_CUFFT(cufftPlan1d(&plan, n, CUFFT_C2C, 1));
+
+        /* Warmup */
+        for (int w = 0; w < WARMUP; w++)
+            CHECK_CUFFT(cufftExecC2C(plan, d_data, d_data, CUFFT_FORWARD));
+        CHECK_CUDA(cudaDeviceSynchronize());
+
+        /* Pilot to determine reps */
+        cudaEvent_t start, stop;
+        CHECK_CUDA(cudaEventCreate(&start));
+        CHECK_CUDA(cudaEventCreate(&stop));
+
+        CHECK_CUDA(cudaEventRecord(start));
+        CHECK_CUFFT(cufftExecC2C(plan, d_data, d_data, CUFFT_FORWARD));
+        CHECK_CUDA(cudaEventRecord(stop));
+        CHECK_CUDA(cudaEventSynchronize(stop));
+        float pilot_ms;
+        CHECK_CUDA(cudaEventElapsedTime(&pilot_ms, start, stop));
+
+        int reps = (pilot_ms > 0.001f) ? (int)(50.0f / pilot_ms) : 50000;
+        if (reps < 10) reps = 10;
+        if (reps > 100000) reps = 100000;
+
+        /* Timed runs */
+        double times[ITERS];
+        for (int it = 0; it < ITERS; it++) {
+            CHECK_CUDA(cudaEventRecord(start));
+            for (int r = 0; r < reps; r++)
+                CHECK_CUFFT(cufftExecC2C(plan, d_data, d_data, CUFFT_FORWARD));
+            CHECK_CUDA(cudaEventRecord(stop));
+            CHECK_CUDA(cudaEventSynchronize(stop));
+            float ms;
+            CHECK_CUDA(cudaEventElapsedTime(&ms, start, stop));
+            times[it] = (double)ms / reps;
+        }
+
+        printf("%-10d  %10.4f  %6d\n", n, median(times, ITERS), reps);
         fflush(stdout);
+
+        CHECK_CUDA(cudaEventDestroy(start));
+        CHECK_CUDA(cudaEventDestroy(stop));
+        CHECK_CUFFT(cufftDestroy(plan));
+        CHECK_CUDA(cudaFree(d_data));
     }
 
-    /* Single-dispatch test */
-    int sizes[] = {
-        64, 128, 256, 512, 1024, 2048, 4096, 8192,
-        48, 80, 112, 240, 336, 360, 720, 1080,
-        1280, 1920, 2160, 2592, 2880, 3360,
-    };
-    int n_sizes = sizeof(sizes) / sizeof(sizes[0]);
-
-    printf("\n=== Single (batch=1) ===\n");
-    printf("%-8s  %10s\n", "N", "cuFFT_ms");
-    printf("-------  ----------\n");
-
-    for (int i = 0; i < n_sizes; i++) {
-        double ms = bench_cufft(sizes[i], 1, 1);
-        printf("%-8d  %10.4f\n", sizes[i], ms);
-        fflush(stdout);
-    }
-
+    printf("\n");
     return 0;
 }

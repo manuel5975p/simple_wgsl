@@ -291,6 +291,10 @@ struct CUctx_st {
     /* Default (NULL) stream */
     struct CUstream_st              default_stream;
 
+    /* Deferred cuFFT flush callback — set by cuFFT library, called at
+     * sync points (cuCtxSynchronize, cuMemcpy).  NULL if cuFFT not loaded. */
+    void                          (*fft_flush_fn)(struct CUctx_st *);
+
     /* Context-local storage (used by cudart internals) */
     CuvkStorageEntry               *storage;
     uint32_t                        storage_count;
@@ -389,6 +393,11 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len);
 
 /* Submit whatever is recorded on the stream and wait for completion */
 CUresult cuvk_stream_submit_and_wait(struct CUstream_st *stream);
+
+/* Flush deferred cuFFT work (if any).  Calls ctx->fft_flush_fn. */
+static inline void cuvk_fft_flush(struct CUctx_st *ctx) {
+    if (ctx->fft_flush_fn) ctx->fft_flush_fn(ctx);
+}
 
 #ifdef CUVK_NVJITLINK
 /* Compile LTO-IR sections from a fatbin via nvJitLink. Returns malloc'd PTX. */

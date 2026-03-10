@@ -305,6 +305,7 @@ typedef struct WgslTypeAlias {
 /* WGSL extension flags */
 #define WGSL_EXT_IMMEDIATE_ADDRESS_SPACE 0x1u
 #define WGSL_EXT_IMMEDIATE_ARRAYS        0x2u
+#define WGSL_EXT_DEVICE_ADDRESS          0x4u
 
 typedef struct Program {
     int decl_count;
@@ -407,7 +408,8 @@ typedef enum {
     WGSL_SYM_GLOBAL = 1,
     WGSL_SYM_PARAM,
     WGSL_SYM_LOCAL,
-    WGSL_SYM_IMMEDIATE
+    WGSL_SYM_IMMEDIATE,
+    WGSL_SYM_DEVICE
 } WgslSymbolKind;
 
 typedef struct {
@@ -487,6 +489,19 @@ const WgslImmediateInfo *wgsl_resolver_entrypoint_immediates(
     int *out_count);
 
 int wgsl_resolver_fragment_outputs(const WgslResolver *r, const char *fragment_entry_name, WgslFragmentOutput **frag_outputs);
+
+/* Device address variable reflection */
+typedef struct WgslDeviceVarInfo {
+    const char *name;
+    int offset;              /* byte offset in push constant block (always u64 = 8 bytes) */
+    const WgslAstNode *decl_node;
+} WgslDeviceVarInfo;
+
+const WgslDeviceVarInfo *wgsl_resolver_entrypoint_device_vars(
+    const WgslResolver *r,
+    const char *entry_name,
+    SsirLayoutRule layout,
+    int *out_count);
 
 void wgsl_resolve_free(void *p);
 
