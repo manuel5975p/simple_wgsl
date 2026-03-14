@@ -394,6 +394,14 @@ char *cuvk_fatbin_extract_ptx(const void *fatbin_data, size_t *ptx_len);
 /* Submit whatever is recorded on the stream and wait for completion */
 CUresult cuvk_stream_submit_and_wait(struct CUstream_st *stream);
 
+/* Resolve a CUstream handle: NULL, CU_STREAM_LEGACY (0x1), and
+ * CU_STREAM_PER_THREAD (0x2) all map to the context's default stream. */
+static inline struct CUstream_st *cuvk_resolve_stream(CUstream hStream) {
+    if ((uintptr_t)hStream <= 2)
+        return g_cuvk.current_ctx ? &g_cuvk.current_ctx->default_stream : NULL;
+    return hStream;
+}
+
 /* Flush deferred cuFFT work (if any).  Calls ctx->fft_flush_fn. */
 static inline void cuvk_fft_flush(struct CUctx_st *ctx) {
     if (ctx->fft_flush_fn) ctx->fft_flush_fn(ctx);

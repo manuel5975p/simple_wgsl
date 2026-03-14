@@ -1942,11 +1942,19 @@ static CUresult CUDAAPI cudart_load_compilers(void) {
 static CUresult CUDAAPI
 ctx_local_storage_put(CUcontext cu_ctx, void *key, void *value,
     void (*dtor_cb)(CUcontext, void *, void *)) {
-    fprintf(stderr, "[cuvk] ctx_storage_put: ctx=%p key=%p value=%p dtor=%p\n",
+    CUVK_LOG("[cuvk] ctx_storage_put: ctx=%p key=%p value=%p dtor=%p\n",
         (void *)cu_ctx, key, value, (void *)(uintptr_t)dtor_cb);
-    fflush(stderr);
     struct CUctx_st *ctx = cu_ctx ? (struct CUctx_st *)cu_ctx : g_cuvk.current_ctx;
-    if (!ctx) return CUDA_ERROR_INVALID_CONTEXT;
+    if (!ctx) {
+        /* Lazily create a context - CUDA runtime calls storage before context init */
+        cuInit(0);
+        if (!g_cuvk.current_ctx) {
+            CUcontext new_ctx;
+            cuDevicePrimaryCtxRetain(&new_ctx, 0);
+        }
+        ctx = g_cuvk.current_ctx;
+        if (!ctx) return CUDA_ERROR_INVALID_CONTEXT;
+    }
     uintptr_t k = (uintptr_t)key;
     for (uint32_t i = 0; i < ctx->storage_count; i++) {
         if (ctx->storage[i].key == k) {
@@ -1990,11 +1998,11 @@ static CUresult CUDAAPI
 ctx_local_storage_get(void **value_out, CUcontext cu_ctx, void *key) {
     CUVK_LOG("[cuvk] ctx_storage_get: value_out=%p ctx=%p key=%p\n",
         (void *)value_out, (void *)cu_ctx, key);
-    fflush(stderr);
     struct CUctx_st *ctx = cu_ctx ? (struct CUctx_st *)cu_ctx : g_cuvk.current_ctx;
     if (!ctx) {
-        CUVK_LOG("[cuvk]   -> INVALID_CONTEXT\n");
-        return CUDA_ERROR_INVALID_CONTEXT;
+        /* No context yet - return not-found rather than error */
+        if (value_out) *value_out = NULL;
+        return CUDA_ERROR_NOT_FOUND;
     }
     uintptr_t k = (uintptr_t)key;
     for (uint32_t i = 0; i < ctx->storage_count; i++) {

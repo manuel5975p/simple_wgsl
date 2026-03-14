@@ -207,7 +207,7 @@ foreach(test ${NVCC_TESTS})
     add_test(
         NAME e2e_nvcc_${test}
         COMMAND ${CMAKE_COMMAND} -E env
-            "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/cuvk_runtime:$ENV{LD_LIBRARY_PATH}"
+            "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/cuvk_runtime:${CMAKE_BINARY_DIR}/cuvk_runtime/fft:$ENV{LD_LIBRARY_PATH}"
             ${NVCC_OUT}
     )
     set_tests_properties(e2e_nvcc_${test} PROPERTIES

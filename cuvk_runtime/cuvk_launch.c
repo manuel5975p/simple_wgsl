@@ -131,7 +131,6 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
                                  void **extra)
 {
     (void)sharedMemBytes;
-    (void)extra;
     CUVK_LOG("[cuvk] cuLaunchKernel: f=%p grid=(%u,%u,%u) block=(%u,%u,%u)\n",
             (void *)f, gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ);
 
@@ -142,8 +141,12 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
 
-    /* Resolve NULL stream to default stream */
-    struct CUstream_st *stream = hStream ? hStream : &ctx->default_stream;
+    /* Flush any deferred cuFFT work before recording new dispatches,
+     * so that FFT results are visible to subsequent kernel reads. */
+    cuvk_fft_flush(ctx);
+
+    /* Resolve NULL/sentinel stream to default stream */
+    struct CUstream_st *stream = cuvk_resolve_stream(hStream);
 
     /* 1. Get or create the compute pipeline */
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -170,9 +173,39 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
         memset(pc_data, 0, sizeof(pc_data));
         uint32_t pc_offset = 0;
 
+        /* Parse 'extra' parameter if kernelParams is NULL.
+         * extra format: { CU_LAUNCH_PARAM_BUFFER_POINTER, ptr,
+         *                 CU_LAUNCH_PARAM_BUFFER_SIZE, &sz,
+         *                 CU_LAUNCH_PARAM_END } */
+        void *extra_buf = NULL;
+        size_t extra_buf_sz = 0;
+        if (!kernelParams && extra) {
+            for (int ei = 0; extra[ei]; ei++) {
+                if (extra[ei] == (void *)(uintptr_t)1) { /* CU_LAUNCH_PARAM_BUFFER_POINTER */
+                    extra_buf = extra[ei + 1];
+                    ei++;
+                } else if (extra[ei] == (void *)(uintptr_t)2) { /* CU_LAUNCH_PARAM_BUFFER_SIZE */
+                    extra_buf_sz = *(size_t *)extra[ei + 1];
+                    ei++;
+                }
+            }
+        }
+
+        if (extra_buf && f->param_count > 0) {
+            /* Bulk copy from extra buffer (byte array / struct params) */
+            uint32_t copy_sz = f->params[0].size;
+            if (copy_sz > extra_buf_sz && extra_buf_sz > 0)
+                copy_sz = (uint32_t)extra_buf_sz;
+            if (copy_sz > sizeof(pc_data))
+                copy_sz = sizeof(pc_data);
+            memcpy(pc_data, extra_buf, copy_sz);
+            pc_offset = copy_sz;
+        }
+
         for (uint32_t i = 0; i < f->param_count && kernelParams; i++) {
             uint32_t sz = f->params[i].size;
-            uint32_t align = sz;
+            uint32_t align = sz <= 8 ? sz : 4; /* cap alignment for large params */
+            if (align == 0) align = 4;
             /* Align offset up */
             pc_offset = (pc_offset + align - 1) & ~(align - 1);
 
@@ -199,6 +232,18 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
             memcpy(pc_data + pc_offset, &blockDimX, 4); pc_offset += 4;
             memcpy(pc_data + pc_offset, &blockDimY, 4); pc_offset += 4;
             memcpy(pc_data + pc_offset, &blockDimZ, 4); pc_offset += 4;
+        }
+
+        /* Memory barrier: ensure previous dispatches' writes are visible */
+        {
+            VkMemoryBarrier bar = {0};
+            bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+            bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            g_cuvk.vk.vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 1, &bar, 0, NULL, 0, NULL);
         }
 
         g_cuvk.vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
@@ -282,6 +327,18 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
             g_cuvk.vk.vkUpdateDescriptorSets(ctx->device, f->param_count, writes, 0, NULL);
             free(writes);
             free(buf_infos);
+        }
+
+        /* Memory barrier: ensure previous dispatches' writes are visible */
+        {
+            VkMemoryBarrier bar = {0};
+            bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            bar.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+            bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            g_cuvk.vk.vkCmdPipelineBarrier(cmd,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                0, 1, &bar, 0, NULL, 0, NULL);
         }
 
         /* 4. Record dispatch into the stream */

@@ -243,18 +243,20 @@ CUresult CUDAAPI cuStreamDestroy_v2(CUstream hStream)
 
 CUresult CUDAAPI cuStreamSynchronize(CUstream hStream)
 {
-    if (!hStream) {
-        /* NULL stream = wait for everything on the device */
+    struct CUstream_st *stream = cuvk_resolve_stream(hStream);
+    if (!stream || (uintptr_t)hStream <= 2) {
+        /* NULL/sentinel stream = wait for everything on the device */
         struct CUctx_st *ctx = g_cuvk.current_ctx;
         if (!ctx)
             return CUDA_ERROR_INVALID_CONTEXT;
+        cuvk_stream_submit_and_wait(&ctx->default_stream);
         VkResult vr = g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
         return cuvk_vk_to_cu(vr);
     }
 
     /* If stream has pending recording, submit and wait */
-    if (hStream->recording)
-        return cuvk_stream_submit_and_wait(hStream);
+    if (stream->recording)
+        return cuvk_stream_submit_and_wait(stream);
 
     return CUDA_SUCCESS;
 }
@@ -265,11 +267,12 @@ CUresult CUDAAPI cuStreamSynchronize(CUstream hStream)
 
 CUresult CUDAAPI cuStreamQuery(CUstream hStream)
 {
-    if (!hStream)
+    struct CUstream_st *stream = cuvk_resolve_stream(hStream);
+    if (!stream || (uintptr_t)hStream <= 2)
         return CUDA_SUCCESS;
 
     /* If not recording, the stream is idle */
-    if (!hStream->recording)
+    if (!stream->recording)
         return CUDA_SUCCESS;
 
     /* Check if the fence is signaled */
@@ -350,12 +353,11 @@ CUresult CUDAAPI cuEventRecord(CUevent hEvent, CUstream hStream)
     if (!hEvent)
         return CUDA_ERROR_INVALID_VALUE;
 
-    struct CUctx_st *ctx = hStream ? hStream->ctx : g_cuvk.current_ctx;
+    /* Resolve NULL/sentinel stream to default stream */
+    struct CUstream_st *stream = cuvk_resolve_stream(hStream);
+    struct CUctx_st *ctx = (stream && (uintptr_t)hStream > 2) ? hStream->ctx : g_cuvk.current_ctx;
     if (!ctx)
         return CUDA_ERROR_INVALID_CONTEXT;
-
-    /* Resolve NULL stream to default stream */
-    struct CUstream_st *stream = hStream ? hStream : &ctx->default_stream;
 
     /* Ensure the stream's command buffer is recording */
     CUresult res = cuvk_stream_ensure_recording(stream);

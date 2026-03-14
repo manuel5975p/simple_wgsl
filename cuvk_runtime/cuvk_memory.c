@@ -842,8 +842,9 @@ CUresult CUDAAPI cuMemcpyHtoDAsync_v2(CUdeviceptr dstDevice,
                                        size_t ByteCount, CUstream hStream)
 {
     /* Flush the target stream so any prior recorded work completes first */
-    if (hStream) {
-        CUresult res = cuvk_stream_submit_and_wait(hStream);
+    struct CUstream_st *stream = cuvk_resolve_stream(hStream);
+    if (stream) {
+        CUresult res = cuvk_stream_submit_and_wait(stream);
         if (res != CUDA_SUCCESS)
             return res;
     }
@@ -858,8 +859,9 @@ CUresult CUDAAPI cuMemcpyDtoHAsync_v2(void *dstHost, CUdeviceptr srcDevice,
                                        size_t ByteCount, CUstream hStream)
 {
     /* Flush the target stream so any prior recorded work completes first */
-    if (hStream) {
-        CUresult res = cuvk_stream_submit_and_wait(hStream);
+    struct CUstream_st *stream = cuvk_resolve_stream(hStream);
+    if (stream) {
+        CUresult res = cuvk_stream_submit_and_wait(stream);
         if (res != CUDA_SUCCESS)
             return res;
     }

@@ -162,8 +162,22 @@ static CUresult extract_params_bda(SsirModule *ssir,
                     user_param_count = j; /* first hidden member index */
             }
             SsirType *mt = ssir_get_type(ssir, st->struc.members[j]);
-            if (mt && (mt->kind == SSIR_TYPE_U64 || mt->kind == SSIR_TYPE_I64)) {
-                params[j].is_pointer = true;
+            if (mt && mt->kind == SSIR_TYPE_ARRAY) {
+                /* Array member (byte array param): compute full byte size */
+                SsirType *elem = ssir_get_type(ssir, mt->array.elem);
+                uint32_t elem_sz = 4; /* default u32 */
+                if (elem) {
+                    if (elem->kind == SSIR_TYPE_U8 || elem->kind == SSIR_TYPE_I8)
+                        elem_sz = 1;
+                    else if (elem->kind == SSIR_TYPE_U16 || elem->kind == SSIR_TYPE_I16 ||
+                             elem->kind == SSIR_TYPE_F16) elem_sz = 2;
+                    else if (elem->kind == SSIR_TYPE_U64 || elem->kind == SSIR_TYPE_I64 ||
+                             elem->kind == SSIR_TYPE_F64) elem_sz = 8;
+                }
+                params[j].is_pointer = false;
+                params[j].size = mt->array.length * elem_sz;
+            } else if (mt && (mt->kind == SSIR_TYPE_U64 || mt->kind == SSIR_TYPE_I64)) {
+                params[j].is_pointer = false;
                 params[j].size = 8;
             } else if (mt && (mt->kind == SSIR_TYPE_U32 || mt->kind == SSIR_TYPE_I32 ||
                               mt->kind == SSIR_TYPE_F32)) {

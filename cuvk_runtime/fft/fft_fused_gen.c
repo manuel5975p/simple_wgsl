@@ -52,7 +52,15 @@ static int wg_per_fft_mr(int n, int max_r) {
 }
 
 static int batch_per_wg_impl(int n, int max_r, int wg_limit) {
-  if (uses_direct_path_mr(n, max_r)) return wg_limit;
+  if (uses_direct_path_mr(n, max_r)) {
+    /* The hybrid variant uses shared memory for coalesced I/O
+     * (2 arrays of n floats per batch slot), so cap at the
+     * shared memory limit.  The non-hybrid variant doesn't use
+     * shared memory, but a conservative cap here is harmless. */
+    int max_by_shmem = MAX_SHARED_BYTES / (n * 8);
+    if (max_by_shmem < 1) max_by_shmem = 1;
+    return wg_limit < max_by_shmem ? wg_limit : max_by_shmem;
+  }
 
   int wpf = wg_per_fft_mr(n, max_r);
   if (wpf == 0) return 0;
@@ -69,7 +77,7 @@ static int batch_per_wg_impl(int n, int max_r, int wg_limit) {
 }
 
 static int workgroup_size_impl(int n, int max_r, int wg_limit) {
-  if (uses_direct_path_mr(n, max_r)) return wg_limit;
+  if (uses_direct_path_mr(n, max_r)) return batch_per_wg_impl(n, max_r, wg_limit);
 
   int wpf = wg_per_fft_mr(n, max_r);
   if (wpf == 0) return 0;
@@ -451,190 +459,9 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int
     return sb.buf;
   }
 
-  /* ===== Register-exchange path: multi-thread, all-register FFT =====
-   * For 2-stage factorizations [R0, R1] where R0 = elements/thread and
-   * R1 = threads/FFT, both stages can be computed entirely in registers:
-   *   Stage 0: radix-R0 butterfly (all R0 elements in one thread)
-   *   Stage 1: R0/R1 radix-R1 butterflies on interleaved register subsets
-   * Shared memory is used only for coalesced I/O (2 barriers vs 5+).
-   * Twiddle factors computed inline with cos/sin (no LUT buffer needed). */
-  if (n_stages == 2 && !uses_direct_path_mr(n, max_r) &&
-      in_es == 1 && out_es == 1 && tw_n == 0 &&
-      in_bs == n && out_bs == n && total_batch == 0) {
-    int R0 = radices[0], R1 = radices[1];
-    int wpf_rx = wg_per_fft_mr(n, max_r);
-    int B_rx = batch_per_wg_impl(n, max_r, wg_limit);
-
-    if (wpf_rx == R1 && R0 >= R1 && R0 % R1 == 0 && B_rx > 1) {
-      int total_wg_rx = wpf_rx * B_rx;
-      int shr_stride_rx = padded_stride(n);
-      int total_shr_rx = B_rx * shr_stride_rx;
-      int regx_step = R0 / R1;
-      int has_pad = (shr_stride_rx != n);
-      int is_po2 = (n & (n - 1)) == 0;
-      int log2n_rx = 0;
-      if (is_po2) { int tmp = n; while (tmp > 1) { log2n_rx++; tmp >>= 1; } }
-
-      StrBuf sb;
-      sb_init_cap(&sb, 65536);
-
-      /* Bindings — include LUT declaration for pipeline layout compatibility */
-      int has_lut_rx = (lut_size_mr(n, direction, max_r) > 0);
-      sb_emit_bda_src_dst(&sb, has_lut_rx);
-      sb_printf(&sb, "\n");
-
-      sb_printf(&sb, "var<workgroup> s_re: array<f32, %d>;\n", total_shr_rx);
-      sb_printf(&sb, "var<workgroup> s_im: array<f32, %d>;\n\n", total_shr_rx);
-
-      sb_printf(&sb, "@compute @workgroup_size(%d)\n", total_wg_rx);
-      sb_printf(&sb, "fn main(\n");
-      sb_printf(&sb, "  @builtin(local_invocation_id) lid: vec3<u32>,\n");
-      sb_printf(&sb, "  @builtin(workgroup_id) wid: vec3<u32>\n");
-      sb_printf(&sb, ") {\n");
-      sb_printf(&sb, "  let t: u32 = lid.x;\n");
-      sb_printf(&sb, "  let fft_t: u32 = t %% %uu;\n", wpf_rx);
-      sb_printf(&sb, "  let fft_id: u32 = t / %uu;\n", wpf_rx);
-      sb_printf(&sb, "  let shr_off: u32 = fft_id * %uu;\n\n", shr_stride_rx);
-
-      /* ---- Coalesced load: global -> shared ---- */
-      sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B_rx * n);
-      for (int e = 0; e < R0; e++) {
-        int off = e * total_wg_rx;
-        sb_printf(&sb, "    let gi%d: u32 = t", e);
-        if (off > 0) sb_printf(&sb, " + %uu", off);
-        sb_printf(&sb, ";\n");
-        if (is_po2) {
-          sb_printf(&sb, "    let f%d: u32 = gi%d >> %du;\n", e, e, log2n_rx);
-          sb_printf(&sb, "    let k%d: u32 = gi%d & %uu;\n", e, e, n - 1);
-        } else {
-          sb_printf(&sb, "    let f%d: u32 = gi%d / %uu;\n", e, e, n);
-          sb_printf(&sb, "    let k%d: u32 = gi%d %% %uu;\n", e, e, n);
-        }
-        if (!has_pad) {
-          sb_printf(&sb, "    s_re[f%d * %uu + k%d] = src.d[(wg_base + gi%d) * 2u];\n",
-                    e, shr_stride_rx, e, e);
-          sb_printf(&sb, "    s_im[f%d * %uu + k%d] = src.d[(wg_base + gi%d) * 2u + 1u];\n",
-                    e, shr_stride_rx, e, e);
-        } else {
-          sb_printf(&sb, "    { let pi%d: u32 = k%d + k%d / 16u;\n", e, e, e);
-          sb_printf(&sb, "      s_re[f%d * %uu + pi%d] = src.d[(wg_base + gi%d) * 2u];\n",
-                    e, shr_stride_rx, e, e);
-          sb_printf(&sb, "      s_im[f%d * %uu + pi%d] = src.d[(wg_base + gi%d) * 2u + 1u]; }\n",
-                    e, shr_stride_rx, e, e);
-        }
-      }
-      sb_printf(&sb, "  }\n");
-      sb_printf(&sb, "  workgroupBarrier();\n");
-
-      /* ---- Shared -> registers (R0 consecutive elements per thread) ---- */
-      sb_printf(&sb, "\n");
-      for (int k = 0; k < R0; k++) {
-        if (!has_pad) {
-          sb_printf(&sb, "  var v%d: vec2<f32> = vec2<f32>("
-                    "s_re[shr_off + fft_t * %uu + %uu], "
-                    "s_im[shr_off + fft_t * %uu + %uu]);\n",
-                    k, R0, k, R0, k);
-        } else {
-          sb_printf(&sb, "  var v%d: vec2<f32>;\n", k);
-          sb_printf(&sb, "  { let li: u32 = fft_t * %uu + %uu; "
-                    "let pi: u32 = li + li / 16u;\n", R0, k);
-          sb_printf(&sb, "    v%d = vec2<f32>("
-                    "s_re[shr_off + pi], s_im[shr_off + pi]); }\n", k);
-        }
-      }
-
-      /* ---- Stage 0: radix-R0 butterfly (thread-local) ---- */
-      sb_printf(&sb, "\n  // Stage 0: radix-%d (thread-local)\n", R0);
-      emit_radix_butterfly(&sb, R0, direction, "v", 0, 0, 0);
-
-      /* ---- Stage 1: radix-R1 on interleaved register subsets ---- */
-      sb_printf(&sb, "\n  // Stage 1: %d x radix-%d (thread-local)\n", regx_step, R1);
-      for (int k = 0; k < R1; k++)
-        sb_printf(&sb, "  var r%d: vec2<f32>;\n", k);
-
-      /* LUT offset for stage 1 twiddles: stage 0 (stride=1) contributes 0
-       * entries, so stage 1 twiddles start at LUT index 0.
-       * Layout: for k=1..R1-1, pos=0..R0-1: lut[(k-1)*R0 + pos]. */
-
-      for (int g = 0; g < regx_step; g++) {
-        int gbase = g * R1;
-
-        /* Gather: r[m] = v[g + m*step] */
-        for (int m = 0; m < R1; m++)
-          sb_printf(&sb, "  r%d = v%d;\n", m, g + m * regx_step);
-
-        /* Twiddle r[1..R1-1] via LUT: W_N^(m * (gbase + fft_t))
-         * LUT entry index = (m-1)*R0 + gbase + fft_t */
-        for (int m = 1; m < R1; m++) {
-          int lut_base_f = ((m - 1) * R0 + gbase) * 2; /* float offset */
-          sb_printf(&sb, "  { let tw: vec2<f32> = vec2<f32>("
-                    "lut.d[%du + fft_t * 2u], lut.d[%du + fft_t * 2u + 1u]);\n",
-                    lut_base_f, lut_base_f);
-          sb_printf(&sb, "    r%d = vec2<f32>("
-                    "r%d.x*tw.x - r%d.y*tw.y, "
-                    "r%d.x*tw.y + r%d.y*tw.x); }\n", m, m, m, m, m);
-        }
-
-        /* Butterfly */
-        emit_radix_butterfly(&sb, R1, direction, "r", 0, 100 + g, 0);
-
-        /* Scatter: v[g + m*step] = r[m] */
-        for (int m = 0; m < R1; m++)
-          sb_printf(&sb, "  v%d = r%d;\n", g + m * regx_step, m);
-      }
-
-      /* ---- Registers -> shared (Stockham natural order) ---- */
-      sb_printf(&sb, "\n");
-      for (int g = 0; g < regx_step; g++) {
-        for (int m = 0; m < R1; m++) {
-          int ri = g + m * regx_step;
-          int pos_const = g * R1 + m * R0;
-          if (!has_pad) {
-            sb_printf(&sb, "  s_re[shr_off + fft_t + %du] = v%d.x;\n", pos_const, ri);
-            sb_printf(&sb, "  s_im[shr_off + fft_t + %du] = v%d.y;\n", pos_const, ri);
-          } else {
-            sb_printf(&sb, "  { let li: u32 = fft_t + %du; "
-                      "let pi: u32 = li + li / 16u;\n", pos_const);
-            sb_printf(&sb, "    s_re[shr_off + pi] = v%d.x; "
-                      "s_im[shr_off + pi] = v%d.y; }\n", ri, ri);
-          }
-        }
-      }
-      sb_printf(&sb, "  workgroupBarrier();\n\n");
-
-      /* ---- Coalesced store: shared -> global ---- */
-      sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B_rx * n);
-      for (int e = 0; e < R0; e++) {
-        int off = e * total_wg_rx;
-        sb_printf(&sb, "    let gi%d: u32 = t", e);
-        if (off > 0) sb_printf(&sb, " + %uu", off);
-        sb_printf(&sb, ";\n");
-        if (is_po2) {
-          sb_printf(&sb, "    let f%d: u32 = gi%d >> %du;\n", e, e, log2n_rx);
-          sb_printf(&sb, "    let k%d: u32 = gi%d & %uu;\n", e, e, n - 1);
-        } else {
-          sb_printf(&sb, "    let f%d: u32 = gi%d / %uu;\n", e, e, n);
-          sb_printf(&sb, "    let k%d: u32 = gi%d %% %uu;\n", e, e, n);
-        }
-        if (!has_pad) {
-          sb_printf(&sb, "    dst.d[(wg_base + gi%d) * 2u] = s_re[f%d * %uu + k%d];\n",
-                    e, e, shr_stride_rx, e);
-          sb_printf(&sb, "    dst.d[(wg_base + gi%d) * 2u + 1u] = s_im[f%d * %uu + k%d];\n",
-                    e, e, shr_stride_rx, e);
-        } else {
-          sb_printf(&sb, "    { let pi%d: u32 = k%d + k%d / 16u;\n", e, e, e);
-          sb_printf(&sb, "      dst.d[(wg_base + gi%d) * 2u] = s_re[f%d * %uu + pi%d];\n",
-                    e, e, shr_stride_rx, e);
-          sb_printf(&sb, "      dst.d[(wg_base + gi%d) * 2u + 1u] = s_im[f%d * %uu + pi%d]; }\n",
-                    e, e, shr_stride_rx, e);
-        }
-      }
-      sb_printf(&sb, "  }\n");
-
-      sb_printf(&sb, "}\n");
-      return sb_finish(&sb);
-    }
-  }
+  /* Note: a register-exchange path for 2-stage factorizations was attempted
+   * and removed (see git history); it needs a shared-memory exchange step
+   * between stages to be correct. */
 
   /* ===== Shared-memory path: multi-stage ===== */
   int wpf = wg_per_fft_mr(n, max_r);
