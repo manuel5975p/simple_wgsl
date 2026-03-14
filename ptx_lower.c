@@ -105,6 +105,9 @@ typedef struct {
     struct { char cond_target[PTX_NAME_MAX]; char merge_label[PTX_NAME_MAX]; } *precomputed_merges;
     int precomputed_merge_count, precomputed_merge_cap;
 
+    char cur_return_reg[80];
+    bool cur_has_return;
+
     char error[1024];
     int had_error;
 } PtxLower;
@@ -1813,7 +1816,17 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
 
 static void pl_lower_ret(PtxLower *p, const PtxInst *inst) {
     (void)inst;
-    ssir_build_return_void(PL_BCTX(p));
+    if (p->cur_has_return && p->cur_return_reg[0]) {
+        PlReg *r = pl_find_reg(p, p->cur_return_reg);
+        if (r) {
+            uint32_t val = pl_load_reg(p, p->cur_return_reg);
+            ssir_build_return(PL_BCTX(p), val);
+        } else {
+            ssir_build_return_void(PL_BCTX(p));
+        }
+    } else {
+        ssir_build_return_void(PL_BCTX(p));
+    }
     p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
     p->block_from_label = false;
 }
@@ -2869,6 +2882,8 @@ static void pl_lower_entry(PtxLower *p, const PtxEntry *entry) {
     p->construct_depth = 0;
     p->precomputed_merge_count = 0;
     p->is_entry = true;
+    p->cur_has_return = false;
+    p->cur_return_reg[0] = '\0';
     p->next_binding = p->module_binding_base;
     p->wg_size[0] = entry->wg_size[0];
     p->wg_size[1] = entry->wg_size[1];
@@ -2962,12 +2977,22 @@ static void pl_lower_func(PtxLower *p, const PtxFunc *func) {
     p->block_id = ssir_block_create(p->mod, p->func_id, "entry");
     pl_register_func(p, func->name, p->func_id, ret_type);
 
-    /* Add function params */
+    /* Track return register for this function */
+    p->cur_has_return = func->has_return;
+    p->cur_return_reg[0] = '\0';
+    if (func->has_return && func->return_reg[0]) {
+        snprintf(p->cur_return_reg, sizeof(p->cur_return_reg), "%s",
+                 func->return_reg);
+        pl_add_reg(p, func->return_reg, ret_type, false);
+    }
+
+    /* Add function params — create SSIR params and store into local regs */
     for (int i = 0; i < func->param_count; i++) {
         uint32_t param_type = pl_map_type(p, func->params[i].type);
-        ssir_function_add_param(p->mod, p->func_id,
+        uint32_t param_id = ssir_function_add_param(p->mod, p->func_id,
                                 func->params[i].name, param_type);
-        pl_add_reg(p, func->params[i].name, param_type, false);
+        PlReg *r = pl_add_reg(p, func->params[i].name, param_type, false);
+        ssir_build_store(PL_BCTX(p), r->ptr_id, param_id);
     }
 
     /* Declare registers */

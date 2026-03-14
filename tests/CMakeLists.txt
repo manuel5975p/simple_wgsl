@@ -146,6 +146,10 @@ if(Vulkan_FOUND)
     target_link_libraries(cuvk_graph_test gtest_main cuvk_runtime_static)
     add_test(NAME cuvk_graph_test COMMAND cuvk_graph_test)
 
+    add_executable(cuvk_complex_kernel_test cuvk_complex_kernel_test.cpp)
+    target_link_libraries(cuvk_complex_kernel_test gtest_main cuvk_runtime_static)
+    add_test(NAME cuvk_complex_kernel_test COMMAND cuvk_complex_kernel_test)
+
     find_package(PkgConfig QUIET)
     if(PkgConfig_FOUND)
         pkg_check_modules(FFTW3F QUIET fftw3f)

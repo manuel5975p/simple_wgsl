@@ -555,8 +555,7 @@ TEST(PtxParser, ParseDeviceFunction) {
 
         .visible .func (.reg .f32 %retval) square(.reg .f32 %x)
         {
-            .reg .f32 %result;
-            mul.f32 %result, %x, %x;
+            mul.f32 %retval, %x, %x;
             ret;
         }
 

@@ -169,6 +169,9 @@ else()
         add_executable(bench_ours_batched bench/bench_ours_batched.c)
         target_link_libraries(bench_ours_batched cuvk_cufft_shared cuvk_runtime_shared m)
 
+        add_executable(bench_ours_matched bench/bench_ours_matched.c)
+        target_link_libraries(bench_ours_matched cuvk_cufft_shared cuvk_runtime_shared m)
+
         add_executable(bench_128_explore bench/bench_128_explore.c)
         target_link_libraries(bench_128_explore cuvk_cufft_shared cuvk_runtime_shared m)
 
