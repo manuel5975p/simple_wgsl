@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 #include "test_utils.h"
+#ifdef WGSL_HAS_FFT
 #include "fft_stockham_gen.h"
 extern "C" {
 #include "fft_fused_gen.h"
@@ -7,6 +8,7 @@ extern "C" {
 #include "fft_fourstep_gen.h"
 #include "fft_optimal_gen.h"
 }
+#endif
 
 TEST(LowerTest, EmitMinimalSpirv) {
     const char *source = "fn main() {}";
@@ -2222,6 +2224,7 @@ TEST(ConstArrayTest, FunctionScopeLetArray) {
     EXPECT_TRUE(r.success) << r.error;
 }
 
+#ifdef WGSL_HAS_FFT
 // ============================================================================
 // Stockham FFT generator tests
 // ============================================================================
@@ -2523,3 +2526,4 @@ TEST(DeviceAddressFftTest, FftDirect_BDA) {
     free(wgsl);
     EXPECT_TRUE(r.success) << r.error;
 }
+#endif // WGSL_HAS_FFT

@@ -1608,7 +1608,7 @@ static void pl_create_loop_structure(PtxLower *p, uint32_t target_block,
             if (ii->operand_count >= 4 && ii->operands[3] != 0) {
                 uint32_t m = ii->operands[3];
                 if (m != target_block && m != body_block &&
-                    m != actual_continue && m != merge_block)
+                    m != actual_continue)
                     ii->operands[3] = 0;
             }
         }
@@ -1785,6 +1785,25 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
             fallthrough = new_fallthrough;
         }
         p->block_id = fallthrough;
+        p->block_from_label = false;
+    } else if (is_back_edge) {
+        /* Unconditional backward branch = loop back-edge.
+         * Create structured loop: header with loop_merge, body, continue. */
+        uint32_t continue_block = p->block_id;
+        uint32_t merge_block = 0;
+
+        /* Use the innermost construct's merge as the loop merge block.
+         * This is typically the forward branch target (loop exit). */
+        if (p->construct_depth > 0)
+            merge_block = p->construct_stack[p->construct_depth - 1].merge_block;
+
+        if (!merge_block)
+            merge_block = ssir_block_create(p->mod, p->func_id, NULL);
+
+        ssir_build_branch(PL_BCTX(p), target);
+        pl_create_loop_structure(p, target, continue_block, merge_block);
+        pl_mark_merge(p, merge_block);
+        p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
         p->block_from_label = false;
     } else {
         uint32_t actual_target = target;
@@ -2626,13 +2645,27 @@ static void pl_lower_body(PtxLower *p, const PtxStmt *body, int body_count) {
     }
 
     SsirBlock *blk = ssir_get_block(PL_BCTX(p));
+    bool needs_term = false;
     if (blk && blk->inst_count == 0) {
-        ssir_build_return_void(PL_BCTX(p));
+        needs_term = true;
     } else if (blk && blk->inst_count > 0) {
         SsirInst *last = &blk->insts[blk->inst_count - 1];
         if (last->op != SSIR_OP_BRANCH && last->op != SSIR_OP_BRANCH_COND &&
             last->op != SSIR_OP_RETURN && last->op != SSIR_OP_RETURN_VOID &&
             last->op != SSIR_OP_UNREACHABLE && last->op != SSIR_OP_SWITCH) {
+            needs_term = true;
+        }
+    }
+    if (needs_term) {
+        if (p->cur_has_return && p->cur_return_reg[0]) {
+            PlReg *r = pl_find_reg(p, p->cur_return_reg);
+            if (r) {
+                uint32_t val = pl_load_reg(p, p->cur_return_reg);
+                ssir_build_return(PL_BCTX(p), val);
+            } else {
+                ssir_build_return_void(PL_BCTX(p));
+            }
+        } else {
             ssir_build_return_void(PL_BCTX(p));
         }
     }
@@ -3019,7 +3052,17 @@ static void pl_lower_func(PtxLower *p, const PtxFunc *func) {
     }
 
     if (func->is_decl_only) {
-        ssir_build_return_void(PL_BCTX(p));
+        if (p->cur_has_return && p->cur_return_reg[0]) {
+            PlReg *r = pl_find_reg(p, p->cur_return_reg);
+            if (r) {
+                uint32_t val = pl_load_reg(p, p->cur_return_reg);
+                ssir_build_return(PL_BCTX(p), val);
+            } else {
+                ssir_build_return_void(PL_BCTX(p));
+            }
+        } else {
+            ssir_build_return_void(PL_BCTX(p));
+        }
     } else {
         pl_precompute_merges(p, func->body, func->body_count);
         pl_lower_body(p, func->body, func->body_count);

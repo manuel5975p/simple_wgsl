@@ -78,15 +78,16 @@ add_executable(wgsl_tests ${TEST_SOURCES})
 
 target_link_libraries(wgsl_tests
     wgsl_compiler
-    fft_stockham_gen
-    fft_fused_gen
-    fft_2d_gen
-    fft_fourstep_gen
-    fft_optimal_gen
     GTest::gtest
     GTest::gtest_main
     m
 )
+
+if(TARGET fft_stockham_gen)
+    target_link_libraries(wgsl_tests
+        fft_stockham_gen fft_fused_gen fft_2d_gen fft_fourstep_gen fft_optimal_gen)
+    target_compile_definitions(wgsl_tests PRIVATE WGSL_HAS_FFT=1)
+endif()
 
 if(Vulkan_FOUND)
     target_link_libraries(wgsl_tests Vulkan::Vulkan)
@@ -184,30 +185,34 @@ if(Vulkan_FOUND)
     add_subdirectory(e2e)
 endif()
 
-# FFT four-step generator tests (no Vulkan needed)
-add_executable(fourstep_gen_test fourstep_gen_test.cpp)
-target_link_libraries(fourstep_gen_test
-    gtest_main
-    fft_fourstep_gen
-    wgsl_compiler
-    m
-)
-target_include_directories(fourstep_gen_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
-    ${CMAKE_SOURCE_DIR}
-)
-gtest_discover_tests(fourstep_gen_test)
+# FFT four-step generator tests (no Vulkan needed, but library built under cuvk_runtime)
+if(TARGET fft_fourstep_gen)
+    add_executable(fourstep_gen_test fourstep_gen_test.cpp)
+    target_link_libraries(fourstep_gen_test
+        gtest_main
+        fft_fourstep_gen
+        wgsl_compiler
+        m
+    )
+    target_include_directories(fourstep_gen_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
+        ${CMAKE_SOURCE_DIR}
+    )
+    gtest_discover_tests(fourstep_gen_test)
+endif()
 
-# FFT 2D generator tests (no Vulkan needed)
-add_executable(fft_2d_gen_test fft_2d_gen_test.cpp)
-target_link_libraries(fft_2d_gen_test
-    gtest_main
-    fft_2d_gen
-    wgsl_compiler
-    m
-)
-target_include_directories(fft_2d_gen_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
-    ${CMAKE_SOURCE_DIR}
-)
-gtest_discover_tests(fft_2d_gen_test)
+# FFT 2D generator tests (no Vulkan needed, but library built under cuvk_runtime)
+if(TARGET fft_2d_gen)
+    add_executable(fft_2d_gen_test fft_2d_gen_test.cpp)
+    target_link_libraries(fft_2d_gen_test
+        gtest_main
+        fft_2d_gen
+        wgsl_compiler
+        m
+    )
+    target_include_directories(fft_2d_gen_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
+        ${CMAKE_SOURCE_DIR}
+    )
+    gtest_discover_tests(fft_2d_gen_test)
+endif()
