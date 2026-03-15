@@ -1,6 +1,8 @@
 libcufft.so.12 {
     global:
         cufft*;
+        cuvk_wp_*;
+        vkCufft*;
     local:
         *;
 };

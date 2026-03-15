@@ -522,6 +522,8 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DC2CForwardTest,
         std::make_pair(64, 16),
         std::make_pair(128, 128),
         std::make_pair(256, 256),
+        std::make_pair(256, 128),
+        std::make_pair(128, 256),
         /* Four-step on innermost axis (ny > 4096) */
         std::make_pair(4, 8192),
         std::make_pair(8, 8192),
@@ -577,6 +579,8 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DC2CRoundtripTest,
         std::make_pair(16, 8),
         std::make_pair(128, 128),
         std::make_pair(256, 256),
+        std::make_pair(256, 128),
+        std::make_pair(128, 256),
         /* Four-step on innermost axis */
         std::make_pair(4, 8192),
         std::make_pair(8, 8192)
@@ -630,6 +634,8 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DImpulseTest,
         std::make_pair(32, 4),
         std::make_pair(128, 128),
         std::make_pair(256, 256),
+        std::make_pair(256, 128),
+        std::make_pair(128, 256),
         /* Four-step on innermost axis */
         std::make_pair(4, 8192)
     ));

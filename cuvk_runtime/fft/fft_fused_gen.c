@@ -633,8 +633,56 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int
         sb_printf(&sb, "    s_im[shr_off + pi] = src.d[(base_in + li) * 2u + 1u]; }\n");
       }
     }
+  } else if (B > 1) {
+    /* Tiled coalesced load: all threads cooperatively scan B*N input
+     * elements in flat order for B-wide coalescing. */
+    int bn = B * n;
+    int iters = (bn + total_wg - 1) / total_wg;
+    int is_B_po2 = (B & (B - 1)) == 0;
+    int log2B = 0;
+    if (is_B_po2) { int tmp = B; while (tmp > 1) { log2B++; tmp >>= 1; } }
+
+    sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B);
+    for (int e = 0; e < iters; e++) {
+      int off = e * total_wg;
+      sb_printf(&sb, "    {\n");
+      if (off == 0)
+        sb_printf(&sb, "      let flat: u32 = t;\n");
+      else
+        sb_printf(&sb, "      let flat: u32 = t + %uu;\n", off);
+
+      int need_guard = (off + total_wg > bn);
+      if (need_guard)
+        sb_printf(&sb, "      if (flat < %uu) {\n", bn);
+      const char *g = need_guard ? "  " : "";
+
+      if (is_B_po2) {
+        sb_printf(&sb, "      %slet f: u32 = flat & %uu;\n", g, B - 1);
+        sb_printf(&sb, "      %slet k: u32 = flat >> %du;\n", g, log2B);
+      } else {
+        sb_printf(&sb, "      %slet f: u32 = flat %% %uu;\n", g, B);
+        sb_printf(&sb, "      %slet k: u32 = flat / %uu;\n", g, B);
+      }
+
+      sb_printf(&sb, "      %slet addr: u32 = (wg_base + f) * %uu + k * %uu;\n",
+                g, in_bs, in_es);
+
+      if (shr_stride == n) {
+        sb_printf(&sb, "      %ss_re[f * %uu + k] = src.d[addr * 2u];\n", g, shr_stride);
+        sb_printf(&sb, "      %ss_im[f * %uu + k] = src.d[addr * 2u + 1u];\n", g, shr_stride);
+      } else {
+        sb_printf(&sb, "      %s{ let pi: u32 = k + k / 16u;\n", g);
+        sb_printf(&sb, "      %ss_re[f * %uu + pi] = src.d[addr * 2u];\n", g, shr_stride);
+        sb_printf(&sb, "      %ss_im[f * %uu + pi] = src.d[addr * 2u + 1u]; }\n", g, shr_stride);
+      }
+
+      if (need_guard)
+        sb_printf(&sb, "      }\n");
+      sb_printf(&sb, "    }\n");
+    }
+    sb_printf(&sb, "  }\n");
   } else {
-    /* Strided load (no twiddle) */
+    /* Strided load (no twiddle), B==1 */
     for (int e = 0; e < epr; e++) {
       sb_printf(&sb, "  {\n");
       sb_printf(&sb, "    let k: u32 = fft_t + %uu;\n", e*wpf);
@@ -871,7 +919,63 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int
         sb_printf(&sb, "    dst.d[(base_out + li) * 2u + 1u] = s_im[shr_off + pi]; }\n");
       }
     }
+  } else if (B > 1) {
+    /* Tiled coalesced store: all threads cooperatively scan B*N output
+     * elements in flat order.  Consecutive threads write consecutive
+     * batch indices (f, f+1) whose addresses differ by out_bs,
+     * achieving B-wide coalescing instead of stride-out_es. */
+    int bn = B * n;
+    int iters = (bn + total_wg - 1) / total_wg;
+    int is_B_po2 = (B & (B - 1)) == 0;
+    int log2B = 0;
+    if (is_B_po2) { int tmp = B; while (tmp > 1) { log2B++; tmp >>= 1; } }
+
+    sb_printf(&sb, "  { let wg_base: u32 = wid.x * %uu;\n", B);
+    for (int e = 0; e < iters; e++) {
+      int off = e * total_wg;
+      sb_printf(&sb, "    {\n");
+      if (off == 0)
+        sb_printf(&sb, "      let flat: u32 = t;\n");
+      else
+        sb_printf(&sb, "      let flat: u32 = t + %uu;\n", off);
+
+      int need_guard = (off + total_wg > bn);
+      if (need_guard)
+        sb_printf(&sb, "      if (flat < %uu) {\n", bn);
+      const char *g = need_guard ? "  " : "";
+
+      if (is_B_po2) {
+        sb_printf(&sb, "      %slet f: u32 = flat & %uu;\n", g, B - 1);
+        sb_printf(&sb, "      %slet k: u32 = flat >> %du;\n", g, log2B);
+      } else {
+        sb_printf(&sb, "      %slet f: u32 = flat %% %uu;\n", g, B);
+        sb_printf(&sb, "      %slet k: u32 = flat / %uu;\n", g, B);
+      }
+
+      if (shr_stride == n) {
+        sb_printf(&sb, "      %slet val_re: f32 = s_re[f * %uu + k];\n", g, shr_stride);
+        sb_printf(&sb, "      %slet val_im: f32 = s_im[f * %uu + k];\n", g, shr_stride);
+      } else {
+        sb_printf(&sb, "      %s{ let pi: u32 = k + k / 16u;\n", g);
+        sb_printf(&sb, "      %slet val_re: f32 = s_re[f * %uu + pi];\n", g, shr_stride);
+        sb_printf(&sb, "      %slet val_im: f32 = s_im[f * %uu + pi];\n", g, shr_stride);
+      }
+
+      sb_printf(&sb, "      %slet addr: u32 = (wg_base + f) * %uu + k * %uu;\n",
+                g, out_bs, out_es);
+      sb_printf(&sb, "      %sdst.d[addr * 2u] = val_re;\n", g);
+      sb_printf(&sb, "      %sdst.d[addr * 2u + 1u] = val_im;\n", g);
+
+      if (shr_stride != n)
+        sb_printf(&sb, "      %s}\n", g);  /* close the pi block */
+
+      if (need_guard)
+        sb_printf(&sb, "      }\n");
+      sb_printf(&sb, "    }\n");
+    }
+    sb_printf(&sb, "  }\n");
   } else {
+    /* Strided store, B==1: single FFT per workgroup, no tiling benefit */
     for (int e = 0; e < epr; e++) {
       sb_printf(&sb, "  {\n");
       sb_printf(&sb, "    let k: u32 = fft_t + %uu;\n", e*wpf);

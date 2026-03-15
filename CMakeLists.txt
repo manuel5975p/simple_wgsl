@@ -166,6 +166,12 @@ else()
         add_executable(bench_fft_2d bench/bench_fft_2d.c)
         target_link_libraries(bench_fft_2d cuvk_cufft_shared cuvk_runtime_shared m)
 
+        add_executable(bench_2d_matched bench/bench_2d_matched.c)
+        target_link_libraries(bench_2d_matched cuvk_cufft_shared cuvk_runtime_shared m)
+
+        add_executable(bench_wp_fft2d bench/bench_wp_fft2d.c)
+        target_link_libraries(bench_wp_fft2d cuvk_cufft_shared cuvk_runtime_shared m)
+
         add_executable(bench_ours_batched bench/bench_ours_batched.c)
         target_link_libraries(bench_ours_batched cuvk_cufft_shared cuvk_runtime_shared m)
 

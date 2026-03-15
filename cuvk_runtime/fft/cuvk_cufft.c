@@ -2989,3 +2989,297 @@ cufftResult cufftEstimate1d(int nx, cufftType type, int batch,
     if (workSize) *workSize = 0;
     return CUFFT_SUCCESS;
 }
+
+/* ============================================================================
+ * WorkPackage API (cufft_vk.h)
+ * ============================================================================ */
+
+/* cufft.h types are already defined above — prevent cufft_vk.h from
+   re-including them. */
+#define CUVK_CUFFT_H
+#include "cufft_vk.h"
+
+static void wp_grow_cmds(CuvkWorkPackage *wp) {
+    if (wp->n_cmds < wp->cmd_cap) return;
+    int new_cap = wp->cmd_cap ? wp->cmd_cap * 2 : 64;
+    wp->cmds = (CuvkWorkCmd *)realloc(wp->cmds, (size_t)new_cap * sizeof(CuvkWorkCmd));
+    wp->cmd_cap = new_cap;
+}
+
+static void wp_grow_bufs(CuvkWorkPackage *wp) {
+    if (wp->n_bufs < wp->buf_cap) return;
+    int new_cap = wp->buf_cap ? wp->buf_cap * 2 : 16;
+    wp->bufs = (CuvkWorkBufRef *)realloc(wp->bufs, (size_t)new_cap * sizeof(CuvkWorkBufRef));
+    wp->buf_cap = new_cap;
+}
+
+cufftResult cuvk_wp_init(CuvkWorkPackage *wp, struct CUctx_st *ctx) {
+    memset(wp, 0, sizeof(*wp));
+    wp->ctx = ctx;
+    return CUFFT_SUCCESS;
+}
+
+void cuvk_wp_destroy(CuvkWorkPackage *wp) {
+    free(wp->cmds);
+    free(wp->bufs);
+    memset(wp, 0, sizeof(*wp));
+}
+
+void cuvk_wp_clear(CuvkWorkPackage *wp) {
+    wp->n_cmds = 0;
+    wp->n_bufs = 0;
+    wp->sealed = 0;
+}
+
+void cuvk_wp_barrier(CuvkWorkPackage *wp,
+                     VkPipelineStageFlags src_stage,
+                     VkPipelineStageFlags dst_stage,
+                     VkAccessFlags src_access,
+                     VkAccessFlags dst_access) {
+    wp_grow_cmds(wp);
+    CuvkWorkCmd *c = &wp->cmds[wp->n_cmds++];
+    c->type = CUVK_WORK_BARRIER;
+    c->barrier.src_stage = src_stage;
+    c->barrier.dst_stage = dst_stage;
+    c->barrier.src_access = src_access;
+    c->barrier.dst_access = dst_access;
+}
+
+void cuvk_wp_copy(CuvkWorkPackage *wp,
+                  VkBuffer src, VkBuffer dst,
+                  VkDeviceSize src_off, VkDeviceSize dst_off,
+                  VkDeviceSize size) {
+    wp_grow_cmds(wp);
+    CuvkWorkCmd *c = &wp->cmds[wp->n_cmds++];
+    c->type = CUVK_WORK_COPY;
+    c->copy.src = src;
+    c->copy.dst = dst;
+    c->copy.src_offset = src_off;
+    c->copy.dst_offset = dst_off;
+    c->copy.size = size;
+}
+
+void cuvk_wp_dispatch(CuvkWorkPackage *wp,
+                      VkPipeline pipeline, VkPipelineLayout layout,
+                      const void *push_data, uint32_t push_size,
+                      uint32_t gx, uint32_t gy, uint32_t gz) {
+    wp_grow_cmds(wp);
+    CuvkWorkCmd *c = &wp->cmds[wp->n_cmds++];
+    c->type = CUVK_WORK_DISPATCH;
+    c->dispatch.pipeline = pipeline;
+    c->dispatch.layout = layout;
+    if (push_size > 128) push_size = 128;
+    memcpy(c->dispatch.push_data, push_data, push_size);
+    c->dispatch.push_size = push_size;
+    c->dispatch.group_count_x = gx;
+    c->dispatch.group_count_y = gy;
+    c->dispatch.group_count_z = gz;
+}
+
+void cuvk_wp_ref_buf(CuvkWorkPackage *wp,
+                     VkBuffer buf, VkDeviceAddress bda, uint32_t access) {
+    /* Deduplicate */
+    for (int i = 0; i < wp->n_bufs; i++) {
+        if (wp->bufs[i].buffer == buf) {
+            wp->bufs[i].access |= access;
+            return;
+        }
+    }
+    wp_grow_bufs(wp);
+    CuvkWorkBufRef *b = &wp->bufs[wp->n_bufs++];
+    b->buffer = buf;
+    b->bda = bda;
+    b->access = access;
+}
+
+void cuvk_wp_encode(const CuvkWorkPackage *wp, VkCommandBuffer cb) {
+    for (int i = 0; i < wp->n_cmds; i++) {
+        const CuvkWorkCmd *c = &wp->cmds[i];
+        switch (c->type) {
+        case CUVK_WORK_BARRIER: {
+            VkMemoryBarrier bar = {0};
+            bar.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+            bar.srcAccessMask = c->barrier.src_access;
+            bar.dstAccessMask = c->barrier.dst_access;
+            g_cuvk.vk.vkCmdPipelineBarrier(cb,
+                c->barrier.src_stage, c->barrier.dst_stage,
+                0, 1, &bar, 0, NULL, 0, NULL);
+            break;
+        }
+        case CUVK_WORK_COPY: {
+            VkBufferCopy region = {0};
+            region.srcOffset = c->copy.src_offset;
+            region.dstOffset = c->copy.dst_offset;
+            region.size = c->copy.size;
+            g_cuvk.vk.vkCmdCopyBuffer(cb, c->copy.src, c->copy.dst, 1, &region);
+            break;
+        }
+        case CUVK_WORK_DISPATCH:
+            g_cuvk.vk.vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                         c->dispatch.pipeline);
+            g_cuvk.vk.vkCmdPushConstants(cb, c->dispatch.layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                c->dispatch.push_size, c->dispatch.push_data);
+            g_cuvk.vk.vkCmdDispatch(cb,
+                c->dispatch.group_count_x,
+                c->dispatch.group_count_y,
+                c->dispatch.group_count_z);
+            break;
+        }
+    }
+}
+
+cufftResult cuvk_wp_seal(CuvkWorkPackage *wp) {
+    (void)wp;
+    return CUFFT_SUCCESS;
+}
+
+cufftResult cuvk_wp_submit(CuvkWorkPackage *wp) {
+    (void)wp;
+    return CUFFT_NOT_IMPLEMENTED;
+}
+
+cufftResult vkCufftExecC2C(CuvkWorkPackage *wp, cufftHandle plan_handle,
+                            VkBuffer idata_buf, VkDeviceAddress idata_bda,
+                            VkBuffer odata_buf, VkDeviceAddress odata_bda,
+                            int direction)
+{
+    if (plan_handle < 0 || plan_handle >= MAX_CUFFT_PLANS)
+        return CUFFT_INVALID_PLAN;
+    CufftPlan *p = &g_cufft_plans[plan_handle];
+    if (!p->valid) return CUFFT_INVALID_PLAN;
+
+    int dir_idx = (direction == CUFFT_FORWARD) ? 0 : 1;
+    int inplace = (idata_buf == odata_buf);
+
+    VkBuffer src_buf = inplace ? odata_buf : idata_buf;
+    VkBuffer dst_buf = odata_buf;
+    VkDeviceAddress src_bda = inplace ? odata_bda : idata_bda;
+    VkDeviceAddress dst_bda = odata_bda;
+
+    VkDeviceSize buf_size = (VkDeviceSize)p->total_elements * 2 * sizeof(float)
+                          * (VkDeviceSize)p->batch;
+
+    /* Count total stages */
+    int total_stages = 0;
+    for (int a = 0; a < p->n_axes; a++)
+        total_stages += p->axes[a].n_stages;
+
+    /* Compute ping-pong buffer assignments (same logic as record_fft_cb_range) */
+    VkBuffer read_bufs[MAX_FFT_STAGES * MAX_AXES];
+    VkBuffer write_bufs[MAX_FFT_STAGES * MAX_AXES];
+    VkDeviceAddress read_bdas[MAX_FFT_STAGES * MAX_AXES];
+    VkDeviceAddress write_bdas[MAX_FFT_STAGES * MAX_AXES];
+    int need_final_copy = 0;
+
+    if (total_stages == 1 && inplace) {
+        read_bufs[0] = dst_buf;        read_bdas[0] = dst_bda;
+        write_bufs[0] = p->scratch_buf; write_bdas[0] = p->scratch_bda;
+        need_final_copy = 1;
+    } else if (inplace) {
+        read_bufs[0] = dst_buf;        read_bdas[0] = dst_bda;
+        write_bufs[0] = p->scratch_buf; write_bdas[0] = p->scratch_bda;
+        for (int i = 1; i < total_stages; i++) {
+            read_bufs[i] = write_bufs[i - 1];
+            read_bdas[i] = write_bdas[i - 1];
+            if (read_bufs[i] == p->scratch_buf) {
+                write_bufs[i] = dst_buf; write_bdas[i] = dst_bda;
+            } else {
+                write_bufs[i] = p->scratch_buf; write_bdas[i] = p->scratch_bda;
+            }
+        }
+        if (write_bufs[total_stages - 1] != dst_buf)
+            need_final_copy = 1;
+    } else {
+        write_bufs[total_stages - 1] = dst_buf;
+        write_bdas[total_stages - 1] = dst_bda;
+        for (int i = total_stages - 2; i >= 0; i--) {
+            if (write_bufs[i + 1] == dst_buf) {
+                write_bufs[i] = p->scratch_buf; write_bdas[i] = p->scratch_bda;
+            } else {
+                write_bufs[i] = dst_buf; write_bdas[i] = dst_bda;
+            }
+        }
+        read_bufs[0] = src_buf;  read_bdas[0] = src_bda;
+        for (int i = 1; i < total_stages; i++) {
+            read_bufs[i] = write_bufs[i - 1];
+            read_bdas[i] = write_bdas[i - 1];
+        }
+    }
+
+    /* Initial barrier */
+    cuvk_wp_barrier(wp,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+    /* Track buffer refs */
+    cuvk_wp_ref_buf(wp, dst_buf, dst_bda, CUVK_BUF_READ | CUVK_BUF_WRITE);
+    if (!inplace)
+        cuvk_wp_ref_buf(wp, src_buf, src_bda, CUVK_BUF_READ);
+    if (p->scratch_buf)
+        cuvk_wp_ref_buf(wp, p->scratch_buf, p->scratch_bda, CUVK_BUF_READ | CUVK_BUF_WRITE);
+
+    /* Emit all stages */
+    int global_stage = 0;
+    for (int a = 0; a < p->n_axes; a++) {
+        FftAxis *axis = &p->axes[a];
+        for (int s = 0; s < axis->n_stages; s++) {
+            if (global_stage > 0)
+                cuvk_wp_barrier(wp,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+            uint64_t pc[3];
+            pc[0] = read_bdas[global_stage];
+            pc[1] = write_bdas[global_stage];
+            VkDeviceAddress stage_lut = axis->stage_info[s].lut_bda[dir_idx];
+            pc[2] = stage_lut;
+            int npc = stage_lut ? 3 : 2;
+
+            uint32_t dy = axis->stage_info[s].dispatch_y;
+            if (dy == 0) dy = (uint32_t)axis->batch_count;
+            uint32_t dz = axis->batch_count2 > 0 ? (uint32_t)axis->batch_count2 : 1;
+
+            cuvk_wp_dispatch(wp,
+                axis->pipelines[dir_idx][s], p->pipe_layout,
+                pc, (uint32_t)(npc * 8),
+                axis->dispatch_x[s], dy, dz);
+
+            if (axis->stage_info[s].lut_buf[dir_idx])
+                cuvk_wp_ref_buf(wp, axis->stage_info[s].lut_buf[dir_idx],
+                                stage_lut, CUVK_BUF_READ);
+
+            global_stage++;
+        }
+    }
+
+    /* Final copy if result in scratch */
+    if (need_final_copy) {
+        cuvk_wp_barrier(wp,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT);
+        cuvk_wp_copy(wp, p->scratch_buf, dst_buf, 0, 0, buf_size);
+    }
+
+    return CUFFT_SUCCESS;
+}
+
+cufftResult vkCufftExecR2C(CuvkWorkPackage *wp, cufftHandle plan,
+                            VkBuffer idata_buf, VkDeviceAddress idata_bda,
+                            VkBuffer odata_buf, VkDeviceAddress odata_bda) {
+    (void)wp; (void)plan; (void)idata_buf; (void)idata_bda; (void)odata_buf; (void)odata_bda;
+    return CUFFT_NOT_IMPLEMENTED;
+}
+
+cufftResult vkCufftExecC2R(CuvkWorkPackage *wp, cufftHandle plan,
+                            VkBuffer idata_buf, VkDeviceAddress idata_bda,
+                            VkBuffer odata_buf, VkDeviceAddress odata_bda) {
+    (void)wp; (void)plan; (void)idata_buf; (void)idata_bda; (void)odata_buf; (void)odata_bda;
+    return CUFFT_NOT_IMPLEMENTED;
+}
