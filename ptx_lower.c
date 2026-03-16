@@ -44,6 +44,7 @@ typedef struct {
     char name[PTX_NAME_MAX];
     uint32_t block_id;
     bool defined;
+    int displaced_construct_depth;  /* construct_depth when targeted by bra.uni, -1 if not displaced */
 } PlLabel;
 
 typedef struct {
@@ -83,7 +84,7 @@ typedef struct {
     uint32_t *merge_blocks;
     int merge_block_count, merge_block_cap;
 
-    struct { uint32_t merge_block; uint32_t target_label; bool has_inner_merge; } *construct_stack;
+    struct { uint32_t merge_block; uint32_t target_label; bool has_inner_merge; int push_depth; int displaced_depth_at_push; } *construct_stack;
     int construct_depth, construct_cap;
 
     uint32_t wg_size[3];
@@ -105,8 +106,21 @@ typedef struct {
     struct { char cond_target[PTX_NAME_MAX]; char merge_label[PTX_NAME_MAX]; } *precomputed_merges;
     int precomputed_merge_count, precomputed_merge_cap;
 
+    /* Exit ramp detection: simple blocks (1-2 arith instructions + unconditional branch)
+     * that can be inlined at the branch site to preserve exit ramp semantics
+     * when loop restructuring rewrites the branch target. */
+    struct {
+        char label[PTX_NAME_MAX];     /* ramp label */
+        char exit_label[PTX_NAME_MAX]; /* where the ramp branches to */
+        PtxInst insts[4];             /* instructions to inline */
+        int inst_count;
+    } *exit_ramps;
+    int exit_ramp_count, exit_ramp_cap;
+
     char cur_return_reg[80];
     bool cur_has_return;
+    bool past_return;  /* Set after ret/exit; suppresses back-edge detection */
+    int displaced_depth;  /* construct_depth limit for displaced blocks, -1 if none */
 
     char error[1024];
     int had_error;
@@ -294,6 +308,7 @@ static uint32_t pl_get_or_create_label(PtxLower *p, const char *name) {
     snprintf(l->name, sizeof(l->name), "%s", name);
     l->block_id = ssir_module_alloc_id(p->mod);
     l->defined = false;
+    l->displaced_construct_depth = -1;
     return l->block_id;
 }
 
@@ -302,6 +317,13 @@ static bool pl_is_label_defined(PtxLower *p, const char *name) {
         if (strcmp(p->labels[i].name, name) == 0)
             return p->labels[i].defined;
     return false;
+}
+
+static PlLabel *pl_find_label_by_name(PtxLower *p, const char *name) {
+    for (int i = 0; i < p->label_count; i++)
+        if (strcmp(p->labels[i].name, name) == 0)
+            return &p->labels[i];
+    return NULL;
 }
 
 static bool pl_is_merge_used(PtxLower *p, uint32_t block_id) {
@@ -324,6 +346,8 @@ static void pl_push_construct(PtxLower *p, uint32_t merge_block,
     p->construct_stack[p->construct_depth].merge_block = merge_block;
     p->construct_stack[p->construct_depth].target_label = target_label;
     p->construct_stack[p->construct_depth].has_inner_merge = has_inner_merge;
+    p->construct_stack[p->construct_depth].push_depth = p->construct_depth;
+    p->construct_stack[p->construct_depth].displaced_depth_at_push = p->displaced_depth;
     p->construct_depth++;
 }
 
@@ -709,7 +733,29 @@ static void pl_lower_arith(PtxLower *p, const PtxInst *inst) {
     if (p->had_error) return;
 
     bool is_wide = (inst->modifiers & PTX_MOD_WIDE) != 0;
+    bool is_hi = (inst->modifiers & PTX_MOD_HI) != 0;
     uint32_t result_type = type;
+
+    if (is_hi && inst->opcode == PTX_OP_MUL) {
+        /* mul.hi: compute high bits of widened multiply.
+         * Widen to 64-bit, multiply, shift right by 32, convert back. */
+        SsirType *ty = ssir_get_type(p->mod, type);
+        if (ty && (ty->kind == SSIR_TYPE_I32 || ty->kind == SSIR_TYPE_U32)) {
+            bool is_signed = (ty->kind == SSIR_TYPE_I32);
+            uint32_t wide_type = is_signed
+                ? ssir_type_i64(p->mod) : ssir_type_u64(p->mod);
+            uint32_t wa = ssir_build_convert(PL_BCTX(p), wide_type, a);
+            uint32_t wb = ssir_build_convert(PL_BCTX(p), wide_type, b);
+            uint32_t prod = ssir_build_mul(PL_BCTX(p), wide_type, wa, wb);
+            uint32_t shift_amt = ssir_const_u32(p->mod, 32);
+            uint32_t shifted = is_signed
+                ? ssir_build_shr(PL_BCTX(p), wide_type, prod, shift_amt)
+                : ssir_build_shr_logical(PL_BCTX(p), wide_type, prod, shift_amt);
+            uint32_t result = ssir_build_convert(PL_BCTX(p), type, shifted);
+            pl_store_reg_typed(p, inst->dst.name, result, type);
+            return;
+        }
+    }
 
     if (is_wide && inst->opcode == PTX_OP_MUL) {
         SsirType *ty = ssir_get_type(p->mod, type);
@@ -886,7 +932,8 @@ static void pl_lower_bitwise(PtxLower *p, const PtxInst *inst) {
                          : ssir_build_bit_or(PL_BCTX(p), type, a, b);
         break;
     case PTX_OP_XOR:
-        result = ssir_build_bit_xor(PL_BCTX(p), type, a, b);
+        result = is_bool ? ssir_build_ne(PL_BCTX(p), ssir_type_bool(p->mod), a, b)
+                         : ssir_build_bit_xor(PL_BCTX(p), type, a, b);
         break;
     default: break;
     }
@@ -916,6 +963,41 @@ static void pl_lower_setp(PtxLower *p, const PtxInst *inst) {
     if (p->had_error) return;
 
     uint32_t bool_t = ssir_type_bool(p->mod);
+
+    /* Handle NAN/NUM comparisons: setp.nan checks if either operand is NaN,
+     * setp.num checks if both operands are numbers (not NaN). */
+    if (inst->cmp_op == PTX_CMP_NAN) {
+        uint32_t args_a[] = { a };
+        uint32_t isnan_a = ssir_build_builtin(PL_BCTX(p), bool_t,
+                                               SSIR_BUILTIN_ISNAN, args_a, 1);
+        uint32_t args_b[] = { b };
+        uint32_t isnan_b = ssir_build_builtin(PL_BCTX(p), bool_t,
+                                               SSIR_BUILTIN_ISNAN, args_b, 1);
+        uint32_t cmp_result = ssir_build_or(PL_BCTX(p), bool_t, isnan_a, isnan_b);
+        pl_store_reg(p, inst->dst.name, cmp_result);
+        if (inst->has_dst2) {
+            uint32_t neg = ssir_build_not(PL_BCTX(p), bool_t, cmp_result);
+            pl_store_reg(p, inst->dst2.name, neg);
+        }
+        return;
+    }
+    if (inst->cmp_op == PTX_CMP_NUM) {
+        uint32_t args_a[] = { a };
+        uint32_t isnan_a = ssir_build_builtin(PL_BCTX(p), bool_t,
+                                               SSIR_BUILTIN_ISNAN, args_a, 1);
+        uint32_t args_b[] = { b };
+        uint32_t isnan_b = ssir_build_builtin(PL_BCTX(p), bool_t,
+                                               SSIR_BUILTIN_ISNAN, args_b, 1);
+        uint32_t either_nan = ssir_build_or(PL_BCTX(p), bool_t, isnan_a, isnan_b);
+        uint32_t cmp_result = ssir_build_not(PL_BCTX(p), bool_t, either_nan);
+        pl_store_reg(p, inst->dst.name, cmp_result);
+        if (inst->has_dst2) {
+            uint32_t neg = ssir_build_not(PL_BCTX(p), bool_t, cmp_result);
+            pl_store_reg(p, inst->dst2.name, neg);
+        }
+        return;
+    }
+
     SsirOpcode cmp_opcode = pl_cmp_op(inst->cmp_op);
     uint32_t cmp_result = 0;
     switch (cmp_opcode) {
@@ -1555,6 +1637,23 @@ static void pl_lower_membar(PtxLower *p, const PtxInst *inst) {
 
 /* ===== Loop Restructuring ===== */
 
+/* Check if block_id is between start_block (exclusive) and end_block (exclusive)
+ * in the function's block ordering. Used to detect interior loop blocks. */
+static bool pl_block_is_interior(PtxLower *p, uint32_t block_id,
+                                  uint32_t start_block, uint32_t end_block) {
+    SsirFunction *f = ssir_get_function(p->mod, p->func_id);
+    if (!f) return false;
+    int start_pos = -1, end_pos = -1, target_pos = -1;
+    for (uint32_t i = 0; i < f->block_count; i++) {
+        if (f->blocks[i].id == start_block) start_pos = (int)i;
+        if (f->blocks[i].id == end_block) end_pos = (int)i;
+        if (f->blocks[i].id == block_id) target_pos = (int)i;
+    }
+    if (start_pos < 0 || target_pos < 0) return false;
+    if (end_pos < 0) return target_pos > start_pos;
+    return target_pos > start_pos && target_pos < end_pos;
+}
+
 static void pl_create_loop_structure(PtxLower *p, uint32_t target_block,
                                       uint32_t continue_block,
                                       uint32_t merge_block) {
@@ -1602,13 +1701,18 @@ static void pl_create_loop_structure(PtxLower *p, uint32_t target_block,
             for (int j = 1; j <= 2; j++) {
                 uint32_t t = ii->operands[j];
                 if (t != target_block && t != body_block &&
-                    t != actual_continue && t != merge_block)
+                    t != actual_continue && t != merge_block &&
+                    !pl_block_is_interior(p, t, target_block, merge_block))
                     ii->operands[j] = merge_block;
             }
             if (ii->operand_count >= 4 && ii->operands[3] != 0) {
                 uint32_t m = ii->operands[3];
-                if (m != target_block && m != body_block &&
-                    m != actual_continue)
+                /* Selection merge can only target interior blocks that are
+                 * NOT the continue block, merge block, target block,
+                 * or blocks outside the loop. */
+                if (m == actual_continue || m == merge_block ||
+                    m == target_block ||
+                    !pl_block_is_interior(p, m, target_block, merge_block))
                     ii->operands[3] = 0;
             }
         }
@@ -1622,11 +1726,58 @@ static void pl_create_loop_structure(PtxLower *p, uint32_t target_block,
                 for (int j = 1; j <= 2; j++) {
                     uint32_t t = ii->operands[j];
                     if (t != target_block && t != body_block &&
-                        t != actual_continue && t != merge_block)
+                        t != actual_continue && t != merge_block &&
+                        !pl_block_is_interior(p, t, target_block, merge_block))
                         ii->operands[j] = merge_block;
                 }
                 if (ii->operand_count >= 4 && ii->operands[3] != 0)
                     ii->operands[3] = 0;
+            }
+        }
+    }
+
+    /* Also rewrite branches in ALL interior blocks (blocks between
+     * target_block and merge_block) that escape the loop.
+     * Interior blocks include selection merge targets and other blocks
+     * created during lowering of instructions inside the loop body. */
+    {
+        SsirFunction *f = ssir_get_function(p->mod, p->func_id);
+        if (f) {
+            int start_pos = -1, end_pos = -1;
+            for (uint32_t i = 0; i < f->block_count; i++) {
+                if (f->blocks[i].id == target_block) start_pos = (int)i;
+                if (f->blocks[i].id == merge_block) end_pos = (int)i;
+            }
+            if (start_pos >= 0) {
+                uint32_t limit = (end_pos >= 0) ? (uint32_t)end_pos : f->block_count;
+                for (uint32_t bi = (uint32_t)start_pos + 1; bi < limit; bi++) {
+                    SsirBlock *blk = &f->blocks[bi];
+                    if (blk->id == body_block || blk->id == actual_continue)
+                        continue; /* already processed above */
+                    for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+                        SsirInst *si = &blk->insts[ii];
+                        if (si->op == SSIR_OP_BRANCH) {
+                            uint32_t t = si->operands[0];
+                            if (t != target_block && t != merge_block &&
+                                !pl_block_is_interior(p, t, target_block, merge_block))
+                                si->operands[0] = merge_block;
+                        } else if (si->op == SSIR_OP_BRANCH_COND) {
+                            for (int j = 1; j <= 2; j++) {
+                                uint32_t t = si->operands[j];
+                                if (t != target_block && t != body_block &&
+                                    t != actual_continue && t != merge_block &&
+                                    !pl_block_is_interior(p, t, target_block, merge_block))
+                                    si->operands[j] = merge_block;
+                            }
+                            /* Strip selection merges that escape the loop */
+                            if (si->operand_count >= 4 && si->operands[3] != 0) {
+                                uint32_t m = si->operands[3];
+                                if (!pl_block_is_interior(p, m, target_block, merge_block))
+                                    si->operands[3] = 0;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1742,12 +1893,186 @@ static void pl_precompute_merges(PtxLower *p, const PtxStmt *body, int body_coun
     }
 }
 
+/* Forward declaration */
+static void pl_lower_inst(PtxLower *p, const PtxInst *inst);
+
+/* ===== Exit Ramp Detection ===== */
+
+/* Detect simple exit ramp blocks: a label followed by 1-2 arithmetic
+ * instructions and an unconditional branch to a common exit target.
+ * These are generated by nvcc when unrolling loops with early exits. */
+static void pl_precompute_exit_ramps(PtxLower *p, const PtxStmt *body, int body_count) {
+    /* First, find all back-edge targets (loop headers) to identify loops */
+    const char *loop_headers[64];
+    int loop_header_count = 0;
+    for (int i = 0; i < body_count; i++) {
+        if (body[i].kind != PTX_STMT_INST) continue;
+        const PtxInst *ins = &body[i].inst;
+        if (ins->opcode != PTX_OP_BRA) continue;
+        if (ins->src_count < 1 || ins->src[0].kind != PTX_OPER_LABEL) continue;
+        /* Check if target label appears before this instruction */
+        int target_idx = pl_find_label_index(body, body_count, ins->src[0].name);
+        if (target_idx >= 0 && target_idx < i && loop_header_count < 64)
+            loop_headers[loop_header_count++] = ins->src[0].name;
+    }
+
+    for (int i = 0; i < body_count; i++) {
+        if (body[i].kind != PTX_STMT_LABEL) continue;
+        const char *label = body[i].label;
+
+        /* Check that this label comes after a back-edge instruction
+         * or after another already-detected exit ramp block. */
+        bool after_backedge = false;
+        for (int j = i - 1; j >= 0; j--) {
+            if (body[j].kind == PTX_STMT_LABEL) {
+                /* Check if the previous label is already detected as a ramp */
+                for (int r = 0; r < p->exit_ramp_count; r++) {
+                    if (strcmp(p->exit_ramps[r].label, body[j].label) == 0) {
+                        after_backedge = true;
+                        break;
+                    }
+                }
+                break;
+            }
+            if (body[j].kind == PTX_STMT_INST) {
+                const PtxInst *prev = &body[j].inst;
+                if (prev->opcode == PTX_OP_BRA && prev->src_count > 0 &&
+                    prev->src[0].kind == PTX_OPER_LABEL) {
+                    int tgt = pl_find_label_index(body, body_count, prev->src[0].name);
+                    if (tgt >= 0 && tgt < j) {
+                        after_backedge = true;
+                        break;
+                    }
+                    /* Forward branch from a ramp block -- check previous label */
+                    for (int k = j - 1; k >= 0; k--) {
+                        if (body[k].kind == PTX_STMT_LABEL) {
+                            for (int r = 0; r < p->exit_ramp_count; r++) {
+                                if (strcmp(p->exit_ramps[r].label, body[k].label) == 0) {
+                                    after_backedge = true;
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+        }
+        if (!after_backedge) continue;
+
+        /* Collect instructions until next label or end */
+        int inst_start = i + 1;
+        int inst_end = inst_start;
+        while (inst_end < body_count && body[inst_end].kind == PTX_STMT_INST)
+            inst_end++;
+
+        int inst_count = inst_end - inst_start;
+        if (inst_count < 1 || inst_count > 4) continue;
+
+        /* Determine exit label: either from trailing unconditional branch
+         * or from fallthrough to the next label */
+        const PtxInst *last = &body[inst_end - 1].inst;
+        const char *exit_label = NULL;
+        int arith_end = inst_end;
+
+        if (last->opcode == PTX_OP_BRA && !last->has_pred &&
+            last->src_count >= 1 && last->src[0].kind == PTX_OPER_LABEL) {
+            exit_label = last->src[0].name;
+            arith_end = inst_end - 1; /* exclude the branch */
+        } else {
+            /* No trailing branch -- check for fallthrough to next label */
+            if (inst_end < body_count && body[inst_end].kind == PTX_STMT_LABEL)
+                exit_label = body[inst_end].label;
+            arith_end = inst_end;
+        }
+        if (!exit_label) continue;
+
+        /* All arithmetic instructions must be simple (no branches, loads, stores) */
+        bool all_simple = true;
+        int arith_count = arith_end - inst_start;
+        if (arith_count < 1 || arith_count > 4) continue;
+        for (int j = inst_start; j < arith_end; j++) {
+            const PtxInst *ins = &body[j].inst;
+            switch (ins->opcode) {
+            case PTX_OP_ADD: case PTX_OP_SUB: case PTX_OP_MUL: case PTX_OP_MOV:
+                break;
+            default:
+                all_simple = false;
+            }
+        }
+        if (!all_simple) continue;
+
+        /* Store the ramp */
+        SW_GROW(p->exit_ramps, p->exit_ramp_count, p->exit_ramp_cap,
+                __typeof__(*p->exit_ramps), ptx_realloc_);
+        int idx = p->exit_ramp_count++;
+        snprintf(p->exit_ramps[idx].label, PTX_NAME_MAX, "%s", label);
+        snprintf(p->exit_ramps[idx].exit_label, PTX_NAME_MAX, "%s", exit_label);
+        p->exit_ramps[idx].inst_count = 0;
+        for (int j = inst_start; j < arith_end && p->exit_ramps[idx].inst_count < 4; j++)
+            p->exit_ramps[idx].insts[p->exit_ramps[idx].inst_count++] = body[j].inst;
+    }
+}
+
+static int pl_find_exit_ramp(PtxLower *p, const char *label) {
+    for (int i = 0; i < p->exit_ramp_count; i++)
+        if (strcmp(p->exit_ramps[i].label, label) == 0)
+            return i;
+    return -1;
+}
+
 /* ===== Control Flow ===== */
 
 static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
                           uint32_t pred_val, bool has_pred, bool pred_negated) {
     const char *label = inst->src[0].name;
     bool is_back_edge = pl_is_label_defined(p, label);
+
+    /* After a ret/exit, blocks are displaced code that branches to
+     * already-defined labels. These are NOT loop back-edges. */
+    if (p->past_return)
+        is_back_edge = false;
+
+    /* Exit ramp inlining: if this is a conditional forward branch to an
+     * exit ramp block, inline the ramp's arithmetic instructions into a
+     * guarded if-block and redirect the branch to the ramp's exit target.
+     * This preserves counter increments that would otherwise be lost when
+     * loop restructuring rewrites the branch target to the merge block. */
+    if (has_pred && !is_back_edge) {
+        int ramp_idx = pl_find_exit_ramp(p, label);
+        if (ramp_idx >= 0 && p->exit_ramps[ramp_idx].inst_count > 0) {
+            uint32_t cond = pred_negated
+                ? ssir_build_not(PL_BCTX(p), ssir_type_bool(p->mod), pred_val)
+                : pred_val;
+
+            /* Create if-then structure: if (cond) { ramp insts } merge */
+            uint32_t then_block = ssir_block_create(p->mod, p->func_id, NULL);
+            uint32_t merge_blk = ssir_block_create(p->mod, p->func_id, NULL);
+            ssir_build_branch_cond_merge(PL_BCTX(p),
+                                   cond, then_block, merge_blk, merge_blk);
+
+            /* Emit ramp instructions in the then-block */
+            p->block_id = then_block;
+            p->block_from_label = false;
+            for (int ri = 0; ri < p->exit_ramps[ramp_idx].inst_count; ri++)
+                pl_lower_inst(p, &p->exit_ramps[ramp_idx].insts[ri]);
+            ssir_build_branch(PL_BCTX(p), merge_blk);
+
+            /* Continue in the merge block -- redirect the original branch
+             * to the ramp's exit target instead of the ramp label */
+            p->block_id = merge_blk;
+            p->block_from_label = false;
+
+            /* Redirect: treat as if the original branch targeted the ramp's
+             * exit label. The condition and ramp insts are already handled. */
+            label = p->exit_ramps[ramp_idx].exit_label;
+            is_back_edge = pl_is_label_defined(p, label);
+            pred_negated = false;
+            /* Fall through to normal branch handling for the exit target */
+        }
+    }
+
     uint32_t target = pl_get_or_create_label(p, label);
 
     if (has_pred) {
@@ -1761,8 +2086,46 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
         if (is_back_edge) {
             ssir_build_branch_cond(PL_BCTX(p),
                                    pred_val, target, fallthrough);
+
+            /* Strip selection-merge annotations that conflict with the loop merge */
+            {
+                SsirFunction *f = ssir_get_function(p->mod, p->func_id);
+                if (f) {
+                    for (uint32_t bi = 0; bi < f->block_count; bi++) {
+                        SsirBlock *blk = &f->blocks[bi];
+                        for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+                            SsirInst *si = &blk->insts[ii];
+                            if (si->op == SSIR_OP_BRANCH_COND &&
+                                si->operand_count >= 4 &&
+                                si->operands[3] == fallthrough)
+                                si->operands[3] = 0;
+                        }
+                    }
+                }
+            }
+
             pl_create_loop_structure(p, target, p->block_id, fallthrough);
             pl_mark_merge(p, fallthrough);
+
+            /* Remove construct entries whose merge_block is interior to the loop.
+             * Also add branches from those interior merge blocks to the loop merge,
+             * since the bridge chain won't create them anymore. */
+            {
+                int write = 0;
+                for (int ci = 0; ci < p->construct_depth; ci++) {
+                    uint32_t mb = p->construct_stack[ci].merge_block;
+                    if (pl_block_is_interior(p, mb, target, fallthrough)) {
+                        /* Add a branch from this interior merge block to the
+                         * loop's merge block so the block has a terminator */
+                        SsirBlock *interior = ssir_get_block(p->mod, p->func_id, mb);
+                        if (interior && interior->inst_count == 0)
+                            ssir_build_branch(p->mod, p->func_id, mb, fallthrough);
+                    } else {
+                        p->construct_stack[write++] = p->construct_stack[ci];
+                    }
+                }
+                p->construct_depth = write;
+            }
         } else if (precomputed) {
             uint32_t real_merge = pl_get_or_create_label(p, precomputed);
             uint32_t deferred_id = ssir_module_alloc_id(p->mod);
@@ -1800,14 +2163,67 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
         if (!merge_block)
             merge_block = ssir_block_create(p->mod, p->func_id, NULL);
 
+        /* Strip any selection-merge annotations targeting this merge block,
+         * since a block can only be the merge target for one construct in SPIR-V.
+         * The loop merge takes priority. */
+        {
+            SsirFunction *f = ssir_get_function(p->mod, p->func_id);
+            if (f) {
+                for (uint32_t bi = 0; bi < f->block_count; bi++) {
+                    SsirBlock *blk = &f->blocks[bi];
+                    for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+                        SsirInst *si = &blk->insts[ii];
+                        if (si->op == SSIR_OP_BRANCH_COND &&
+                            si->operand_count >= 4 &&
+                            si->operands[3] == merge_block)
+                            si->operands[3] = 0;
+                    }
+                }
+            }
+        }
+
         ssir_build_branch(PL_BCTX(p), target);
         pl_create_loop_structure(p, target, continue_block, merge_block);
         pl_mark_merge(p, merge_block);
+
+        /* Remove construct entries whose merge_block is interior to the loop.
+         * Also add branches from those interior merge blocks to the loop merge. */
+        {
+            int write = 0;
+            for (int ci = 0; ci < p->construct_depth; ci++) {
+                uint32_t mb = p->construct_stack[ci].merge_block;
+                if (pl_block_is_interior(p, mb, target, merge_block)) {
+                    SsirBlock *interior = ssir_get_block(p->mod, p->func_id, mb);
+                    if (interior && interior->inst_count == 0)
+                        ssir_build_branch(p->mod, p->func_id, mb, merge_block);
+                } else {
+                    p->construct_stack[write++] = p->construct_stack[ci];
+                }
+            }
+            p->construct_depth = write;
+        }
+
         p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
         p->block_from_label = false;
     } else {
+        /* Record construct depth for displaced block targets: when bra.uni
+         * targets an undefined label, the block at that label is "displaced"
+         * and should only see constructs that existed at this point. */
+        if (!is_back_edge) {
+            PlLabel *tgt_lbl = pl_find_label_by_name(p, label);
+            if (tgt_lbl && !tgt_lbl->defined && tgt_lbl->displaced_construct_depth < 0) {
+                tgt_lbl->displaced_construct_depth = p->construct_depth;
+            }
+        }
+
+        /* Limit construct search to displaced_depth if we're in a displaced block.
+         * This prevents routing through constructs pushed by sibling scopes. */
+        int search_depth = p->construct_depth;
+        if (p->displaced_depth >= 0 && p->displaced_depth < search_depth)
+            search_depth = p->displaced_depth;
+
         uint32_t actual_target = target;
-        for (int i = p->construct_depth - 1; i >= 0; i--) {
+        for (int i = search_depth - 1; i >= 0; i--) {
             if (p->construct_stack[i].target_label == target) {
                 if (p->construct_stack[i].merge_block != target)
                     actual_target = p->construct_stack[i].merge_block;
@@ -1824,6 +2240,25 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
                 if (has_outer) {
                     actual_target = p->construct_stack[i].merge_block;
                     break;
+                }
+            }
+        }
+        /* If the target is an already-materialized block that comes BEFORE our
+         * current block in the function layout, and we have constructs on the stack,
+         * route through the innermost construct's merge to maintain domination.
+         * This handles nvcc's interleaved block placement in switch cascades. */
+        if (actual_target == target && p->construct_depth > 0) {
+            SsirBlock *tgt_blk = ssir_get_block(p->mod, p->func_id, target);
+            if (tgt_blk) {
+                SsirFunction *f = ssir_get_function(p->mod, p->func_id);
+                if (f) {
+                    int tgt_pos = -1, cur_pos = -1;
+                    for (uint32_t bi = 0; bi < f->block_count; bi++) {
+                        if (f->blocks[bi].id == target) tgt_pos = (int)bi;
+                        if (f->blocks[bi].id == p->block_id) cur_pos = (int)bi;
+                    }
+                    if (tgt_pos >= 0 && cur_pos >= 0 && tgt_pos < cur_pos)
+                        actual_target = p->construct_stack[p->construct_depth - 1].merge_block;
                 }
             }
         }
@@ -1848,6 +2283,7 @@ static void pl_lower_ret(PtxLower *p, const PtxInst *inst) {
     }
     p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
     p->block_from_label = false;
+    p->past_return = true;
 }
 
 static void pl_lower_call(PtxLower *p, const PtxInst *inst) {
@@ -2576,7 +3012,7 @@ static void pl_lower_inst(PtxLower *p, const PtxInst *inst) {
 static void pl_handle_label(PtxLower *p, const char *name) {
     uint32_t lbl_block = pl_get_or_create_label(p, name);
 
-    typedef struct { uint32_t merge_block; uint32_t target_label; bool has_inner_merge; } PopEntry;
+    typedef struct { uint32_t merge_block; uint32_t target_label; bool has_inner_merge; int push_depth; int displaced_depth_at_push; } PopEntry;
     PopEntry popped[64];
     int popped_count = 0;
     int write = 0;
@@ -2587,6 +3023,8 @@ static void pl_handle_label(PtxLower *p, const char *name) {
                 popped[popped_count].merge_block = p->construct_stack[i].merge_block;
                 popped[popped_count].target_label = p->construct_stack[i].target_label;
                 popped[popped_count].has_inner_merge = p->construct_stack[i].has_inner_merge;
+                popped[popped_count].push_depth = p->construct_stack[i].push_depth;
+                popped[popped_count].displaced_depth_at_push = p->construct_stack[i].displaced_depth_at_push;
                 popped_count++;
             }
         } else {
@@ -2600,12 +3038,44 @@ static void pl_handle_label(PtxLower *p, const char *name) {
         if (mb != lbl_block && popped[i].has_inner_merge)
             ssir_block_create_with_id(p->mod, p->func_id, mb, NULL);
     }
+    /* Build bridge chain from popped constructs.  Normally each popped merge
+     * block bridges to the previous one (linear chain).  However, when a
+     * construct was pushed from a displaced scope (bra.uni target), it may be
+     * a sibling of the previous entry rather than its child.  In that case,
+     * bridge to the correct parent's merge block instead of chaining through
+     * the sibling.
+     *
+     * We use displaced_depth_at_push: if >= 0, this construct was pushed from
+     * a scope that only saw constructs up to that depth.  The bridge target
+     * should be the merge of the last popped entry whose push_depth <
+     * displaced_depth_at_push, i.e. the actual parent. */
     uint32_t bridge_target = lbl_block;
+    /* Track bridge_target for each popped entry so siblings can look up
+     * the correct parent's bridge target. */
+    uint32_t popped_bridge[64];
     for (int i = 0; i < popped_count; i++) {
         uint32_t mb = popped[i].merge_block;
         if (mb != lbl_block) {
-            ssir_build_branch(p->mod, p->func_id, mb, bridge_target);
+            uint32_t my_bridge = bridge_target;
+            if (popped[i].displaced_depth_at_push >= 0) {
+                /* This construct was pushed from a displaced scope.  Find the
+                 * correct parent: scan backward through earlier popped entries
+                 * for one whose push_depth < displaced_depth_at_push. */
+                int dd = popped[i].displaced_depth_at_push;
+                for (int j = i - 1; j >= 0; j--) {
+                    if (popped[j].merge_block == lbl_block) continue;
+                    if (popped[j].push_depth < dd) {
+                        /* This entry is the parent -- bridge to its merge_block */
+                        my_bridge = popped[j].merge_block;
+                        break;
+                    }
+                }
+            }
+            ssir_build_branch(p->mod, p->func_id, mb, my_bridge);
+            popped_bridge[i] = my_bridge;
             bridge_target = mb;
+        } else {
+            popped_bridge[i] = 0;
         }
     }
 
@@ -2622,9 +3092,27 @@ static void pl_handle_label(PtxLower *p, const char *name) {
         ssir_build_branch(PL_BCTX(p), bridge_target);
     }
 
-    ssir_block_create_with_id(p->mod, p->func_id, lbl_block, name);
+    if (p->past_return) {
+        /* For displaced blocks after ret, insert after the current block
+         * to keep them within the right scope. */
+        ssir_block_insert_after_with_id(p->mod, p->func_id, p->block_id,
+                                         lbl_block, name);
+    } else {
+        ssir_block_create_with_id(p->mod, p->func_id, lbl_block, name);
+    }
     p->block_id = lbl_block;
     p->block_from_label = true;
+
+    /* Activate displaced depth limit: when a label was the target of bra.uni
+     * from a parent scope, limit construct search to the depth at that point.
+     * This prevents displaced blocks from routing through sibling constructs. */
+    {
+        PlLabel *lbl = pl_find_label_by_name(p, name);
+        if (lbl && lbl->displaced_construct_depth >= 0)
+            p->displaced_depth = lbl->displaced_construct_depth;
+        else
+            p->displaced_depth = -1;
+    }
 
     for (int i = 0; i < p->label_count; i++) {
         if (p->labels[i].block_id == lbl_block)
@@ -2914,8 +3402,11 @@ static void pl_lower_entry(PtxLower *p, const PtxEntry *entry) {
     p->merge_block_count = 0;
     p->construct_depth = 0;
     p->precomputed_merge_count = 0;
+    p->exit_ramp_count = 0;
     p->is_entry = true;
     p->cur_has_return = false;
+    p->past_return = false;
+    p->displaced_depth = -1;
     p->cur_return_reg[0] = '\0';
     p->next_binding = p->module_binding_base;
     p->wg_size[0] = entry->wg_size[0];
@@ -2963,9 +3454,12 @@ static void pl_lower_entry(PtxLower *p, const PtxEntry *entry) {
 
     /* Pre-compute merge blocks for if-else patterns */
     pl_precompute_merges(p, entry->body, entry->body_count);
+    pl_precompute_exit_ramps(p, entry->body, entry->body_count);
 
     /* Lower body */
     pl_lower_body(p, entry->body, entry->body_count);
+
+    /* (Block ordering fixup is handled by the SPIR-V emission layer) */
 
     /* Materialize remaining buffers (descriptor mode only) */
     if (!p->use_bda) {
@@ -3001,6 +3495,9 @@ static void pl_lower_func(PtxLower *p, const PtxFunc *func) {
     p->merge_block_count = 0;
     p->construct_depth = 0;
     p->precomputed_merge_count = 0;
+    p->exit_ramp_count = 0;
+    p->displaced_depth = -1;
+    p->past_return = false;
     p->is_entry = false;
 
     uint32_t ret_type = func->has_return
@@ -3065,6 +3562,7 @@ static void pl_lower_func(PtxLower *p, const PtxFunc *func) {
         }
     } else {
         pl_precompute_merges(p, func->body, func->body_count);
+        pl_precompute_exit_ramps(p, func->body, func->body_count);
         pl_lower_body(p, func->body, func->body_count);
     }
 }

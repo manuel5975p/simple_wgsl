@@ -977,6 +977,12 @@ static uint32_t sts_emit_constant(Ctx *c, const SsirConstant *cnst) {
             wb_push(wb, (uint32_t)cnst->u8_val);
             break;
         case SSIR_CONST_I16:
+            sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 4);
+            wb_push(wb, type_spv);
+            wb_push(wb, id);
+            /* Sign-extend i16 to 32 bits as required by SPIR-V */
+            wb_push(wb, (uint32_t)(int32_t)cnst->i16_val);
+            break;
         case SSIR_CONST_U16:
             sts_emit_op(wb, spec ? SpvOpSpecConstant : SpvOpConstant, 4);
             wb_push(wb, type_spv);
@@ -2663,9 +2669,69 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
         set_ssir_type(c, func->params[i].id, func->params[i].type);
     }
 
-    /* Emit blocks */
-    for (uint32_t bi = 0; bi < func->block_count; ++bi) {
-        const SsirBlock *block = &func->blocks[bi];
+    /* Compute DFS block ordering to satisfy SPIR-V structural domination.
+     * Blocks are emitted in DFS order of the control flow graph. */
+    uint32_t *dfs_order = (uint32_t *)STS_MALLOC(func->block_count * sizeof(uint32_t));
+    uint32_t dfs_count = 0;
+    if (dfs_order && func->block_count > 0) {
+        uint8_t *visited = (uint8_t *)STS_MALLOC(func->block_count);
+        if (visited) {
+            memset(visited, 0, func->block_count);
+            /* DFS stack (indices into func->blocks) */
+            uint32_t *stack = (uint32_t *)STS_MALLOC(func->block_count * sizeof(uint32_t));
+            if (stack) {
+                uint32_t sp = 0;
+                stack[sp++] = 0; /* start from first block */
+                while (sp > 0) {
+                    uint32_t idx = stack[--sp];
+                    if (idx >= func->block_count || visited[idx]) continue;
+                    visited[idx] = 1;
+                    dfs_order[dfs_count++] = idx;
+
+                    /* Find branch targets and push them (in reverse for DFS order) */
+                    const SsirBlock *b = &func->blocks[idx];
+                    uint32_t targets[4] = {0};
+                    int tc = 0;
+                    for (uint32_t ii = 0; ii < b->inst_count; ii++) {
+                        const SsirInst *si = &b->insts[ii];
+                        if (si->op == SSIR_OP_BRANCH && si->operand_count >= 1) {
+                            targets[tc++] = si->operands[0];
+                        } else if (si->op == SSIR_OP_BRANCH_COND && si->operand_count >= 3) {
+                            targets[tc++] = si->operands[2]; /* false first (reversed) */
+                            targets[tc++] = si->operands[1]; /* true second */
+                        }
+                        if (tc >= 4) break;
+                    }
+                    /* Push targets in reverse order (so true arm is visited first) */
+                    for (int ti = 0; ti < tc; ti++) {
+                        for (uint32_t k = 0; k < func->block_count; k++) {
+                            if (func->blocks[k].id == targets[ti] && !visited[k]) {
+                                stack[sp++] = k;
+                                break;
+                            }
+                        }
+                    }
+                }
+                STS_FREE(stack);
+            }
+            /* Add any unvisited blocks (unreachable code) at the end */
+            for (uint32_t k = 0; k < func->block_count; k++) {
+                if (!visited[k])
+                    dfs_order[dfs_count++] = k;
+            }
+            STS_FREE(visited);
+        }
+    }
+    /* Fallback: if DFS failed, use original order */
+    if (dfs_count != func->block_count) {
+        for (uint32_t k = 0; k < func->block_count; k++)
+            dfs_order[k] = k;
+        dfs_count = func->block_count;
+    }
+
+    /* Emit blocks in DFS order */
+    for (uint32_t dfs_i = 0; dfs_i < dfs_count; ++dfs_i) {
+        const SsirBlock *block = &func->blocks[dfs_order[dfs_i]];
         uint32_t block_spv = get_spv_id(c, block->id);
 
         /* Emit OpLabel */
@@ -2682,7 +2748,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
         }
 
         /* Emit local variables in first block */
-        if (bi == 0) {
+        if (dfs_i == 0) {
             for (uint32_t li = 0; li < func->local_count; ++li) {
                 const SsirLocalVar *local = &func->locals[li];
                 uint32_t local_type_spv = sts_emit_type(c, local->type);
@@ -2701,6 +2767,8 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
             emit_instruction(c, &block->insts[ii], func->return_type);
         }
     }
+
+    if (dfs_order) STS_FREE(dfs_order);
 
     /* Emit OpFunctionEnd */
     sts_emit_op(wb, SpvOpFunctionEnd, 1);

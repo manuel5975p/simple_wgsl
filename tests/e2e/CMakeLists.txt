@@ -168,6 +168,13 @@ set(NVCC_TESTS
     40_cublas_basic
     41_cufft_basic
     42_events
+    43_if_else_branches
+    44_for_while_loops
+    45_switch_statement
+    46_continue_break
+    47_early_return
+    48_nested_control_flow
+    49_deep_call_tree
 )
 
 set(NVCC_BIN_DIR ${CMAKE_CURRENT_BINARY_DIR}/nvcc)

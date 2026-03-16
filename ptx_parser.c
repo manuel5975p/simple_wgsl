@@ -539,6 +539,8 @@ static PtxCmpOp pp_parse_cmp_str(const char *s) {
   if (strcmp(s, "ls") == 0)  return PTX_CMP_LS;
   if (strcmp(s, "hi") == 0)  return PTX_CMP_HI;
   if (strcmp(s, "hs") == 0)  return PTX_CMP_HS;
+  if (strcmp(s, "nan") == 0) return PTX_CMP_NAN;
+  if (strcmp(s, "num") == 0) return PTX_CMP_NUM;
   return PTX_CMP_EQ;
 }
 
