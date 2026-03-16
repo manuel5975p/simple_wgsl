@@ -1046,3 +1046,478 @@ char *gen_fft_fused_strided(int n, int direction, int max_radix, int wg_limit,
                            wg_limit > 0 ? wg_limit : DEFAULT_WG_LIMIT,
                            total_batch, in_bs, in_es, out_bs, out_es, tw_n);
 }
+
+/* ========================================================================== */
+/* Fused R2C strided generator                                                */
+/* ========================================================================== */
+
+/* Effective max_radix for R2C: always forces multi-stage shared-memory path */
+static int r2c_effective_max_r(int half_n, int max_r) {
+  int cap = max_r;
+  if (cap == 0 || cap >= half_n) {
+    cap = half_n / 2;
+    if (cap > 16) cap = 16;
+    if (cap < 2) cap = 2;
+  }
+  return cap;
+}
+
+int fft_fused_r2c_lut_size(int half_n, int max_r) {
+  int cap = r2c_effective_max_r(half_n, max_r);
+  return lut_size_mr(half_n, 1, cap);
+}
+
+float *fft_fused_r2c_compute_lut(int half_n, int max_r) {
+  int cap = r2c_effective_max_r(half_n, max_r);
+  return compute_lut_mr(half_n, 1, cap);
+}
+
+/*
+ * Batch-per-workgroup for fused R2C strided.
+ * Always uses shared-memory path (no direct register path).
+ */
+int fft_fused_r2c_batch_per_wg(int half_n, int max_r, int wg_limit) {
+  /* The R2C generator always uses the shared-memory path, so compute
+   * wpf for multi-stage factorization.  If max_r allows the direct path
+   * (single radix-N), cap it to force multi-stage. */
+  int mr = max_r;
+  if (mr == 0 || mr >= half_n) {
+    mr = half_n / 2;
+    if (mr > 16) mr = 16;
+    if (mr < 2) mr = 2;
+  }
+  int wpf = wg_per_fft_mr(half_n, mr);
+  if (wpf == 0) return 0;
+  int shr = padded_stride(half_n);
+  int wl = wg_limit > 0 ? wg_limit : DEFAULT_WG_LIMIT;
+  int max_by_threads = wl / wpf;
+  int max_by_shmem = MAX_SHARED_BYTES / (shr * 8);
+  if (max_by_shmem < 1) max_by_shmem = 1;
+  int B = max_by_threads;
+  if (B > max_by_shmem) B = max_by_shmem;
+  if (B < 1) B = 1;
+  return B;
+}
+
+int fft_fused_r2c_workgroup_size(int half_n, int max_r, int wg_limit) {
+  int mr = max_r;
+  if (mr == 0 || mr >= half_n) {
+    mr = half_n / 2;
+    if (mr > 16) mr = 16;
+    if (mr < 2) mr = 2;
+  }
+  int wpf = wg_per_fft_mr(half_n, mr);
+  if (wpf == 0) return 0;
+  return wpf * fft_fused_r2c_batch_per_wg(half_n, mr, wg_limit);
+}
+
+/*
+ * gen_fft_fused_r2c_strided: Generate a fused half_n-point forward C2C
+ * + inline R2C post-process shader with strided output.
+ *
+ * Based on the shared-memory path of gen_fft_fused_mr, but with a custom
+ * store section that writes half_n+1 elements per FFT with R2C post-process
+ * applied inline.
+ *
+ * Direction is always forward (1).
+ */
+char *gen_fft_fused_r2c_strided(int half_n, int max_r, int wg_limit,
+                                 int total_batch,
+                                 int in_bs, int in_es,
+                                 int out_bs, int out_es) {
+  int radices[MAX_STAGES];
+  int n_stages;
+  const int direction = 1;  /* always forward */
+
+  if (half_n < 2) return NULL;
+
+  /* Cap max_radix to force multi-stage shared-memory path.
+   * The direct register path can't handle strided output + R2C. */
+  int max_radix_cap = r2c_effective_max_r(half_n, max_r);
+  n_stages = factorize_mr(half_n, radices, max_radix_cap);
+  if (n_stages == 0) return NULL;
+
+  int max_radix = 0;
+  for (int i = 0; i < n_stages; i++)
+    if (radices[i] > max_radix) max_radix = radices[i];
+
+  int wl = wg_limit > 0 ? wg_limit : DEFAULT_WG_LIMIT;
+  int wpf = wg_per_fft_mr(half_n, max_radix_cap);
+  if (wpf < 1) return NULL;
+  int B = fft_fused_r2c_batch_per_wg(half_n, max_radix_cap, wl);
+  int total_wg = wpf * B;
+
+  int epr = half_n / wpf;
+  int shr_stride = padded_stride(half_n);
+  int total_shr = B * shr_stride;
+
+  /* Compute LUT offsets for stage twiddles */
+  int lut_offsets[MAX_STAGES];
+  int lut_total = 0;
+  {
+    int stride = 1;
+    for (int s = 0; s < n_stages; s++) {
+      lut_offsets[s] = lut_total;
+      int R = radices[s];
+      if (stride > 1)
+        lut_total += (R - 1) * stride;
+      stride *= R;
+    }
+  }
+
+  /* Compute Rader kernel LUT offsets per stage */
+  int rader_offsets[MAX_STAGES];
+  {
+    int roff = lut_total;
+    for (int s = 0; s < n_stages; s++) {
+      rader_offsets[s] = roff;
+      int R = radices[s];
+      if (is_prime(R) && rader_supported(R))
+        roff += R - 1;
+    }
+    lut_total = roff;
+  }
+  int has_lut = (lut_total > 0);
+
+  /* Max registers needed for butterfly */
+  int max_regs_per_bf = max_radix;
+  for (int s = 0; s < n_stages; s++) {
+    int R = radices[s];
+    if (is_prime(R) && rader_supported(R)) {
+      int need = R + (R - 1);
+      if (need > max_regs_per_bf) max_regs_per_bf = need;
+    }
+  }
+
+  StrBuf sb;
+  sb_init_cap(&sb, 131072);
+
+  /* Bindings */
+  sb_emit_bda_src_dst(&sb, has_lut);
+  sb_printf(&sb, "\n");
+
+  /* Shared memory */
+  sb_printf(&sb, "var<workgroup> s_re: array<f32, %d>;\n", total_shr);
+  sb_printf(&sb, "var<workgroup> s_im: array<f32, %d>;\n\n", total_shr);
+
+  /* Entry point */
+  sb_printf(&sb, "@compute @workgroup_size(%d)\n", total_wg);
+  sb_printf(&sb, "fn main(\n");
+  sb_printf(&sb, "  @builtin(local_invocation_id) lid: vec3<u32>,\n");
+  sb_printf(&sb, "  @builtin(workgroup_id) wid: vec3<u32>\n");
+  sb_printf(&sb, ") {\n");
+  sb_printf(&sb, "  let t: u32 = lid.x;\n");
+
+  if (B > 1) {
+    sb_printf(&sb, "  let fft_t: u32 = t %% %uu;\n", wpf);
+    sb_printf(&sb, "  let fft_id: u32 = t / %uu;\n", wpf);
+    if (total_batch > 0) {
+      sb_printf(&sb, "  let global_fft: u32 = wid.x * %uu + fft_id;\n", B);
+      sb_printf(&sb, "  if (global_fft >= %uu) { return; }\n", total_batch);
+    }
+    sb_printf(&sb, "  let shr_off: u32 = fft_id * %uu;\n", shr_stride);
+    sb_printf(&sb, "  let fft_idx: u32 = wid.x * %uu + fft_id;\n", B);
+    sb_printf(&sb, "  let base_in: u32 = fft_idx * %uu;\n", in_bs);
+    sb_printf(&sb, "  let base_out: u32 = fft_idx * %uu;\n\n", out_bs);
+  } else {
+    sb_printf(&sb, "  let fft_t: u32 = t;\n");
+    sb_printf(&sb, "  let shr_off: u32 = 0u;\n");
+    if (total_batch > 0) {
+      sb_printf(&sb, "  if (wid.x >= %uu) { return; }\n", total_batch);
+    }
+    sb_printf(&sb, "  let fft_idx: u32 = wid.x;\n");
+    sb_printf(&sb, "  let base_in: u32 = fft_idx * %uu;\n", in_bs);
+    sb_printf(&sb, "  let base_out: u32 = fft_idx * %uu;\n\n", out_bs);
+  }
+
+  /* ---- Global load -> shared ---- */
+  /* Contiguous or strided load (same as gen_fft_fused_mr) */
+  if (in_es == 1) {
+    if (shr_stride == half_n) {
+      for (int e = 0; e < epr; e++) {
+        sb_printf(&sb, "  s_re[shr_off + fft_t + %uu] = "
+                  "src.d[(base_in + fft_t + %uu) * 2u];\n", e*wpf, e*wpf);
+        sb_printf(&sb, "  s_im[shr_off + fft_t + %uu] = "
+                  "src.d[(base_in + fft_t + %uu) * 2u + 1u];\n", e*wpf, e*wpf);
+      }
+    } else {
+      for (int e = 0; e < epr; e++) {
+        sb_printf(&sb, "  { let li: u32 = fft_t + %uu; "
+                  "let pi: u32 = li + li / 16u;\n", e*wpf);
+        sb_printf(&sb, "    s_re[shr_off + pi] = src.d[(base_in + li) * 2u];\n");
+        sb_printf(&sb, "    s_im[shr_off + pi] = src.d[(base_in + li) * 2u + 1u]; }\n");
+      }
+    }
+  } else {
+    /* Strided load, B==1 or per-FFT */
+    for (int e = 0; e < epr; e++) {
+      sb_printf(&sb, "  {\n");
+      sb_printf(&sb, "    let k: u32 = fft_t + %uu;\n", e*wpf);
+      if (shr_stride == half_n) {
+        sb_printf(&sb, "    s_re[shr_off + k] = "
+                  "src.d[(base_in + k * %uu) * 2u];\n", in_es);
+        sb_printf(&sb, "    s_im[shr_off + k] = "
+                  "src.d[(base_in + k * %uu) * 2u + 1u];\n", in_es);
+      } else {
+        sb_printf(&sb, "    let pi: u32 = k + k / 16u;\n");
+        sb_printf(&sb, "    s_re[shr_off + pi] = "
+                  "src.d[(base_in + k * %uu) * 2u];\n", in_es);
+        sb_printf(&sb, "    s_im[shr_off + pi] = "
+                  "src.d[(base_in + k * %uu) * 2u + 1u];\n", in_es);
+      }
+      sb_printf(&sb, "  }\n");
+    }
+  }
+  sb_printf(&sb, "  workgroupBarrier();\n");
+
+  /* ---- Stockham FFT stages (identical to gen_fft_fused_mr) ---- */
+  int stride = 1;
+  for (int stage = 0; stage < n_stages; stage++) {
+    int R = radices[stage];
+    int n_bf = half_n / R;
+    int bpt = (n_bf + wpf - 1) / wpf;
+    int read_stride = half_n / R;
+    /* Use this stage's actual register need, not the global max.
+     * The global max causes massive over-allocation for stages with
+     * small radix (e.g., radix-2 after radix-16 allocates 16 regs
+     * per butterfly instead of 2, causing register pressure blowup). */
+    int stage_regs = R;
+    if (is_prime(R) && rader_supported(R))
+        stage_regs = R + (R - 1);
+    int total_regs = bpt * stage_regs;
+
+    sb_printf(&sb, "\n  // Stage %d: radix-%d, stride=%d\n", stage, R, stride);
+    sb_printf(&sb, "  {\n");
+    for (int i = 0; i < total_regs; i++)
+      sb_printf(&sb, "    var v%d: vec2<f32> = vec2<f32>(0.0, 0.0);\n", i);
+
+    /* Phase 1: Read all butterfly elements from shared */
+    for (int b = 0; b < bpt; b++) {
+      int rb = b * stage_regs;
+      sb_printf(&sb, "    {\n");
+      if (bpt == 1)
+        sb_printf(&sb, "      let bf: u32 = fft_t;\n");
+      else
+        sb_printf(&sb, "      let bf: u32 = fft_t * %uu + %uu;\n", bpt, b);
+
+      int needs_guard = (bpt * wpf > n_bf);
+      if (needs_guard)
+        sb_printf(&sb, "      if (bf < %uu) {\n", n_bf);
+      const char *g = needs_guard ? "  " : "";
+
+      if (shr_stride == half_n) {
+        if (stride == 1) {
+          for (int k = 0; k < R; k++)
+            sb_printf(&sb, "      %sv%d = vec2<f32>("
+                      "s_re[shr_off + bf + %uu], s_im[shr_off + bf + %uu]);\n",
+                      g, rb+k, k*read_stride, k*read_stride);
+        } else {
+          sb_printf(&sb, "      %slet grp: u32 = bf / %uu;\n", g, stride);
+          sb_printf(&sb, "      %slet pos: u32 = bf %% %uu;\n", g, stride);
+          for (int k = 0; k < R; k++)
+            sb_printf(&sb, "      %sv%d = vec2<f32>("
+                      "s_re[shr_off + grp * %uu + pos + %uu], "
+                      "s_im[shr_off + grp * %uu + pos + %uu]);\n",
+                      g, rb+k, stride, k*read_stride, stride, k*read_stride);
+        }
+      } else {
+        if (stride == 1) {
+          for (int k = 0; k < R; k++) {
+            sb_printf(&sb, "      %s{ let li: u32 = bf + %uu; "
+                      "let pi: u32 = li + li / 16u;\n", g, k*read_stride);
+            sb_printf(&sb, "      %s  v%d = vec2<f32>("
+                      "s_re[shr_off + pi], s_im[shr_off + pi]); }\n",
+                      g, rb+k);
+          }
+        } else {
+          sb_printf(&sb, "      %slet grp: u32 = bf / %uu;\n", g, stride);
+          sb_printf(&sb, "      %slet pos: u32 = bf %% %uu;\n", g, stride);
+          for (int k = 0; k < R; k++) {
+            sb_printf(&sb, "      %s{ let li: u32 = grp * %uu + pos + %uu; "
+                      "let pi: u32 = li + li / 16u;\n", g, stride, k*read_stride);
+            sb_printf(&sb, "      %s  v%d = vec2<f32>("
+                      "s_re[shr_off + pi], s_im[shr_off + pi]); }\n",
+                      g, rb+k);
+          }
+        }
+      }
+      if (needs_guard) sb_printf(&sb, "      }\n");
+      sb_printf(&sb, "    }\n");
+    }
+
+    sb_printf(&sb, "    workgroupBarrier();\n");
+
+    /* Phase 2: Twiddle + butterfly + write */
+    for (int b = 0; b < bpt; b++) {
+      int rb = b * stage_regs;
+      sb_printf(&sb, "    {\n");
+      if (bpt == 1)
+        sb_printf(&sb, "      let bf: u32 = fft_t;\n");
+      else
+        sb_printf(&sb, "      let bf: u32 = fft_t * %uu + %uu;\n", bpt, b);
+
+      int needs_guard = (bpt * wpf > n_bf);
+      if (needs_guard)
+        sb_printf(&sb, "      if (bf < %uu) {\n", n_bf);
+      const char *ind = needs_guard ? "        " : "      ";
+
+      if (stride > 1) {
+        sb_printf(&sb, "%slet grp: u32 = bf / %uu;\n", ind, stride);
+        sb_printf(&sb, "%slet pos: u32 = bf %% %uu;\n", ind, stride);
+      }
+
+      /* Twiddles via LUT */
+      if (stride > 1 && has_lut) {
+        for (int k = 1; k < R; k++) {
+          int lut_base = lut_offsets[stage] + (k-1) * stride;
+          sb_printf(&sb, "%s{ let tw: vec2<f32> = vec2<f32>("
+                    "lut.d[%uu + pos * 2u], lut.d[%uu + pos * 2u + 1u]);\n",
+                    ind, lut_base*2, lut_base*2);
+          int ri = rb + k;
+          sb_printf(&sb, "%s  v%d = vec2<f32>("
+                    "v%d.x*tw.x - v%d.y*tw.y, "
+                    "v%d.x*tw.y + v%d.y*tw.x); }\n",
+                    ind, ri, ri, ri, ri, ri);
+        }
+      } else if (stride > 1) {
+        for (int k = 1; k < R; k++) {
+          double tw_angle = (double)direction * -2.0 * M_PI * k / (double)(stride * R);
+          sb_printf(&sb, "%s{ let tw_a: f32 = ", ind);
+          sb_float(&sb, tw_angle);
+          sb_printf(&sb, " * f32(pos);\n");
+          sb_printf(&sb, "%s  let tw: vec2<f32> = vec2<f32>(cos(tw_a), sin(tw_a));\n", ind);
+          int ri = rb + k;
+          sb_printf(&sb, "%s  v%d = vec2<f32>("
+                    "v%d.x*tw.x - v%d.y*tw.y, "
+                    "v%d.x*tw.y + v%d.y*tw.x); }\n",
+                    ind, ri, ri, ri, ri, ri);
+        }
+      }
+
+      /* Butterfly */
+      emit_radix_butterfly(&sb, R, direction, "v", rb,
+                           stage*100+b, rader_offsets[stage]);
+
+      /* Stockham write */
+      if (shr_stride == half_n) {
+        if (stride == 1) {
+          for (int k = 0; k < R; k++) {
+            sb_printf(&sb, "%ss_re[shr_off + bf * %uu + %uu] = v%d.x;\n",
+                      ind, R, k, rb+k);
+            sb_printf(&sb, "%ss_im[shr_off + bf * %uu + %uu] = v%d.y;\n",
+                      ind, R, k, rb+k);
+          }
+        } else {
+          for (int k = 0; k < R; k++) {
+            sb_printf(&sb, "%ss_re[shr_off + grp * %uu + pos + %uu] = v%d.x;\n",
+                      ind, stride*R, k*stride, rb+k);
+            sb_printf(&sb, "%ss_im[shr_off + grp * %uu + pos + %uu] = v%d.y;\n",
+                      ind, stride*R, k*stride, rb+k);
+          }
+        }
+      } else {
+        if (stride == 1) {
+          for (int k = 0; k < R; k++) {
+            sb_printf(&sb, "%s{ let li: u32 = bf * %uu + %uu; "
+                      "let pi: u32 = li + li / 16u;\n", ind, R, k);
+            sb_printf(&sb, "%s  s_re[shr_off + pi] = v%d.x; "
+                      "s_im[shr_off + pi] = v%d.y; }\n", ind, rb+k, rb+k);
+          }
+        } else {
+          for (int k = 0; k < R; k++) {
+            sb_printf(&sb, "%s{ let li: u32 = grp * %uu + pos + %uu; "
+                      "let pi: u32 = li + li / 16u;\n", ind, stride*R, k*stride);
+            sb_printf(&sb, "%s  s_re[shr_off + pi] = v%d.x; "
+                      "s_im[shr_off + pi] = v%d.y; }\n", ind, rb+k, rb+k);
+          }
+        }
+      }
+
+      if (needs_guard) sb_printf(&sb, "      }\n");
+      sb_printf(&sb, "    }\n");
+    }
+
+    sb_printf(&sb, "    workgroupBarrier();\n");
+    sb_printf(&sb, "  }\n");
+    stride *= R;
+  }
+
+  /* ---- R2C post-process store ---- */
+  /* After the final FFT barrier, shared memory holds Z[0..half_n-1].
+   * We write half_n+1 output elements with the R2C formula applied inline. */
+  int padded_n = half_n + 1;
+  (void)padded_n;
+
+  sb_printf(&sb, "\n  // R2C post-process store: %d elements -> %d outputs\n",
+            half_n, half_n + 1);
+
+  /* The R2C angle constant: -PI / half_n  (i.e., -2*PI / (2*half_n)) */
+  double pi_over_n = M_PI / (double)half_n;
+
+  for (int e = 0; e < epr; e++) {
+    sb_printf(&sb, "  {\n");
+    sb_printf(&sb, "    let k: u32 = fft_t + %uu;\n", e * wpf);
+
+    /* DC and Nyquist (k == 0) */
+    sb_printf(&sb, "    if (k == 0u) {\n");
+    if (shr_stride == half_n) {
+      sb_printf(&sb, "      let z0r: f32 = s_re[shr_off];\n");
+      sb_printf(&sb, "      let z0i: f32 = s_im[shr_off];\n");
+    } else {
+      sb_printf(&sb, "      let z0r: f32 = s_re[shr_off];\n");
+      sb_printf(&sb, "      let z0i: f32 = s_im[shr_off];\n");
+    }
+    /* DC: X[0] = (z0r + z0i, 0) */
+    sb_printf(&sb, "      dst.d[(base_out) * 2u] = z0r + z0i;\n");
+    sb_printf(&sb, "      dst.d[(base_out) * 2u + 1u] = 0.0;\n");
+    /* Nyquist: X[half_n] = (z0r - z0i, 0) */
+    sb_printf(&sb, "      dst.d[(base_out + %uu * %uu) * 2u] = z0r - z0i;\n",
+              half_n, out_es);
+    sb_printf(&sb, "      dst.d[(base_out + %uu * %uu) * 2u + 1u] = 0.0;\n",
+              half_n, out_es);
+
+    /* General bins 0 < k < half_n */
+    sb_printf(&sb, "    } else {\n");
+    sb_printf(&sb, "      let nk: u32 = %uu - k;\n", half_n);
+
+    /* Read Z[k] and Z[half_n - k] from shared memory */
+    if (shr_stride == half_n) {
+      sb_printf(&sb, "      let zk_re: f32 = s_re[shr_off + k];\n");
+      sb_printf(&sb, "      let zk_im: f32 = s_im[shr_off + k];\n");
+      sb_printf(&sb, "      let znk_re: f32 = s_re[shr_off + nk];\n");
+      sb_printf(&sb, "      let znk_im: f32 = -s_im[shr_off + nk];\n");
+    } else {
+      sb_printf(&sb, "      let pk: u32 = k + k / 16u;\n");
+      sb_printf(&sb, "      let pnk: u32 = nk + nk / 16u;\n");
+      sb_printf(&sb, "      let zk_re: f32 = s_re[shr_off + pk];\n");
+      sb_printf(&sb, "      let zk_im: f32 = s_im[shr_off + pk];\n");
+      sb_printf(&sb, "      let znk_re: f32 = s_re[shr_off + pnk];\n");
+      sb_printf(&sb, "      let znk_im: f32 = -s_im[shr_off + pnk];\n");
+    }
+
+    /* E = 0.5 * (Z[k] + conj(Z[half_n-k])) */
+    sb_printf(&sb, "      let er: f32 = 0.5 * (zk_re + znk_re);\n");
+    sb_printf(&sb, "      let ei: f32 = 0.5 * (zk_im + znk_im);\n");
+    /* D = 0.5 * (Z[k] - conj(Z[half_n-k])) */
+    sb_printf(&sb, "      let dr: f32 = 0.5 * (zk_re - znk_re);\n");
+    sb_printf(&sb, "      let di: f32 = 0.5 * (zk_im - znk_im);\n");
+    /* W^k = exp(-2*pi*i*k / (2*half_n)) = exp(-pi*i*k / half_n) */
+    sb_printf(&sb, "      let angle: f32 = ");
+    sb_float(&sb, -pi_over_n);
+    sb_printf(&sb, " * f32(k);\n");
+    sb_printf(&sb, "      let wr: f32 = cos(angle);\n");
+    sb_printf(&sb, "      let wi: f32 = sin(angle);\n");
+    /* T = W * (-j * D) = (wr*di + wi*dr, -(wr*dr - wi*di)) */
+    sb_printf(&sb, "      let t_re: f32 = wr * di + wi * dr;\n");
+    sb_printf(&sb, "      let t_im: f32 = -(wr * dr - wi * di);\n");
+    /* X[k] = E + T */
+    sb_printf(&sb, "      dst.d[(base_out + k * %uu) * 2u] = er + t_re;\n", out_es);
+    sb_printf(&sb, "      dst.d[(base_out + k * %uu) * 2u + 1u] = ei + t_im;\n", out_es);
+
+    sb_printf(&sb, "    }\n");
+    sb_printf(&sb, "  }\n");
+  }
+
+  sb_printf(&sb, "}\n");
+  return sb_finish(&sb);
+}

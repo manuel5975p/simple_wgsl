@@ -93,6 +93,24 @@ char *gen_fft_fused_strided(int n, int direction, int max_radix, int wg_limit,
                              int in_bs, int in_es, int out_bs, int out_es,
                              int tw_n);
 
+/*
+ * Fused R2C strided: half_n-point forward C2C + inline R2C post-process
+ * with strided output.  Always uses shared-memory path.
+ * Writes half_n+1 output elements per FFT (DC through Nyquist).
+ * Direction is always forward (hardcoded).
+ */
+char *gen_fft_fused_r2c_strided(int half_n, int max_radix, int wg_limit,
+                                 int total_batch,
+                                 int in_bs, int in_es,
+                                 int out_bs, int out_es);
+int fft_fused_r2c_batch_per_wg(int half_n, int max_radix, int wg_limit);
+int fft_fused_r2c_workgroup_size(int half_n, int max_radix, int wg_limit);
+
+/* LUT for R2C fused shader (uses the R2C-specific radix cap, NOT the
+ * default auto-cap which may select the direct register path). */
+int fft_fused_r2c_lut_size(int half_n, int max_radix);
+float *fft_fused_r2c_compute_lut(int half_n, int max_radix);
+
 #ifdef __cplusplus
 }
 #endif

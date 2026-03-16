@@ -48,6 +48,10 @@ typedef struct { float x, y; } cufftComplex;
 cufftResult cufftPlan1d(cufftHandle *plan, int nx, cufftType type, int batch);
 cufftResult cufftPlan2d(cufftHandle *plan, int nx, int ny, cufftType type);
 cufftResult cufftPlan3d(cufftHandle *plan, int nx, int ny, int nz, cufftType type);
+cufftResult cufftPlanMany(cufftHandle *plan, int rank, int *n,
+                           int *inembed, int istride, int idist,
+                           int *onembed, int ostride, int odist,
+                           cufftType type, int batch);
 
 cufftResult cufftExecC2C(cufftHandle plan, cufftComplex *idata,
                           cufftComplex *odata, int direction);

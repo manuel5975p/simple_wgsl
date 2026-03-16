@@ -60,8 +60,11 @@ protected:
             skip_ = true;
             return;
         }
+        int dev_id = 0;
+        const char *env = getenv("CUVK_DEVICE");
+        if (env) dev_id = atoi(env);
         CUdevice dev;
-        cuDeviceGet(&dev, 0);
+        cuDeviceGet(&dev, dev_id);
         cuCtxCreate(&ctx_, NULL, 0, dev);
     }
 
@@ -638,6 +641,248 @@ INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DImpulseTest,
         std::make_pair(128, 256),
         /* Four-step on innermost axis */
         std::make_pair(4, 8192)
+    ));
+
+/* ========================================================================== */
+/* 2D R2C                                                                      */
+/* ========================================================================== */
+
+class Cufft2DR2CTest : public CufftTest,
+    public ::testing::WithParamInterface<std::pair<int,int>> {};
+
+TEST_P(Cufft2DR2CTest, MatchesFftw) {
+    auto [nx, ny] = GetParam();
+    int total_r = nx * ny;
+    int padded_y = ny / 2 + 1;
+    int total_c = nx * padded_y;
+
+    std::vector<float> h_in(total_r);
+    fill_random(h_in.data(), total_r, 7000 + nx * 100 + ny);
+
+    /* FFTW 2D R2C reference */
+    std::vector<float> ref_out(total_c * 2);
+    {
+        float *in = (float *)fftwf_malloc(sizeof(float) * total_r);
+        memcpy(in, h_in.data(), sizeof(float) * total_r);
+        fftwf_complex *out = (fftwf_complex *)ref_out.data();
+        fftwf_plan p = fftwf_plan_dft_r2c_2d(nx, ny, in, out, FFTW_ESTIMATE);
+        fftwf_execute(p);
+        fftwf_destroy_plan(p);
+        fftwf_free(in);
+    }
+
+    CUdeviceptr d_in = gpu_upload(h_in.data(), h_in.size() * sizeof(float));
+    CUdeviceptr d_out = gpu_alloc(total_c * 2 * sizeof(float));
+    cufftHandle plan;
+    ASSERT_EQ(cufftPlan2d(&plan, nx, ny, CUFFT_R2C), CUFFT_SUCCESS);
+    ASSERT_EQ(cufftExecR2C(plan, (cufftReal *)d_in, (cufftComplex *)d_out),
+              CUFFT_SUCCESS);
+
+    std::vector<float> h_out(total_c * 2);
+    gpu_download(d_out, h_out.data(), h_out.size() * sizeof(float));
+    cufftDestroy(plan);
+
+    float err = max_abs_error(h_out.data(), ref_out.data(), total_c * 2);
+    float tol = 1e-2f * sqrtf((float)total_r);
+    EXPECT_LT(err, tol) << nx << "x" << ny << " max_err=" << err;
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DR2CTest,
+    ::testing::Values(
+        std::make_pair(4, 4),
+        std::make_pair(8, 8),
+        std::make_pair(16, 16),
+        std::make_pair(32, 32),
+        std::make_pair(64, 64),
+        std::make_pair(128, 128),
+        std::make_pair(8, 16),
+        std::make_pair(16, 8),
+        std::make_pair(64, 128),
+        std::make_pair(128, 64),
+        std::make_pair(256, 128),
+        std::make_pair(128, 256),
+        std::make_pair(512, 128),
+        std::make_pair(128, 512)
+    ));
+
+/* ========================================================================== */
+/* 2D R2C→C2R roundtrip                                                        */
+/* ========================================================================== */
+
+class Cufft2DR2CC2RRoundtripTest : public CufftTest,
+    public ::testing::WithParamInterface<std::pair<int,int>> {};
+
+TEST_P(Cufft2DR2CC2RRoundtripTest, RoundtripGivesNxNy) {
+    auto [nx, ny] = GetParam();
+    int total_r = nx * ny;
+    int padded_y = ny / 2 + 1;
+    int total_c = nx * padded_y;
+
+    std::vector<float> h_in(total_r);
+    fill_random(h_in.data(), total_r, 8000 + nx * 100 + ny);
+
+    CUdeviceptr d_real = gpu_upload(h_in.data(), h_in.size() * sizeof(float));
+    CUdeviceptr d_complex = gpu_alloc(total_c * 2 * sizeof(float));
+    CUdeviceptr d_out = gpu_alloc(total_r * sizeof(float));
+
+    cufftHandle plan_r2c, plan_c2r;
+    ASSERT_EQ(cufftPlan2d(&plan_r2c, nx, ny, CUFFT_R2C), CUFFT_SUCCESS);
+    ASSERT_EQ(cufftPlan2d(&plan_c2r, nx, ny, CUFFT_C2R), CUFFT_SUCCESS);
+
+    ASSERT_EQ(cufftExecR2C(plan_r2c, (cufftReal *)d_real,
+                            (cufftComplex *)d_complex), CUFFT_SUCCESS);
+    ASSERT_EQ(cufftExecC2R(plan_c2r, (cufftComplex *)d_complex,
+                            (cufftReal *)d_out), CUFFT_SUCCESS);
+
+    cufftDestroy(plan_r2c);
+    cufftDestroy(plan_c2r);
+
+    std::vector<float> h_out(total_r);
+    gpu_download(d_out, h_out.data(), h_out.size() * sizeof(float));
+
+    float max_err = 0.0f;
+    float scale = 1.0f / (float)total_r;
+    for (int i = 0; i < total_r; i++) {
+        float e = fabsf(h_out[i] * scale - h_in[i]);
+        if (e > max_err) max_err = e;
+    }
+    EXPECT_LT(max_err, 1e-4f) << nx << "x" << ny << " max_err=" << max_err;
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, Cufft2DR2CC2RRoundtripTest,
+    ::testing::Values(
+        std::make_pair(4, 4),
+        std::make_pair(8, 8),
+        std::make_pair(16, 16),
+        std::make_pair(32, 32),
+        std::make_pair(64, 64),
+        std::make_pair(128, 128),
+        std::make_pair(64, 128),
+        std::make_pair(128, 64),
+        std::make_pair(256, 128),
+        std::make_pair(512, 128)
+    ));
+
+/* ========================================================================== */
+/* Batched 2D R2C via cufftPlanMany                                            */
+/* ========================================================================== */
+
+struct BatchR2CParams { int nx, ny, batch; };
+
+class CufftPlanMany2DR2CTest : public CufftTest,
+    public ::testing::WithParamInterface<BatchR2CParams> {};
+
+TEST_P(CufftPlanMany2DR2CTest, MatchesFftw) {
+    auto [nx, ny, batch] = GetParam();
+    int total_r = nx * ny;
+    int padded_y = ny / 2 + 1;
+    int total_c = nx * padded_y;
+
+    std::vector<float> h_in(total_r * batch);
+    fill_random(h_in.data(), total_r * batch, 9000 + nx * 100 + ny * 10 + batch);
+
+    /* FFTW reference: batch independent 2D R2C transforms */
+    std::vector<float> ref_out(total_c * 2 * batch);
+    for (int b = 0; b < batch; b++) {
+        float *in = (float *)fftwf_malloc(sizeof(float) * total_r);
+        memcpy(in, h_in.data() + b * total_r, sizeof(float) * total_r);
+        fftwf_complex *out = (fftwf_complex *)(ref_out.data() + b * total_c * 2);
+        fftwf_plan p = fftwf_plan_dft_r2c_2d(nx, ny, in, out, FFTW_ESTIMATE);
+        fftwf_execute(p);
+        fftwf_destroy_plan(p);
+        fftwf_free(in);
+    }
+
+    CUdeviceptr d_in = gpu_upload(h_in.data(), h_in.size() * sizeof(float));
+    CUdeviceptr d_out = gpu_alloc(total_c * 2 * batch * sizeof(float));
+
+    cufftHandle plan;
+    int dims[2] = {nx, ny};
+    ASSERT_EQ(cufftPlanMany(&plan, 2, dims,
+                             NULL, 1, total_r,
+                             NULL, 1, total_c,
+                             CUFFT_R2C, batch), CUFFT_SUCCESS);
+    ASSERT_EQ(cufftExecR2C(plan, (cufftReal *)d_in, (cufftComplex *)d_out),
+              CUFFT_SUCCESS);
+
+    std::vector<float> h_out(total_c * 2 * batch);
+    gpu_download(d_out, h_out.data(), h_out.size() * sizeof(float));
+    cufftDestroy(plan);
+
+    float err = max_abs_error(h_out.data(), ref_out.data(), total_c * 2 * batch);
+    float tol = 1e-2f * sqrtf((float)total_r);
+    EXPECT_LT(err, tol) << nx << "x" << ny << " batch=" << batch
+                         << " max_err=" << err;
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, CufftPlanMany2DR2CTest,
+    ::testing::Values(
+        BatchR2CParams{4, 4, 2},
+        BatchR2CParams{8, 8, 3},
+        BatchR2CParams{16, 16, 4},
+        BatchR2CParams{32, 32, 2},
+        BatchR2CParams{64, 64, 2},
+        BatchR2CParams{64, 128, 2},
+        BatchR2CParams{128, 64, 3},
+        BatchR2CParams{128, 128, 2},
+        BatchR2CParams{512, 128, 2}
+    ));
+
+/* ========================================================================== */
+/* Batched 2D C2C via cufftPlanMany                                            */
+/* ========================================================================== */
+
+class CufftPlanMany2DC2CTest : public CufftTest,
+    public ::testing::WithParamInterface<BatchR2CParams> {};
+
+TEST_P(CufftPlanMany2DC2CTest, MatchesFftw) {
+    auto [nx, ny, batch] = GetParam();
+    int total = nx * ny;
+
+    std::vector<float> h_in(total * 2 * batch);
+    fill_random(h_in.data(), total * 2 * batch, 9500 + nx * 100 + ny * 10 + batch);
+
+    /* FFTW reference */
+    std::vector<float> ref_out(total * 2 * batch);
+    for (int b = 0; b < batch; b++) {
+        fftwf_complex *in  = (fftwf_complex *)(h_in.data() + b * total * 2);
+        fftwf_complex *out = (fftwf_complex *)(ref_out.data() + b * total * 2);
+        fftwf_plan p = fftwf_plan_dft_2d(nx, ny, in, out,
+                                          FFTW_FORWARD, FFTW_ESTIMATE);
+        fftwf_execute(p);
+        fftwf_destroy_plan(p);
+    }
+
+    CUdeviceptr d_data = gpu_upload(h_in.data(), h_in.size() * sizeof(float));
+
+    cufftHandle plan;
+    int dims[2] = {nx, ny};
+    ASSERT_EQ(cufftPlanMany(&plan, 2, dims,
+                             NULL, 1, total,
+                             NULL, 1, total,
+                             CUFFT_C2C, batch), CUFFT_SUCCESS);
+    ASSERT_EQ(cufftExecC2C(plan, (cufftComplex *)d_data,
+                            (cufftComplex *)d_data, CUFFT_FORWARD),
+              CUFFT_SUCCESS);
+
+    std::vector<float> h_out(total * 2 * batch);
+    gpu_download(d_data, h_out.data(), h_out.size() * sizeof(float));
+    cufftDestroy(plan);
+
+    float err = max_abs_error(h_out.data(), ref_out.data(), total * 2 * batch);
+    float tol = 1e-2f * sqrtf((float)total);
+    EXPECT_LT(err, tol) << nx << "x" << ny << " batch=" << batch
+                         << " max_err=" << err;
+}
+
+INSTANTIATE_TEST_SUITE_P(Sizes, CufftPlanMany2DC2CTest,
+    ::testing::Values(
+        BatchR2CParams{4, 4, 2},
+        BatchR2CParams{8, 8, 3},
+        BatchR2CParams{16, 16, 4},
+        BatchR2CParams{32, 32, 2},
+        BatchR2CParams{64, 64, 2},
+        BatchR2CParams{128, 128, 2}
     ));
 
 /* ========================================================================== */

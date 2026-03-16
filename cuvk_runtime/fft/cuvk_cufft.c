@@ -163,6 +163,10 @@ typedef struct {
     VkDeviceMemory        ctl_mem;
     void                 *ctl_mapped;         /* persistently mapped */
     VkDeviceAddress       ctl_bda;
+
+    /* Fused 2-dispatch R2C (forward only) */
+    int              r2c_fused;
+    FftAxis          r2c_fused_axis;
 } CufftPlan;
 
 static CufftPlan g_cufft_plans[MAX_CUFFT_PLANS];
@@ -1682,12 +1686,16 @@ static cufftResult record_r2c_cb(CufftPlan *p, VkCommandBuffer cb,
         pc[0] = read_bdas[s];
         pc[1] = write_bdas[s];
         pc[2] = 0;
+        VkDeviceAddress slut = axis->stage_info[s].lut_bda[0];
+        pc[2] = slut;
+        int npc = slut ? 3 : 2;
         g_cuvk.vk.vkCmdPushConstants(cb, p->pipe_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
-        g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s],
-                      (uint32_t)axis->batch_count,
-                      axis->batch_count2 > 0 ?
-                          (uint32_t)axis->batch_count2 : 1);
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)(npc * 8), pc);
+        uint32_t dy = axis->stage_info[s].dispatch_y;
+        if (dy == 0) dy = (uint32_t)axis->batch_count;
+        uint32_t dz = axis->batch_count2 > 0 ?
+                          (uint32_t)axis->batch_count2 : 1;
+        g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s], dy, dz);
     }
 
     /* Post-process stage */
@@ -1795,13 +1803,16 @@ static cufftResult record_c2r_cb(CufftPlan *p, VkCommandBuffer cb,
         uint64_t pc[3];
         pc[0] = read_bdas[1 + s];
         pc[1] = write_bdas[1 + s];
-        pc[2] = 0;
+        VkDeviceAddress slut = axis->stage_info[s].lut_bda[1];
+        pc[2] = slut;
+        int npc = slut ? 3 : 2;
         g_cuvk.vk.vkCmdPushConstants(cb, p->pipe_layout,
-            VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, pc);
-        g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s],
-                      (uint32_t)axis->batch_count,
-                      axis->batch_count2 > 0 ?
-                          (uint32_t)axis->batch_count2 : 1);
+            VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)(npc * 8), pc);
+        uint32_t dy = axis->stage_info[s].dispatch_y;
+        if (dy == 0) dy = (uint32_t)axis->batch_count;
+        uint32_t dz = axis->batch_count2 > 0 ?
+                          (uint32_t)axis->batch_count2 : 1;
+        g_cuvk.vk.vkCmdDispatch(cb, axis->dispatch_x[s], dy, dz);
     }
 
     /* If last C2C stage landed in scratch, copy to dst */
@@ -1837,7 +1848,8 @@ cufftResult cufftExecR2C(cufftHandle plan_handle,
     if (plan_handle < 0 || plan_handle >= MAX_CUFFT_PLANS)
         return CUFFT_INVALID_PLAN;
     CufftPlan *p = &g_cufft_plans[plan_handle];
-    if (!p->valid || !p->r2c_post_pipeline) return CUFFT_INVALID_PLAN;
+    if (!p->valid || (!p->r2c_post_pipeline && !p->r2c_fused))
+        return CUFFT_INVALID_PLAN;
 
     struct CUctx_st *ctx = g_cuvk.current_ctx;
     if (!ctx) ctx = p->ctx;
@@ -1859,6 +1871,63 @@ cufftResult cufftExecR2C(cufftHandle plan_handle,
     g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
     g_cuvk.vk.vkResetCommandBuffer(p->cb_fwd, 0);
     p->cb_fwd_valid = 0;
+
+    /* Fused 2-dispatch R2C path */
+    if (p->r2c_fused) {
+        FftAxis *faxis = &p->r2c_fused_axis;
+        int ns = faxis->n_stages;
+
+        VkDeviceAddress rd[MAX_FFT_STAGES], wr[MAX_FFT_STAGES];
+        wr[ns - 1] = dst_bda;
+        for (int i = ns - 2; i >= 0; i--)
+            wr[i] = (wr[i + 1] == dst_bda) ? p->scratch_bda : dst_bda;
+        rd[0] = src_bda;
+        for (int i = 1; i < ns; i++) rd[i] = wr[i - 1];
+
+        VkCommandBufferBeginInfo begin = {0};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        VkResult vr = g_cuvk.vk.vkBeginCommandBuffer(p->cb_fwd, &begin);
+        if (vr != VK_SUCCESS) return CUFFT_INTERNAL_ERROR;
+
+        for (int s = 0; s < ns; s++) {
+            if (s > 0) emit_barrier(p->cb_fwd);
+            g_cuvk.vk.vkCmdBindPipeline(p->cb_fwd,
+                VK_PIPELINE_BIND_POINT_COMPUTE, faxis->pipelines[0][s]);
+            uint64_t pc[3];
+            pc[0] = rd[s]; pc[1] = wr[s];
+            VkDeviceAddress slut = faxis->stage_info[s].lut_bda[0];
+            pc[2] = slut;
+            int npc = slut ? 3 : 2;
+            g_cuvk.vk.vkCmdPushConstants(p->cb_fwd, p->pipe_layout,
+                VK_SHADER_STAGE_COMPUTE_BIT, 0, (uint32_t)(npc * 8), pc);
+            uint32_t dy = faxis->stage_info[s].dispatch_y;
+            if (dy == 0) dy = 1;
+            g_cuvk.vk.vkCmdDispatch(p->cb_fwd, faxis->dispatch_x[s], dy, 1);
+        }
+
+        vr = g_cuvk.vk.vkEndCommandBuffer(p->cb_fwd);
+        if (vr != VK_SUCCESS) {
+            CUVK_LOG("[cufft] fused R2C: vkEndCommandBuffer failed: %d\n", vr);
+            return CUFFT_INTERNAL_ERROR;
+        }
+
+        g_cuvk.vk.vkResetFences(ctx->device, 1, &p->fence);
+        VkSubmitInfo submit = {0};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &p->cb_fwd;
+        vr = g_cuvk.vk.vkQueueSubmit(ctx->compute_queue, 1, &submit, p->fence);
+        if (vr != VK_SUCCESS) {
+            CUVK_LOG("[cufft] fused R2C: vkQueueSubmit failed: %d\n", vr);
+            return CUFFT_EXEC_FAILED;
+        }
+        vr = g_cuvk.vk.vkWaitForFences(ctx->device, 1, &p->fence, VK_TRUE, UINT64_MAX);
+        if (vr != VK_SUCCESS) {
+            CUVK_LOG("[cufft] fused R2C: vkWaitForFences failed: %d\n", vr);
+            return CUFFT_EXEC_FAILED;
+        }
+        return CUFFT_SUCCESS;
+    }
 
     /* Phase 1: R2C on axis 0 (C2C stages + post-process) -> dst_buf */
     cufftResult cr = record_r2c_cb(p, p->cb_fwd, src_buf, dst_buf,
@@ -1957,6 +2026,10 @@ cufftResult cufftDestroy(cufftHandle plan_handle)
         g_cuvk.vk.vkDestroyPipeline(ctx->device, p->c2r_pre_pipeline, NULL);
     if (p->c2r_pre_shader)
         g_cuvk.vk.vkDestroyShaderModule(ctx->device, p->c2r_pre_shader, NULL);
+
+    /* Destroy fused R2C axis resources */
+    if (p->r2c_fused)
+        destroy_axis_resources(ctx, &p->r2c_fused_axis);
 
     /* Destroy looped pipeline resources */
     if (p->has_loop_pipeline) {
@@ -2351,6 +2424,128 @@ static cufftResult build_2d_strided(struct CUctx_st *ctx, FftAxis *axis,
     return CUFFT_SUCCESS;
 }
 
+/*
+ * Build a 2-stage fused R2C strided axis for 2D R2C FFT (forward only).
+ * Stage 0: half_y C2C + inline R2C post-process, transposed write to [padded_y][nx]
+ * Stage 1: nx-point C2C on contiguous rows, transposed write to [nx][padded_y]
+ */
+static cufftResult build_2d_r2c_strided(struct CUctx_st *ctx, FftAxis *axis,
+                                         int nx, int ny,
+                                         VkPipelineLayout pipe_layout)
+{
+    if (ny < 2 || ny % 2 != 0) return CUFFT_INTERNAL_ERROR;
+    int half_y = ny / 2;
+    int padded_y = half_y + 1;
+
+    memset(axis, 0, sizeof(*axis));
+    axis->n = nx * padded_y;
+    axis->element_stride = 1;
+    axis->batch_stride = nx * padded_y;
+    axis->batch_count = 1;
+    axis->n_stages = 2;
+
+    cufftResult cr;
+
+    /* Stage 0: Row R2C — half_y-point fused C2C + R2C post-process
+     * Read row-major: in_bs=half_y, in_es=1
+     * Write col-major (transposed): out_bs=1, out_es=nx */
+    {
+        /* Compute batch-per-wg using R2C sizing, ensuring it divides nx */
+        int max_bpw = fft_fused_r2c_batch_per_wg(half_y, 0, 0);
+        if (max_bpw <= 0) return CUFFT_INTERNAL_ERROR;
+        int bpw = max_bpw;
+        while (bpw > 1 && nx % bpw != 0) bpw--;
+        int wg_size = fft_fused_r2c_workgroup_size(half_y, 0, 0);
+        if (wg_size <= 0) return CUFFT_INTERNAL_ERROR;
+        int wpf = wg_size / max_bpw;
+        int wg_limit = bpw * wpf;
+
+        axis->stage_info[0].type = FFT_STAGE_FUSED;
+        axis->stage_info[0].dispatch_y = 1;
+        axis->dispatch_x[0] = (uint32_t)(nx / bpw);
+
+        /* total_batch=0: B divides nx exactly, no bounds guard needed
+         * (avoids barrier divergence from early-return threads) */
+        char *wgsl = gen_fft_fused_r2c_strided(half_y, 0, wg_limit,
+                                                0, half_y, 1, 1, nx);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[0][0], &axis->pipelines[0][0]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+
+        int lut_count = fft_fused_r2c_lut_size(half_y, 0);
+        if (lut_count > 0) {
+            float *lut_data = fft_fused_r2c_compute_lut(half_y, 0);
+            if (!lut_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                    &axis->stage_info[0].lut_buf[0],
+                                    &axis->stage_info[0].lut_mem[0]);
+            free(lut_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[0].lut_buf[0]; axis->stage_info[0].lut_bda[0]=ctx->pfn_get_bda(ctx->device,&ai); }
+        }
+    }
+
+    /* Stage 1: Column C2C — nx-point forward FFT on transposed data.
+     * Read from [padded_y][nx]: in_bs=nx, in_es=1
+     * Write to [nx][padded_y]: out_bs=1, out_es=padded_y
+     * Cap max_radix to force shared-memory path for small nx. */
+    {
+        int mr1 = 0;
+        if (nx <= DIRECT_MAX_N) {
+            mr1 = nx / 2;
+            if (mr1 > 16) mr1 = 16;
+            if (mr1 < 2) mr1 = 2;
+        }
+
+        int wpf1 = fft_fused_workgroup_size_ex(nx, mr1, 1);
+        if (wpf1 <= 0) return CUFFT_INTERNAL_ERROR;
+        int max_bpw1 = fft_fused_batch_per_wg_ex(nx, mr1, 256);
+        int best_b1 = 1;
+        for (int b = max_bpw1; b >= 1; b--)
+            if (padded_y % b == 0) { best_b1 = b; break; }
+        int wg_limit = best_b1 * wpf1;
+        if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
+        int bpw = fft_fused_batch_per_wg_ex(nx, mr1, wg_limit);
+        if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
+
+        axis->stage_info[1].type = FFT_STAGE_FUSED;
+        axis->stage_info[1].dispatch_y = 1;
+        axis->dispatch_x[1] = (uint32_t)(padded_y / bpw);
+
+        char *wgsl = gen_fft_fused_strided(nx, 1, mr1, wg_limit,
+                                            padded_y, nx, 1, 1, padded_y, 0);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                                    &axis->shaders[0][1], &axis->pipelines[0][1]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+
+        int lut_count = fft_fused_lut_size_ex(nx, 1, mr1);
+        if (lut_count > 0) {
+            float *lut_data = fft_fused_compute_lut_ex(nx, 1, mr1);
+            if (!lut_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                                    &axis->stage_info[1].lut_buf[0],
+                                    &axis->stage_info[1].lut_mem[0]);
+            free(lut_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            { VkBufferDeviceAddressInfo ai={0}; ai.sType=VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO; ai.buffer=axis->stage_info[1].lut_buf[0]; axis->stage_info[1].lut_bda[0]=ctx->pfn_get_bda(ctx->device,&ai); }
+        }
+    }
+
+    return CUFFT_SUCCESS;
+}
+
 /* ============================================================================
  * Axis resource cleanup (for discarding losing benchmark candidate)
  * ============================================================================ */
@@ -2385,6 +2580,187 @@ static void destroy_axis_resources(struct CUctx_st *ctx, FftAxis *axis)
             }
         }
     }
+}
+
+/*
+ * Build a 1-stage axis for column FFTs using strided fused dispatch.
+ * Single dispatch reads/writes with stride=cols (non-coalesced but
+ * avoids transpose overhead — wins when barrier cost dominates).
+ */
+static cufftResult build_col_fft_strided_fused(struct CUctx_st *ctx, FftAxis *axis,
+                                                int rows, int cols,
+                                                VkPipelineLayout pipe_layout)
+{
+    /* The direct register path (small N) ignores stride parameters —
+     * only the shared-memory path handles strided I/O correctly.
+     * Reject sizes that would use the direct path. */
+    if (rows <= DIRECT_MAX_N) return CUFFT_INTERNAL_ERROR;
+
+    memset(axis, 0, sizeof(*axis));
+    axis->n = rows;
+    axis->element_stride = cols;
+    axis->batch_stride = 1;
+    axis->batch_count = cols;
+    axis->n_stages = 1;
+
+    int wg_limit = aligned_wg_limit(rows, cols);
+    if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
+    int bpw = fft_fused_batch_per_wg_ex(rows, 0, wg_limit);
+    if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
+
+    axis->stage_info[0].type = FFT_STAGE_FUSED;
+    axis->stage_info[0].dispatch_y = 1;
+    axis->dispatch_x[0] = (uint32_t)(cols / bpw);
+
+    int gen_dirs[2] = {1, -1};
+    cufftResult cr;
+
+    for (int d = 0; d < 2; d++) {
+        char *wgsl = gen_fft_fused_strided(rows, gen_dirs[d], 0, wg_limit,
+                                            cols, 1, cols, 1, cols, 0);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+            &axis->shaders[d][0], &axis->pipelines[d][0]);
+        wgsl_lower_free(spirv);
+        if (cr != CUFFT_SUCCESS) return cr;
+    }
+
+    for (int d = 0; d < 2; d++) {
+        int lut_count = fft_fused_lut_size(rows, gen_dirs[d]);
+        if (lut_count > 0) {
+            float *lut_data = fft_fused_compute_lut(rows, gen_dirs[d]);
+            if (!lut_data) return CUFFT_INTERNAL_ERROR;
+            cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                &axis->stage_info[0].lut_buf[d],
+                &axis->stage_info[0].lut_mem[d]);
+            free(lut_data);
+            if (cr != CUFFT_SUCCESS) return cr;
+            VkBufferDeviceAddressInfo ai = {0};
+            ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+            ai.buffer = axis->stage_info[0].lut_buf[d];
+            axis->stage_info[0].lut_bda[d] =
+                ctx->pfn_get_bda(ctx->device, &ai);
+        }
+    }
+
+    return CUFFT_SUCCESS;
+}
+
+/*
+ * Build a 3-stage axis for column FFTs on [rows][cols] complex layout:
+ *   Stage 0: Transpose [rows][cols] → [cols][rows]
+ *   Stage 1: rows-point fused FFTs on cols contiguous rows
+ *   Stage 2: Transpose [cols][rows] → [rows][cols]
+ *
+ * Returns CUFFT_INTERNAL_ERROR if fused FFT is unavailable for the given size.
+ */
+static cufftResult build_col_fft_transpose(struct CUctx_st *ctx, FftAxis *axis,
+                                            int rows, int cols, int tile_dim,
+                                            VkPipelineLayout pipe_layout)
+{
+    memset(axis, 0, sizeof(*axis));
+    axis->n = rows * cols;
+    axis->element_stride = 1;
+    axis->batch_stride = rows * cols;
+    axis->batch_count = 1;
+    axis->n_stages = 3;
+
+    int gen_dirs[2] = {1, -1};
+    cufftResult cr;
+
+    /* Check fused FFT is available for rows-point */
+    int wg_limit = aligned_wg_limit(rows, cols);
+    if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
+    int bpw = fft_fused_batch_per_wg_ex(rows, 0, wg_limit);
+    if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
+
+    /* Stage 0: Transpose [rows][cols] → [cols][rows] */
+    {
+        axis->stage_info[0].type = FFT_STAGE_TILED_TRANSPOSE;
+        axis->stage_info[0].dispatch_y =
+            (uint32_t)((rows + tile_dim - 1) / tile_dim);
+        axis->dispatch_x[0] =
+            (uint32_t)((cols + tile_dim - 1) / tile_dim);
+
+        char *wgsl = gen_transpose_tiled(rows, cols, tile_dim);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        for (int d = 0; d < 2; d++) {
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                &axis->shaders[d][0], &axis->pipelines[d][0]);
+            if (cr != CUFFT_SUCCESS) { wgsl_lower_free(spirv); return cr; }
+        }
+        wgsl_lower_free(spirv);
+    }
+
+    /* Stage 1: rows-point fused FFTs on cols contiguous rows */
+    {
+        axis->stage_info[1].type = FFT_STAGE_FUSED;
+        axis->stage_info[1].dispatch_y = 1;
+        axis->dispatch_x[1] = (uint32_t)(cols / bpw);
+
+        for (int d = 0; d < 2; d++) {
+            char *wgsl = gen_fft_fused_ex(rows, gen_dirs[d], 0, wg_limit);
+            if (!wgsl) return CUFFT_INTERNAL_ERROR;
+            uint32_t *spirv = NULL; size_t sc = 0;
+            cr = compile_wgsl(wgsl, &spirv, &sc);
+            free(wgsl);
+            if (cr != CUFFT_SUCCESS) return cr;
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                &axis->shaders[d][1], &axis->pipelines[d][1]);
+            wgsl_lower_free(spirv);
+            if (cr != CUFFT_SUCCESS) return cr;
+        }
+
+        for (int d = 0; d < 2; d++) {
+            int lut_count = fft_fused_lut_size(rows, gen_dirs[d]);
+            if (lut_count > 0) {
+                float *lut_data = fft_fused_compute_lut(rows, gen_dirs[d]);
+                if (!lut_data) return CUFFT_INTERNAL_ERROR;
+                cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
+                    &axis->stage_info[1].lut_buf[d],
+                    &axis->stage_info[1].lut_mem[d]);
+                free(lut_data);
+                if (cr != CUFFT_SUCCESS) return cr;
+                VkBufferDeviceAddressInfo ai = {0};
+                ai.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+                ai.buffer = axis->stage_info[1].lut_buf[d];
+                axis->stage_info[1].lut_bda[d] =
+                    ctx->pfn_get_bda(ctx->device, &ai);
+            }
+        }
+    }
+
+    /* Stage 2: Transpose [cols][rows] → [rows][cols] */
+    {
+        axis->stage_info[2].type = FFT_STAGE_TILED_TRANSPOSE;
+        axis->stage_info[2].dispatch_y =
+            (uint32_t)((cols + tile_dim - 1) / tile_dim);
+        axis->dispatch_x[2] =
+            (uint32_t)((rows + tile_dim - 1) / tile_dim);
+
+        char *wgsl = gen_transpose_tiled(cols, rows, tile_dim);
+        if (!wgsl) return CUFFT_INTERNAL_ERROR;
+        uint32_t *spirv = NULL; size_t sc = 0;
+        cr = compile_wgsl(wgsl, &spirv, &sc);
+        free(wgsl);
+        if (cr != CUFFT_SUCCESS) return cr;
+        for (int d = 0; d < 2; d++) {
+            cr = create_stage_pipeline(ctx, spirv, sc, pipe_layout,
+                &axis->shaders[d][2], &axis->pipelines[d][2]);
+            if (cr != CUFFT_SUCCESS) { wgsl_lower_free(spirv); return cr; }
+        }
+        wgsl_lower_free(spirv);
+    }
+
+    return CUFFT_SUCCESS;
 }
 
 /* ============================================================================
@@ -2536,6 +2912,7 @@ static double bench_axis_gpu(struct CUctx_st *ctx, FftAxis *axis,
     result = times[PLAN_BENCH_ITERS / 2];
 
 cleanup:
+    g_cuvk.vk.vkDeviceWaitIdle(ctx->device);
     if (fence) g_cuvk.vk.vkDestroyFence(ctx->device, fence, NULL);
     if (cb) g_cuvk.vk.vkFreeCommandBuffers(ctx->device, ctx->cmd_pool, 1, &cb);
     if (ts_pool) g_cuvk.vk.vkDestroyQueryPool(ctx->device, ts_pool, NULL);
@@ -2556,7 +2933,7 @@ cufftResult cufftPlan2d(cufftHandle *plan, int nx, int ny, cufftType type)
 
     if (!plan || nx <= 0 || ny <= 0)
         return CUFFT_INVALID_VALUE;
-    if (type != CUFFT_C2C)
+    if (type != CUFFT_C2C && type != CUFFT_R2C && type != CUFFT_C2R)
         return CUFFT_INVALID_TYPE;
 
     CufftPlan *p;
@@ -2567,6 +2944,79 @@ cufftResult cufftPlan2d(cufftHandle *plan, int nx, int ny, cufftType type)
     struct CUctx_st *ctx = p->ctx;
     p->rank = 2;
     p->dims[0] = nx; p->dims[1] = ny;
+
+    if (type == CUFFT_R2C || type == CUFFT_C2R) {
+        /* R2C/C2R along innermost dimension (ny), C2C on remaining (nx).
+         * Output layout: [nx][ny/2+1] complex. */
+        if (ny < 2 || ny % 2 != 0) return CUFFT_INVALID_SIZE;
+        int half_y = ny / 2;
+        int padded_y = half_y + 1;
+
+        p->r2c_n = ny;
+        p->total_elements = nx * padded_y;
+        p->n_axes = 2;
+
+        /* Axis 0: half_y-point C2C on contiguous rows (used by C2R inverse). */
+        cr = build_axis(ctx, &p->axes[0], half_y, 1, half_y,
+                         nx, p->pipe_layout);
+        if (cr != CUFFT_SUCCESS) return cr;
+
+        /* R2C post-processing pipeline */
+        {
+            char *wgsl = gen_fft_r2c_postprocess(ny, FFT_WORKGROUP_SIZE);
+            if (!wgsl) return CUFFT_INTERNAL_ERROR;
+            uint32_t *spirv = NULL;
+            size_t spirv_count = 0;
+            cr = compile_wgsl(wgsl, &spirv, &spirv_count);
+            free(wgsl);
+            if (cr != CUFFT_SUCCESS) return cr;
+            cr = create_stage_pipeline(ctx, spirv, spirv_count,
+                                       p->pipe_layout,
+                                       &p->r2c_post_shader,
+                                       &p->r2c_post_pipeline);
+            wgsl_lower_free(spirv);
+            if (cr != CUFFT_SUCCESS) return cr;
+            p->r2c_dispatch_x = ((uint32_t)(half_y + 1) +
+                                  FFT_WORKGROUP_SIZE - 1) / FFT_WORKGROUP_SIZE;
+        }
+
+        /* C2R pre-processing pipeline */
+        {
+            char *wgsl = gen_fft_c2r_preprocess(ny, FFT_WORKGROUP_SIZE);
+            if (!wgsl) return CUFFT_INTERNAL_ERROR;
+            uint32_t *spirv = NULL;
+            size_t spirv_count = 0;
+            cr = compile_wgsl(wgsl, &spirv, &spirv_count);
+            free(wgsl);
+            if (cr != CUFFT_SUCCESS) return cr;
+            cr = create_stage_pipeline(ctx, spirv, spirv_count,
+                                       p->pipe_layout,
+                                       &p->c2r_pre_shader,
+                                       &p->c2r_pre_pipeline);
+            wgsl_lower_free(spirv);
+            if (cr != CUFFT_SUCCESS) return cr;
+        }
+
+        /* Axis 1: x-direction C2C on padded layout (used by C2R inverse
+         * and as fallback for forward R2C if fused is unavailable). */
+        cr = build_axis(ctx, &p->axes[1], nx, padded_y, 1, padded_y,
+                         p->pipe_layout);
+        if (cr != CUFFT_SUCCESS) return cr;
+
+        /* Try fused 2-dispatch R2C strided (always preferred when available —
+         * 2 dispatches vs 3+, no benchmarking needed to know it's faster). */
+        if (half_y <= FOURSTEP_THRESHOLD && nx <= FOURSTEP_THRESHOLD) {
+            FftAxis fused_axis;
+            cufftResult cr_fused = build_2d_r2c_strided(ctx, &fused_axis,
+                                                         nx, ny, p->pipe_layout);
+            if (cr_fused == CUFFT_SUCCESS) {
+                CUVK_LOG("[cufft] 2D R2C: using fused strided (2 dispatches)\n");
+                p->r2c_fused = 1;
+                p->r2c_fused_axis = fused_axis;
+            }
+        }
+    } else {
+
     p->total_elements = nx * ny;
 
     /* Strategy selection:
@@ -2712,6 +3162,8 @@ cufftResult cufftPlan2d(cufftHandle *plan, int nx, int ny, cufftType type)
         /* Axis 1: column FFTs — nx-point on ny columns */
         cr = build_axis(ctx, &p->axes[1], nx, ny, 1, ny, p->pipe_layout);
     }
+
+    } /* end C2C */
     if (cr != CUFFT_SUCCESS) return cr;
 
     cr = alloc_plan_resources(p);
@@ -2875,10 +3327,122 @@ cufftResult cufftPlanMany(cufftHandle *plan, int rank, int *n,
                            int *inembed, int istride, int idist,
                            int *onembed, int ostride, int odist,
                            cufftType type, int batch) {
-    (void)plan; (void)rank; (void)n;
-    (void)inembed; (void)istride; (void)idist;
-    (void)onembed; (void)ostride; (void)odist;
-    (void)type; (void)batch;
+    if (!plan || !n || rank < 1 || batch < 1)
+        return CUFFT_INVALID_VALUE;
+
+    /* Rank 1: delegate to cufftPlan1d */
+    if (rank == 1) {
+        (void)inembed; (void)istride; (void)idist;
+        (void)onembed; (void)ostride; (void)odist;
+        return cufftPlan1d(plan, n[0], type, batch);
+    }
+
+    /* Rank 2: batch=1 delegates to optimized cufftPlan2d */
+    if (rank == 2 && batch == 1) {
+        (void)inembed; (void)istride; (void)idist;
+        (void)onembed; (void)ostride; (void)odist;
+        return cufftPlan2d(plan, n[0], n[1], type);
+    }
+
+    /* Rank 2, batch > 1: per-axis approach with batch_count2 */
+    if (rank == 2) {
+        int nx = n[0], ny = n[1];
+        if (nx <= 0 || ny <= 0) return CUFFT_INVALID_VALUE;
+        if (type != CUFFT_C2C && type != CUFFT_R2C && type != CUFFT_C2R)
+            return CUFFT_INVALID_TYPE;
+
+        (void)inembed; (void)istride; (void)idist;
+        (void)onembed; (void)ostride; (void)odist;
+
+        CufftPlan *p;
+        int handle;
+        cufftResult cr = plan_init(&p, &handle, type, batch);
+        if (cr != CUFFT_SUCCESS) return cr;
+
+        struct CUctx_st *ctx = p->ctx;
+        p->rank = 2;
+        p->dims[0] = nx; p->dims[1] = ny;
+
+        if (type == CUFFT_C2C) {
+            p->total_elements = nx * ny;
+            p->n_axes = 2;
+
+            /* Axis 0: row FFTs — ny-point on nx rows, batch batches */
+            cr = build_axis2(ctx, &p->axes[0], ny, 1, ny, nx,
+                              nx * ny, batch, p->pipe_layout);
+            if (cr != CUFFT_SUCCESS) return cr;
+
+            /* Axis 1: column FFTs — nx-point on ny columns, batch batches */
+            cr = build_axis2(ctx, &p->axes[1], nx, ny, 1, ny,
+                              nx * ny, batch, p->pipe_layout);
+            if (cr != CUFFT_SUCCESS) return cr;
+        } else {
+            /* R2C / C2R */
+            if (ny < 2 || ny % 2 != 0) return CUFFT_INVALID_SIZE;
+            int half_y = ny / 2;
+            int padded_y = half_y + 1;
+
+            p->r2c_n = ny;
+            p->total_elements = nx * padded_y;
+            p->n_axes = 2;
+
+            /* Axis 0: half_y-point C2C on contiguous rows, batch batches */
+            cr = build_axis2(ctx, &p->axes[0], half_y, 1, half_y, nx,
+                              nx * half_y, batch, p->pipe_layout);
+            if (cr != CUFFT_SUCCESS) return cr;
+
+            /* R2C post-processing pipeline */
+            {
+                char *wgsl = gen_fft_r2c_postprocess(ny, FFT_WORKGROUP_SIZE);
+                if (!wgsl) return CUFFT_INTERNAL_ERROR;
+                uint32_t *spirv = NULL;
+                size_t spirv_count = 0;
+                cr = compile_wgsl(wgsl, &spirv, &spirv_count);
+                free(wgsl);
+                if (cr != CUFFT_SUCCESS) return cr;
+                cr = create_stage_pipeline(ctx, spirv, spirv_count,
+                                           p->pipe_layout,
+                                           &p->r2c_post_shader,
+                                           &p->r2c_post_pipeline);
+                wgsl_lower_free(spirv);
+                if (cr != CUFFT_SUCCESS) return cr;
+                p->r2c_dispatch_x = ((uint32_t)(half_y + 1) +
+                                      FFT_WORKGROUP_SIZE - 1) / FFT_WORKGROUP_SIZE;
+            }
+
+            /* C2R pre-processing pipeline */
+            {
+                char *wgsl = gen_fft_c2r_preprocess(ny, FFT_WORKGROUP_SIZE);
+                if (!wgsl) return CUFFT_INTERNAL_ERROR;
+                uint32_t *spirv = NULL;
+                size_t spirv_count = 0;
+                cr = compile_wgsl(wgsl, &spirv, &spirv_count);
+                free(wgsl);
+                if (cr != CUFFT_SUCCESS) return cr;
+                cr = create_stage_pipeline(ctx, spirv, spirv_count,
+                                           p->pipe_layout,
+                                           &p->c2r_pre_shader,
+                                           &p->c2r_pre_pipeline);
+                wgsl_lower_free(spirv);
+                if (cr != CUFFT_SUCCESS) return cr;
+            }
+
+            /* Axis 1: nx-point C2C on padded complex layout, batch batches */
+            cr = build_axis2(ctx, &p->axes[1], nx, padded_y, 1, padded_y,
+                              nx * padded_y, batch, p->pipe_layout);
+            if (cr != CUFFT_SUCCESS) return cr;
+        }
+
+        cr = alloc_plan_resources(p);
+        if (cr != CUFFT_SUCCESS) return cr;
+
+        p->valid = 1;
+        *plan = handle;
+        CUVK_LOG("[cufft] cufftPlanMany: rank=2 %dx%d batch=%d type=0x%x SUCCESS handle=%d\n",
+                 nx, ny, batch, type, handle);
+        return CUFFT_SUCCESS;
+    }
+
     return CUFFT_NOT_SUPPORTED;
 }
 
@@ -3270,16 +3834,393 @@ cufftResult vkCufftExecC2C(CuvkWorkPackage *wp, cufftHandle plan_handle,
     return CUFFT_SUCCESS;
 }
 
-cufftResult vkCufftExecR2C(CuvkWorkPackage *wp, cufftHandle plan,
+cufftResult vkCufftExecR2C(CuvkWorkPackage *wp, cufftHandle plan_handle,
                             VkBuffer idata_buf, VkDeviceAddress idata_bda,
                             VkBuffer odata_buf, VkDeviceAddress odata_bda) {
-    (void)wp; (void)plan; (void)idata_buf; (void)idata_bda; (void)odata_buf; (void)odata_bda;
-    return CUFFT_NOT_IMPLEMENTED;
+    if (plan_handle < 0 || plan_handle >= MAX_CUFFT_PLANS)
+        return CUFFT_INVALID_PLAN;
+    CufftPlan *p = &g_cufft_plans[plan_handle];
+    if (!p->valid || (!p->r2c_post_pipeline && !p->r2c_fused))
+        return CUFFT_INVALID_PLAN;
+
+    /* Fused 2-dispatch R2C path */
+    if (p->r2c_fused) {
+        FftAxis *faxis = &p->r2c_fused_axis;
+        int ns = faxis->n_stages;
+
+        VkDeviceAddress rd[MAX_FFT_STAGES], wr[MAX_FFT_STAGES];
+        wr[ns - 1] = odata_bda;
+        for (int i = ns - 2; i >= 0; i--)
+            wr[i] = (wr[i + 1] == odata_bda) ? p->scratch_bda : odata_bda;
+        rd[0] = idata_bda;
+        for (int i = 1; i < ns; i++) rd[i] = wr[i - 1];
+
+        cuvk_wp_ref_buf(wp, odata_buf, odata_bda, CUVK_BUF_READ | CUVK_BUF_WRITE);
+        if (idata_buf != odata_buf)
+            cuvk_wp_ref_buf(wp, idata_buf, idata_bda, CUVK_BUF_READ);
+        if (p->scratch_buf)
+            cuvk_wp_ref_buf(wp, p->scratch_buf, p->scratch_bda,
+                             CUVK_BUF_READ | CUVK_BUF_WRITE);
+
+        cuvk_wp_barrier(wp,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+        for (int s = 0; s < ns; s++) {
+            if (s > 0)
+                cuvk_wp_barrier(wp,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+            uint64_t pc[3];
+            pc[0] = rd[s]; pc[1] = wr[s];
+            VkDeviceAddress slut = faxis->stage_info[s].lut_bda[0];
+            pc[2] = slut;
+            int npc = slut ? 3 : 2;
+            uint32_t dy = faxis->stage_info[s].dispatch_y;
+            if (dy == 0) dy = 1;
+
+            cuvk_wp_dispatch(wp, faxis->pipelines[0][s], p->pipe_layout,
+                             pc, (uint32_t)(npc * 8),
+                             faxis->dispatch_x[s], dy, 1);
+
+            if (faxis->stage_info[s].lut_buf[0])
+                cuvk_wp_ref_buf(wp, faxis->stage_info[s].lut_buf[0],
+                                slut, CUVK_BUF_READ);
+        }
+        return CUFFT_SUCCESS;
+    }
+
+    /* Non-fused R2C path */
+    FftAxis *axis0 = &p->axes[0];
+    int ns = axis0->n_stages;
+
+    /* Phase 1: C2C stages on axis 0, ping-pong between src and scratch */
+    VkDeviceAddress r2c_read[MAX_FFT_STAGES + 1];
+    VkDeviceAddress r2c_write[MAX_FFT_STAGES + 1];
+
+    if (ns == 0) {
+        r2c_read[0] = idata_bda;
+        r2c_write[0] = odata_bda;
+    } else {
+        r2c_read[0] = idata_bda;
+        r2c_write[0] = p->scratch_bda;
+        for (int i = 1; i < ns; i++) {
+            r2c_read[i] = r2c_write[i - 1];
+            r2c_write[i] = (r2c_read[i] == p->scratch_bda)
+                           ? idata_bda : p->scratch_bda;
+        }
+        r2c_read[ns] = r2c_write[ns - 1];
+        r2c_write[ns] = odata_bda;
+    }
+
+    /* Track buffer refs */
+    cuvk_wp_ref_buf(wp, odata_buf, odata_bda, CUVK_BUF_READ | CUVK_BUF_WRITE);
+    if (idata_buf != odata_buf)
+        cuvk_wp_ref_buf(wp, idata_buf, idata_bda, CUVK_BUF_READ);
+    if (p->scratch_buf)
+        cuvk_wp_ref_buf(wp, p->scratch_buf, p->scratch_bda,
+                         CUVK_BUF_READ | CUVK_BUF_WRITE);
+
+    /* Initial barrier */
+    cuvk_wp_barrier(wp,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+    /* C2C stages */
+    for (int s = 0; s < ns; s++) {
+        if (s > 0)
+            cuvk_wp_barrier(wp,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+        uint64_t pc[3];
+        pc[0] = r2c_read[s];
+        pc[1] = r2c_write[s];
+        VkDeviceAddress slut = axis0->stage_info[s].lut_bda[0];
+        pc[2] = slut;
+        int npc = slut ? 3 : 2;
+
+        uint32_t dy = axis0->stage_info[s].dispatch_y;
+        if (dy == 0) dy = (uint32_t)axis0->batch_count;
+        uint32_t dz = axis0->batch_count2 > 0 ? (uint32_t)axis0->batch_count2 : 1;
+        cuvk_wp_dispatch(wp, axis0->pipelines[0][s], p->pipe_layout,
+                         pc, (uint32_t)(npc * 8), axis0->dispatch_x[s], dy, dz);
+    }
+
+    /* R2C post-process */
+    cuvk_wp_barrier(wp,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    {
+        uint64_t pc[3];
+        pc[0] = r2c_read[ns];
+        pc[1] = r2c_write[ns];
+        pc[2] = 0;
+        uint32_t total_batches = (uint32_t)axis0->batch_count *
+            (uint32_t)(axis0->batch_count2 > 0 ? axis0->batch_count2 : 1);
+        cuvk_wp_dispatch(wp, p->r2c_post_pipeline, p->pipe_layout,
+                         pc, 16, p->r2c_dispatch_x, total_batches, 1);
+    }
+
+    /* Phase 2: C2C on remaining axes (in-place on odata_buf) */
+    if (p->n_axes > 1) {
+        int phase2_stages = 0;
+        for (int a = 1; a < p->n_axes; a++)
+            phase2_stages += p->axes[a].n_stages;
+
+        VkDeviceAddress p2_read[MAX_FFT_STAGES * MAX_AXES];
+        VkDeviceAddress p2_write[MAX_FFT_STAGES * MAX_AXES];
+        int need_final_copy = 0;
+
+        if (phase2_stages == 1) {
+            p2_read[0] = odata_bda;
+            p2_write[0] = p->scratch_bda;
+            need_final_copy = 1;
+        } else {
+            p2_read[0] = odata_bda;
+            p2_write[0] = p->scratch_bda;
+            for (int i = 1; i < phase2_stages; i++) {
+                p2_read[i] = p2_write[i - 1];
+                p2_write[i] = (p2_read[i] == p->scratch_bda)
+                             ? odata_bda : p->scratch_bda;
+            }
+            if (p2_write[phase2_stages - 1] != odata_bda)
+                need_final_copy = 1;
+        }
+
+        int gs = 0;
+        for (int a = 1; a < p->n_axes; a++) {
+            FftAxis *axis = &p->axes[a];
+            for (int s = 0; s < axis->n_stages; s++) {
+                cuvk_wp_barrier(wp,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_SHADER_WRITE_BIT,
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+                uint64_t pc[3];
+                pc[0] = p2_read[gs];
+                pc[1] = p2_write[gs];
+                VkDeviceAddress lut = axis->stage_info[s].lut_bda[0];
+                pc[2] = lut;
+                int npc = lut ? 3 : 2;
+
+                uint32_t dy = axis->stage_info[s].dispatch_y;
+                if (dy == 0) dy = (uint32_t)axis->batch_count;
+                uint32_t dz = axis->batch_count2 > 0
+                            ? (uint32_t)axis->batch_count2 : 1;
+                cuvk_wp_dispatch(wp, axis->pipelines[0][s], p->pipe_layout,
+                                 pc, (uint32_t)(npc * 8),
+                                 axis->dispatch_x[s], dy, dz);
+
+                if (axis->stage_info[s].lut_buf[0])
+                    cuvk_wp_ref_buf(wp, axis->stage_info[s].lut_buf[0],
+                                    lut, CUVK_BUF_READ);
+                gs++;
+            }
+        }
+
+        if (need_final_copy) {
+            VkDeviceSize buf_size = (VkDeviceSize)p->total_elements * 2 *
+                                    sizeof(float) * (VkDeviceSize)p->batch;
+            cuvk_wp_barrier(wp,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT);
+            cuvk_wp_copy(wp, p->scratch_buf, odata_buf, 0, 0, buf_size);
+        }
+    }
+
+    return CUFFT_SUCCESS;
 }
 
-cufftResult vkCufftExecC2R(CuvkWorkPackage *wp, cufftHandle plan,
+cufftResult vkCufftExecC2R(CuvkWorkPackage *wp, cufftHandle plan_handle,
                             VkBuffer idata_buf, VkDeviceAddress idata_bda,
                             VkBuffer odata_buf, VkDeviceAddress odata_bda) {
-    (void)wp; (void)plan; (void)idata_buf; (void)idata_bda; (void)odata_buf; (void)odata_bda;
-    return CUFFT_NOT_IMPLEMENTED;
+    if (plan_handle < 0 || plan_handle >= MAX_CUFFT_PLANS)
+        return CUFFT_INVALID_PLAN;
+    CufftPlan *p = &g_cufft_plans[plan_handle];
+    if (!p->valid || !p->c2r_pre_pipeline) return CUFFT_INVALID_PLAN;
+
+    /* Track buffer refs */
+    cuvk_wp_ref_buf(wp, idata_buf, idata_bda, CUVK_BUF_READ | CUVK_BUF_WRITE);
+    if (odata_buf != idata_buf)
+        cuvk_wp_ref_buf(wp, odata_buf, odata_bda, CUVK_BUF_WRITE);
+    if (p->scratch_buf)
+        cuvk_wp_ref_buf(wp, p->scratch_buf, p->scratch_bda,
+                         CUVK_BUF_READ | CUVK_BUF_WRITE);
+
+    /* Initial barrier */
+    cuvk_wp_barrier(wp,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+    /* Phase 1: C2C inverse on remaining axes (in-place on idata_buf) */
+    if (p->n_axes > 1) {
+        int phase1_stages = 0;
+        for (int a = 1; a < p->n_axes; a++)
+            phase1_stages += p->axes[a].n_stages;
+
+        VkDeviceAddress p1_read[MAX_FFT_STAGES * MAX_AXES];
+        VkDeviceAddress p1_write[MAX_FFT_STAGES * MAX_AXES];
+        int need_copy = 0;
+
+        if (phase1_stages == 1) {
+            p1_read[0] = idata_bda;
+            p1_write[0] = p->scratch_bda;
+            need_copy = 1;
+        } else {
+            p1_read[0] = idata_bda;
+            p1_write[0] = p->scratch_bda;
+            for (int i = 1; i < phase1_stages; i++) {
+                p1_read[i] = p1_write[i - 1];
+                p1_write[i] = (p1_read[i] == p->scratch_bda)
+                             ? idata_bda : p->scratch_bda;
+            }
+            if (p1_write[phase1_stages - 1] != idata_bda)
+                need_copy = 1;
+        }
+
+        int gs = 0;
+        for (int a = 1; a < p->n_axes; a++) {
+            FftAxis *axis = &p->axes[a];
+            for (int s = 0; s < axis->n_stages; s++) {
+                if (gs > 0)
+                    cuvk_wp_barrier(wp,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                        VK_ACCESS_SHADER_WRITE_BIT,
+                        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+                uint64_t pc[3];
+                pc[0] = p1_read[gs];
+                pc[1] = p1_write[gs];
+                VkDeviceAddress lut = axis->stage_info[s].lut_bda[1];
+                pc[2] = lut;
+                int npc = lut ? 3 : 2;
+
+                uint32_t dy = axis->stage_info[s].dispatch_y;
+                if (dy == 0) dy = (uint32_t)axis->batch_count;
+                uint32_t dz = axis->batch_count2 > 0
+                            ? (uint32_t)axis->batch_count2 : 1;
+                cuvk_wp_dispatch(wp, axis->pipelines[1][s], p->pipe_layout,
+                                 pc, (uint32_t)(npc * 8),
+                                 axis->dispatch_x[s], dy, dz);
+
+                if (axis->stage_info[s].lut_buf[1])
+                    cuvk_wp_ref_buf(wp, axis->stage_info[s].lut_buf[1],
+                                    lut, CUVK_BUF_READ);
+                gs++;
+            }
+        }
+
+        if (need_copy) {
+            VkDeviceSize buf_size = (VkDeviceSize)p->total_elements * 2 *
+                                    sizeof(float) * (VkDeviceSize)p->batch;
+            cuvk_wp_barrier(wp,
+                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_ACCESS_SHADER_WRITE_BIT,
+                VK_ACCESS_TRANSFER_READ_BIT);
+            cuvk_wp_copy(wp, p->scratch_buf, idata_buf, 0, 0, buf_size);
+        }
+    }
+
+    /* Phase 2: C2R on axis 0 (pre-process + C2C inverse stages) */
+    FftAxis *axis0 = &p->axes[0];
+    int half = p->r2c_n / 2;
+    int ns = axis0->n_stages;
+    int total = 1 + ns;
+
+    VkDeviceAddress c2r_read[MAX_FFT_STAGES + 1];
+    VkDeviceAddress c2r_write[MAX_FFT_STAGES + 1];
+    int need_final_copy = 0;
+
+    if (ns == 0) {
+        c2r_read[0] = idata_bda;
+        c2r_write[0] = odata_bda;
+    } else {
+        c2r_read[0] = idata_bda;
+        c2r_write[0] = p->scratch_bda;
+        c2r_read[1] = p->scratch_bda;
+        c2r_write[1] = odata_bda;
+        for (int i = 2; i < total; i++) {
+            c2r_read[i] = c2r_write[i - 1];
+            c2r_write[i] = (c2r_read[i] == odata_bda)
+                           ? p->scratch_bda : odata_bda;
+        }
+        if (c2r_write[total - 1] != odata_bda)
+            need_final_copy = 1;
+    }
+
+    /* C2R pre-process */
+    cuvk_wp_barrier(wp,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+    {
+        uint64_t pc[3];
+        pc[0] = c2r_read[0];
+        pc[1] = c2r_write[0];
+        pc[2] = 0;
+        uint32_t total_batches = (uint32_t)axis0->batch_count *
+            (uint32_t)(axis0->batch_count2 > 0 ? axis0->batch_count2 : 1);
+        cuvk_wp_dispatch(wp, p->c2r_pre_pipeline, p->pipe_layout,
+                         pc, 16,
+                         ((uint32_t)half + FFT_WORKGROUP_SIZE - 1) /
+                             FFT_WORKGROUP_SIZE,
+                         total_batches, 1);
+    }
+
+    /* C2C inverse stages */
+    for (int s = 0; s < ns; s++) {
+        cuvk_wp_barrier(wp,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+
+        uint64_t pc[3];
+        pc[0] = c2r_read[1 + s];
+        pc[1] = c2r_write[1 + s];
+        VkDeviceAddress slut = axis0->stage_info[s].lut_bda[1];
+        pc[2] = slut;
+        int npc = slut ? 3 : 2;
+
+        uint32_t dy = axis0->stage_info[s].dispatch_y;
+        if (dy == 0) dy = (uint32_t)axis0->batch_count;
+        uint32_t dz = axis0->batch_count2 > 0 ? (uint32_t)axis0->batch_count2 : 1;
+        cuvk_wp_dispatch(wp, axis0->pipelines[1][s], p->pipe_layout,
+                         pc, (uint32_t)(npc * 8), axis0->dispatch_x[s], dy, dz);
+    }
+
+    if (need_final_copy) {
+        VkDeviceSize c2c_size = (VkDeviceSize)half * 2 * sizeof(float) *
+            (VkDeviceSize)axis0->batch_count *
+            (VkDeviceSize)(axis0->batch_count2 > 0 ? axis0->batch_count2 : 1);
+        cuvk_wp_barrier(wp,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_TRANSFER_READ_BIT);
+        cuvk_wp_copy(wp, p->scratch_buf, odata_buf, 0, 0, c2c_size);
+    }
+
+    return CUFFT_SUCCESS;
 }
