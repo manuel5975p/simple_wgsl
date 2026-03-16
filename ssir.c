@@ -1439,6 +1439,36 @@ static SsirInst *ssir_add_inst(SsirModule *mod, uint32_t func_id, uint32_t block
     return inst;
 }
 
+void ssir_block_remove_inst_at(SsirBlock *b, uint32_t index) {
+    if (!b || index >= b->inst_count) return;
+    if (b->insts[index].extra) {
+        SSIR_FREE(b->insts[index].extra);
+        b->insts[index].extra = NULL;
+    }
+    if (index < b->inst_count - 1) {
+        memmove(&b->insts[index], &b->insts[index + 1],
+                (b->inst_count - index - 1) * sizeof(SsirInst));
+    }
+    b->inst_count--;
+}
+
+void ssir_block_insert_inst_at(SsirBlock *b, uint32_t pos, const SsirInst *inst) {
+    if (!b || !inst) return;
+    if (b->inst_count >= b->inst_capacity) {
+        uint32_t nc = b->inst_capacity ? b->inst_capacity * 2 : 8;
+        b->insts = (SsirInst *)SSIR_REALLOC(b->insts, nc * sizeof(SsirInst));
+        if (!b->insts) return;
+        b->inst_capacity = nc;
+    }
+    if (pos > b->inst_count) pos = b->inst_count;
+    if (pos < b->inst_count) {
+        memmove(&b->insts[pos + 1], &b->insts[pos],
+                (b->inst_count - pos) * sizeof(SsirInst));
+    }
+    b->insts[pos] = *inst;
+    b->inst_count++;
+}
+
 // mod nonnull
 static uint32_t ssir_emit_binary(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     SsirOpcode op, uint32_t type, uint32_t a, uint32_t b) {

@@ -74,6 +74,7 @@ add_library(wgsl_compiler STATIC
     msl_parser.c
     ptx_parser.c
     ptx_lower.c
+    ssir_structurize.c
 )
 
 set_target_properties(wgsl_compiler PROPERTIES POSITION_INDEPENDENT_CODE ON)

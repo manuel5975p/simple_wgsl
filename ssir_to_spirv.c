@@ -182,6 +182,10 @@ typedef struct {
         uint32_t spv_id;
     } sampled_image_cache[16];
     uint32_t sampled_image_cache_count;
+
+    /* Block decoration dedup: SPIR-V type IDs that already have Block */
+    uint32_t block_decorated[64];
+    uint32_t block_decorated_count;
 } Ctx;
 
 // c nonnull
@@ -353,6 +357,19 @@ static int sts_emit_decorate(Ctx *c, uint32_t target, SpvDecoration decor, const
         if (!wb_push(wb, literals[i])) return 0;
     }
     return 1;
+}
+
+// c nonnull
+// Emit Block decoration on target, but only once per target ID.
+static int sts_emit_block_decoration(Ctx *c, uint32_t target) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_block_decoration: c is NULL");
+    for (uint32_t i = 0; i < c->block_decorated_count; i++) {
+        if (c->block_decorated[i] == target) return 1; // already decorated
+    }
+    if (c->block_decorated_count < 64) {
+        c->block_decorated[c->block_decorated_count++] = target;
+    }
+    return sts_emit_decorate(c, target, SpvDecorationBlock, NULL, 0);
 }
 
 // c nonnull
@@ -837,7 +854,7 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
                 /* Block decoration for PSB pointee structs (required for runtime arrays) */
                 SsirType *pointee_t = ssir_get_type((SsirModule *)c->mod, t->ptr.pointee);
                 if (pointee_t && pointee_t->kind == SSIR_TYPE_STRUCT) {
-                    sts_emit_decorate(c, pointee_spv, SpvDecorationBlock, NULL, 0);
+                    sts_emit_block_decoration(c, pointee_spv);
                 }
             }
             break;
@@ -1101,7 +1118,17 @@ static uint32_t sts_emit_global_var(Ctx *c, const SsirGlobalVar *g) {
             SsirType *pointee = ssir_get_type((SsirModule *)c->mod, ptr_type->ptr.pointee);
             if (pointee && pointee->kind == SSIR_TYPE_STRUCT) {
                 uint32_t struct_spv = sts_emit_type(c, ptr_type->ptr.pointee);
-                sts_emit_decorate(c, struct_spv, SpvDecorationBlock, NULL, 0);
+                sts_emit_block_decoration(c, struct_spv);
+                /* Ensure ArrayStride on array members that lack it */
+                for (uint32_t mi = 0; mi < pointee->struc.member_count; ++mi) {
+                    SsirType *mt = ssir_get_type((SsirModule *)c->mod, pointee->struc.members[mi]);
+                    if (mt && mt->kind == SSIR_TYPE_ARRAY && !mt->array.stride) {
+                        uint32_t arr_spv = sts_emit_type(c, pointee->struc.members[mi]);
+                        uint32_t stride = compute_array_stride(c, mt->array.elem);
+                        if (stride)
+                            sts_emit_decorate(c, arr_spv, SpvDecorationArrayStride, &stride, 1);
+                    }
+                }
             }
         }
     }
@@ -2639,6 +2666,18 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
  * Function Emission
  * ============================================================================ */
 
+static bool sts_is_trivial_branch_bridge(const SsirBlock *block) {
+    if (!block || block->inst_count == 0) return false;
+    const SsirInst *term = &block->insts[block->inst_count - 1];
+    if (term->op != SSIR_OP_BRANCH || term->operand_count < 1) return false;
+    for (uint32_t ii = 0; ii + 1 < block->inst_count; ++ii) {
+        SsirOpcode op = block->insts[ii].op;
+        if (op != SSIR_OP_SELECTION_MERGE && op != SSIR_OP_LOOP_MERGE)
+            return false;
+    }
+    return true;
+}
+
 // c nonnull, func nonnull
 static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_type) {
     wgsl_compiler_assert(c != NULL, "sts_emit_function: c is NULL");
@@ -2669,64 +2708,1358 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
         set_ssir_type(c, func->params[i].id, func->params[i].type);
     }
 
-    /* Compute DFS block ordering to satisfy SPIR-V structural domination.
-     * Blocks are emitted in DFS order of the control flow graph. */
-    uint32_t *dfs_order = (uint32_t *)STS_MALLOC(func->block_count * sizeof(uint32_t));
+    /* Dominator-tree-based block ordering for SPIR-V structural domination.
+     * Uses ipdom (immediate post-dominator) to determine merge points for
+     * selection constructs, and LOOP_MERGE annotations for loop constructs.
+     * A recursive traversal with merge_bound prevents crossing construct
+     * boundaries, producing valid SPIR-V layouts regardless of how merge
+     * annotations were assigned. */
+    uint32_t *dfs_order = (uint32_t *)STS_MALLOC((func->block_count + 64) * sizeof(uint32_t));
     uint32_t dfs_count = 0;
-    if (dfs_order && func->block_count > 0) {
-        uint8_t *visited = (uint8_t *)STS_MALLOC(func->block_count);
-        if (visited) {
-            memset(visited, 0, func->block_count);
-            /* DFS stack (indices into func->blocks) */
-            uint32_t *stack = (uint32_t *)STS_MALLOC(func->block_count * sizeof(uint32_t));
-            if (stack) {
-                uint32_t sp = 0;
-                stack[sp++] = 0; /* start from first block */
-                while (sp > 0) {
-                    uint32_t idx = stack[--sp];
-                    if (idx >= func->block_count || visited[idx]) continue;
-                    visited[idx] = 1;
-                    dfs_order[dfs_count++] = idx;
+    const char *order_debug_env = getenv("SSIR_TO_SPIRV_DEBUG");
+    bool order_debug = order_debug_env && order_debug_env[0] != '\0' &&
+                       order_debug_env[0] != '0';
 
-                    /* Find branch targets and push them (in reverse for DFS order) */
-                    const SsirBlock *b = &func->blocks[idx];
-                    uint32_t targets[4] = {0};
-                    int tc = 0;
-                    for (uint32_t ii = 0; ii < b->inst_count; ii++) {
-                        const SsirInst *si = &b->insts[ii];
-                        if (si->op == SSIR_OP_BRANCH && si->operand_count >= 1) {
-                            targets[tc++] = si->operands[0];
-                        } else if (si->op == SSIR_OP_BRANCH_COND && si->operand_count >= 3) {
-                            targets[tc++] = si->operands[2]; /* false first (reversed) */
-                            targets[tc++] = si->operands[1]; /* true second */
+    if (dfs_order && func->block_count > 0) {
+        const int n = (int)func->block_count;
+        /* --- Build lightweight CFG: successors and predecessors --- */
+        /* succ[i] stores successor block indices; nsuc[i] is count */
+        int *succ_flat = (int *)STS_MALLOC(n * 140 * sizeof(int));
+        int *nsuc = (int *)STS_MALLOC(n * sizeof(int));
+        int *pred_flat = (int *)STS_MALLOC(n * 140 * sizeof(int));
+        int *npred = (int *)STS_MALLOC(n * sizeof(int));
+        int *ipdom = (int *)STS_MALLOC(n * sizeof(int));
+        int *idom_fwd = NULL; /* forward dominators, computed alongside ipdom */
+        uint8_t *visited = (uint8_t *)STS_MALLOC(n);
+        uint8_t *is_known_merge_target = (uint8_t *)STS_MALLOC(n);
+        uint8_t *is_active_merge = (uint8_t *)STS_MALLOC(n);
+        uint8_t *is_continue_target = (uint8_t *)STS_MALLOC(n);
+
+        if (succ_flat && nsuc && pred_flat && npred && ipdom && visited) {
+            memset(nsuc, 0, n * sizeof(int));
+            memset(npred, 0, n * sizeof(int));
+            memset(visited, 0, n);
+            if (is_known_merge_target) memset(is_known_merge_target, 0, n);
+            if (is_active_merge) memset(is_active_merge, 0, n);
+            if (is_continue_target) memset(is_continue_target, 0, n);
+
+            /* Helper: find block index by ID */
+            #define BO_IDX(id_val) ({ \
+                int _r = -1; \
+                for (int _i = 0; _i < n; _i++) \
+                    if (func->blocks[_i].id == (id_val)) { _r = _i; break; } \
+                _r; })
+            #define BO_SUCC(bi, si) succ_flat[(bi) * 140 + (si)]
+            #define BO_PRED(bi, pi) pred_flat[(bi) * 140 + (pi)]
+            #define BO_ADD_EDGE(f, t) do { \
+                if ((f) >= 0 && (t) >= 0 && nsuc[f] < 140) { \
+                    bool _dup = false; \
+                    for (int _i = 0; _i < nsuc[f]; _i++) \
+                        if (BO_SUCC(f, _i) == (t)) { _dup = true; break; } \
+                    if (!_dup) { \
+                        BO_SUCC(f, nsuc[f]++) = (t); \
+                        if (npred[t] < 140) { \
+                            bool _dup2 = false; \
+                            for (int _i = 0; _i < npred[t]; _i++) \
+                                if (BO_PRED(t, _i) == (f)) { _dup2 = true; break; } \
+                            if (!_dup2) BO_PRED(t, npred[t]++) = (f); \
+                        } \
+                    } \
+                } \
+            } while(0)
+
+            /* Build CFG edges */
+            for (int bi = 0; bi < n; bi++) {
+                const SsirBlock *b = &func->blocks[bi];
+                for (uint32_t ii = 0; ii < b->inst_count; ii++) {
+                    const SsirInst *si = &b->insts[ii];
+                    if (si->op == SSIR_OP_BRANCH && si->operand_count >= 1)
+                        BO_ADD_EDGE(bi, BO_IDX(si->operands[0]));
+                    else if (si->op == SSIR_OP_BRANCH_COND && si->operand_count >= 2) {
+                        BO_ADD_EDGE(bi, BO_IDX(si->operands[1]));
+                        if (si->operand_count >= 3)
+                            BO_ADD_EDGE(bi, BO_IDX(si->operands[2]));
+                        if (si->operand_count >= 4 &&
+                            si->operands[3] != 0 &&
+                            is_known_merge_target) {
+                            int mi = BO_IDX(si->operands[3]);
+                            if (mi >= 0 && mi < n)
+                                is_known_merge_target[mi] = 1;
                         }
-                        if (tc >= 4) break;
-                    }
-                    /* Push targets in reverse order (so true arm is visited first) */
-                    for (int ti = 0; ti < tc; ti++) {
-                        for (uint32_t k = 0; k < func->block_count; k++) {
-                            if (func->blocks[k].id == targets[ti] && !visited[k]) {
-                                stack[sp++] = k;
-                                break;
-                            }
+                    } else if (si->op == SSIR_OP_SWITCH) {
+                        if (si->operand_count >= 2)
+                            BO_ADD_EDGE(bi, BO_IDX(si->operands[1]));
+                        for (uint32_t ei = 1; ei < si->extra_count; ei += 2)
+                            BO_ADD_EDGE(bi, BO_IDX(si->extra[ei]));
+                    } else if (si->op == SSIR_OP_SELECTION_MERGE &&
+                               si->operand_count >= 1 &&
+                               is_known_merge_target) {
+                        int mi = BO_IDX(si->operands[0]);
+                        if (mi >= 0 && mi < n)
+                            is_known_merge_target[mi] = 1;
+                    } else if (si->op == SSIR_OP_LOOP_MERGE &&
+                               si->operand_count >= 1) {
+                        if (is_known_merge_target) {
+                            int mi = BO_IDX(si->operands[0]);
+                            if (mi >= 0 && mi < n)
+                                is_known_merge_target[mi] = 1;
+                        }
+                        if (si->operand_count >= 2 && is_continue_target) {
+                            int ci = BO_IDX(si->operands[1]);
+                            if (ci >= 0 && ci < n)
+                                is_continue_target[ci] = 1;
                         }
                     }
                 }
-                STS_FREE(stack);
             }
-            /* Add any unvisited blocks (unreachable code) at the end */
-            for (uint32_t k = 0; k < func->block_count; k++) {
-                if (!visited[k])
-                    dfs_order[dfs_count++] = k;
+
+            /* --- Compute reachability and reverse-RPO for ipdom --- */
+            bool *reach = (bool *)STS_MALLOC(n * sizeof(bool));
+            int *rpo_stk = (int *)STS_MALLOC(n * sizeof(int));
+            int *rpo_num = (int *)STS_MALLOC(n * sizeof(int));
+            bool *rvis = (bool *)STS_MALLOC(n * sizeof(bool));
+            int rpo_sp = 0;
+
+            if (reach && rpo_stk && rpo_num && rvis) {
+                /* Forward DFS to find reachable blocks and compute RPO numbers */
+                memset(reach, 0, n * sizeof(bool));
+                memset(rvis, 0, n * sizeof(bool));
+                /* Iterative DFS for RPO */
+                {
+                    int dfs_cap = n * 12 + 64;
+                    int *dfs_stk = (int *)STS_MALLOC(dfs_cap * sizeof(int));
+                    int dsp = 0;
+                    if (dfs_stk) {
+                        dfs_stk[dsp++] = 0;
+                        dfs_stk[dsp++] = 0; /* phase 0=enter, 1=post */
+                        while (dsp > 0) {
+                            int phase = dfs_stk[--dsp];
+                            int node = dfs_stk[--dsp];
+                            if (node < 0 || node >= n) continue;
+                            if (phase == 1) {
+                                rpo_stk[rpo_sp++] = node;
+                                continue;
+                            }
+                            if (rvis[node]) continue;
+                            rvis[node] = true;
+                            reach[node] = true;
+                            /* Push post-visit marker */
+                            if (dsp + 2 <= dfs_cap) {
+                                dfs_stk[dsp++] = node;
+                                dfs_stk[dsp++] = 1;
+                            }
+                            /* Push successors in reverse order */
+                            for (int si = nsuc[node] - 1; si >= 0; si--) {
+                                int s = BO_SUCC(node, si);
+                                if (s >= 0 && !rvis[s] && dsp + 2 <= dfs_cap) {
+                                    dfs_stk[dsp++] = s;
+                                    dfs_stk[dsp++] = 0;
+                                }
+                            }
+                        }
+                        STS_FREE(dfs_stk);
+                    }
+                }
+
+                /* RPO numbering (rpo_stk is in reverse-postorder when read backwards) */
+                for (int i = 0; i < n; i++) rpo_num[i] = n + i; /* unreachable = high */
+                { int rn = 0;
+                  for (int i = rpo_sp - 1; i >= 0; i--)
+                      rpo_num[rpo_stk[i]] = rn++;
+                }
+
+                /* Reverse-RPO for post-dominator computation */
+                /* Find exit blocks and do reverse DFS */
+                int *rrpo_stk = (int *)STS_MALLOC(n * sizeof(int));
+                int *rrpo_num = (int *)STS_MALLOC(n * sizeof(int));
+                int rrpo_sp = 0;
+                if (rrpo_stk && rrpo_num) {
+                    bool *rr_vis = (bool *)STS_MALLOC(n * sizeof(bool));
+                    if (rr_vis) {
+                        memset(rr_vis, 0, n * sizeof(bool));
+                        /* Iterative reverse DFS from exit blocks */
+                        int rdfs_cap = n * 12 + 64;
+                        int *rdfs_stk = (int *)STS_MALLOC(rdfs_cap * sizeof(int));
+                        int rdsp = 0;
+                        if (rdfs_stk) {
+                            /* Seed: exit blocks (no successors, or has return/unreachable) */
+                            for (int i = 0; i < n; i++) {
+                                if (!reach[i]) continue;
+                                bool is_exit = (nsuc[i] == 0);
+                                const SsirBlock *b = &func->blocks[i];
+                                for (uint32_t ii = 0; ii < b->inst_count; ii++) {
+                                    SsirOpcode op = b->insts[ii].op;
+                                    if (op == SSIR_OP_RETURN || op == SSIR_OP_RETURN_VOID ||
+                                        op == SSIR_OP_UNREACHABLE)
+                                        is_exit = true;
+                                }
+                                if (is_exit && !rr_vis[i]) {
+                                    /* DFS from this exit using predecessors */
+                                    rdfs_stk[rdsp++] = i;
+                                    rdfs_stk[rdsp++] = 0;
+                                    while (rdsp > 0) {
+                                        int ph = rdfs_stk[--rdsp];
+                                        int nd = rdfs_stk[--rdsp];
+                                        if (nd < 0 || nd >= n) continue;
+                                        if (ph == 1) { rrpo_stk[rrpo_sp++] = nd; continue; }
+                                        if (rr_vis[nd]) continue;
+                                        rr_vis[nd] = true;
+                                        if (rdsp + 2 <= rdfs_cap) {
+                                            rdfs_stk[rdsp++] = nd;
+                                            rdfs_stk[rdsp++] = 1;
+                                        }
+                                        for (int pi = npred[nd] - 1; pi >= 0; pi--) {
+                                            int p = BO_PRED(nd, pi);
+                                            if (p >= 0 && !rr_vis[p] && rdsp + 2 <= rdfs_cap) {
+                                                rdfs_stk[rdsp++] = p;
+                                                rdfs_stk[rdsp++] = 0;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            STS_FREE(rdfs_stk);
+                        }
+                        STS_FREE(rr_vis);
+                    }
+                    for (int i = 0; i < n; i++) rrpo_num[i] = n + i;
+                    { int rn = 0;
+                      for (int i = rrpo_sp - 1; i >= 0; i--)
+                          rrpo_num[rrpo_stk[i]] = rn++;
+                    }
+
+                    /* --- Compute ipdom (immediate post-dominator) --- */
+                    for (int i = 0; i < n; i++) ipdom[i] = -1;
+                    /* Seed exit blocks as their own post-dominators */
+                    for (int i = 0; i < n; i++) {
+                        if (!reach[i]) continue;
+                        bool is_exit = (nsuc[i] == 0);
+                        const SsirBlock *b = &func->blocks[i];
+                        for (uint32_t ii = 0; ii < b->inst_count; ii++) {
+                            SsirOpcode op = b->insts[ii].op;
+                            if (op == SSIR_OP_RETURN || op == SSIR_OP_RETURN_VOID ||
+                                op == SSIR_OP_UNREACHABLE)
+                                is_exit = true;
+                        }
+                        if (is_exit) ipdom[i] = i;
+                    }
+                    /* Cooper-Harvey-Kennedy iterative post-dominator */
+                    { bool changed = true;
+                      while (changed) {
+                          changed = false;
+                          for (int ri = 0; ri < rrpo_sp; ri++) {
+                              int b = rrpo_stk[rrpo_sp - 1 - ri];
+                              if (!reach[b] || ipdom[b] == b) continue;
+                              int nd = -1;
+                              for (int si = 0; si < nsuc[b]; si++) {
+                                  int s = BO_SUCC(b, si);
+                                  if (ipdom[s] == -1) continue;
+                                  if (nd < 0) { nd = s; continue; }
+                                  /* Intersect (with guard against infinite loop) */
+                                  int a2 = nd, b2 = s, _steps = 0;
+                                  while (a2 != b2 && _steps < n * 2) {
+                                      while (rrpo_num[a2] > rrpo_num[b2] && _steps < n * 2) { a2 = ipdom[a2]; _steps++; }
+                                      while (rrpo_num[b2] > rrpo_num[a2] && _steps < n * 2) { b2 = ipdom[b2]; _steps++; }
+                                  }
+                                  nd = (a2 == b2) ? a2 : -1;
+                              }
+                              if (nd >= 0 && nd != ipdom[b]) { ipdom[b] = nd; changed = true; }
+                          }
+                      }
+                    }
+
+                    /* --- Compute forward dominators (idom_fwd) for construct membership --- */
+                    idom_fwd = (int *)STS_MALLOC(n * sizeof(int));
+                    if (idom_fwd) {
+                        for (int i = 0; i < n; i++) idom_fwd[i] = -1;
+                        idom_fwd[0] = 0; /* entry block is its own dominator */
+                        bool idom_changed = true;
+                        while (idom_changed) {
+                            idom_changed = false;
+                            /* Process in RPO order (rpo_stk[rpo_sp-1] is RPO #0) */
+                            for (int ri = rpo_sp - 1; ri >= 0; ri--) {
+                                int b_idx = rpo_stk[ri];
+                                if (b_idx == 0 || !reach[b_idx]) continue;
+                                int nd = -1;
+                                for (int pi = 0; pi < npred[b_idx]; pi++) {
+                                    int p = BO_PRED(b_idx, pi);
+                                    if (p < 0 || idom_fwd[p] == -1) continue;
+                                    if (nd < 0) { nd = p; continue; }
+                                    /* Intersect using rpo_num (forward RPO) */
+                                    int a2 = nd, b2 = p;
+                                    int _steps = 0;
+                                    while (a2 != b2 && _steps < n * 2) {
+                                        while (rpo_num[a2] > rpo_num[b2] && _steps < n * 2)
+                                            { a2 = idom_fwd[a2]; _steps++; }
+                                        while (rpo_num[b2] > rpo_num[a2] && _steps < n * 2)
+                                            { b2 = idom_fwd[b2]; _steps++; }
+                                    }
+                                    nd = (a2 == b2) ? a2 : -1;
+                                }
+                                if (nd >= 0 && nd != idom_fwd[b_idx]) {
+                                    idom_fwd[b_idx] = nd;
+                                    idom_changed = true;
+                                }
+                            }
+                        }
+                    }
+
+                    STS_FREE(rrpo_stk);
+                    STS_FREE(rrpo_num);
+                }
+
+
+                /* Check if 'header' dominates 'block' using idom_fwd[] */
+                #define BO_DOMINATES(header, block) ({ \
+                    bool _dom = false; \
+                    if (idom_fwd) { \
+                        int _x = (block), _s = 0; \
+                        while (_x >= 0 && _s < n + 1) { \
+                            if (_x == (header)) { _dom = true; break; } \
+                            if (_x == idom_fwd[_x]) break; \
+                            _x = idom_fwd[_x]; _s++; \
+                        } \
+                    } \
+                    _dom; })
+                #define BO_POSTDOMINATES(merge, block) ({ \
+                    bool _pdom = false; \
+                    if (ipdom && (merge) >= 0 && (merge) < n) { \
+                        int _x = (block), _s = 0; \
+                        while (_x >= 0 && _s < n + 1) { \
+                            if (_x == (merge)) { _pdom = true; break; } \
+                            if (ipdom[_x] < 0 || ipdom[_x] == _x) break; \
+                            _x = ipdom[_x]; _s++; \
+                        } \
+                    } \
+                    _pdom; })
+
+                /* --- Late loop detection: add OpLoopMerge to blocks that ---
+                 * --- are back-edge targets but were not annotated by the  ---
+                 * --- structurizer (non-trivial headers or loops created   ---
+                 * --- by structurization transforms).                      --- */
+                if (idom_fwd) {
+                    for (int bi = 0; bi < n; bi++) {
+                        SsirBlock *bk = &func->blocks[bi];
+                        bool has_lm = false;
+                        for (uint32_t ii = 0; ii < bk->inst_count; ii++)
+                            if (bk->insts[ii].op == SSIR_OP_LOOP_MERGE) { has_lm = true; break; }
+                        if (has_lm) continue;
+
+                        /* Check if any predecessor edge is a back-edge
+                         * (target dominates source). */
+                        bool has_backedge_to = false;
+                        for (int pi = 0; pi < npred[bi]; pi++) {
+                            int p = BO_PRED(bi, pi);
+                            if (p < 0 || p == bi) continue;
+                            if (BO_DOMINATES(bi, p)) {
+                                has_backedge_to = true;
+                                break;
+                            }
+                        }
+                        if (bk->name && strstr(bk->name, "L__BB0_4") &&
+                            (strstr(bk->name, "BB0_41") || strstr(bk->name, "BB0_42") ||
+                             strstr(bk->name, "BB0_40")))
+                            fprintf(stderr, "[late-loop] idx=%d (%s) id=%u "
+                                "npred=%d has_lm=%d be=%d idom=%d\n",
+                                bi, bk->name, bk->id,
+                                npred[bi], has_lm, has_backedge_to, idom_fwd[bi]);
+                        if (!has_backedge_to) continue;
+
+                        /* bi is a back-edge target (loop header) without
+                         * OpLoopMerge.  Find a merge (exit) block and a
+                         * continue (latch) block. */
+
+                        /* Collect natural loop body */
+                        uint8_t *lbody = (uint8_t *)STS_MALLOC(n);
+                        if (!lbody) continue;
+                        memset(lbody, 0, n);
+                        lbody[bi] = 1;
+                        /* Reverse walk from each latch */
+                        int lstack[512];
+                        int lsp = 0;
+                        for (int pi = 0; pi < npred[bi]; pi++) {
+                            int p = BO_PRED(bi, pi);
+                            if (p >= 0 && BO_DOMINATES(bi, p) && !lbody[p]) {
+                                lbody[p] = 1;
+                                if (lsp < 512) lstack[lsp++] = p;
+                            }
+                        }
+                        while (lsp > 0) {
+                            int x = lstack[--lsp];
+                            for (int pi = 0; pi < npred[x]; pi++) {
+                                int p = BO_PRED(x, pi);
+                                if (p >= 0 && p < n && !lbody[p]) {
+                                    lbody[p] = 1;
+                                    if (lsp < 512) lstack[lsp++] = p;
+                                }
+                            }
+                        }
+
+                        /* Merge block: first successor of a body block that
+                         * is NOT in the body, preferring ipdom of header. */
+                        int lmerge = -1;
+                        if (ipdom[bi] >= 0 && ipdom[bi] < n && !lbody[ipdom[bi]])
+                            lmerge = ipdom[bi];
+                        if (lmerge < 0) {
+                            int best_rpo = n + 1;
+                            for (int j = 0; j < n; j++) {
+                                if (!lbody[j]) continue;
+                                for (int si = 0; si < nsuc[j]; si++) {
+                                    int s = BO_SUCC(j, si);
+                                    if (s >= 0 && s < n && !lbody[s]) {
+                                        if (rpo_num[s] < best_rpo) {
+                                            best_rpo = rpo_num[s];
+                                            lmerge = s;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        /* Continue block: last latch by RPO */
+                        int lcont = -1;
+                        int best_rpo_cont = -1;
+                        for (int pi = 0; pi < npred[bi]; pi++) {
+                            int p = BO_PRED(bi, pi);
+                            if (p >= 0 && p < n && lbody[p] &&
+                                BO_DOMINATES(bi, p) &&
+                                rpo_num[p] > best_rpo_cont) {
+                                best_rpo_cont = rpo_num[p];
+                                lcont = p;
+                            }
+                        }
+
+                        STS_FREE(lbody);
+
+                        if (lmerge < 0 || lcont < 0) continue;
+
+                        /* Check for conflicting SelectionMerge */
+                        bool has_sm = false;
+                        for (uint32_t ii = 0; ii < bk->inst_count; ii++)
+                            if (bk->insts[ii].op == SSIR_OP_SELECTION_MERGE)
+                                { has_sm = true; break; }
+
+                        if (has_sm) {
+                            /* Replace the SelectionMerge with LoopMerge:
+                             * the loop annotation takes precedence. */
+                            for (uint32_t ii = 0; ii < bk->inst_count; ii++) {
+                                if (bk->insts[ii].op == SSIR_OP_SELECTION_MERGE) {
+                                    bk->insts[ii].op = SSIR_OP_LOOP_MERGE;
+                                    bk->insts[ii].operands[0] = func->blocks[lmerge].id;
+                                    bk->insts[ii].operands[1] = func->blocks[lcont].id;
+                                    bk->insts[ii].operand_count = 2;
+                                    break;
+                                }
+                            }
+                        } else {
+                            /* Insert OpLoopMerge before terminator */
+                            if (bk->inst_count > 0) {
+                                SsirInst lm;
+                                memset(&lm, 0, sizeof(lm));
+                                lm.op = SSIR_OP_LOOP_MERGE;
+                                lm.operands[0] = func->blocks[lmerge].id;
+                                lm.operands[1] = func->blocks[lcont].id;
+                                lm.operand_count = 2;
+                                /* Make room */
+                                if (bk->inst_count >= bk->inst_capacity) {
+                                    uint32_t nc = bk->inst_capacity ? bk->inst_capacity * 2 : 8;
+                                    bk->insts = (SsirInst *)STS_REALLOC(bk->insts,
+                                        nc * sizeof(SsirInst));
+                                    bk->inst_capacity = nc;
+                                }
+                                uint32_t tpos = bk->inst_count - 1;
+                                memmove(&bk->insts[tpos + 1], &bk->insts[tpos],
+                                    sizeof(SsirInst));
+                                bk->insts[tpos] = lm;
+                                bk->inst_count++;
+                            }
+                        }
+
+                        if (is_known_merge_target && lmerge >= 0 && lmerge < n)
+                            is_known_merge_target[lmerge] = 1;
+                    }
+                }
+
+                /* --- Recursive dominator-tree block ordering --- */
+                /* Use an explicit work stack to avoid C recursion depth issues.
+                 * Each frame: (block_idx, merge_bound, successor_index).
+                 * successor_index tracks which successors have been visited. */
+                {
+                    typedef struct { int block; int merge_bound; int phase; int flags; } Frame;
+                    #define FRAME_FROM_CONSTRUCT 1
+                    int frame_cap = n * 4 + 64;
+                    Frame *frames = (Frame *)STS_MALLOC(frame_cap * sizeof(Frame));
+                    if (frames) {
+                        int fsp = 0;
+                        frames[fsp++] = (Frame){0, -1, 0, 0};
+
+                        while (fsp > 0) {
+                            Frame *f = &frames[fsp - 1];
+                            int bi = f->block;
+                            int mb = f->merge_bound;
+
+                            /* Skip if invalid or at merge_bound */
+                            if (bi < 0 || bi >= n) {
+                                fsp--;
+                                continue;
+                            }
+                            if (bi == mb && !(f->flags & FRAME_FROM_CONSTRUCT)) {
+                                fsp--;
+                                continue;
+                            }
+                            /* Skip blocks that are active merge targets of enclosing
+                             * constructs. These blocks will be visited later when
+                             * their owning header's phase 2/3 fires. Without this
+                             * check, an inner construct can prematurely visit the
+                             * merge of an outer construct, placing it too early. */
+                            if (f->phase == 0 &&
+                                !(f->flags & FRAME_FROM_CONSTRUCT) &&
+                                is_known_merge_target &&
+                                bi >= 0 && bi < n &&
+                                is_known_merge_target[bi]) {
+                                fsp--;
+                                continue;
+                            }
+                            if (f->phase == 0 &&
+                                !(f->flags & FRAME_FROM_CONSTRUCT) &&
+                                is_active_merge &&
+                                bi >= 0 && bi < n && is_active_merge[bi]) {
+                                fsp--;
+                                continue;
+                            }
+                            /* Skip already-visited blocks ONLY for phase 0 (first visit).
+                             * Phase 2/3 frames are return visits to already-visited
+                             * headers for merge block processing — don't skip them. */
+                            if (visited[bi] && f->phase == 0) {
+                                fsp--;
+                                continue;
+                            }
+
+                            if (f->phase == 0) {
+                                /* First visit: emit this block */
+                                visited[bi] = 1;
+                                dfs_order[dfs_count++] = bi;
+                                f->phase = 1;
+
+                                /* Determine block type from instructions */
+                                const SsirBlock *b = &func->blocks[bi];
+                                int loop_merge_idx = -1;
+                                bool has_loop_merge = false;
+                                bool is_multi_succ = false;
+                                SsirOpcode term_op = (SsirOpcode)0;
+
+                                for (uint32_t ii = 0; ii < b->inst_count; ii++) {
+                                    const SsirInst *si = &b->insts[ii];
+                                    if (si->op == SSIR_OP_LOOP_MERGE && si->operand_count >= 1) {
+                                        loop_merge_idx = BO_IDX(si->operands[0]);
+                                        has_loop_merge = true;
+                                    }
+                                }
+                                if (b->inst_count > 0)
+                                    term_op = b->insts[b->inst_count - 1].op;
+                                is_multi_succ = (term_op == SSIR_OP_BRANCH_COND ||
+                                                 term_op == SSIR_OP_SWITCH);
+
+                                if (has_loop_merge && loop_merge_idx >= 0) {
+                                    /* Loop header: visit all successors with
+                                     * merge_bound = loop_merge, then visit loop_merge
+                                     * with the outer merge_bound. */
+                                    f->phase = 2; /* mark: come back for loop merge */
+                                    if (is_active_merge && loop_merge_idx >= 0 && loop_merge_idx < n)
+                                        is_active_merge[loop_merge_idx] = 1;
+                                    /* Push loop merge visit (will execute after body) */
+                                    /* Push successor visits in reverse order */
+                                    int saved_fsp = fsp;
+                                    for (int si = nsuc[bi] - 1; si >= 0; si--) {
+                                        int s = BO_SUCC(bi, si);
+                                        if (s != loop_merge_idx && fsp < frame_cap)
+                                            frames[fsp++] = (Frame){s, loop_merge_idx, 0};
+                                    }
+                                    (void)saved_fsp;
+                                } else if (is_multi_succ) {
+                                    /* Selection header: use explicit merge annotation
+                                     * if present, otherwise fall back to ipdom. */
+                                    int merge_idx = -1;
+                                    bool has_explicit_merge = false;
+                                    for (uint32_t ii = 0; ii < b->inst_count; ii++) {
+                                        const SsirInst *ai = &b->insts[ii];
+                                        if (ai->op == SSIR_OP_SELECTION_MERGE &&
+                                            ai->operand_count >= 1) {
+                                            merge_idx = BO_IDX(ai->operands[0]);
+                                            has_explicit_merge = true;
+                                            break;
+                                        }
+                                        if (ai->op == SSIR_OP_BRANCH_COND &&
+                                            ai->operand_count >= 4 &&
+                                            ai->operands[3] != 0) {
+                                            merge_idx = BO_IDX(ai->operands[3]);
+                                            has_explicit_merge = true;
+                                            break;
+                                        }
+                                    }
+                                    if (merge_idx < 0)
+                                        merge_idx = ipdom[bi];
+                                    /* Trust explicit merge annotations even when the
+                                     * CFG RPO does not make the merge look "forward".
+                                     * The orderer is responsible for placing it after
+                                     * the construct body. */
+                                    bool valid_merge = (merge_idx >= 0 && merge_idx != bi);
+                                    if (valid_merge && !has_explicit_merge &&
+                                        rpo_num[merge_idx] <= rpo_num[bi])
+                                        valid_merge = false;
+                                    if (valid_merge) {
+                                        f->phase = 3; /* come back for ipdom merge */
+                                        if (is_active_merge && merge_idx >= 0 && merge_idx < n)
+                                            is_active_merge[merge_idx] = 1;
+                                        /* Push successors except merge, in reverse */
+                                        for (int si = nsuc[bi] - 1; si >= 0; si--) {
+                                            int s = BO_SUCC(bi, si);
+                                            if (s != merge_idx && fsp < frame_cap)
+                                                frames[fsp++] = (Frame){s, merge_idx, 0, 0};
+                                        }
+                                    } else {
+                                        /* No valid ipdom: visit all successors */
+                                        f->phase = -1;
+                                        for (int si = nsuc[bi] - 1; si >= 0; si--) {
+                                            int s = BO_SUCC(bi, si);
+                                            if (fsp < frame_cap)
+                                                frames[fsp++] = (Frame){s, mb, 0, 0};
+                                        }
+                                    }
+                                } else {
+                                    /* Single-successor or return: visit successors.
+                                     * Current frame stays (phase -1); will be popped
+                                     * via the visited[] check on next encounter. */
+                                    if ((f->flags & FRAME_FROM_CONSTRUCT) &&
+                                        sts_is_trivial_branch_bridge(b) &&
+                                        nsuc[bi] == 1) {
+                                        int s = BO_SUCC(bi, 0);
+                                        bool delay_succ = false;
+                                        if (s >= 0 && s < n) {
+                                            if (is_continue_target && is_continue_target[s])
+                                                delay_succ = true;
+                                            if (is_active_merge && is_active_merge[s])
+                                                delay_succ = true;
+                                        }
+                                        if (delay_succ) {
+                                            fsp--;
+                                            continue;
+                                        }
+                                    }
+                                    f->phase = -1;
+                                    for (int si = nsuc[bi] - 1; si >= 0; si--) {
+                                        int s = BO_SUCC(bi, si);
+                                        if (fsp < frame_cap)
+                                            frames[fsp++] = (Frame){s, mb, 0, 0};
+                                    }
+                                    if (nsuc[bi] == 0) fsp--; /* return/unreachable: no successors, just pop */
+                                }
+                            } else if (f->phase == 2) {
+                                /* Loop: body done, now visit the loop merge block */
+                                const SsirBlock *b = &func->blocks[bi];
+                                int lm_idx = -1;
+                                for (uint32_t ii = 0; ii < b->inst_count; ii++) {
+                                    const SsirInst *si = &b->insts[ii];
+                                    if (si->op == SSIR_OP_LOOP_MERGE && si->operand_count >= 1) {
+                                        lm_idx = BO_IDX(si->operands[0]);
+                                        break;
+                                    }
+                                }
+                                if (is_active_merge && lm_idx >= 0 && lm_idx < n)
+                                    is_active_merge[lm_idx] = 0;
+                                fsp--; /* remove current frame */
+                                if (lm_idx >= 0 && fsp < frame_cap)
+                                    frames[fsp++] = (Frame){lm_idx, mb, 0,
+                                                             FRAME_FROM_CONSTRUCT};
+                            } else if (f->phase == 3) {
+                                /* Selection: body done. Before visiting merge,
+                                 * rescue unvisited blocks that belong to this
+                                 * construct but were unreachable by the forward
+                                 * DFS (bridge chain blocks and their targets). */
+                                const SsirBlock *b3 = &func->blocks[bi];
+                                int merge_idx = -1;
+                                for (uint32_t ii = 0; ii < b3->inst_count; ii++) {
+                                    const SsirInst *ai = &b3->insts[ii];
+                                    if (ai->op == SSIR_OP_SELECTION_MERGE &&
+                                        ai->operand_count >= 1) {
+                                        merge_idx = BO_IDX(ai->operands[0]);
+                                        break;
+                                    }
+                                    if (ai->op == SSIR_OP_BRANCH_COND &&
+                                        ai->operand_count >= 4 &&
+                                        ai->operands[3] != 0) {
+                                        merge_idx = BO_IDX(ai->operands[3]);
+                                        break;
+                                    }
+                                }
+                                if (merge_idx < 0)
+                                    merge_idx = ipdom[bi];
+
+                                /* --- Rescue unvisited construct members --- */
+                                int rescue[512];
+                                int resc_count = 0;
+                                if (merge_idx >= 0 && merge_idx < n && idom_fwd) {
+                                    int bfs_q[512];
+                                    int bfs_head = 0, bfs_tail = 0;
+                                    /* Seed: unvisited predecessors of merge */
+                                    for (int pi = 0; pi < npred[merge_idx]; pi++) {
+                                        int p = BO_PRED(merge_idx, pi);
+                                        if (p >= 0 && p < n && !visited[p] &&
+                                            bfs_tail < 512)
+                                            bfs_q[bfs_tail++] = p;
+                                    }
+                                    while (bfs_head < bfs_tail) {
+                                        int bp = bfs_q[bfs_head++];
+                                        if (bp < 0 || bp >= n || visited[bp]) continue;
+                                        if (bp == bi || bp == merge_idx) continue;
+                                        if (!BO_DOMINATES(bi, bp)) continue;
+                                        if (!BO_POSTDOMINATES(merge_idx, bp)) continue;
+                                        /* Dedup */
+                                        bool dup = false;
+                                        for (int ri = 0; ri < resc_count; ri++)
+                                            if (rescue[ri] == bp) { dup = true; break; }
+                                        if (dup) continue;
+                                        if (resc_count < 512) rescue[resc_count++] = bp;
+                                        /* Continue BFS only through bridge blocks */
+                                        const SsirBlock *bpb = &func->blocks[bp];
+                                        bool is_br = (bpb->inst_count >= 1 &&
+                                            bpb->insts[bpb->inst_count-1].op == SSIR_OP_BRANCH);
+                                        if (is_br) {
+                                            bool pure = true;
+                                            for (uint32_t ii = 0; ii < bpb->inst_count-1; ii++) {
+                                                SsirOpcode op = bpb->insts[ii].op;
+                                                if (op != SSIR_OP_SELECTION_MERGE &&
+                                                    op != SSIR_OP_LOOP_MERGE)
+                                                    { pure = false; break; }
+                                            }
+                                            if (pure) {
+                                                for (int pi = 0; pi < npred[bp]; pi++) {
+                                                    int pp = BO_PRED(bp, pi);
+                                                    if (pp >= 0 && pp < n && !visited[pp] &&
+                                                        bfs_tail < 512)
+                                                        bfs_q[bfs_tail++] = pp;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    /* Forward extension: for rescued bridge blocks,
+                                     * also rescue their branch targets if in-construct */
+                                    for (int ri = 0; ri < resc_count; ri++) {
+                                        int rb = rescue[ri];
+                                        const SsirBlock *rbb = &func->blocks[rb];
+                                        if (rbb->inst_count < 1) continue;
+                                        if (rbb->insts[rbb->inst_count-1].op != SSIR_OP_BRANCH)
+                                            continue;
+                                        int tgt = BO_IDX(rbb->insts[rbb->inst_count-1].operands[0]);
+                                        if (tgt < 0 || tgt >= n || visited[tgt]) continue;
+                                        if (tgt == merge_idx) continue;
+                                        if (!BO_DOMINATES(bi, tgt)) continue;
+                                        if (!BO_POSTDOMINATES(merge_idx, tgt)) continue;
+                                        bool dup = false;
+                                        for (int ri2 = 0; ri2 < resc_count; ri2++)
+                                            if (rescue[ri2] == tgt) { dup = true; break; }
+                                        if (!dup && resc_count < 512)
+                                            rescue[resc_count++] = tgt;
+                                    }
+                                    /* Sort descending by RPO (LIFO: lowest RPO on top) */
+                                    for (int i = 0; i < resc_count - 1; i++)
+                                        for (int j = i + 1; j < resc_count; j++)
+                                            if (rpo_num[rescue[i]] < rpo_num[rescue[j]]) {
+                                                int tmp = rescue[i];
+                                                rescue[i] = rescue[j];
+                                                rescue[j] = tmp;
+                                            }
+                                }
+
+                                if (is_active_merge && merge_idx >= 0 && merge_idx < n)
+                                    is_active_merge[merge_idx] = 0;
+                                fsp--; /* pop selection header */
+                                /* Push merge (visited last) */
+                                if (merge_idx >= 0 && fsp < frame_cap)
+                                    frames[fsp++] = (Frame){merge_idx, mb, 0,
+                                                             FRAME_FROM_CONSTRUCT};
+                                /* Push rescued blocks on top (visited before merge) */
+                                for (int ri = 0; ri < resc_count; ri++) {
+                                    if (!visited[rescue[ri]] && fsp < frame_cap)
+                                        frames[fsp++] = (Frame){rescue[ri], merge_idx, 0, 0};
+                                }
+                            } else {
+                                fsp--;
+                            }
+                        }
+                        STS_FREE(frames);
+                        #undef FRAME_FROM_CONSTRUCT
+                    }
+                }
+
+                /* Place unvisited bridge chain blocks before their merge
+                 * target in the output. Bridge blocks are created by the
+                 * structurizer and contain only OpBranch (+ optional merge
+                 * annotations). They form chains leading to merge blocks.
+                 * Placing them before the merge inside the construct fixes
+                 * SPIR-V validation errors about blocks branching to
+                 * selection constructs from outside. */
+                {
+                    /* Process unvisited reachable blocks: bridge blocks get
+                     * inserted before their target; others go at the end.
+                     * Unreachable blocks are excluded — the structurizer's
+                     * final pass already fixed dangling merge references. */
+                    int unvis[512];
+                    int unvis_count = 0;
+                    for (int k = 0; k < n; k++) {
+                        if (!visited[k] && reach[k] && unvis_count < 512)
+                            unvis[unvis_count++] = k;
+                    }
+
+                    /* For each unvisited bridge block, find where its chain
+                     * connects to the ordered output and insert it there. */
+                    for (int ui = 0; ui < unvis_count; ui++) {
+                        int blk = unvis[ui];
+                        if (visited[blk]) continue; /* already inserted */
+                        if (is_known_merge_target &&
+                            blk >= 0 && blk < n &&
+                            is_known_merge_target[blk])
+                            continue;
+
+                        /* Check if this is a bridge block */
+                        const SsirBlock *bk = &func->blocks[blk];
+                        bool is_bridge = false;
+                        if (bk->inst_count >= 1 &&
+                            bk->insts[bk->inst_count - 1].op == SSIR_OP_BRANCH) {
+                            is_bridge = true;
+                            for (uint32_t ii = 0; ii < bk->inst_count - 1; ii++) {
+                                SsirOpcode op = bk->insts[ii].op;
+                                if (op != SSIR_OP_SELECTION_MERGE &&
+                                    op != SSIR_OP_LOOP_MERGE) {
+                                    is_bridge = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!is_bridge) continue;
+
+                        /* Collect the bridge chain starting from this block.
+                         * Follow OpBranch targets until we reach a visited block
+                         * (the connection point). */
+                        int chain[512];
+                        int chain_len = 0;
+                        int cur = blk;
+                        int connect = -1;
+                        while (cur >= 0 && cur < n && !visited[cur] &&
+                               chain_len < 512) {
+                            const SsirBlock *cb = &func->blocks[cur];
+                            bool cb_bridge = false;
+                            if (cb->inst_count >= 1 &&
+                                cb->insts[cb->inst_count - 1].op == SSIR_OP_BRANCH) {
+                                cb_bridge = true;
+                                for (uint32_t ii = 0;
+                                     ii < cb->inst_count - 1; ii++) {
+                                    SsirOpcode op = cb->insts[ii].op;
+                                    if (op != SSIR_OP_SELECTION_MERGE &&
+                                        op != SSIR_OP_LOOP_MERGE) {
+                                        cb_bridge = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!cb_bridge) break;
+                            chain[chain_len++] = cur;
+                            int tgt = BO_IDX(cb->insts[cb->inst_count - 1].operands[0]);
+                            if (tgt >= 0 && tgt < n && visited[tgt]) {
+                                connect = tgt;
+                                break;
+                            }
+                            cur = tgt;
+                        }
+
+                        if (chain_len > 0) {
+                            bool can_insert = (connect >= 0);
+                            if (can_insert) {
+                                for (int ci = 0; ci < chain_len && can_insert; ci++) {
+                                    int cb = chain[ci];
+                                    for (int pi = 0; pi < npred[cb]; pi++) {
+                                        int pred = BO_PRED(cb, pi);
+                                        if (pred < 0) continue;
+                                        if (visited[pred]) continue;
+                                        bool in_chain = false;
+                                        for (int cj = 0; cj < chain_len; cj++) {
+                                            if (chain[cj] == pred) {
+                                                in_chain = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!in_chain) {
+                                            can_insert = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (can_insert) {
+                                for (int ci = 0; ci < chain_len; ci++)
+                                    visited[chain[ci]] = 1;
+                                /* Find the position of 'connect' in dfs_order
+                                 * and insert the chain before it. */
+                                int pos = -1;
+                                for (uint32_t di = 0; di < dfs_count; di++) {
+                                    if ((int)dfs_order[di] == connect) {
+                                        pos = (int)di;
+                                        break;
+                                    }
+                                }
+                                if (pos >= 0) {
+                                    /* Make room: shift dfs_order[pos..] right by chain_len */
+                                    if (dfs_count + chain_len <= func->block_count + 64) {
+                                        for (int si = (int)dfs_count - 1; si >= pos; si--)
+                                            dfs_order[si + chain_len] = dfs_order[si];
+                                        /* Insert chain */
+                                        for (int ci = 0; ci < chain_len; ci++)
+                                            dfs_order[pos + ci] = (uint32_t)chain[ci];
+                                        dfs_count += chain_len;
+                                    }
+                                } else {
+                                    /* Connection point not found; append at end */
+                                    for (int ci = 0; ci < chain_len; ci++)
+                                        dfs_order[dfs_count++] = (uint32_t)chain[ci];
+                                }
+                            } else if (connect < 0) {
+                                /* No connection: chain didn't reach a visited block.
+                                 * Append at end to avoid losing these blocks. */
+                                for (int ci = 0; ci < chain_len; ci++)
+                                    visited[chain[ci]] = 1;
+                                for (int ci = 0; ci < chain_len; ci++)
+                                    dfs_order[dfs_count++] = (uint32_t)chain[ci];
+                            }
+                        }
+                    }
+
+                    /* Append any remaining unvisited reachable blocks in
+                     * forward-RPO.  Unreachable blocks are omitted unless
+                     * they are merge targets (needed for SPIR-V structure). */
+                    {
+                        int remaining[512];
+                        int remaining_count = 0;
+                        for (int k = 0; k < n; k++) {
+                            bool keep = reach[k];
+                            if (!keep && is_known_merge_target &&
+                                k < n && is_known_merge_target[k])
+                                keep = true;
+                            if (!visited[k] && keep && remaining_count < 512)
+                                remaining[remaining_count++] = k;
+                        }
+                        /* Also include any NEW blocks (index >= n) that
+                         * are merge targets created by the structurizer.
+                         * These have index >= original n but < block_count. */
+                        for (uint32_t k = (uint32_t)n; k < func->block_count; k++) {
+                            /* Check if any emitted block references this
+                             * block as a merge target. */
+                            bool is_merge_ref = false;
+                            uint32_t bid = func->blocks[k].id;
+                            for (uint32_t di = 0; di < dfs_count && !is_merge_ref; di++) {
+                                int eb = (int)dfs_order[di];
+                                if (eb < 0 || eb >= (int)func->block_count) continue;
+                                const SsirBlock *eb_b = &func->blocks[eb];
+                                for (uint32_t ii = 0; ii < eb_b->inst_count; ii++) {
+                                    const SsirInst *si = &eb_b->insts[ii];
+                                    if ((si->op == SSIR_OP_SELECTION_MERGE ||
+                                         si->op == SSIR_OP_LOOP_MERGE) &&
+                                        si->operand_count >= 1) {
+                                        for (uint32_t oi = 0; oi < si->operand_count; oi++) {
+                                            if (si->operands[oi] == bid) {
+                                                is_merge_ref = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (is_merge_ref) break;
+                                }
+                            }
+                            if (is_merge_ref && remaining_count < 512)
+                                remaining[remaining_count++] = (int)k;
+                        }
+                        for (int i = 0; i + 1 < remaining_count; i++) {
+                            for (int j = i + 1; j < remaining_count; j++) {
+                                if (rpo_num[remaining[i]] > rpo_num[remaining[j]]) {
+                                    int tmp = remaining[i];
+                                    remaining[i] = remaining[j];
+                                    remaining[j] = tmp;
+                                }
+                            }
+                        }
+                        for (int i = 0; i < remaining_count; i++)
+                            dfs_order[dfs_count++] = (uint32_t)remaining[i];
+                    }
+
+                    /* Some private bridge blocks are discovered during the
+                     * main walk, so they never go through the "unvisited
+                     * chain" rescue above. If such a bridge chain still ends
+                     * up after the block it feeds, hoist the whole chain just
+                     * before that target. */
+                    {
+                        bool changed = true;
+                        int passes = 0;
+                        int *pos_of = (int *)STS_MALLOC((n > 0 ? n : 1) * sizeof(int));
+                        uint32_t *new_order = (uint32_t *)STS_MALLOC(
+                            (func->block_count + 64) * sizeof(uint32_t));
+                        if (!pos_of || !new_order) {
+                            if (pos_of) STS_FREE(pos_of);
+                            if (new_order) STS_FREE(new_order);
+                        } else while (changed && passes++ < n * 4) {
+                            changed = false;
+
+                            for (int i = 0; i < n; i++)
+                                pos_of[i] = -1;
+                            for (uint32_t di = 0; di < dfs_count; di++) {
+                                int blk = (int)dfs_order[di];
+                                if (blk >= 0 && blk < n)
+                                    pos_of[blk] = (int)di;
+                            }
+
+                            for (uint32_t di = 0; di < dfs_count && !changed; di++) {
+                                int blk = (int)dfs_order[di];
+                                if (blk < 0 || blk >= n) continue;
+
+                                const SsirBlock *bk = &func->blocks[blk];
+                                bool is_bridge = false;
+                                if (bk->inst_count >= 1 &&
+                                    bk->insts[bk->inst_count - 1].op == SSIR_OP_BRANCH) {
+                                    is_bridge = true;
+                                    for (uint32_t ii = 0; ii < bk->inst_count - 1; ii++) {
+                                        SsirOpcode op = bk->insts[ii].op;
+                                        if (op != SSIR_OP_SELECTION_MERGE &&
+                                            op != SSIR_OP_LOOP_MERGE) {
+                                            is_bridge = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if (!is_bridge) continue;
+
+                                int chain[512];
+                                int chain_len = 0;
+                                int final_target = -1;
+                                int cur = blk;
+                                while (cur >= 0 && cur < n && chain_len < 512) {
+                                    bool seen = false;
+                                    for (int cj = 0; cj < chain_len; cj++) {
+                                        if (chain[cj] == cur) {
+                                            seen = true;
+                                            break;
+                                        }
+                                    }
+                                    if (seen) break;
+
+                                    const SsirBlock *cb = &func->blocks[cur];
+                                    bool cb_bridge = false;
+                                    if (cb->inst_count >= 1 &&
+                                        cb->insts[cb->inst_count - 1].op == SSIR_OP_BRANCH) {
+                                        cb_bridge = true;
+                                        for (uint32_t ii = 0; ii < cb->inst_count - 1; ii++) {
+                                            SsirOpcode op = cb->insts[ii].op;
+                                            if (op != SSIR_OP_SELECTION_MERGE &&
+                                                op != SSIR_OP_LOOP_MERGE) {
+                                                cb_bridge = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (!cb_bridge) break;
+
+                                    chain[chain_len++] = cur;
+                                    int tgt = BO_IDX(cb->insts[cb->inst_count - 1].operands[0]);
+                                    if (tgt < 0 || tgt >= n) {
+                                        final_target = -1;
+                                        break;
+                                    }
+
+                                    const SsirBlock *tb = &func->blocks[tgt];
+                                    bool tgt_bridge = false;
+                                    if (tb->inst_count >= 1 &&
+                                        tb->insts[tb->inst_count - 1].op == SSIR_OP_BRANCH) {
+                                        tgt_bridge = true;
+                                        for (uint32_t ii = 0; ii < tb->inst_count - 1; ii++) {
+                                            SsirOpcode op = tb->insts[ii].op;
+                                            if (op != SSIR_OP_SELECTION_MERGE &&
+                                                op != SSIR_OP_LOOP_MERGE) {
+                                                tgt_bridge = false;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    if (!tgt_bridge) {
+                                        final_target = tgt;
+                                        break;
+                                    }
+                                    cur = tgt;
+                                }
+
+                                if (chain_len == 0) continue;
+
+                                /* Check dominator of first block in chain */
+                                int chain_idom = -1;
+                                if (idom_fwd && chain[0] >= 0 && chain[0] < n)
+                                    chain_idom = idom_fwd[chain[0]];
+
+                                bool dom_violation = (chain_idom >= 0 &&
+                                    chain_idom < n &&
+                                    pos_of[chain_idom] >= 0 &&
+                                    pos_of[chain_idom] > (int)di);
+
+                                bool target_violation = (final_target >= 0 &&
+                                    final_target < n &&
+                                    pos_of[final_target] >= 0 &&
+                                    pos_of[final_target] < (int)di);
+
+                                if (dom_violation) {
+                                    /* Bridge chain appears before its dominator.
+                                     * Move it to just after the dominator. */
+                                    uint32_t out = 0;
+                                    bool inserted = false;
+                                    for (uint32_t oi = 0; oi < dfs_count; oi++) {
+                                        int cur_blk = (int)dfs_order[oi];
+                                        bool in_chain = false;
+                                        for (int cj = 0; cj < chain_len; cj++) {
+                                            if (chain[cj] == cur_blk) {
+                                                in_chain = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!in_chain)
+                                            new_order[out++] = (uint32_t)cur_blk;
+                                        if (!inserted && cur_blk == chain_idom) {
+                                            for (int cj = 0; cj < chain_len; cj++)
+                                                new_order[out++] = (uint32_t)chain[cj];
+                                            inserted = true;
+                                        }
+                                    }
+                                    if (!inserted || out != dfs_count) continue;
+                                    for (uint32_t oi = 0; oi < dfs_count; oi++)
+                                        dfs_order[oi] = new_order[oi];
+                                    changed = true;
+                                } else if (target_violation) {
+                                    /* Bridge chain appears after its target.
+                                     * Hoist it to just before the target. */
+                                    uint32_t out = 0;
+                                    bool inserted = false;
+                                    for (uint32_t oi = 0; oi < dfs_count; oi++) {
+                                        int cur_blk = (int)dfs_order[oi];
+                                        bool in_chain = false;
+                                        for (int cj = 0; cj < chain_len; cj++) {
+                                            if (chain[cj] == cur_blk) {
+                                                in_chain = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!inserted && cur_blk == final_target) {
+                                            for (int cj = 0; cj < chain_len; cj++)
+                                                new_order[out++] = (uint32_t)chain[cj];
+                                            inserted = true;
+                                        }
+                                        if (!in_chain)
+                                            new_order[out++] = (uint32_t)cur_blk;
+                                    }
+                                    if (!inserted || out != dfs_count) continue;
+                                    for (uint32_t oi = 0; oi < dfs_count; oi++)
+                                        dfs_order[oi] = new_order[oi];
+                                    changed = true;
+                                }
+                            }
+                        }
+                        if (pos_of) STS_FREE(pos_of);
+                        if (new_order) STS_FREE(new_order);
+                    }
+                }
+
+                /* Recompute idom_fwd from the filtered block set.
+                 * Compute proper RPO via forward DFS from block 0,
+                 * considering only blocks that are in dfs_order. */
+                if (idom_fwd && dfs_count > 0) {
+                    uint8_t *in_out = (uint8_t *)STS_MALLOC(n);
+                    int *lrpo = (int *)STS_MALLOC(n * sizeof(int));
+                    int *lrpo_num = (int *)STS_MALLOC(n * sizeof(int));
+                    if (in_out && lrpo && lrpo_num) {
+                        memset(in_out, 0, n);
+                        for (uint32_t di = 0; di < dfs_count; di++) {
+                            int blk = (int)dfs_order[di];
+                            if (blk >= 0 && blk < n) in_out[blk] = 1;
+                        }
+                        /* Forward DFS from block 0 on filtered CFG */
+                        uint8_t *lvis = (uint8_t *)STS_MALLOC(n);
+                        int *ldfs = (int *)STS_MALLOC(n * 12 * sizeof(int));
+                        int lrpo_n = 0;
+                        if (lvis && ldfs) {
+                            memset(lvis, 0, n);
+                            int ldsp = 0, ldcap = n * 12;
+                            ldfs[ldsp++] = 0; ldfs[ldsp++] = 0;
+                            while (ldsp > 0) {
+                                int ph = ldfs[--ldsp];
+                                int nd = ldfs[--ldsp];
+                                if (nd < 0 || nd >= n) continue;
+                                if (ph == 1) { lrpo[lrpo_n++] = nd; continue; }
+                                if (lvis[nd]) continue;
+                                lvis[nd] = true;
+                                if (ldsp + 2 <= ldcap) { ldfs[ldsp++] = nd; ldfs[ldsp++] = 1; }
+                                for (int si = nsuc[nd] - 1; si >= 0; si--) {
+                                    int s = BO_SUCC(nd, si);
+                                    if (s >= 0 && s < n && in_out[s] && !lvis[s] && ldsp + 2 <= ldcap) {
+                                        ldfs[ldsp++] = s; ldfs[ldsp++] = 0;
+                                    }
+                                }
+                            }
+                        }
+                        if (lvis) STS_FREE(lvis);
+                        if (ldfs) STS_FREE(ldfs);
+                        /* Reverse lrpo to get RPO order */
+                        for (int i = 0; i < lrpo_n / 2; i++) {
+                            int tmp = lrpo[i]; lrpo[i] = lrpo[lrpo_n - 1 - i]; lrpo[lrpo_n - 1 - i] = tmp;
+                        }
+                        for (int i = 0; i < n; i++) { idom_fwd[i] = -1; lrpo_num[i] = n + i; }
+                        for (int i = 0; i < lrpo_n; i++) lrpo_num[lrpo[i]] = i;
+                        if (lrpo_n > 0) idom_fwd[lrpo[0]] = lrpo[0];
+                        bool lch = true;
+                        while (lch) {
+                            lch = false;
+                            for (int ri = 1; ri < lrpo_n; ri++) {
+                                int b = lrpo[ri];
+                                int nd = -1;
+                                for (int pi = 0; pi < npred[b]; pi++) {
+                                    int p = BO_PRED(b, pi);
+                                    if (p < 0 || !in_out[p] || idom_fwd[p] == -1) continue;
+                                    if (nd < 0) { nd = p; continue; }
+                                    int a2 = nd, b2 = p, _s = 0;
+                                    while (a2 != b2 && _s < n * 2) {
+                                        while (lrpo_num[a2] > lrpo_num[b2] && _s < n * 2)
+                                            { a2 = idom_fwd[a2]; _s++; }
+                                        while (lrpo_num[b2] > lrpo_num[a2] && _s < n * 2)
+                                            { b2 = idom_fwd[b2]; _s++; }
+                                    }
+                                    nd = (a2 == b2) ? a2 : -1;
+                                }
+                                if (nd >= 0 && nd != idom_fwd[b]) {
+                                    idom_fwd[b] = nd; lch = true;
+                                }
+                            }
+                        }
+                    }
+                    if (in_out) STS_FREE(in_out);
+                    if (lrpo) STS_FREE(lrpo);
+                    if (lrpo_num) STS_FREE(lrpo_num);
+                }
+
+                /* General dominator-order enforcement: if a block appears
+                 * before its immediate forward dominator, hoist the dominator
+                 * to just before the block.  Hoisting the dominator earlier
+                 * is safer than pushing the dominated block later, because
+                 * the dominated block is already inside the right construct
+                 * and moving it could break nesting. */
+                if (idom_fwd) {
+                    int *gpos = (int *)STS_MALLOC((n > 0 ? n : 1) * sizeof(int));
+                    uint32_t *gord = (uint32_t *)STS_MALLOC(
+                        (func->block_count + 64) * sizeof(uint32_t));
+                    if (gpos && gord) {
+                        bool gchanged = true;
+                        int gpasses = 0;
+                        while (gchanged && gpasses++ < n * 4) {
+                            gchanged = false;
+
+                            for (int i = 0; i < n; i++)
+                                gpos[i] = -1;
+                            for (uint32_t di = 0; di < dfs_count; di++) {
+                                int blk = (int)dfs_order[di];
+                                if (blk >= 0 && blk < n)
+                                    gpos[blk] = (int)di;
+                            }
+
+                            for (uint32_t di = 0; di < dfs_count && !gchanged; di++) {
+                                int blk = (int)dfs_order[di];
+                                if (blk < 0 || blk >= n) continue;
+                                int dom = idom_fwd[blk];
+                                if (dom < 0 || dom >= n || dom == blk) continue;
+                                if (gpos[dom] < 0 || gpos[dom] <= (int)di) continue;
+
+                                /* dom at gpos[dom] is after blk at di.
+                                 * Hoist dom to just before blk. */
+                                uint32_t out = 0;
+                                bool inserted = false;
+                                for (uint32_t oi = 0; oi < dfs_count; oi++) {
+                                    if ((int)dfs_order[oi] == dom) continue;
+                                    if (!inserted && (int)dfs_order[oi] == blk) {
+                                        gord[out++] = (uint32_t)dom;
+                                        inserted = true;
+                                    }
+                                    gord[out++] = dfs_order[oi];
+                                }
+                                if (inserted && out == dfs_count) {
+                                    for (uint32_t oi = 0; oi < dfs_count; oi++)
+                                        dfs_order[oi] = gord[oi];
+                                    gchanged = true;
+                                }
+                            }
+                        }
+                    }
+                    if (gpos) STS_FREE(gpos);
+                    if (gord) STS_FREE(gord);
+                }
+
             }
-            STS_FREE(visited);
+
+            if (reach) STS_FREE(reach);
+            if (rpo_stk) STS_FREE(rpo_stk);
+            if (rpo_num) STS_FREE(rpo_num);
+            if (rvis) STS_FREE(rvis);
         }
+
+        if (succ_flat) STS_FREE(succ_flat);
+        if (nsuc) STS_FREE(nsuc);
+        if (pred_flat) STS_FREE(pred_flat);
+        if (npred) STS_FREE(npred);
+        if (ipdom) STS_FREE(ipdom);
+        if (idom_fwd) STS_FREE(idom_fwd);
+        if (visited) STS_FREE(visited);
+        if (is_known_merge_target) STS_FREE(is_known_merge_target);
+        if (is_active_merge) STS_FREE(is_active_merge);
+        if (is_continue_target) STS_FREE(is_continue_target);
+
+        #undef BO_IDX
+        #undef BO_SUCC
+        #undef BO_PRED
+        #undef BO_ADD_EDGE
+        #undef BO_DOMINATES
+        #undef BO_POSTDOMINATES
     }
-    /* Fallback: if DFS failed, use original order */
+    /* Append any blocks not reached by DFS (unreachable / bounce blocks).
+     * Instead of falling back to original order (which loses DFS ordering),
+     * keep the DFS-ordered blocks and append the rest at the end. */
     if (dfs_count != func->block_count) {
-        for (uint32_t k = 0; k < func->block_count; k++)
-            dfs_order[k] = k;
-        dfs_count = func->block_count;
+        if (order_debug) {
+            fprintf(stderr,
+                    "[sts_order] appending %u unreached blocks (func=%s dfs=%u total=%u)\n",
+                    func->block_count - dfs_count,
+                    func->name ? func->name : "<anon-func>",
+                    dfs_count, func->block_count);
+        }
+        /* Build a visited set from the DFS order */
+        uint8_t *in_dfs = (uint8_t *)STS_MALLOC(func->block_count);
+        if (in_dfs) {
+            memset(in_dfs, 0, func->block_count);
+            for (uint32_t k = 0; k < dfs_count; k++)
+                if (dfs_order[k] < func->block_count)
+                    in_dfs[dfs_order[k]] = 1;
+            /* Drop unreachable blocks — they have no valid predecessors
+             * and emitting them can produce invalid SPIR-V (undefined IDs,
+             * loads from non-pointer types, unterminated blocks). */
+            if (order_debug) {
+                for (uint32_t k = 0; k < func->block_count; k++) {
+                    if (!in_dfs[k]) {
+                        const SsirBlock *ub = &func->blocks[k];
+                        fprintf(stderr, "[sts_order]   dropped unreached[%u] id=%u name=%s insts=%u\n",
+                                k, ub->id, ub->name ? ub->name : "?", ub->inst_count);
+                    }
+                }
+            }
+            STS_FREE(in_dfs);
+        }
     }
 
     /* Emit blocks in DFS order */
@@ -2762,9 +4095,50 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
             }
         }
 
-        /* Emit instructions */
-        for (uint32_t ii = 0; ii < block->inst_count; ++ii) {
-            emit_instruction(c, &block->insts[ii], func->return_type);
+        /* Emit instructions.
+         * Skip SelectionMerge if the block also has a LoopMerge
+         * (only one merge can precede a branch in SPIR-V). */
+        {
+            bool has_loop_merge = false;
+            for (uint32_t ii = 0; ii < block->inst_count; ii++) {
+                if (block->insts[ii].op == SSIR_OP_LOOP_MERGE) {
+                    has_loop_merge = true;
+                    break;
+                }
+            }
+            for (uint32_t ii = 0; ii < block->inst_count; ++ii) {
+                /* Skip SelectionMerge in blocks that have LoopMerge */
+                if (has_loop_merge && block->insts[ii].op == SSIR_OP_SELECTION_MERGE)
+                    continue;
+                /* Skip SelectionMerge embedded in BRANCH_COND when LoopMerge exists */
+                if (has_loop_merge && block->insts[ii].op == SSIR_OP_BRANCH_COND &&
+                    block->insts[ii].operand_count >= 4 && block->insts[ii].operands[3] != 0) {
+                    /* Temporarily clear the merge annotation so emit_instruction doesn't emit SelectionMerge */
+                    uint32_t saved = block->insts[ii].operands[3];
+                    ((SsirInst *)&block->insts[ii])->operands[3] = 0;
+                    emit_instruction(c, &block->insts[ii], func->return_type);
+                    ((SsirInst *)&block->insts[ii])->operands[3] = saved;
+                    continue;
+                }
+                emit_instruction(c, &block->insts[ii], func->return_type);
+            }
+        }
+
+        /* Ensure every block ends with a terminator.  Unreachable blocks
+         * (or blocks whose terminator was lost) get OpUnreachable. */
+        {
+            bool has_term = false;
+            if (block->inst_count > 0) {
+                SsirOpcode last_op = block->insts[block->inst_count - 1].op;
+                if (last_op == SSIR_OP_BRANCH || last_op == SSIR_OP_BRANCH_COND ||
+                    last_op == SSIR_OP_RETURN || last_op == SSIR_OP_RETURN_VOID ||
+                    last_op == SSIR_OP_UNREACHABLE || last_op == SSIR_OP_DISCARD ||
+                    last_op == SSIR_OP_SWITCH)
+                    has_term = true;
+            }
+            if (!has_term) {
+                sts_emit_op(wb, SpvOpUnreachable, 1);
+            }
         }
     }
 

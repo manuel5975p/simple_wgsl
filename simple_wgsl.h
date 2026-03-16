@@ -1546,6 +1546,15 @@ void ssir_validation_result_free(SsirValidationResult *result);
 void ssir_count_uses(SsirFunction *f, uint32_t *use_counts, uint32_t max_id);
 void ssir_module_build_lookup(SsirModule *mod);
 
+/* Block instruction manipulation */
+
+void ssir_block_remove_inst_at(SsirBlock *b, uint32_t index);
+void ssir_block_insert_inst_at(SsirBlock *b, uint32_t pos, const SsirInst *inst);
+
+/* Structurization API */
+
+void ssir_structurize_function(SsirModule *mod, uint32_t func_id);
+
 /* Debug/Utility API */
 
 const char *ssir_opcode_name(SsirOpcode op);

@@ -45,6 +45,7 @@ typedef struct {
     uint32_t block_id;
     bool defined;
     int displaced_construct_depth;  /* construct_depth when targeted by bra.uni, -1 if not displaced */
+    int owning_construct_depth;     /* push_depth of the branch that targets this label, -1 if not a branch target */
 } PlLabel;
 
 typedef struct {
@@ -121,6 +122,25 @@ typedef struct {
     bool cur_has_return;
     bool past_return;  /* Set after ret/exit; suppresses back-edge detection */
     int displaced_depth;  /* construct_depth limit for displaced blocks, -1 if none */
+    int label_construct_depth;  /* owning_construct_depth of current label block, -1 if fallthrough */
+
+    /* Switch cascade detection: nvcc compiles switch statements as binary search
+     * trees of setp+bra instructions.  We detect these patterns and emit OpSwitch
+     * to avoid creating deeply nested selections that violate SPIR-V's structured
+     * control flow requirements. */
+    struct PlSwitchCascade {
+        int start_stmt;                     /* first statement index of cascade (setp) */
+        int end_stmt;                       /* statement index past the dispatch compare ladder */
+        char selector_reg[PTX_NAME_MAX];    /* register being switched on */
+        char default_label[PTX_NAME_MAX];   /* default/merge label */
+        char merge_label[PTX_NAME_MAX];     /* where all cases converge */
+        struct PlSwitchCase { int32_t value; char label[PTX_NAME_MAX]; } cases[128];
+        int case_count;
+        /* Labels that are subtree nodes of the binary search (comparison-only blocks) */
+        char subtree_labels[32][PTX_NAME_MAX];
+        int subtree_label_count;
+    } *switch_cascades;
+    int switch_cascade_count, switch_cascade_cap;
 
     char error[1024];
     int had_error;
@@ -309,6 +329,7 @@ static uint32_t pl_get_or_create_label(PtxLower *p, const char *name) {
     l->block_id = ssir_module_alloc_id(p->mod);
     l->defined = false;
     l->displaced_construct_depth = -1;
+    l->owning_construct_depth = -1;
     return l->block_id;
 }
 
@@ -357,6 +378,43 @@ static bool pl_has_deferred_merge_for(PtxLower *p, uint32_t block_id) {
             p->construct_stack[i].has_inner_merge)
             return true;
     return false;
+}
+
+/* Route unmatched forward branches through the nearest valid construct merge.
+ * This catches convergence labels that are not currently represented by a
+ * construct-stack entry. */
+static uint32_t pl_far_target_route(PtxLower *p, const char *label,
+                                    uint32_t target) {
+    if (!p || p->construct_depth <= 0)
+        return 0;
+
+    /* Only intercept forward references. Already-defined labels have a
+     * concrete placement and should use the normal branch path. */
+    PlLabel *tgt_lbl = pl_find_label_by_name(p, label);
+    if (tgt_lbl && tgt_lbl->defined)
+        return 0;
+
+    int effective_depth = p->construct_depth;
+    if (p->displaced_depth >= 0 && p->displaced_depth < effective_depth)
+        effective_depth = p->displaced_depth;
+    if (effective_depth <= 0)
+        return 0;
+
+    /* Direct branches to an existing merge are already structured exits. */
+    for (int i = 0; i < effective_depth; i++) {
+        if (p->construct_stack[i].merge_block == target)
+            return 0;
+    }
+
+    int my_depth = p->label_construct_depth;
+    if (my_depth >= 0) {
+        for (int i = effective_depth - 1; i >= 0; i--) {
+            if (p->construct_stack[i].push_depth <= my_depth)
+                return p->construct_stack[i].merge_block;
+        }
+    }
+
+    return p->construct_stack[effective_depth - 1].merge_block;
 }
 
 /* ===== Constant Helpers ===== */
@@ -2022,6 +2080,907 @@ static int pl_find_exit_ramp(PtxLower *p, const char *label) {
     return -1;
 }
 
+/* ===== Switch Cascade Detection ===== */
+
+/* Check if a basic block (from label_idx+1 to next label or end) contains
+ * only dispatch instructions (setp, bra, add for offset computation).
+ * Returns true if so. */
+static bool pl_is_subtree_block(const PtxStmt *body, int body_count,
+                                 int label_idx, const char *selector_reg,
+                                 const char *default_label) {
+    (void)selector_reg;
+    for (int j = label_idx + 1; j < body_count; j++) {
+        if (body[j].kind == PTX_STMT_LABEL) break; /* reached next block */
+        const PtxInst *inst = &body[j].inst;
+        if (inst->opcode == PTX_OP_SETP) {
+            /* Accept any comparison in dispatch blocks */
+        } else if (inst->opcode == PTX_OP_ADD) {
+            /* Accept add instructions (used for range offset computation) */
+        } else if (inst->opcode == PTX_OP_BRA) {
+            /* Conditional or unconditional bra is ok in a subtree */
+            if (!inst->has_pred) {
+                /* Unconditional branch must go to default */
+                if (inst->src_count < 1 || inst->src[0].kind != PTX_OPER_LABEL)
+                    return false;
+                if (default_label && strcmp(inst->src[0].name, default_label) != 0)
+                    return false;
+            }
+        } else {
+            return false; /* non-comparison instruction */
+        }
+    }
+    return true;
+}
+
+static bool pl_switch_selector_match(const PtxInst *inst, const char *selector_reg,
+                                     int32_t *value_out) {
+    if (!inst || inst->opcode != PTX_OP_SETP || inst->src_count < 2 || !selector_reg)
+        return false;
+
+    if (inst->src[0].kind == PTX_OPER_REG &&
+        strcmp(inst->src[0].name, selector_reg) == 0 &&
+        inst->src[1].kind == PTX_OPER_IMM_INT) {
+        if (value_out) *value_out = (int32_t)inst->src[1].ival;
+        return true;
+    }
+    if (inst->src[1].kind == PTX_OPER_REG &&
+        strcmp(inst->src[1].name, selector_reg) == 0 &&
+        inst->src[0].kind == PTX_OPER_IMM_INT) {
+        if (value_out) *value_out = (int32_t)inst->src[0].ival;
+        return true;
+    }
+    return false;
+}
+
+/* Collect eq-case mappings from a comparison block starting at start_idx.
+ * The block contains setp+bra pairs. For setp.eq, record the case value and
+ * branch target. For setp.ne with the next instruction being bra.uni, the
+ * bra.uni target is the case for non-match (i.e., the code after ne+bra is
+ * the match case). For setp.gt/lt, the branch target is a subtree to recurse into.
+ * Returns the default label (from final bra.uni) or NULL. */
+static const char *pl_collect_switch_cases(const PtxStmt *body, int body_count,
+                                            int start_idx, int end_idx,
+                                            const char *selector_reg,
+                                            struct PlSwitchCase *cases,
+                                            int *case_count, int max_cases,
+                                            char subtree_labels[][PTX_NAME_MAX],
+                                            int *subtree_label_count, int max_subtrees,
+                                            int *pair_count, int *eq_count,
+                                            int *dispatch_end,
+                                            const char **explicit_default_label,
+                                            bool current_inline_case) {
+    const char *default_label = NULL;
+    char pending_pred[PTX_NAME_MAX] = {0};
+    PtxCmpOp pending_cmp = PTX_CMP_NONE;
+    int32_t pending_val = 0;
+    bool saw_pair = false;
+    int last_dispatch = start_idx;
+
+    if (pair_count) *pair_count = 0;
+    if (eq_count) *eq_count = 0;
+    if (dispatch_end) *dispatch_end = start_idx;
+    if (explicit_default_label) *explicit_default_label = NULL;
+
+    for (int i = start_idx; i < end_idx && i < body_count; i++) {
+        if (body[i].kind == PTX_STMT_LABEL) break;
+        if (body[i].kind != PTX_STMT_INST) continue;
+        const PtxInst *inst = &body[i].inst;
+
+        if (pending_pred[0] != '\0') {
+            if (inst->opcode == PTX_OP_BRA && inst->has_pred &&
+                strcmp(inst->pred, pending_pred) == 0 &&
+                inst->src_count >= 1 && inst->src[0].kind == PTX_OPER_LABEL) {
+                const char *target = inst->src[0].name;
+                bool pred_neg = inst->pred_negated;
+                saw_pair = true;
+                last_dispatch = i + 1;
+                if (pair_count) (*pair_count)++;
+                if (eq_count &&
+                    (pending_cmp == PTX_CMP_EQ || pending_cmp == PTX_CMP_NE))
+                    (*eq_count)++;
+
+                if ((pending_cmp == PTX_CMP_EQ && !pred_neg) ||
+                    (pending_cmp == PTX_CMP_NE && pred_neg)) {
+                    if (*case_count < max_cases) {
+                        cases[*case_count].value = pending_val;
+                        snprintf(cases[*case_count].label, PTX_NAME_MAX, "%s", target);
+                        (*case_count)++;
+                    }
+                } else if ((pending_cmp == PTX_CMP_NE && !pred_neg) ||
+                           (pending_cmp == PTX_CMP_EQ && pred_neg)) {
+                    if (*case_count < max_cases) {
+                        cases[*case_count].value = pending_val;
+                        snprintf(cases[*case_count].label, PTX_NAME_MAX,
+                                 current_inline_case ? "$__current_inline_%d"
+                                                     : "$__inline_%d",
+                                 pending_val);
+                        (*case_count)++;
+                    }
+                    default_label = target;
+                } else if (pending_cmp == PTX_CMP_GT || pending_cmp == PTX_CMP_LT ||
+                           pending_cmp == PTX_CMP_GE || pending_cmp == PTX_CMP_LE) {
+                    int sub_idx = pl_find_label_index(body, body_count, target);
+                    if (sub_idx >= 0 && *subtree_label_count < max_subtrees) {
+                        snprintf(subtree_labels[*subtree_label_count], PTX_NAME_MAX,
+                                 "%s", target);
+                        (*subtree_label_count)++;
+                    }
+                }
+
+                pending_pred[0] = '\0';
+                pending_cmp = PTX_CMP_NONE;
+                continue;
+            }
+
+            if (inst->opcode == PTX_OP_SETP) {
+                int32_t unused_val = 0;
+                if (pl_switch_selector_match(inst, selector_reg, &unused_val))
+                    break;
+            }
+
+            /* Allow arbitrary setup between the compare and its predicated bra. */
+            continue;
+        }
+
+        if (inst->opcode == PTX_OP_SETP) {
+            int32_t cmp_val = 0;
+            if (!pl_switch_selector_match(inst, selector_reg, &cmp_val)) {
+                if (saw_pair) break;
+                continue;
+            }
+            pending_cmp = inst->cmp_op;
+            pending_val = cmp_val;
+            snprintf(pending_pred, PTX_NAME_MAX, "%s", inst->dst.name);
+            continue;
+        }
+
+        if (inst->opcode == PTX_OP_BRA && !inst->has_pred &&
+            inst->src_count >= 1 && inst->src[0].kind == PTX_OPER_LABEL) {
+            if (saw_pair) {
+                if (!default_label)
+                    default_label = inst->src[0].name;
+                if (explicit_default_label)
+                    *explicit_default_label = inst->src[0].name;
+                last_dispatch = i + 1;
+            }
+            break;
+        }
+
+        if (saw_pair) break;
+    }
+
+    if (dispatch_end) *dispatch_end = last_dispatch;
+    return default_label;
+}
+
+/* Detect switch cascades in the PTX body.  A switch cascade is a binary search
+ * tree of setp+bra instructions that all compare the same register against
+ * integer constants, spanning potentially multiple basic blocks (subtrees). */
+static void pl_precompute_switch_cascades(PtxLower *p, const PtxStmt *body,
+                                           int body_count) {
+    for (int i = 0; i < body_count - 2; i++) {
+        /* Skip statements inside subtree blocks or case/default blocks
+         * of already-detected cascades */
+        {
+            bool in_cascade_region = false;
+            for (int sc = 0; sc < p->switch_cascade_count && !in_cascade_region; sc++) {
+                /* Check subtree blocks */
+                for (int sl = 0; sl < p->switch_cascades[sc].subtree_label_count; sl++) {
+                    int sub_idx = pl_find_label_index(body, body_count,
+                        p->switch_cascades[sc].subtree_labels[sl]);
+                    if (sub_idx >= 0 && sub_idx < i) {
+                        bool between = true;
+                        for (int k = sub_idx + 1; k < i; k++) {
+                            if (body[k].kind == PTX_STMT_LABEL) { between = false; break; }
+                        }
+                        if (between) { in_cascade_region = true; break; }
+                    }
+                }
+                /* Check default block: if this statement is inside the default
+                 * target of an outer cascade, skip to avoid creating a nested
+                 * cascade with the same merge label. */
+                if (!in_cascade_region) {
+                    int def_idx = pl_find_label_index(body, body_count,
+                        p->switch_cascades[sc].default_label);
+                    if (def_idx >= 0 && def_idx < i) {
+                        bool between = true;
+                        for (int k = def_idx + 1; k < i; k++) {
+                            if (body[k].kind == PTX_STMT_LABEL) { between = false; break; }
+                        }
+                        if (between) in_cascade_region = true;
+                    }
+                }
+            }
+            if (in_cascade_region) continue;
+        }
+
+        /* Look for the start of a cascade: setp followed by @pred bra */
+        if (body[i].kind != PTX_STMT_INST) continue;
+        const PtxInst *setp = &body[i].inst;
+        if (setp->opcode != PTX_OP_SETP) continue;
+        if (setp->src_count < 2) continue;
+
+        /* One operand must be an integer constant, the other a register */
+        const char *selector_reg = NULL;
+        if (setp->src[0].kind == PTX_OPER_REG &&
+            setp->src[1].kind == PTX_OPER_IMM_INT)
+            selector_reg = setp->src[0].name;
+        else if (setp->src[1].kind == PTX_OPER_REG &&
+                 setp->src[0].kind == PTX_OPER_IMM_INT)
+            selector_reg = setp->src[1].name;
+        if (!selector_reg) continue;
+
+        /* Collect cases from the root block */
+        struct PlSwitchCase temp_cases[128];
+        int temp_case_count = 0;
+        char temp_subtrees[32][PTX_NAME_MAX];
+        int temp_subtree_count = 0;
+        int pair_count = 0;
+        int eq_count = 0;
+        int cascade_end = i;
+        const char *explicit_default = NULL;
+
+        const char *default_label = pl_collect_switch_cases(
+                                body, body_count, i, body_count, selector_reg,
+                                temp_cases, &temp_case_count, 128,
+                                temp_subtrees, &temp_subtree_count, 32,
+                                &pair_count, &eq_count, &cascade_end,
+                                &explicit_default, true);
+
+        /* Need at least 2 comparison pairs and some eq checks to be a switch */
+        if (pair_count < 2 || eq_count < 2) continue;
+        if (!default_label) continue;
+        const char *inferred_merge = NULL;
+
+        /* If the inline case body stays in the same basic block and ends with
+         * a simple bra.uni before the next label, keep using the synthetic
+         * inline lowering path. Reserve the live fallthrough path for truly
+         * complex inline cases that introduce labels/control flow. */
+        {
+            const char *tail_merge = NULL;
+            for (int j = cascade_end; j < body_count; j++) {
+                if (body[j].kind == PTX_STMT_LABEL) break;
+                if (body[j].kind != PTX_STMT_INST) continue;
+                const PtxInst *inst = &body[j].inst;
+                if (inst->opcode == PTX_OP_BRA && !inst->has_pred &&
+                    inst->src_count >= 1 && inst->src[0].kind == PTX_OPER_LABEL) {
+                    tail_merge = inst->src[0].name;
+                    break;
+                }
+            }
+            if (tail_merge) {
+                for (int c = 0; c < temp_case_count; c++) {
+                    if (strncmp(temp_cases[c].label, "$__current_inline_", 18) == 0) {
+                        int32_t v = temp_cases[c].value;
+                        snprintf(temp_cases[c].label, PTX_NAME_MAX, "$__inline_%d", v);
+                    }
+                }
+                explicit_default = tail_merge;
+            }
+        }
+
+        /* For complex inline cases that introduce their own labels, nvcc still
+         * tends to place the shared merge as the first top-level label after the
+         * last case/default block. Use that as an explicit merge so the switch
+         * does not rely on the structurizer to rediscover it inside loops. */
+        if (!explicit_default) {
+            bool has_current_inline = false;
+            int max_case_idx = pl_find_label_index(body, body_count, default_label);
+            for (int c = 0; c < temp_case_count; c++) {
+                if (strncmp(temp_cases[c].label, "$__current_inline_", 18) == 0) {
+                    has_current_inline = true;
+                    continue;
+                }
+                int case_idx = pl_find_label_index(body, body_count, temp_cases[c].label);
+                if (case_idx > max_case_idx) max_case_idx = case_idx;
+            }
+            if (has_current_inline && max_case_idx >= 0) {
+                for (int j = max_case_idx + 1; j < body_count; j++) {
+                    if (body[j].kind == PTX_STMT_LABEL) {
+                        inferred_merge = body[j].label;
+                        break;
+                    }
+                }
+            }
+        }
+
+        /* Now recurse into subtree blocks and collect their cases.
+         * Also collect cases from impure subtrees (blocks with code),
+         * which allows combining inner cascades with the outer one. */
+        int processed_subtrees = 0;
+        while (processed_subtrees < temp_subtree_count) {
+            const char *sub_label = temp_subtrees[processed_subtrees++];
+            int sub_idx = pl_find_label_index(body, body_count, sub_label);
+            if (sub_idx < 0) continue;
+
+            /* Find end of subtree block */
+            int sub_end = body_count;
+            for (int j = sub_idx + 1; j < body_count; j++) {
+                if (body[j].kind == PTX_STMT_LABEL) { sub_end = j; break; }
+            }
+
+            /* Always try to collect cases from subtree blocks, even impure ones.
+             * This allows combining inner cascades (like apply_op's BB0_49)
+             * with the outer cascade. */
+            pl_collect_switch_cases(body, body_count, sub_idx + 1, sub_end,
+                                    selector_reg, temp_cases, &temp_case_count, 128,
+                                    temp_subtrees, &temp_subtree_count, 32,
+                                    NULL, NULL, NULL, NULL, false);
+        }
+
+        /* Filter subtree labels: only keep those that are pure comparison blocks.
+         * Labels that have non-comparison instructions (case bodies) should NOT
+         * be skipped during lowering. If a non-pure subtree was a gt/lt split
+         * target, it should become the default (it handles the remaining cases). */
+        {
+            int write_st = 0;
+            for (int s = 0; s < temp_subtree_count; s++) {
+                int sub_idx = pl_find_label_index(body, body_count, temp_subtrees[s]);
+                if (sub_idx >= 0 && pl_is_subtree_block(body, body_count, sub_idx,
+                                                         selector_reg, default_label)) {
+                    if (write_st != s)
+                        snprintf(temp_subtrees[write_st], PTX_NAME_MAX, "%s",
+                                 temp_subtrees[s]);
+                    write_st++;
+                } else {
+                    /* Non-pure subtree: check if all its eq cases have been
+                     * collected. If so, use the merge as default instead of
+                     * the subtree (since the subtree's code is now handled
+                     * by the OpSwitch cases). If not, use the subtree as
+                     * default so it can handle remaining cases. */
+                    /* Count eq cases collected from this subtree */
+                    int sub_cases = 0;
+                    int sub_idx = pl_find_label_index(body, body_count, temp_subtrees[s]);
+                    if (sub_idx >= 0) {
+                        for (int c = 0; c < temp_case_count; c++) {
+                            int cbl_idx = pl_find_label_index(body, body_count,
+                                temp_cases[c].label);
+                            if (cbl_idx > sub_idx) sub_cases++;
+                        }
+                    }
+                    /* If we got cases from the subtree, it's handled by the switch.
+                     * Use merge as default and add the subtree to the skip list.
+                     * Otherwise use subtree as default. */
+                    if (sub_cases == 0) {
+                        default_label = temp_subtrees[s];
+                    } else {
+                        /* Add this dead subtree to be skipped during lowering */
+                        if (write_st < 32) {
+                            char tmp_name[PTX_NAME_MAX];
+                            snprintf(tmp_name, PTX_NAME_MAX, "%s", temp_subtrees[s]);
+                            snprintf(temp_subtrees[write_st], PTX_NAME_MAX, "%s", tmp_name);
+                            write_st++;
+                        }
+                    }
+                }
+            }
+            temp_subtree_count = write_st;
+        }
+
+        /* Require at least 3 concrete cases to consider this a switch */
+        if (temp_case_count < 3) continue;
+
+        /* Find the merge label: where all case bodies converge.
+         * If there is no explicit branch out of the dispatch ladder, leave it
+         * unset and let the SSIR structurizer infer a selection merge. */
+        const char *merge_label = "";
+        if (explicit_default) {
+            merge_label = explicit_default;
+            if (strcmp(explicit_default, default_label) == 0)
+                merge_label = explicit_default;
+        } else if (inferred_merge) {
+            merge_label = inferred_merge;
+        }
+
+        /* Allow cascades that converge at the same PTX label. The SSIR
+         * structurizer will split duplicate merge targets with trampolines,
+         * which is still preferable to missing the switch and lowering the
+         * dispatch as a nest of bogus loop back-edges. */
+
+        /* Sort cases by the order their target labels appear in the PTX body.
+         * This ensures the OpSwitch case list matches the fallthrough order,
+         * which SPIR-V validation requires when case blocks branch to each
+         * other (fallthrough semantics). */
+        for (int a = 0; a < temp_case_count - 1; a++) {
+            for (int b = a + 1; b < temp_case_count; b++) {
+                int pos_a = pl_find_label_index(body, body_count, temp_cases[a].label);
+                int pos_b = pl_find_label_index(body, body_count, temp_cases[b].label);
+                if (pos_a > pos_b) {
+                    struct PlSwitchCase tmp = temp_cases[a];
+                    temp_cases[a] = temp_cases[b];
+                    temp_cases[b] = tmp;
+                }
+            }
+        }
+
+        /* Record the switch cascade */
+        SW_GROW(p->switch_cascades, p->switch_cascade_count,
+                p->switch_cascade_cap, __typeof__(*p->switch_cascades),
+                ptx_realloc_);
+        int idx = p->switch_cascade_count++;
+        memset(&p->switch_cascades[idx], 0, sizeof(p->switch_cascades[idx]));
+        p->switch_cascades[idx].start_stmt = i;
+        p->switch_cascades[idx].end_stmt = cascade_end;
+        snprintf(p->switch_cascades[idx].selector_reg, PTX_NAME_MAX, "%s",
+                 selector_reg);
+        snprintf(p->switch_cascades[idx].default_label, PTX_NAME_MAX, "%s",
+                 default_label);
+        if (merge_label && merge_label[0] != '\0')
+            snprintf(p->switch_cascades[idx].merge_label, PTX_NAME_MAX, "%s",
+                     merge_label);
+        for (int c = 0; c < temp_case_count && c < 128; c++)
+            p->switch_cascades[idx].cases[c] = temp_cases[c];
+        p->switch_cascades[idx].case_count = temp_case_count < 128 ? temp_case_count : 128;
+        for (int s = 0; s < temp_subtree_count && s < 32; s++)
+            snprintf(p->switch_cascades[idx].subtree_labels[s], PTX_NAME_MAX,
+                     "%s", temp_subtrees[s]);
+        p->switch_cascades[idx].subtree_label_count =
+            temp_subtree_count < 32 ? temp_subtree_count : 32;
+
+        /* Skip past this cascade so we don't detect sub-patterns */
+        i = cascade_end - 1;
+    }
+}
+
+/* ===== Range Switch Detection ===== */
+/* Detect range-based switch patterns: setp.gt %SEL, N; @p bra; bra.uni
+ * followed by blocks with add+setp.lt.u32 range checks. Expands ranges
+ * into per-value OpSwitch cases. */
+
+/* Trace a range-switch subtree block to collect value-to-label mappings.
+ * subtree_idx is the body index of the subtree label. */
+static void pl_trace_range_subtree(const PtxStmt *body, int body_count,
+                                    int subtree_idx, const char *selector_reg,
+                                    struct PlSwitchCase *cases, int *case_count,
+                                    int max_cases,
+                                    char subtree_labels[][PTX_NAME_MAX],
+                                    int *subtree_label_count, int max_subtrees,
+                                    const char *outer_default) {
+    /* Scan instructions in this block looking for:
+     * 1. add.s32 %rN, %selector, -OFFSET  (offset register)
+     * 2. setp.lt.u32 %pM, %rN, RANGE
+     * 3. @%pM bra TARGET (range match)
+     * Also: setp.eq %pM, %selector, VALUE; @pM bra TARGET (exact match)
+     * And: bra.uni DEFAULT (unmatched values) */
+    char offset_reg[PTX_NAME_MAX] = {0};
+    int32_t offset_val = 0;
+    const char *default_label = outer_default;
+    PtxCmpOp last_cmp = PTX_CMP_NONE;
+    int32_t last_lt_range = 0;
+    int32_t last_eq_val = 0;
+
+    for (int j = subtree_idx + 1; j < body_count; j++) {
+        if (body[j].kind == PTX_STMT_LABEL) break;
+        if (body[j].kind != PTX_STMT_INST) continue;
+        const PtxInst *inst = &body[j].inst;
+
+        if (inst->opcode == PTX_OP_ADD && inst->src_count >= 2) {
+            /* add.s32 %rN, %selector, -OFFSET */
+            if (inst->src[0].kind == PTX_OPER_REG &&
+                strcmp(inst->src[0].name, selector_reg) == 0 &&
+                inst->src[1].kind == PTX_OPER_IMM_INT) {
+                snprintf(offset_reg, PTX_NAME_MAX, "%s", inst->dst.name);
+                offset_val = (int32_t)inst->src[1].ival; /* negative offset */
+            }
+        } else if (inst->opcode == PTX_OP_SETP) {
+            if (inst->cmp_op == PTX_CMP_LT || inst->cmp_op == PTX_CMP_LO) {
+                /* setp.lt.u32 %pM, %rN, RANGE */
+                if (inst->src_count >= 2 && inst->src[0].kind == PTX_OPER_REG &&
+                    strcmp(inst->src[0].name, offset_reg) == 0 &&
+                    inst->src[1].kind == PTX_OPER_IMM_INT) {
+                    last_cmp = PTX_CMP_LT;
+                    last_lt_range = (int32_t)inst->src[1].ival;
+                } else if (inst->src_count >= 2 && inst->src[0].kind == PTX_OPER_REG &&
+                           strcmp(inst->src[0].name, selector_reg) == 0 &&
+                           inst->src[1].kind == PTX_OPER_IMM_INT) {
+                    /* setp.lt.u32 %pM, %selector, VALUE (direct range) */
+                    last_cmp = PTX_CMP_LT;
+                    last_lt_range = (int32_t)inst->src[1].ival;
+                    offset_val = 0;
+                }
+            } else if (inst->cmp_op == PTX_CMP_EQ) {
+                /* setp.eq %pM, %selector, VALUE */
+                if (inst->src_count >= 2 &&
+                    ((inst->src[0].kind == PTX_OPER_REG &&
+                      strcmp(inst->src[0].name, selector_reg) == 0) ||
+                     (inst->src[1].kind == PTX_OPER_REG &&
+                      strcmp(inst->src[1].name, selector_reg) == 0))) {
+                    last_cmp = PTX_CMP_EQ;
+                    if (inst->src[1].kind == PTX_OPER_IMM_INT)
+                        last_eq_val = (int32_t)inst->src[1].ival;
+                    else if (inst->src[0].kind == PTX_OPER_IMM_INT)
+                        last_eq_val = (int32_t)inst->src[0].ival;
+                }
+            } else if (inst->cmp_op == PTX_CMP_GT) {
+                /* setp.gt for further splitting - record as subtree */
+                last_cmp = PTX_CMP_GT;
+            }
+        } else if (inst->opcode == PTX_OP_BRA) {
+            if (inst->has_pred && inst->src_count >= 1 &&
+                inst->src[0].kind == PTX_OPER_LABEL) {
+                const char *target = inst->src[0].name;
+                if (last_cmp == PTX_CMP_LT) {
+                    /* Range match: values from (-offset_val) to (-offset_val + range - 1) */
+                    int32_t base = -offset_val;
+                    for (int32_t v = base; v < base + last_lt_range && *case_count < max_cases; v++) {
+                        cases[*case_count].value = v;
+                        snprintf(cases[*case_count].label, PTX_NAME_MAX, "%s", target);
+                        (*case_count)++;
+                    }
+                    offset_reg[0] = 0;
+                } else if (last_cmp == PTX_CMP_EQ) {
+                    /* Exact match */
+                    if (*case_count < max_cases) {
+                        cases[*case_count].value = last_eq_val;
+                        snprintf(cases[*case_count].label, PTX_NAME_MAX, "%s", target);
+                        (*case_count)++;
+                    }
+                } else if (last_cmp == PTX_CMP_GT) {
+                    /* Subtree split */
+                    int sub_idx = pl_find_label_index(body, body_count, target);
+                    if (sub_idx >= 0 && *subtree_label_count < max_subtrees) {
+                        snprintf(subtree_labels[*subtree_label_count], PTX_NAME_MAX,
+                                 "%s", target);
+                        (*subtree_label_count)++;
+                    }
+                }
+                last_cmp = PTX_CMP_NONE;
+            } else if (!inst->has_pred) {
+                /* bra.uni: remaining values go to this target (subtree or default) */
+                if (inst->src_count >= 1 && inst->src[0].kind == PTX_OPER_LABEL) {
+                    int sub_idx = pl_find_label_index(body, body_count, inst->src[0].name);
+                    if (sub_idx >= 0 && *subtree_label_count < max_subtrees) {
+                        snprintf(subtree_labels[*subtree_label_count], PTX_NAME_MAX,
+                                 "%s", inst->src[0].name);
+                        (*subtree_label_count)++;
+                    }
+                }
+            }
+        }
+    }
+}
+
+static void pl_detect_range_switches(PtxLower *p, const PtxStmt *body,
+                                      int body_count) {
+    for (int i = 0; i < body_count - 2; i++) {
+        if (body[i].kind != PTX_STMT_INST) continue;
+        const PtxInst *setp = &body[i].inst;
+        if (setp->opcode != PTX_OP_SETP) continue;
+        if (setp->cmp_op != PTX_CMP_GT && setp->cmp_op != PTX_CMP_LT) continue;
+        if (setp->src_count < 2) continue;
+
+        /* Must compare a register against an integer constant */
+        const char *selector_reg = NULL;
+        if (setp->src[0].kind == PTX_OPER_REG && setp->src[1].kind == PTX_OPER_IMM_INT)
+            selector_reg = setp->src[0].name;
+        else if (setp->src[1].kind == PTX_OPER_REG && setp->src[0].kind == PTX_OPER_IMM_INT)
+            selector_reg = setp->src[1].name;
+        if (!selector_reg) continue;
+
+        /* Next must be @pred bra + bra.uni (2-way split) */
+        if (i + 2 >= body_count) continue;
+        if (body[i + 1].kind != PTX_STMT_INST) continue;
+        const PtxInst *cond_bra = &body[i + 1].inst;
+        if (cond_bra->opcode != PTX_OP_BRA || !cond_bra->has_pred) continue;
+        if (cond_bra->src_count < 1 || cond_bra->src[0].kind != PTX_OPER_LABEL) continue;
+
+        if (body[i + 2].kind != PTX_STMT_INST) continue;
+        const PtxInst *uncond_bra = &body[i + 2].inst;
+        if (uncond_bra->opcode != PTX_OP_BRA || uncond_bra->has_pred) continue;
+        if (uncond_bra->src_count < 1 || uncond_bra->src[0].kind != PTX_OPER_LABEL) continue;
+
+        /* Skip if this is already detected as a cascade */
+        bool already_detected = false;
+        for (int sc = 0; sc < p->switch_cascade_count; sc++) {
+            if (p->switch_cascades[sc].start_stmt == i) { already_detected = true; break; }
+        }
+        if (already_detected) continue;
+
+        const char *high_label = cond_bra->src[0].name;
+        const char *low_label = uncond_bra->src[0].name;
+
+        /* Both targets must be label blocks */
+        int high_idx = pl_find_label_index(body, body_count, high_label);
+        int low_idx = pl_find_label_index(body, body_count, low_label);
+        if (high_idx < 0 || low_idx < 0) continue;
+
+        /* Find the merge label from precomputed merges */
+        const char *merge_label = pl_lookup_precomputed_merge(p, high_label);
+        if (!merge_label) continue;
+
+        /* Trace both subtrees to collect cases */
+        struct PlSwitchCase temp_cases[128];
+        int temp_case_count = 0;
+        char temp_subtrees[32][PTX_NAME_MAX];
+        int temp_subtree_count = 0;
+
+        /* Trace high subtree */
+        pl_trace_range_subtree(body, body_count, high_idx, selector_reg,
+                                temp_cases, &temp_case_count, 128,
+                                temp_subtrees, &temp_subtree_count, 32,
+                                merge_label);
+        /* Trace low subtree */
+        pl_trace_range_subtree(body, body_count, low_idx, selector_reg,
+                                temp_cases, &temp_case_count, 128,
+                                temp_subtrees, &temp_subtree_count, 32,
+                                merge_label);
+
+        /* Recursively trace sub-subtrees */
+        int processed = 0;
+        while (processed < temp_subtree_count) {
+            const char *sub = temp_subtrees[processed++];
+            int sub_idx = pl_find_label_index(body, body_count, sub);
+            if (sub_idx < 0) continue;
+            /* Don't trace case blocks (they have mov + bra.uni, not comparisons) */
+            bool has_cmp = false;
+            for (int j = sub_idx + 1; j < body_count; j++) {
+                if (body[j].kind == PTX_STMT_LABEL) break;
+                if (body[j].kind == PTX_STMT_INST &&
+                    (body[j].inst.opcode == PTX_OP_SETP || body[j].inst.opcode == PTX_OP_ADD))
+                    has_cmp = true;
+            }
+            if (!has_cmp) continue;
+            pl_trace_range_subtree(body, body_count, sub_idx, selector_reg,
+                                    temp_cases, &temp_case_count, 128,
+                                    temp_subtrees, &temp_subtree_count, 32,
+                                    merge_label);
+        }
+
+        /* Need at least 3 cases */
+        if (temp_case_count < 3) continue;
+
+        /* Find default: label that sets default value and branches to merge */
+        const char *default_label = merge_label; /* fallback */
+        for (int s = 0; s < temp_subtree_count; s++) {
+            int sub_idx = pl_find_label_index(body, body_count, temp_subtrees[s]);
+            if (sub_idx < 0) continue;
+            /* Check if this is a "default" block: no comparisons, just value set + bra */
+            bool pure_default = true;
+            for (int j = sub_idx + 1; j < body_count; j++) {
+                if (body[j].kind == PTX_STMT_LABEL) break;
+                if (body[j].kind == PTX_STMT_INST &&
+                    body[j].inst.opcode == PTX_OP_SETP) { pure_default = false; break; }
+            }
+            if (pure_default) { default_label = temp_subtrees[s]; break; }
+        }
+
+        /* Filter subtree labels: only keep pure comparison blocks */
+        int write_st = 0;
+        for (int s = 0; s < temp_subtree_count; s++) {
+            int sub_idx = pl_find_label_index(body, body_count, temp_subtrees[s]);
+            if (sub_idx >= 0 && pl_is_subtree_block(body, body_count, sub_idx,
+                                                     selector_reg, default_label)) {
+                if (write_st != s)
+                    snprintf(temp_subtrees[write_st], PTX_NAME_MAX, "%s", temp_subtrees[s]);
+                write_st++;
+            }
+        }
+        temp_subtree_count = write_st;
+
+        /* Also add the high and low labels as subtrees if they're pure */
+        if (pl_is_subtree_block(body, body_count, high_idx, selector_reg, default_label)) {
+            if (temp_subtree_count < 32)
+                snprintf(temp_subtrees[temp_subtree_count++], PTX_NAME_MAX, "%s", high_label);
+        }
+        if (pl_is_subtree_block(body, body_count, low_idx, selector_reg, default_label)) {
+            if (temp_subtree_count < 32)
+                snprintf(temp_subtrees[temp_subtree_count++], PTX_NAME_MAX, "%s", low_label);
+        }
+
+        /* Sort cases by PTX body order */
+        for (int a = 0; a < temp_case_count - 1; a++) {
+            for (int b = a + 1; b < temp_case_count; b++) {
+                int pos_a = pl_find_label_index(body, body_count, temp_cases[a].label);
+                int pos_b = pl_find_label_index(body, body_count, temp_cases[b].label);
+                if (pos_a > pos_b) {
+                    struct PlSwitchCase tmp = temp_cases[a];
+                    temp_cases[a] = temp_cases[b];
+                    temp_cases[b] = tmp;
+                }
+            }
+        }
+
+        /* Record as switch cascade */
+        SW_GROW(p->switch_cascades, p->switch_cascade_count,
+                p->switch_cascade_cap, __typeof__(*p->switch_cascades),
+                ptx_realloc_);
+        int idx = p->switch_cascade_count++;
+        memset(&p->switch_cascades[idx], 0, sizeof(p->switch_cascades[idx]));
+        p->switch_cascades[idx].start_stmt = i;
+        p->switch_cascades[idx].end_stmt = i + 3; /* setp + bra + bra.uni */
+        snprintf(p->switch_cascades[idx].selector_reg, PTX_NAME_MAX, "%s", selector_reg);
+        snprintf(p->switch_cascades[idx].default_label, PTX_NAME_MAX, "%s", default_label);
+        snprintf(p->switch_cascades[idx].merge_label, PTX_NAME_MAX, "%s", merge_label);
+        for (int c = 0; c < temp_case_count && c < 128; c++)
+            p->switch_cascades[idx].cases[c] = temp_cases[c];
+        p->switch_cascades[idx].case_count = temp_case_count < 128 ? temp_case_count : 128;
+        for (int s = 0; s < temp_subtree_count && s < 32; s++)
+            snprintf(p->switch_cascades[idx].subtree_labels[s], PTX_NAME_MAX,
+                     "%s", temp_subtrees[s]);
+        p->switch_cascades[idx].subtree_label_count =
+            temp_subtree_count < 32 ? temp_subtree_count : 32;
+    }
+}
+
+/* Find if statement index i is the start of a switch cascade */
+static int pl_find_switch_cascade_at(PtxLower *p, int stmt_idx) {
+    for (int i = 0; i < p->switch_cascade_count; i++)
+        if (p->switch_cascades[i].start_stmt == stmt_idx)
+            return i;
+    return -1;
+}
+
+/* Check if a label is a subtree label of any switch cascade */
+static bool pl_is_switch_subtree_label(PtxLower *p, const char *label) {
+    for (int i = 0; i < p->switch_cascade_count; i++)
+        for (int j = 0; j < p->switch_cascades[i].subtree_label_count; j++)
+            if (strcmp(p->switch_cascades[i].subtree_labels[j], label) == 0)
+                return true;
+    return false;
+}
+
+/* Check if a statement index falls within any switch cascade's subtree block */
+static bool pl_is_in_switch_subtree(PtxLower *p, const PtxStmt *body,
+                                     int body_count, int stmt_idx) {
+    (void)body_count;
+    /* Check if stmt_idx is inside a subtree block: preceded by a subtree label
+     * and only contains setp/bra instructions */
+    for (int lbl_idx = stmt_idx - 1; lbl_idx >= 0; lbl_idx--) {
+        if (body[lbl_idx].kind == PTX_STMT_LABEL) {
+            return pl_is_switch_subtree_label(p, body[lbl_idx].label);
+        }
+        if (body[lbl_idx].kind == PTX_STMT_INST) {
+            /* Check instruction type */
+            const PtxInst *inst = &body[lbl_idx].inst;
+            if (inst->opcode != PTX_OP_SETP && inst->opcode != PTX_OP_BRA)
+                return false;
+        }
+    }
+    return false;
+}
+
+/* Emit an OpSwitch for a detected switch cascade.
+ * Returns the statement index to continue from (past the cascade). */
+static int pl_emit_switch_cascade(PtxLower *p, int cascade_idx,
+                                   const PtxStmt *body, int body_count,
+                                   int stmt_idx) {
+    (void)body_count;
+    struct PlSwitchCascade *sc = &p->switch_cascades[cascade_idx];
+
+    /* Load the selector register value */
+    uint32_t selector = pl_load_reg(p, sc->selector_reg);
+    if (!selector) return sc->end_stmt;
+
+    /* Create/get block IDs for the merge, default, and case labels */
+    uint32_t merge_block = 0;
+    if (sc->merge_label[0] != '\0')
+        merge_block = pl_get_or_create_label(p, sc->merge_label);
+    uint32_t default_block = pl_get_or_create_label(p, sc->default_label);
+
+    /* Handle inline cases: create blocks for cases that have inline code
+     * (detected as $__inline_NNN labels). Find the inline instructions
+     * in the cascade trailing code and emit them into new blocks. */
+    uint32_t current_inline_block = 0;
+    for (int c = 0; c < sc->case_count && c < 128; c++) {
+        if (strncmp(sc->cases[c].label, "$__current_inline_", 18) == 0) {
+            if (!current_inline_block)
+                current_inline_block = ssir_block_create(p->mod, p->func_id, NULL);
+            snprintf(sc->cases[c].label, PTX_NAME_MAX, "__blk_%u", current_inline_block);
+        }
+    }
+    for (int c = 0; c < sc->case_count && c < 128; c++) {
+        if (strncmp(sc->cases[c].label, "$__inline_", 10) == 0) {
+            /* Create a block for this inline case */
+            uint32_t blk = ssir_block_create(p->mod, p->func_id, NULL);
+            /* Emit the trailing inline instructions into this block.
+             * Search the cascade range AND subtree blocks for non-setp/bra
+             * instructions that constitute the inline case body. */
+            uint32_t saved_block = p->block_id;
+            p->block_id = blk;
+            p->block_from_label = false;
+            /* First try the cascade's own range */
+            bool found_inline = false;
+            const char *inline_exit = NULL;
+            for (int j = sc->end_stmt; j < body_count; j++) {
+                if (body[j].kind == PTX_STMT_LABEL) break;
+                if (body[j].kind != PTX_STMT_INST) continue;
+                const PtxInst *inst = &body[j].inst;
+                if (inst->opcode == PTX_OP_BRA) {
+                    if (!inst->has_pred && inst->src_count >= 1 &&
+                        inst->src[0].kind == PTX_OPER_LABEL)
+                        inline_exit = inst->src[0].name;
+                    continue;
+                }
+                if (inst->opcode == PTX_OP_SETP || inst->opcode == PTX_OP_ADD)
+                    continue;
+                pl_lower_inst(p, inst);
+                found_inline = true;
+            }
+            /* If not found, search subtree blocks */
+            if (!found_inline) {
+                for (int sl = 0; sl < sc->subtree_label_count; sl++) {
+                    int sub_idx = pl_find_label_index(body, body_count,
+                        sc->subtree_labels[sl]);
+                    if (sub_idx < 0) continue;
+                    for (int j = sub_idx + 1; j < body_count; j++) {
+                        if (body[j].kind == PTX_STMT_LABEL) break;
+                        if (body[j].kind != PTX_STMT_INST) continue;
+                        const PtxInst *inst = &body[j].inst;
+                        if (inst->opcode == PTX_OP_BRA) {
+                            if (!inst->has_pred && inst->src_count >= 1 &&
+                                inst->src[0].kind == PTX_OPER_LABEL)
+                                inline_exit = inst->src[0].name;
+                            continue;
+                        }
+                        if (inst->opcode == PTX_OP_SETP || inst->opcode == PTX_OP_ADD)
+                            continue;
+                        pl_lower_inst(p, inst);
+                        found_inline = true;
+                    }
+                }
+            }
+            /* Branch to the copied inline exit */
+            if (inline_exit) {
+                ssir_build_branch(PL_BCTX(p), pl_get_or_create_label(p, inline_exit));
+            } else if (merge_block) {
+                ssir_build_branch(PL_BCTX(p), merge_block);
+            } else {
+                ssir_build_branch(PL_BCTX(p), default_block);
+            }
+            p->block_id = saved_block;
+            /* Update the case label to the new block id */
+            snprintf(sc->cases[c].label, PTX_NAME_MAX, "__blk_%u", blk);
+        }
+    }
+
+    /* Build the cases array: pairs of (literal_value, block_id) */
+    uint32_t switch_cases[256]; /* 128 cases * 2 */
+    for (int c = 0; c < sc->case_count && c < 128; c++) {
+        switch_cases[c * 2] = (uint32_t)sc->cases[c].value;
+        if (strncmp(sc->cases[c].label, "__blk_", 6) == 0) {
+            uint32_t blk_id = (uint32_t)atoi(sc->cases[c].label + 6);
+            switch_cases[c * 2 + 1] = blk_id;
+        } else {
+            switch_cases[c * 2 + 1] = pl_get_or_create_label(p, sc->cases[c].label);
+        }
+    }
+
+    /* Remove precomputed merges that would create duplicate merge annotations
+     * for the switch's merge block. The OpSwitch's SelectionMerge is sufficient. */
+    if (merge_block) {
+        int write_pm = 0;
+        for (int pmi = 0; pmi < p->precomputed_merge_count; pmi++) {
+            uint32_t pm_merge = pl_get_or_create_label(
+                p, p->precomputed_merges[pmi].merge_label);
+            if (pm_merge == merge_block) continue; /* skip: conflicts with switch merge */
+            p->precomputed_merges[write_pm++] = p->precomputed_merges[pmi];
+        }
+        p->precomputed_merge_count = write_pm;
+    }
+
+    /* Emit selection merge + switch */
+    if (merge_block)
+        ssir_build_selection_merge(PL_BCTX(p), merge_block);
+    ssir_build_switch(PL_BCTX(p), selector, default_block,
+                      switch_cases, (uint32_t)sc->case_count);
+    if (merge_block)
+        pl_mark_merge(p, merge_block);
+
+    /* Continue lowering the inline fallthrough case in-place when present. */
+    if (current_inline_block) {
+        p->block_id = current_inline_block;
+        p->block_from_label = false;
+        return sc->end_stmt;
+    }
+
+    /* Create a dead block to continue lowering into (will be replaced by labels) */
+    p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
+    p->block_from_label = false;
+
+    /* Return the end of the cascade -- the caller will skip to this index */
+    return sc->end_stmt;
+}
+
 /* ===== Control Flow ===== */
 
 static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
@@ -2132,23 +3091,51 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
             ssir_build_branch_cond_merge(PL_BCTX(p),
                                    pred_val, target, fallthrough, deferred_id);
             pl_mark_merge(p, deferred_id);
-            pl_push_construct(p, deferred_id, real_merge, true);
+            /* Also mark the final convergence point as merge-used, so that
+             * later branches from displaced blocks don't create conflicting
+             * selection merges to it. */
+            pl_mark_merge(p, real_merge);
+            {
+                int this_push_depth = p->construct_depth;
+                pl_push_construct(p, deferred_id, real_merge, true);
+                PlLabel *true_lbl = pl_find_label_by_name(p, label);
+                if (true_lbl && true_lbl->owning_construct_depth < 0)
+                    true_lbl->owning_construct_depth = this_push_depth;
+            }
         } else if (!pl_is_merge_used(p, target) &&
                    !pl_has_deferred_merge_for(p, target)) {
             ssir_build_branch_cond_merge(PL_BCTX(p),
                                    pred_val, target, fallthrough, target);
             pl_mark_merge(p, target);
-            pl_push_construct(p, target, target, false);
+            {
+                int this_push_depth = p->construct_depth;
+                pl_push_construct(p, target, target, false);
+                PlLabel *true_lbl = pl_find_label_by_name(p, label);
+                if (true_lbl && true_lbl->owning_construct_depth < 0)
+                    true_lbl->owning_construct_depth = this_push_depth;
+            }
         } else {
             uint32_t new_fallthrough = ssir_block_create(p->mod, p->func_id, NULL);
             ssir_build_branch_cond_merge(PL_BCTX(p),
                                    pred_val, fallthrough, new_fallthrough, fallthrough);
             pl_mark_merge(p, fallthrough);
-            pl_push_construct(p, fallthrough, target, false);
+            /* For displaced blocks (after ret), the merge block's bridge
+             * won't be created by pl_handle_label since the target label
+             * was already processed. Add the branch immediately. */
+            if (p->past_return) {
+                ssir_build_branch(p->mod, p->func_id, fallthrough, target);
+            } else {
+                int this_push_depth = p->construct_depth;
+                pl_push_construct(p, fallthrough, target, false);
+                PlLabel *true_lbl = pl_find_label_by_name(p, label);
+                if (true_lbl && true_lbl->owning_construct_depth < 0)
+                    true_lbl->owning_construct_depth = this_push_depth;
+            }
             fallthrough = new_fallthrough;
         }
         p->block_id = fallthrough;
         p->block_from_label = false;
+        p->label_construct_depth = -1;
     } else if (is_back_edge) {
         /* Unconditional backward branch = loop back-edge.
          * Create structured loop: header with loop_merge, body, continue. */
@@ -2217,29 +3204,92 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
         }
 
         /* Limit construct search to displaced_depth if we're in a displaced block.
-         * This prevents routing through constructs pushed by sibling scopes. */
+         * This prevents routing through constructs pushed by sibling scopes.
+         *
+         * However, constructs pushed WITHIN the displaced block (at indices >=
+         * displaced_depth) must still be searchable if they were pushed from
+         * our own scope.  We identify "our scope" constructs by checking
+         * displaced_depth_at_push: constructs pushed while displaced_depth
+         * matched our current displaced_depth are in our own scope. */
         int search_depth = p->construct_depth;
         if (p->displaced_depth >= 0 && p->displaced_depth < search_depth)
             search_depth = p->displaced_depth;
 
         uint32_t actual_target = target;
-        for (int i = search_depth - 1; i >= 0; i--) {
-            if (p->construct_stack[i].target_label == target) {
-                if (p->construct_stack[i].merge_block != target)
-                    actual_target = p->construct_stack[i].merge_block;
-                break;
-            }
-            if (p->construct_stack[i].merge_block != target) {
-                bool has_outer = false;
-                for (int j = i - 1; j >= 0; j--) {
-                    if (p->construct_stack[j].target_label == target) {
-                        has_outer = true;
+        bool is_switch_merge = false;
+        for (int sci = 0; sci < p->switch_cascade_count; sci++) {
+            uint32_t mblk = pl_get_or_create_label(p, p->switch_cascades[sci].merge_label);
+            if (mblk == target) { is_switch_merge = true; break; }
+        }
+
+        /* First pass: search constructs pushed within OUR displaced scope.
+         * These are at indices >= displaced_depth with matching
+         * displaced_depth_at_push == p->displaced_depth. */
+        if (p->displaced_depth >= 0) {
+            int my_depth = p->label_construct_depth;
+            for (int i = p->construct_depth - 1; i >= p->displaced_depth; i--) {
+                if (p->construct_stack[i].displaced_depth_at_push !=
+                    p->displaced_depth)
+                    continue;
+                if (p->construct_stack[i].target_label == target) {
+                    if (my_depth >= 0 && p->construct_stack[i].push_depth > my_depth)
+                        continue;
+                    if (p->construct_stack[i].merge_block != target)
+                        actual_target = p->construct_stack[i].merge_block;
+                    break;
+                }
+                if (p->construct_stack[i].merge_block != target) {
+                    bool has_outer = false;
+                    for (int j = i - 1; j >= 0; j--) {
+                        if (p->construct_stack[j].target_label == target) {
+                            if (my_depth >= 0 && p->construct_stack[j].push_depth > my_depth)
+                                continue;
+                            has_outer = true;
+                            break;
+                        }
+                    }
+                    if (has_outer && (my_depth < 0 || p->construct_stack[i].push_depth <= my_depth)) {
+                        actual_target = p->construct_stack[i].merge_block;
                         break;
                     }
                 }
-                if (has_outer) {
-                    actual_target = p->construct_stack[i].merge_block;
+            }
+        }
+        /* Second pass: search the pre-displaced constructs. */
+        if (actual_target == target) {
+            int my_depth = p->label_construct_depth;  /* -1 for fallthrough */
+
+            for (int i = search_depth - 1; i >= 0; i--) {
+                if (p->construct_stack[i].target_label == target) {
+                    /* Depth-aware filter: when we entered via a label with known
+                     * construct depth, skip entries pushed at deeper levels than
+                     * our owning construct.  This ensures code inside L1's arm
+                     * routes through D1, not D3.
+                     *
+                     * For fallthrough code (my_depth == -1), no filtering:
+                     * the innermost match is correct (existing behavior). */
+                    if (my_depth >= 0 && p->construct_stack[i].push_depth > my_depth)
+                        continue;
+                    if (p->construct_stack[i].merge_block != target)
+                        actual_target = p->construct_stack[i].merge_block;
                     break;
+                }
+                if (p->construct_stack[i].merge_block != target) {
+                    bool has_outer = false;
+                    for (int j = i - 1; j >= 0; j--) {
+                        if (p->construct_stack[j].target_label == target) {
+                            if (my_depth >= 0 && p->construct_stack[j].push_depth > my_depth)
+                                continue;
+                            has_outer = true;
+                            break;
+                        }
+                    }
+                    if (has_outer) {
+                        if (my_depth < 0 || p->construct_stack[i].push_depth <= my_depth) {
+                            actual_target = p->construct_stack[i].merge_block;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -2262,9 +3312,15 @@ static void pl_lower_bra(PtxLower *p, const PtxInst *inst,
                 }
             }
         }
+        if (actual_target == target && !is_switch_merge) {
+            uint32_t route = pl_far_target_route(p, label, target);
+            if (route)
+                actual_target = route;
+        }
         ssir_build_branch(PL_BCTX(p), actual_target);
         p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
         p->block_from_label = false;
+        p->label_construct_depth = -1;
     }
 }
 
@@ -3102,6 +4158,13 @@ static void pl_handle_label(PtxLower *p, const char *name) {
     }
     p->block_id = lbl_block;
     p->block_from_label = true;
+    {
+        PlLabel *lbl = pl_find_label_by_name(p, name);
+        if (lbl && lbl->owning_construct_depth >= 0)
+            p->label_construct_depth = lbl->owning_construct_depth;
+        else
+            p->label_construct_depth = -1;
+    }
 
     /* Activate displaced depth limit: when a label was the target of bra.uni
      * from a parent scope, limit construct search to the depth at that point.
@@ -3126,8 +4189,70 @@ static void pl_lower_body(PtxLower *p, const PtxStmt *body, int body_count) {
     for (int i = 0; i < body_count && !p->had_error; i++) {
         const PtxStmt *stmt = &body[i];
         if (stmt->kind == PTX_STMT_LABEL) {
+            /* If this is a subtree label of a switch cascade, skip the entire
+             * block.  The subtree's comparisons are encoded in the OpSwitch.
+             * Create the block with a single branch to merge so it's valid
+             * SPIR-V if anything references it. */
+            if (pl_is_switch_subtree_label(p, stmt->label)) {
+                uint32_t lbl_block = pl_get_or_create_label(p, stmt->label);
+
+                /* Terminate the previous block by branching to the subtree
+                 * block (required so the previous block has a terminator). */
+                SsirBlock *prev = ssir_get_block(PL_BCTX(p));
+                if (prev && prev->inst_count == 0)
+                    ssir_build_branch(PL_BCTX(p), lbl_block);
+                else if (prev) {
+                    SsirInst *last = &prev->insts[prev->inst_count - 1];
+                    if (last->op != SSIR_OP_BRANCH && last->op != SSIR_OP_BRANCH_COND &&
+                        last->op != SSIR_OP_RETURN && last->op != SSIR_OP_RETURN_VOID &&
+                        last->op != SSIR_OP_UNREACHABLE && last->op != SSIR_OP_SWITCH)
+                        ssir_build_branch(PL_BCTX(p), lbl_block);
+                }
+
+                /* Create the subtree block and immediately branch to merge */
+                ssir_block_create_with_id(p->mod, p->func_id, lbl_block, stmt->label);
+                p->block_id = lbl_block;
+                p->block_from_label = true;
+                for (int li = 0; li < p->label_count; li++) {
+                    if (p->labels[li].block_id == lbl_block)
+                        p->labels[li].defined = true;
+                }
+
+                /* Find the owning cascade's merge label and branch there */
+                for (int sc = 0; sc < p->switch_cascade_count; sc++) {
+                    for (int sl = 0; sl < p->switch_cascades[sc].subtree_label_count; sl++) {
+                        if (strcmp(p->switch_cascades[sc].subtree_labels[sl],
+                                   stmt->label) == 0) {
+                            uint32_t merge = pl_get_or_create_label(
+                                p, p->switch_cascades[sc].merge_label);
+                            ssir_build_branch(PL_BCTX(p), merge);
+                            goto subtree_done;
+                        }
+                    }
+                }
+                subtree_done:;
+                /* Skip instructions in this subtree block */
+                while (i + 1 < body_count && body[i + 1].kind == PTX_STMT_INST)
+                    i++;
+                /* Create a new dead block for subsequent code */
+                p->block_id = ssir_block_create(p->mod, p->func_id, NULL);
+                p->block_from_label = false;
+                continue;
+            }
             pl_handle_label(p, stmt->label);
         } else {
+            /* Check if this statement starts a switch cascade */
+            int sc_idx = pl_find_switch_cascade_at(p, i);
+            if (sc_idx >= 0) {
+                i = pl_emit_switch_cascade(p, sc_idx, body, body_count, i) - 1;
+                /* -1 because the for loop will increment i */
+                continue;
+            }
+
+            /* Skip instructions inside switch subtree blocks */
+            if (pl_is_in_switch_subtree(p, body, body_count, i))
+                continue;
+
             pl_lower_inst(p, &stmt->inst);
         }
     }
@@ -3403,10 +4528,12 @@ static void pl_lower_entry(PtxLower *p, const PtxEntry *entry) {
     p->construct_depth = 0;
     p->precomputed_merge_count = 0;
     p->exit_ramp_count = 0;
+    p->switch_cascade_count = 0;
     p->is_entry = true;
     p->cur_has_return = false;
     p->past_return = false;
     p->displaced_depth = -1;
+    p->label_construct_depth = -1;
     p->cur_return_reg[0] = '\0';
     p->next_binding = p->module_binding_base;
     p->wg_size[0] = entry->wg_size[0];
@@ -3455,9 +4582,14 @@ static void pl_lower_entry(PtxLower *p, const PtxEntry *entry) {
     /* Pre-compute merge blocks for if-else patterns */
     pl_precompute_merges(p, entry->body, entry->body_count);
     pl_precompute_exit_ramps(p, entry->body, entry->body_count);
+    pl_precompute_switch_cascades(p, entry->body, entry->body_count);
+    pl_detect_range_switches(p, entry->body, entry->body_count);
 
     /* Lower body */
     pl_lower_body(p, entry->body, entry->body_count);
+
+    /* Run structurizer to fix duplicate merges and add missing annotations */
+    ssir_structurize_function(p->mod, p->func_id);
 
     /* (Block ordering fixup is handled by the SPIR-V emission layer) */
 
@@ -3496,7 +4628,9 @@ static void pl_lower_func(PtxLower *p, const PtxFunc *func) {
     p->construct_depth = 0;
     p->precomputed_merge_count = 0;
     p->exit_ramp_count = 0;
+    p->switch_cascade_count = 0;
     p->displaced_depth = -1;
+    p->label_construct_depth = -1;
     p->past_return = false;
     p->is_entry = false;
 
@@ -3563,7 +4697,12 @@ static void pl_lower_func(PtxLower *p, const PtxFunc *func) {
     } else {
         pl_precompute_merges(p, func->body, func->body_count);
         pl_precompute_exit_ramps(p, func->body, func->body_count);
+        pl_precompute_switch_cascades(p, func->body, func->body_count);
+        pl_detect_range_switches(p, func->body, func->body_count);
         pl_lower_body(p, func->body, func->body_count);
+
+        /* Run structurizer to fix duplicate merges and add missing annotations */
+        ssir_structurize_function(p->mod, p->func_id);
     }
 }
 
@@ -3579,6 +4718,8 @@ static void pl_cleanup(PtxLower *p) {
     PTX_FREE(p->merge_blocks);
     PTX_FREE(p->construct_stack);
     PTX_FREE(p->precomputed_merges);
+    PTX_FREE(p->exit_ramps);
+    PTX_FREE(p->switch_cascades);
 }
 
 /* ===== Public API ===== */

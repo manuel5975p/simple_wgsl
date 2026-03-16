@@ -11,6 +11,323 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
+
+/* ============================================================================
+ * SPIR-V fixup: repair SelectionMerge annotations using post-dominator analysis
+ *
+ * The PTX lowerer can produce incorrect selection merge targets that violate
+ * SPIR-V structured control flow rules.  This pass rebuilds the CFG from the
+ * generated SPIR-V, computes immediate post-dominators (ipdom), and replaces
+ * wrong merge targets with the ipdom of the header block.
+ * ============================================================================ */
+
+/* SpvOp constants we care about */
+#define SPV_OP_FUNCTION        54
+#define SPV_OP_FUNCTION_END    56
+#define SPV_OP_LABEL           248
+#define SPV_OP_BRANCH          249
+#define SPV_OP_BRANCH_COND     250
+#define SPV_OP_SWITCH          251
+#define SPV_OP_RETURN          253
+#define SPV_OP_RETURN_VALUE    254
+#define SPV_OP_UNREACHABLE     255
+#define SPV_OP_SELECTION_MERGE  247
+#define SPV_OP_LOOP_MERGE       246
+#define SPV_OP_KILL             252
+
+#define FIXUP_MAX_BLOCKS 2048
+#define FIXUP_MAX_SUCC   32
+
+typedef struct {
+    uint32_t id;           /* SPIR-V result ID */
+    size_t   word_offset;  /* offset in words[] of OpLabel */
+    int      succ[FIXUP_MAX_SUCC];
+    int      nsucc;
+    int      pred[FIXUP_MAX_SUCC];
+    int      npred;
+    size_t   sel_merge_offset;  /* word offset of OpSelectionMerge, or 0 */
+    uint32_t sel_merge_id;      /* current merge target ID */
+    bool     has_loop_merge;
+    bool     is_return;
+} FixupBlock;
+
+static int fixup_find_block(FixupBlock *blocks, int n, uint32_t id) {
+    for (int i = 0; i < n; i++)
+        if (blocks[i].id == id) return i;
+    return -1;
+}
+
+static void fixup_add_edge(FixupBlock *blocks, int from, int to, int n) {
+    if (from < 0 || from >= n || to < 0 || to >= n) return;
+    /* Add successor */
+    for (int i = 0; i < blocks[from].nsucc; i++)
+        if (blocks[from].succ[i] == to) return; /* already exists */
+    if (blocks[from].nsucc < FIXUP_MAX_SUCC)
+        blocks[from].succ[blocks[from].nsucc++] = to;
+    /* Add predecessor */
+    for (int i = 0; i < blocks[to].npred; i++)
+        if (blocks[to].pred[i] == from) return;
+    if (blocks[to].npred < FIXUP_MAX_SUCC)
+        blocks[to].pred[blocks[to].npred++] = from;
+}
+
+/* Compute immediate post-dominators using reverse-CFG dominator algorithm.
+ * ipdom[i] = immediate post-dominator block index, -1 if none.
+ * The exit block is the unique block with no successors (return block). */
+static void fixup_compute_ipdom(FixupBlock *blocks, int n, int *ipdom) {
+    /* Find exit block(s) — blocks with return/unreachable */
+    int exit_block = -1;
+    for (int i = 0; i < n; i++) {
+        if (blocks[i].is_return || blocks[i].nsucc == 0) {
+            exit_block = i;
+            break; /* Use first exit block */
+        }
+    }
+
+    for (int i = 0; i < n; i++) ipdom[i] = -1;
+    if (exit_block < 0) return;
+    ipdom[exit_block] = exit_block;
+
+    /* Iterative reverse-CFG dominator computation */
+    bool changed = true;
+    for (int iter = 0; iter < 100 && changed; iter++) {
+        changed = false;
+        /* Process in reverse order (approximation of reverse post-order) */
+        for (int i = n - 1; i >= 0; i--) {
+            if (i == exit_block) continue;
+            /* In reverse CFG, successors of i are predecessors in forward CFG,
+             * and predecessors of i are successors in forward CFG.
+             * Post-dominators use successors in forward graph. */
+            int new_ipdom = -1;
+            for (int si = 0; si < blocks[i].nsucc; si++) {
+                int s = blocks[i].succ[si];
+                if (ipdom[s] < 0) continue; /* not yet processed */
+                if (new_ipdom < 0) {
+                    new_ipdom = s;
+                } else {
+                    /* Intersect */
+                    int a = new_ipdom, b = s;
+                    while (a != b) {
+                        /* Use block index as RPO approximation (higher = later) */
+                        while (a < b && a != exit_block) a = ipdom[a] >= 0 ? ipdom[a] : exit_block;
+                        while (b < a && b != exit_block) b = ipdom[b] >= 0 ? ipdom[b] : exit_block;
+                        if (ipdom[a] < 0 || ipdom[b] < 0) break;
+                    }
+                    new_ipdom = a;
+                }
+            }
+            if (new_ipdom >= 0 && new_ipdom != ipdom[i]) {
+                ipdom[i] = new_ipdom;
+                changed = true;
+            }
+        }
+    }
+}
+
+/* Check if block 'inner' is dominated by 'header' using the block order
+ * (blocks within a construct should appear between header and merge). */
+static bool fixup_block_between(int inner, int header, int merge) {
+    if (merge < 0) return false;
+    return inner > header && inner < merge;
+}
+
+/* Fix SPIR-V selection merge annotations in-place.
+ * For each function:
+ *   1. Parse block structure and edges
+ *   2. Compute ipdom
+ *   3. For each SelectionMerge, check if it's valid
+ *   4. If not, replace with ipdom of header
+ */
+static void cuvk_fixup_spirv_merges(uint32_t *words, size_t word_count) {
+    /* Process each function */
+    size_t i = 5; /* skip SPIR-V header */
+    while (i < word_count) {
+        uint32_t word = words[i];
+        uint16_t opcode = word & 0xFFFF;
+        uint16_t wc = word >> 16;
+        if (wc == 0) break;
+
+        if (opcode != SPV_OP_FUNCTION) {
+            i += wc;
+            continue;
+        }
+
+        /* Found a function - scan until OpFunctionEnd */
+        size_t func_start = i;
+        i += wc;
+
+        FixupBlock blocks[FIXUP_MAX_BLOCKS];
+        int block_count = 0;
+        int cur_block = -1;
+
+        /* First pass: collect blocks */
+        while (i < word_count) {
+            word = words[i];
+            opcode = word & 0xFFFF;
+            wc = word >> 16;
+            if (wc == 0) break;
+            if (opcode == SPV_OP_FUNCTION_END) { i += wc; break; }
+
+            if (opcode == SPV_OP_LABEL && block_count < FIXUP_MAX_BLOCKS) {
+                cur_block = block_count++;
+                memset(&blocks[cur_block], 0, sizeof(FixupBlock));
+                blocks[cur_block].id = words[i + 1];
+                blocks[cur_block].word_offset = i;
+            } else if (cur_block >= 0) {
+                if (opcode == SPV_OP_SELECTION_MERGE && wc >= 3) {
+                    blocks[cur_block].sel_merge_offset = i;
+                    blocks[cur_block].sel_merge_id = words[i + 1];
+                } else if (opcode == SPV_OP_LOOP_MERGE) {
+                    blocks[cur_block].has_loop_merge = true;
+                } else if (opcode == SPV_OP_BRANCH && wc >= 2) {
+                    int target = fixup_find_block(blocks, block_count, words[i + 1]);
+                    /* Target might not be found yet if it's a forward reference */
+                    /* We'll handle this in second pass */
+                } else if (opcode == SPV_OP_BRANCH_COND && wc >= 4) {
+                    /* targets will be resolved in second pass */
+                } else if (opcode == SPV_OP_RETURN || opcode == SPV_OP_RETURN_VALUE ||
+                           opcode == SPV_OP_UNREACHABLE || opcode == SPV_OP_KILL) {
+                    blocks[cur_block].is_return = true;
+                }
+            }
+            i += wc;
+        }
+        (void)func_start;
+
+        if (block_count < 2) continue;
+
+        /* Second pass: build edges (now all blocks are known) */
+        for (int bi = 0; bi < block_count; bi++) {
+            /* Scan instructions in block bi */
+            size_t start = blocks[bi].word_offset;
+            size_t end = (bi + 1 < block_count) ? blocks[bi + 1].word_offset : i - (words[(i > 0 ? i - 1 : 0)] >> 16 != 0 ? 0 : 0);
+            /* More robust: scan from OpLabel to next OpLabel or OpFunctionEnd */
+            size_t j = start;
+            while (j < word_count) {
+                uint32_t w = words[j];
+                uint16_t op = w & 0xFFFF;
+                uint16_t lwc = w >> 16;
+                if (lwc == 0) break;
+
+                if (op == SPV_OP_BRANCH && lwc >= 2) {
+                    fixup_add_edge(blocks, bi, fixup_find_block(blocks, block_count, words[j + 1]), block_count);
+                } else if (op == SPV_OP_BRANCH_COND && lwc >= 4) {
+                    fixup_add_edge(blocks, bi, fixup_find_block(blocks, block_count, words[j + 2]), block_count);
+                    fixup_add_edge(blocks, bi, fixup_find_block(blocks, block_count, words[j + 3]), block_count);
+                } else if (op == SPV_OP_SWITCH) {
+                    if (lwc >= 3)
+                        fixup_add_edge(blocks, bi, fixup_find_block(blocks, block_count, words[j + 2]), block_count);
+                    for (uint16_t k = 3; k + 1 < lwc; k += 2)
+                        fixup_add_edge(blocks, bi, fixup_find_block(blocks, block_count, words[j + k + 1]), block_count);
+                }
+
+                j += lwc;
+                /* Stop at next OpLabel or terminator */
+                if (op == SPV_OP_BRANCH || op == SPV_OP_BRANCH_COND ||
+                    op == SPV_OP_SWITCH || op == SPV_OP_RETURN ||
+                    op == SPV_OP_RETURN_VALUE || op == SPV_OP_UNREACHABLE ||
+                    op == SPV_OP_KILL)
+                    break;
+            }
+        }
+
+        /* Compute ipdom */
+        int ipdom[FIXUP_MAX_BLOCKS];
+        fixup_compute_ipdom(blocks, block_count, ipdom);
+
+        /* Collect all existing merge/loop merge targets */
+        uint8_t is_loop_merge[FIXUP_MAX_BLOCKS];
+        memset(is_loop_merge, 0, sizeof(is_loop_merge));
+        for (int bi = 0; bi < block_count; bi++) {
+            size_t j = blocks[bi].word_offset;
+            while (j < word_count) {
+                uint32_t w = words[j];
+                uint16_t op = w & 0xFFFF;
+                uint16_t lwc = w >> 16;
+                if (lwc == 0) break;
+                if (op == SPV_OP_LOOP_MERGE && lwc >= 3) {
+                    int mi = fixup_find_block(blocks, block_count, words[j + 1]);
+                    if (mi >= 0) is_loop_merge[mi] = 1;
+                }
+                if (op == SPV_OP_BRANCH || op == SPV_OP_BRANCH_COND ||
+                    op == SPV_OP_SWITCH || op == SPV_OP_RETURN ||
+                    op == SPV_OP_RETURN_VALUE || op == SPV_OP_UNREACHABLE)
+                    break;
+                j += lwc;
+            }
+        }
+
+        /* Fix selection merges by expanding to encompass all reachable exits.
+         * Process from outermost to innermost (forward order) so outer
+         * constructs get fixed first and inner ones can see the fixed state. */
+        for (int bi = 0; bi < block_count; bi++) {
+            if (blocks[bi].sel_merge_offset == 0) continue;
+            if (blocks[bi].has_loop_merge) continue;
+
+            int current_merge = fixup_find_block(blocks, block_count, blocks[bi].sel_merge_id);
+
+            /* Check validity: find the maximum exit target from within the construct */
+            int max_target = current_merge;
+            bool need_fix = false;
+
+            /* Iteratively expand: keep growing max_target until stable */
+            for (int iter = 0; iter < 100; iter++) {
+                bool expanded = false;
+                int limit = (max_target >= 0 && max_target < block_count) ? max_target : block_count;
+                for (int inner = bi + 1; inner < limit; inner++) {
+                    for (int si = 0; si < blocks[inner].nsucc; si++) {
+                        int t = blocks[inner].succ[si];
+                        if (t <= bi || t < 0) continue; /* back-edge or invalid */
+                        if (t > max_target && t < block_count) {
+                            max_target = t;
+                            expanded = true;
+                            need_fix = true;
+                        }
+                    }
+                }
+                if (!expanded) break;
+            }
+
+            if (!need_fix || max_target == current_merge) continue;
+
+            /* Find a suitable merge block at or after max_target that:
+             * 1. Is not already a loop merge target
+             * 2. Actually contains all exits */
+            int new_merge = max_target;
+            /* Verify the new merge is valid */
+            bool is_valid = false;
+            for (int candidate = new_merge; candidate < block_count; candidate++) {
+                if (is_loop_merge[candidate]) continue;
+                /* Check that all blocks in [bi+1, candidate) only branch within or to candidate */
+                bool ok = true;
+                for (int inner = bi + 1; inner < candidate && ok; inner++) {
+                    for (int si = 0; si < blocks[inner].nsucc; si++) {
+                        int t = blocks[inner].succ[si];
+                        if (t < 0) continue;
+                        if (t != bi && t != candidate &&
+                            !(t > bi && t < candidate)) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if (ok) {
+                    new_merge = candidate;
+                    is_valid = true;
+                    break;
+                }
+            }
+
+            if (is_valid && new_merge >= 0 && new_merge < block_count) {
+                words[blocks[bi].sel_merge_offset + 1] = blocks[new_merge].id;
+                CUVK_LOG("[cuvk] fixup: block %u merge %u -> %u\n",
+                         blocks[bi].id, blocks[bi].sel_merge_id, blocks[new_merge].id);
+                blocks[bi].sel_merge_id = blocks[new_merge].id;
+            }
+        }
+    }
+}
 
 /* ============================================================================
  * Helper: compare CuvkParamInfo by binding index for qsort
@@ -557,6 +874,9 @@ CUresult CUDAAPI cuModuleLoadData(CUmodule *module, const void *image)
         return CUDA_ERROR_INVALID_IMAGE;
     }
     CUVK_LOG("[cuvk] SPIR-V: %zu words generated\n", word_count);
+
+    /* 2b. Fix structurally invalid selection merge annotations */
+    cuvk_fixup_spirv_merges(words, word_count);
 
     /* Debug: dump SPIR-V to file if CUVK_DUMP_SPIRV is set */
     const char *dump_path = getenv("CUVK_DUMP_SPIRV");

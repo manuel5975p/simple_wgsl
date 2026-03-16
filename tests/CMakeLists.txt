@@ -41,6 +41,7 @@ set(TEST_SOURCES
     pack_unpack_test.cpp
     barrier_test.cpp
     immediate_test.cpp
+    slug_regression_test.cpp
     wgsl_roundtrip_test.cpp
     glsl_roundtrip_test.cpp
 )

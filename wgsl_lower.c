@@ -432,6 +432,11 @@ struct WgslLower {
     uint32_t *ssir_id_map;
     uint32_t ssir_id_map_cap;
 
+    // spv_type_to_ssir cache (SPV type ID -> SSIR type ID)
+    struct { uint32_t spv; uint32_t ssir; } *type_conv_cache;
+    int type_conv_cache_count;
+    int type_conv_cache_cap;
+
     // Per-function context
     struct {
         uint32_t func_id;
@@ -538,8 +543,35 @@ static SsirAddressSpace spv_sc_to_ssir_addr(SpvStorageClass sc) {
 }
 
 // l nonnull
+static uint32_t spv_type_to_ssir_uncached(WgslLower *l, uint32_t spv_type);
+
 static uint32_t spv_type_to_ssir(WgslLower *l, uint32_t spv_type) {
     wgsl_compiler_assert(l != NULL, "spv_type_to_ssir: l is NULL");
+
+    // Check type conversion cache first (deduplicates composite types)
+    for (int i = 0; i < l->type_conv_cache_count; i++) {
+        if (l->type_conv_cache[i].spv == spv_type)
+            return l->type_conv_cache[i].ssir;
+    }
+
+    uint32_t result = spv_type_to_ssir_uncached(l, spv_type);
+
+    // Store in cache
+    if (l->type_conv_cache_count >= l->type_conv_cache_cap) {
+        int new_cap = l->type_conv_cache_cap ? l->type_conv_cache_cap * 2 : 32;
+        void *p = WGSL_REALLOC(l->type_conv_cache, new_cap * sizeof(l->type_conv_cache[0]));
+        if (p) { l->type_conv_cache = p; l->type_conv_cache_cap = new_cap; }
+    }
+    if (l->type_conv_cache_count < l->type_conv_cache_cap) {
+        l->type_conv_cache[l->type_conv_cache_count].spv = spv_type;
+        l->type_conv_cache[l->type_conv_cache_count].ssir = result;
+        l->type_conv_cache_count++;
+    }
+
+    return result;
+}
+
+static uint32_t spv_type_to_ssir_uncached(WgslLower *l, uint32_t spv_type) {
     // Check well-known types first
     if (spv_type == l->id_void) return l->ssir_void;
     if (spv_type == l->id_bool) return l->ssir_bool;
@@ -1788,15 +1820,25 @@ static int lower_structs(WgslLower *l) {
                 const char *type_name = field->type->type_node.name;
                 if (!type_name) type_name = "";
 
-                // Check for runtime array
+                // Check for array type
                 if (strcmp(type_name, "array") == 0) {
-                    // Runtime array - must be last member
-                    // Inherit alignment from element type
                     const TypeNode *tn = &field->type->type_node;
+                    int elem_size = 4, elem_align = 4;
                     if (tn->type_arg_count > 0 && tn->type_args[0]->type == WGSL_NODE_TYPE) {
-                        get_type_layout(tn->type_args[0]->type_node.name, &field_size, &field_align);
+                        get_type_layout(tn->type_args[0]->type_node.name, &elem_size, &elem_align);
                     }
-                    field_size = 0; // Runtime array size is indeterminate
+                    field_align = elem_align;
+                    // Round element size up to element alignment for stride
+                    int elem_stride = (elem_size + elem_align - 1) & ~(elem_align - 1);
+                    if (tn->expr_arg_count > 0 && tn->expr_args[0]->type == WGSL_NODE_LITERAL) {
+                        // Fixed-size array: array<T, N>
+                        const char *lex = tn->expr_args[0]->literal.lexeme;
+                        int count = lex ? atoi(lex) : 0;
+                        field_size = elem_stride * count;
+                    } else {
+                        // Runtime array - must be last member
+                        field_size = 0;
+                    }
                 } else {
                     get_type_layout(type_name, &field_size, &field_align);
                 }
@@ -2315,6 +2357,18 @@ static int emit_unary_op(WgslLower *l, SpvOp op, uint32_t result_type, uint32_t 
                 case SpvOpBitcast:
                     ssir_result = ssir_build_bitcast(WL_BCTX(l), ssir_type, ssir_a);
                     break;
+                case SpvOpFwidth:
+                    ssir_result = ssir_build_builtin(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+                        ssir_type, SSIR_BUILTIN_FWIDTH, &ssir_a, 1);
+                    break;
+                case SpvOpDPdx:
+                    ssir_result = ssir_build_builtin(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+                        ssir_type, SSIR_BUILTIN_DPDX, &ssir_a, 1);
+                    break;
+                case SpvOpDPdy:
+                    ssir_result = ssir_build_builtin(l->ssir, l->fn_ctx.ssir_func_id, l->fn_ctx.ssir_block_id,
+                        ssir_type, SSIR_BUILTIN_DPDY, &ssir_a, 1);
+                    break;
                 default:
                     break;
             }
@@ -2585,6 +2639,7 @@ static int finalize_spirv(WgslLower *l, uint32_t **out_words, size_t *out_count)
     wgsl_compiler_assert(l != NULL, "finalize_spirv: l is NULL");
     wgsl_compiler_assert(out_words != NULL, "finalize_spirv: out_words is NULL");
     wgsl_compiler_assert(out_count != NULL, "finalize_spirv: out_count is NULL");
+
     SsirToSpirvOptions opts = {0};
     opts.spirv_version = l->opts.spirv_version ? l->opts.spirv_version : 0x00010300;
     opts.enable_debug_names = l->opts.enable_debug_names;
@@ -2954,7 +3009,7 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
 
     // Check local variables first
     for (int i = l->fn_ctx.locals.count - 1; i >= 0; --i) {
-        if (strcmp(l->fn_ctx.locals.vars[i].name, name) == 0) {
+        if (l->fn_ctx.locals.vars[i].name && strcmp(l->fn_ctx.locals.vars[i].name, name) == 0) {
             if (l->fn_ctx.locals.vars[i].is_value) {
                 r.id = l->fn_ctx.locals.vars[i].ptr_id;
                 r.type_id = l->fn_ctx.locals.vars[i].type_id;
@@ -3219,15 +3274,29 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
             const Member *mem = &node->member;
 
             // Check if this member is a struct output field (for vertex shader struct outputs)
-            // The output variables are stored in global_map by field name
-            if (l->fn_ctx.uses_struct_output) {
-                uint32_t var_id, elem_type_id;
-                SpvStorageClass sc;
-                if (find_global_by_name(l, mem->member, &var_id, &elem_type_id, &sc) && sc == SpvStorageClassOutput) {
-                    r.id = var_id;
-                    r.type_id = elem_type_id;
-                    if (out_sc) *out_sc = sc;
-                    return r;
+            // The output variables are stored in global_map by field name.
+            // Only apply when the base object is actually the output struct var
+            // (a function-local var, not a let-bound value like a function return).
+            if (l->fn_ctx.uses_struct_output && mem->object && mem->object->type == WGSL_NODE_IDENT) {
+                const char *base_name = mem->object->ident.name;
+                int is_output_var = 0;
+                for (int i = l->fn_ctx.locals.count - 1; i >= 0; --i) {
+                    if (strcmp(l->fn_ctx.locals.vars[i].name, base_name) == 0) {
+                        if (!l->fn_ctx.locals.vars[i].is_value) {
+                            is_output_var = 1;
+                        }
+                        break;
+                    }
+                }
+                if (is_output_var) {
+                    uint32_t var_id, elem_type_id;
+                    SpvStorageClass sc;
+                    if (find_global_by_name(l, mem->member, &var_id, &elem_type_id, &sc) && sc == SpvStorageClassOutput) {
+                        r.id = var_id;
+                        r.type_id = elem_type_id;
+                        if (out_sc) *out_sc = sc;
+                        return r;
+                    }
                 }
             }
 
@@ -3235,6 +3304,36 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
             SpvStorageClass base_sc;
             ExprResult base = lower_ptr_expr(l, mem->object, &base_sc);
             if (!base.id) break;
+
+            // Check for vector component access (e.g., position.x, position.y)
+            if (base.type_id == l->id_vec2f || base.type_id == l->id_vec3f || base.type_id == l->id_vec4f ||
+                base.type_id == l->id_vec2i || base.type_id == l->id_vec3i || base.type_id == l->id_vec4i ||
+                base.type_id == l->id_vec2u || base.type_id == l->id_vec3u || base.type_id == l->id_vec4u) {
+                int comp = -1;
+                if (strlen(mem->member) == 1) {
+                    char c = mem->member[0];
+                    if (c == 'x' || c == 'r' || c == 's') comp = 0;
+                    else if (c == 'y' || c == 'g' || c == 't') comp = 1;
+                    else if (c == 'z' || c == 'b' || c == 'p') comp = 2;
+                    else if (c == 'w' || c == 'a' || c == 'q') comp = 3;
+                }
+                if (comp >= 0) {
+                    uint32_t elem_type = l->id_f32;
+                    if (base.type_id == l->id_vec2i || base.type_id == l->id_vec3i || base.type_id == l->id_vec4i)
+                        elem_type = l->id_i32;
+                    else if (base.type_id == l->id_vec2u || base.type_id == l->id_vec3u || base.type_id == l->id_vec4u)
+                        elem_type = l->id_u32;
+                    uint32_t idx_const = emit_const_u32(l, (uint32_t)comp);
+                    uint32_t ptr_type = emit_type_pointer(l, base_sc, elem_type);
+                    uint32_t result_id;
+                    if (emit_access_chain(l, ptr_type, &result_id, base.id, &idx_const, 1)) {
+                        r.id = result_id;
+                        r.type_id = elem_type;
+                        if (out_sc) *out_sc = base_sc;
+                    }
+                    break;
+                }
+            }
 
             // Find the struct type name
             const char *struct_name = find_struct_name_by_type_id(l, base.type_id);
@@ -3272,8 +3371,16 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
             ExprResult index = lower_expr_full(l, idx->index);
             if (!index.id) break;
 
-            // Determine element type from runtime array type
-            uint32_t elem_type = get_runtime_array_element_type(l, base.type_id);
+            // Determine element type - check vector types first, then arrays
+            uint32_t elem_type = 0;
+            if (base.type_id == l->id_vec2f || base.type_id == l->id_vec3f || base.type_id == l->id_vec4f)
+                elem_type = l->id_f32;
+            else if (base.type_id == l->id_vec2i || base.type_id == l->id_vec3i || base.type_id == l->id_vec4i)
+                elem_type = l->id_i32;
+            else if (base.type_id == l->id_vec2u || base.type_id == l->id_vec3u || base.type_id == l->id_vec4u)
+                elem_type = l->id_u32;
+            if (!elem_type)
+                elem_type = get_runtime_array_element_type(l, base.type_id);
             if (!elem_type) elem_type = l->id_f32; // Fallback to f32
 
             // Create access chain for array index
@@ -3361,6 +3468,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
             if (!elem_type) elem_type = l->id_f32;
 
             uint32_t constituents[4] = {0, 0, 0, 0};
+            uint32_t c_types[4] = {0, 0, 0, 0};
             int idx = 0;
             for (int i = 0; i < call->arg_count && idx < vec_size; ++i) {
                 ExprResult arg = lower_expr_full(l, call->args[i]);
@@ -3372,19 +3480,42 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                             uint32_t comp_id;
                             uint32_t index = j;
                             if (emit_composite_extract(l, scalar_type, &comp_id, arg.id, &index, 1)) {
+                                c_types[idx] = scalar_type;
                                 constituents[idx++] = comp_id;
                             }
                         }
                     } else {
+                        c_types[idx] = arg.type_id;
                         constituents[idx++] = arg.id;
                     }
                 }
             }
             // Single-arg splat
             if (call->arg_count == 1 && idx == 1) {
-                for (int i = 1; i < vec_size; ++i)
+                for (int i = 1; i < vec_size; ++i) {
                     constituents[i] = constituents[0];
+                    c_types[i] = c_types[0];
+                }
                 idx = vec_size;
+            }
+            // Convert constituents to target element type if mismatched
+            for (int i = 0; i < idx; i++) {
+                if (c_types[i] && c_types[i] != elem_type && constituents[i]) {
+                    uint32_t converted;
+                    SpvOp conv_op = 0;
+                    if (is_float_type(c_types[i], l) && (elem_type == l->id_i32))
+                        conv_op = SpvOpConvertFToS;
+                    else if (is_float_type(c_types[i], l) && (elem_type == l->id_u32))
+                        conv_op = SpvOpConvertFToU;
+                    else if ((c_types[i] == l->id_i32 || c_types[i] == l->id_u32) && is_float_type(elem_type, l))
+                        conv_op = (c_types[i] == l->id_i32) ? SpvOpConvertSToF : SpvOpConvertUToF;
+                    else if (c_types[i] == l->id_u32 && elem_type == l->id_i32)
+                        conv_op = SpvOpBitcast;
+                    else if (c_types[i] == l->id_i32 && elem_type == l->id_u32)
+                        conv_op = SpvOpBitcast;
+                    if (conv_op && emit_unary_op(l, conv_op, elem_type, &converted, constituents[i]))
+                        constituents[i] = converted;
+                }
             }
             uint32_t vec_type = emit_type_vector(l, elem_type, vec_size);
 
@@ -3541,6 +3672,59 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                     r.id = result;
                     r.type_id = l->id_u32;
                 }
+            }
+        }
+        return r;
+    }
+
+    // bitcast<T>(expr) — reinterpret bits as target type
+    if (strcmp(callee_name, "bitcast") == 0 && call->arg_count >= 1) {
+        uint32_t target_type = 0;
+        if (call->callee && call->callee->type == WGSL_NODE_TYPE &&
+            call->callee->type_node.type_arg_count > 0) {
+            target_type = lower_type(l, call->callee->type_node.type_args[0]);
+        }
+        if (target_type) {
+            ExprResult arg = lower_expr_full(l, call->args[0]);
+            if (arg.id) {
+                uint32_t result;
+                if (emit_unary_op(l, SpvOpBitcast, target_type, &result, arg.id)) {
+                    r.id = result;
+                    r.type_id = target_type;
+                }
+            }
+        }
+        return r;
+    }
+
+    // saturate(expr) — clamp to [0, 1]
+    if (strcmp(callee_name, "saturate") == 0 && call->arg_count >= 1) {
+        ExprResult arg = lower_expr_full(l, call->args[0]);
+        if (arg.id) {
+            uint32_t result;
+            uint32_t lo_id = emit_const_f32(l, 0.0f);
+            uint32_t hi_id = emit_const_f32(l, 1.0f);
+            uint32_t lo_type = l->id_f32;
+            uint32_t hi_type = l->id_f32;
+            maybe_splat_scalar(l, arg.type_id, &lo_id, &lo_type);
+            maybe_splat_scalar(l, arg.type_id, &hi_id, &hi_type);
+            uint32_t args3[3] = {arg.id, lo_id, hi_id};
+            if (emit_ext_inst(l, arg.type_id, &result, l->id_extinst_glsl, GLSLstd450FClamp, args3, 3)) {
+                r.id = result;
+                r.type_id = arg.type_id;
+            }
+        }
+        return r;
+    }
+
+    // fwidth(expr) — sum of absolute derivatives
+    if (strcmp(callee_name, "fwidth") == 0 && call->arg_count >= 1) {
+        ExprResult arg = lower_expr_full(l, call->args[0]);
+        if (arg.id) {
+            uint32_t result;
+            if (emit_unary_op(l, SpvOpFwidth, arg.type_id, &result, arg.id)) {
+                r.id = result;
+                r.type_id = arg.type_id;
             }
         }
         return r;
@@ -3903,10 +4087,32 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         ExprResult coord = lower_expr_full(l, call->args[1]);
         if (!tex.id || !coord.id) return r;
 
+        // If tex is a global variable (pointer), load it; if it's a value
+        // parameter, use directly.
         uint32_t loaded_tex;
-        if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+        int tex_is_value = 0;
+        for (int i = l->fn_ctx.locals.count - 1; i >= 0; --i) {
+            if (l->fn_ctx.locals.vars[i].ptr_id == tex.id && l->fn_ctx.locals.vars[i].is_value) {
+                tex_is_value = 1; break;
+            }
+        }
+        if (tex_is_value) {
+            loaded_tex = tex.id;
+        } else {
+            if (!emit_load(l, tex.type_id, &loaded_tex, tex.id)) return r;
+        }
 
+        // Determine result type from texture's sampled type
         uint32_t result_type = l->id_vec4f;
+        for (int bucket = 0; bucket < TYPE_CACHE_SIZE; ++bucket) {
+            for (TypeCacheEntry *e = l->type_cache.buckets[bucket]; e; e = e->next) {
+                if (e->spv_id == tex.type_id && e->kind == TC_IMAGE) {
+                    if (e->image_type.sampled_type_id == l->id_u32) result_type = l->id_vec4u;
+                    else if (e->image_type.sampled_type_id == l->id_i32) result_type = l->id_vec4i;
+                    break;
+                }
+            }
+        }
         uint32_t result_id = fresh_id(l);
 
         // SpvSections path
@@ -4589,6 +4795,32 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         return r;
     }
 
+    // Struct constructor: StructName(field0, field1, ...)
+    // Check if callee_name matches a known struct type.
+    for (int sc = 0; sc < l->struct_cache_count; ++sc) {
+        if (strcmp(l->struct_cache[sc].name, callee_name) != 0) continue;
+
+        uint32_t struct_type = l->struct_cache[sc].spv_id;
+        int count = call->arg_count;
+        if (count > 64) count = 64;
+        uint32_t constituents[64];
+        int all_ok = 1;
+        for (int i = 0; i < count; ++i) {
+            ExprResult arg = lower_expr_full(l, call->args[i]);
+            if (!arg.id) { all_ok = 0; break; }
+            constituents[i] = arg.id;
+        }
+
+        if (all_ok && count > 0) {
+            uint32_t result;
+            if (emit_composite_construct(l, struct_type, &result, constituents, count)) {
+                r.id = result;
+                r.type_id = struct_type;
+            }
+        }
+        return r;
+    }
+
     // User-defined function call: look up in user_funcs registry
     for (int uf = 0; uf < l->user_func_count; uf++) {
         if (strcmp(l->user_funcs[uf].name, callee_name) != 0) continue;
@@ -4616,6 +4848,17 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                 }
             }
             ExprResult arg = lower_expr_full(l, arg_node);
+            // If arg is a global UniformConstant variable (texture/sampler), load it
+            for (int g = 0; g < l->global_map_count; g++) {
+                if (l->global_map[g].spv_id == arg.id &&
+                    l->global_map[g].sc == SpvStorageClassUniformConstant) {
+                    uint32_t loaded;
+                    if (emit_load(l, arg.type_id, &loaded, arg.id)) {
+                        arg.id = loaded;
+                    }
+                    break;
+                }
+            }
             arg_ids[a] = arg.id;
         }
 
@@ -4859,6 +5102,18 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
                 }
             } else if (strcmp(bin->op, "/") == 0) {
                 op = is_float ? SpvOpFDiv : (is_signed ? SpvOpSDiv : SpvOpUDiv);
+                // Handle scalar / vector and vector / scalar broadcasting
+                int left_vc = get_vector_component_count(left.type_id, l);
+                int right_vc = get_vector_component_count(right.type_id, l);
+                if (left_vc == 0 && right_vc > 0) {
+                    // scalar / vector: splat scalar to vector
+                    maybe_splat_scalar(l, right.type_id, &left.id, &left.type_id);
+                    result_type = right.type_id;
+                } else if (left_vc > 0 && right_vc == 0) {
+                    // vector / scalar: splat scalar to vector
+                    maybe_splat_scalar(l, left.type_id, &right.id, &right.type_id);
+                    result_type = left.type_id;
+                }
             } else if (strcmp(bin->op, "%") == 0) {
                 op = is_float ? SpvOpFRem : (is_signed ? SpvOpSRem : SpvOpUMod);
             }
@@ -5029,7 +5284,25 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
                 }
             }
 
-            if (!valid) return r;
+            if (!valid) {
+                // Not a vector swizzle — try struct member extraction
+                const char *struct_name = find_struct_name_by_type_id(l, obj.type_id);
+                if (struct_name) {
+                    int member_idx = find_struct_member_index(l, struct_name, mem->member);
+                    if (member_idx >= 0) {
+                        uint32_t member_type_id = get_struct_member_type(l, struct_name, member_idx);
+                        if (member_type_id) {
+                            uint32_t idx_const = (uint32_t)member_idx;
+                            uint32_t result;
+                            if (emit_composite_extract(l, member_type_id, &result, obj.id, &idx_const, 1)) {
+                                r.id = result;
+                                r.type_id = member_type_id;
+                            }
+                        }
+                    }
+                }
+                return r;
+            }
 
             // Determine element type
             uint32_t elem_type = l->id_f32;
@@ -5090,7 +5363,8 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
             ExprResult ptr = lower_ptr_expr(l, node, &sc);
             if (ptr.id && (sc == SpvStorageClassStorageBuffer || sc == SpvStorageClassUniform ||
                            sc == SpvStorageClassWorkgroup || sc == SpvStorageClassFunction ||
-                           sc == SpvStorageClassPhysicalStorageBuffer)) {
+                           sc == SpvStorageClassPhysicalStorageBuffer ||
+                           sc == SpvStorageClassInput || sc == SpvStorageClassOutput)) {
                 // This is pointer-based array access - load from the pointer
                 uint32_t loaded;
                 if (emit_load(l, ptr.type_id, &loaded, ptr.id)) {
@@ -5228,6 +5502,13 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
                 callee_name = call->callee->type_node.name;
             }
             if (callee_name) {
+                // Check type-parameterized vector constructors: vec2<i32>(...), vec2<u32>(...)
+                if ((strcmp(callee_name, "vec2") == 0 || strcmp(callee_name, "vec3") == 0 ||
+                     strcmp(callee_name, "vec4") == 0) &&
+                    call->callee && call->callee->type == WGSL_NODE_TYPE &&
+                    call->callee->type_node.type_arg_count > 0) {
+                    return lower_type(l, call->callee);
+                }
                 if (strcmp(callee_name, "vec2f") == 0 || strcmp(callee_name, "vec2") == 0) {
                     return l->id_vec2f ? l->id_vec2f : emit_type_vector(l, l->id_f32, 2);
                 }
@@ -5581,6 +5862,10 @@ static int lower_if_stmt(WgslLower *l, const WgslAstNode *node) {
         if (ssir_cond) {
             ssir_build_branch_cond_merge(WL_BCTX(l),
                 ssir_cond, ssir_then_block, ssir_false_target, ssir_merge_block);
+        } else {
+            // Condition SSIR value missing — emit branch to merge so all
+            // downstream blocks stay reachable in the SSIR CFG.
+            ssir_build_branch(WL_BCTX(l), ssir_merge_block);
         }
     }
 
@@ -6705,6 +6990,30 @@ static int lower_helper_function(WgslLower *l, const WgslAstNode *fn_node) {
     l->fn_ctx.pending_init_count = 0;
     l->fn_ctx.pending_init_cap = 0;
 
+    // Register module-scope const and override declarations as value bindings in helper functions
+    if (l->program && l->program->type == WGSL_NODE_PROGRAM) {
+        const Program *mprog = &l->program->program;
+        for (int d = 0; d < mprog->decl_count; d++) {
+            const WgslAstNode *decl = mprog->decls[d];
+            if (!decl || decl->type != WGSL_NODE_VAR_DECL) continue;
+            const VarDecl *vd = &decl->var_decl;
+            if (vd->kind == WGSL_DECL_CONST && vd->init) {
+                ExprResult cval = lower_expr_full(l, vd->init);
+                if (cval.id) {
+                    fn_ctx_add_local_ex(l, vd->name, cval.id, cval.type_id, 1);
+                }
+            } else if (vd->kind == WGSL_DECL_OVERRIDE) {
+                for (int oc = 0; oc < l->override_cache_count; oc++) {
+                    if (strcmp(l->override_cache[oc].name, vd->name) == 0) {
+                        fn_ctx_add_local_ex(l, vd->name, l->override_cache[oc].spv_id,
+                            l->override_cache[oc].type_id, 1);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     // Second pass: lower function body
     if (fn->body) {
         lower_block(l, fn->body);
@@ -6712,7 +7021,16 @@ static int lower_helper_function(WgslLower *l, const WgslAstNode *fn_node) {
 
     // Emit return if not already returned
     if (!l->fn_ctx.has_returned) {
-        emit_return(l);
+        if (return_type == emit_type_void(l)) {
+            emit_return(l);
+        } else {
+            // Non-void function: emit OpUnreachable as safety terminator
+            WordBuf *wb_fn = &l->sections.functions;
+            emit_op(wb_fn, SpvOpUnreachable, 1);
+            if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                ssir_build_unreachable(WL_BCTX(l));
+            }
+        }
     }
 
     if (!emit_function_end(l)) {
@@ -6880,7 +7198,9 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
     }
 
     // For vertex shaders, handle position output (direct @builtin on return type)
-    if (ep->stage == WGSL_STAGE_VERTEX && fn->return_type) {
+    // Skip if return type is a struct — struct fields handle their own builtins below.
+    if (ep->stage == WGSL_STAGE_VERTEX && fn->return_type &&
+        !(fn->return_type->type == WGSL_NODE_TYPE && fn->ret_attr_count == 0)) {
         /* PRE: ret_attrs valid if ret_attr_count > 0 */
         wgsl_compiler_assert(fn->ret_attr_count == 0 || fn->ret_attrs != NULL, "lower_function vertex: ret_attrs NULL");
         for (int i = 0; i < fn->ret_attr_count; ++i) {
@@ -7016,7 +7336,6 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
                             uint32_t loc_val = (uint32_t)loc;
                             emit_decorate(l, var_id, SpvDecorationLocation, &loc_val, 1);
-                            ADD_INTERFACE(var_id);
 
                             // Create SSIR global for output with location
                             uint32_t ssir_var = 0;
@@ -7027,6 +7346,21 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                                 ssir_global_set_location(l->ssir, ssir_var, (uint32_t)loc);
                                 ssir_id_map_set(l, var_id, ssir_var);
                             }
+
+                            // Check for @interpolate(flat) on output
+                            for (int ia = 0; ia < field->attr_count; ++ia) {
+                                const WgslAstNode *iattr = field->attrs[ia];
+                                if (iattr->type == WGSL_NODE_ATTRIBUTE && strcmp(iattr->attribute.name, "interpolate") == 0) {
+                                    if (iattr->attribute.arg_count > 0 && iattr->attribute.args[0]->type == WGSL_NODE_IDENT) {
+                                        if (strcmp(iattr->attribute.args[0]->ident.name, "flat") == 0) {
+                                            emit_decorate(l, var_id, SpvDecorationFlat, NULL, 0);
+                                            if (l->ssir) ssir_global_set_interpolation(l->ssir, ssir_var, SSIR_INTERP_FLAT);
+                                        }
+                                    }
+                                }
+                            }
+
+                            ADD_INTERFACE(var_id);
 
                             // Store in global_map
                             if (l->global_map_count >= l->global_map_cap) {
@@ -7837,6 +8171,12 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
     emit_type_vector(l, l->id_f32, 2);
     emit_type_vector(l, l->id_f32, 3);
     emit_type_vector(l, l->id_f32, 4);
+    emit_type_vector(l, l->id_i32, 2);
+    emit_type_vector(l, l->id_i32, 3);
+    emit_type_vector(l, l->id_i32, 4);
+    emit_type_vector(l, l->id_u32, 2);
+    emit_type_vector(l, l->id_u32, 3);
+    emit_type_vector(l, l->id_u32, 4);
 
     // Initialize SSIR basic types
     l->ssir_void = ssir_type_void(l->ssir);
@@ -7932,6 +8272,35 @@ WgslLower *wgsl_lower_create(const WgslAstNode *program,
                         sc_id = emit_spec_const_i32(l, (int32_t)strtol(s, NULL, 0), spec_id, vd->name);
                         sc_type = l->id_i32;
                     }
+                }
+            } else if (vd->init && vd->init->type == WGSL_NODE_IDENT) {
+                // Boolean override: false/true are parsed as identifiers
+                const char *bname = vd->init->ident.name;
+                if (strcmp(bname, "false") == 0 || strcmp(bname, "true") == 0) {
+                    int bval = (strcmp(bname, "true") == 0) ? 1 : 0;
+                    // Emit OpSpecConstantFalse or OpSpecConstantTrue
+                    uint32_t bool_type = l->id_bool;
+                    sc_id = fresh_id(l);
+                    {
+                        WordBuf *wb = &l->sections.types_constants;
+                        emit_op(wb, bval ? SpvOpSpecConstantTrue : SpvOpSpecConstantFalse, 3);
+                        wb_push_u32(wb, bool_type);
+                        wb_push_u32(wb, sc_id);
+                    }
+                    uint32_t dec_val = spec_id;
+                    emit_decorate(l, sc_id, SpvDecorationSpecId, &dec_val, 1);
+                    if (vd->name && l->opts.enable_debug_names) {
+                        emit_name(l, sc_id, vd->name);
+                    }
+                    // SSIR: create spec constant
+                    if (l->ssir) {
+                        uint32_t ssir_val = bval ? ssir_const_bool(l->ssir, 1) : ssir_const_bool(l->ssir, 0);
+                        ssir_id_map_set(l, sc_id, ssir_val);
+                    }
+                    sc_type = bool_type;
+                } else {
+                    sc_id = emit_spec_const_f32(l, 0.0f, spec_id, vd->name);
+                    sc_type = l->id_f32;
                 }
             } else {
                 // No init or non-literal: default to f32 with 0.0
@@ -8166,6 +8535,7 @@ fail:
     }
     WGSL_FREE(l->global_map);
     WGSL_FREE(l->struct_cache);
+    WGSL_FREE(l->type_conv_cache);
     WGSL_FREE(l);
     return NULL;
 }
@@ -8186,6 +8556,7 @@ void wgsl_lower_destroy(WgslLower *lower) {
         WGSL_FREE(lower->user_funcs[i].param_types);
     }
     WGSL_FREE(lower->user_funcs);
+    WGSL_FREE(lower->type_conv_cache);
     for (int i = 0; i < lower->ep_count; ++i) {
         WGSL_FREE((void *)lower->eps[i].interface_ids);
     }
