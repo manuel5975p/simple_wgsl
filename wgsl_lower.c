@@ -5778,13 +5778,13 @@ static int lower_assignment(WgslLower *l, const WgslAstNode *node) {
         if (strcmp(asgn->op, "+=") == 0) op = is_float ? SpvOpFAdd : SpvOpIAdd;
         else if (strcmp(asgn->op, "-=") == 0) op = is_float ? SpvOpFSub : SpvOpISub;
         else if (strcmp(asgn->op, "*=") == 0) op = is_float ? SpvOpFMul : SpvOpIMul;
-        else if (strcmp(asgn->op, "/=") == 0) op = is_float ? SpvOpFDiv : SpvOpSDiv;
-        else if (strcmp(asgn->op, "%=") == 0) op = is_float ? SpvOpFRem : SpvOpSRem;
+        else if (strcmp(asgn->op, "/=") == 0) op = is_float ? SpvOpFDiv : (is_signed_int_type(lhs.type_id, l) ? SpvOpSDiv : SpvOpUDiv);
+        else if (strcmp(asgn->op, "%=") == 0) op = is_float ? SpvOpFRem : (is_signed_int_type(lhs.type_id, l) ? SpvOpSRem : SpvOpUMod);
         else if (strcmp(asgn->op, "&=") == 0) op = SpvOpBitwiseAnd;
         else if (strcmp(asgn->op, "|=") == 0) op = SpvOpBitwiseOr;
         else if (strcmp(asgn->op, "^=") == 0) op = SpvOpBitwiseXor;
         else if (strcmp(asgn->op, "<<=") == 0) op = SpvOpShiftLeftLogical;
-        else if (strcmp(asgn->op, ">>=") == 0) op = SpvOpShiftRightArithmetic;
+        else if (strcmp(asgn->op, ">>=") == 0) op = is_signed_int_type(lhs.type_id, l) ? SpvOpShiftRightArithmetic : SpvOpShiftRightLogical;
 
         if (op) {
             uint32_t result;
