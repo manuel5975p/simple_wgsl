@@ -2427,7 +2427,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 TEST(DeviceAddressFftTest, FusedGenN64_BDA) {
-    char *wgsl = gen_fft_fused(64, 1);
+    char *wgsl = gen_fft_fused(64, 1, 0, 0);
     ASSERT_NE(wgsl, nullptr);
     EXPECT_NE(strstr(wgsl, "var<device"), nullptr)
         << "Expected var<device> in generated WGSL";
@@ -2439,7 +2439,7 @@ TEST(DeviceAddressFftTest, FusedGenN64_BDA) {
 }
 
 TEST(DeviceAddressFftTest, FusedGenN8_BDA) {
-    char *wgsl = gen_fft_fused(8, 1);
+    char *wgsl = gen_fft_fused(8, 1, 0, 0);
     ASSERT_NE(wgsl, nullptr);
     EXPECT_NE(strstr(wgsl, "var<device"), nullptr);
     auto r = wgsl_test::CompileWgsl(wgsl);

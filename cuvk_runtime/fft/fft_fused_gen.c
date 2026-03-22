@@ -17,7 +17,7 @@
  */
 
 #include "fft_fused_gen.h"
-#include "fft_strbuf.h"
+#include "fft_butterfly.h"
 #include "fft_bda.h"
 
 #include <math.h>
@@ -32,25 +32,6 @@
 /* ========================================================================== */
 
 /* Threads per FFT (before batching) */
-static int wg_per_fft_mr(int n, int max_r) {
-  int radices[MAX_STAGES];
-  if (n < 2) return 0;
-  int ns = factorize_mr(n, radices, max_r);
-  if (ns == 0) return 0;
-
-  int mr = 0;
-  for (int i = 0; i < ns; i++)
-    if (radices[i] > mr) mr = radices[i];
-
-  int limit = n / mr;
-  if (limit > 256) limit = 256;
-
-  int wg = limit;
-  while (wg > 1 && n % wg != 0)
-    wg--;
-  return wg;
-}
-
 static int batch_per_wg_impl(int n, int max_r, int wg_limit) {
   if (uses_direct_path_mr(n, max_r)) {
     /* The hybrid variant uses shared memory for coalesced I/O
@@ -86,15 +67,11 @@ static int workgroup_size_impl(int n, int max_r, int wg_limit) {
 
 #define DEFAULT_WG_LIMIT 256
 
-/* Public API — default (auto) */
-int fft_fused_batch_per_wg(int n) { return batch_per_wg_impl(n, 0, DEFAULT_WG_LIMIT); }
-int fft_fused_workgroup_size(int n) { return workgroup_size_impl(n, 0, DEFAULT_WG_LIMIT); }
-
-/* Public API — explicit max_radix + wg_limit */
-int fft_fused_batch_per_wg_ex(int n, int max_r, int wg_lim) {
+/* Public API — explicit max_radix + wg_limit (0 = auto/default) */
+int fft_fused_batch_per_wg(int n, int max_r, int wg_lim) {
   return batch_per_wg_impl(n, max_r, wg_lim > 0 ? wg_lim : DEFAULT_WG_LIMIT);
 }
-int fft_fused_workgroup_size_ex(int n, int max_r, int wg_lim) {
+int fft_fused_workgroup_size(int n, int max_r, int wg_lim) {
   return workgroup_size_impl(n, max_r, wg_lim > 0 ? wg_lim : DEFAULT_WG_LIMIT);
 }
 
@@ -136,8 +113,7 @@ static int lut_size_mr(int n, int direction, int max_r) {
   return total;
 }
 
-int fft_fused_lut_size(int n, int direction) { return lut_size_mr(n, direction, 0); }
-int fft_fused_lut_size_ex(int n, int direction, int max_r) { return lut_size_mr(n, direction, max_r); }
+int fft_fused_lut_size(int n, int direction, int max_r) { return lut_size_mr(n, direction, max_r); }
 
 /* Simple host-side DFT of length M (for precomputing Rader kernels) */
 static void host_dft(const double *in_re, const double *in_im,
@@ -228,8 +204,7 @@ static float *compute_lut_mr(int n, int direction, int max_r) {
   return lut;
 }
 
-float *fft_fused_compute_lut(int n, int direction) { return compute_lut_mr(n, direction, 0); }
-float *fft_fused_compute_lut_ex(int n, int direction, int max_r) { return compute_lut_mr(n, direction, max_r); }
+float *fft_fused_compute_lut(int n, int direction, int max_r) { return compute_lut_mr(n, direction, max_r); }
 
 /* ========================================================================== */
 /* Main generator                                                             */
@@ -999,13 +974,8 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int
   return sb_finish(&sb);
 }
 
-/* Public API — default (auto) */
-char *gen_fft_fused(int n, int direction) {
-  return gen_fft_fused_mr(n, direction, 0, DEFAULT_WG_LIMIT, 0, n, 1, n, 1, 0);
-}
-
-/* Public API — explicit max_radix + wg_limit */
-char *gen_fft_fused_ex(int n, int direction, int max_r, int wg_lim) {
+/* Public API — explicit max_radix + wg_limit (0 = auto/default) */
+char *gen_fft_fused(int n, int direction, int max_r, int wg_lim) {
   return gen_fft_fused_mr(n, direction, max_r, wg_lim > 0 ? wg_lim : DEFAULT_WG_LIMIT, 0,
                            n, 1, n, 1, 0);
 }

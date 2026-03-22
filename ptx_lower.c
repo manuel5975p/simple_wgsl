@@ -4792,9 +4792,6 @@ PtxToSsirResult ptx_to_ssir(const char *ptx_source, const PtxToSsirOptions *opts
     return result;
 }
 
-void ptx_to_ssir_free(char *str) {
-    PTX_FREE(str);
-}
 
 const char *ptx_to_ssir_result_string(PtxToSsirResult r) {
     switch (r) {

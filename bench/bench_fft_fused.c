@@ -228,9 +228,9 @@ static int bench_one(VkCtx *ctx, int n, int max_radix, int wg_limit,
                      double *out_ms, float *out_err) {
 
   /* Generate WGSL */
-  char *wgsl = gen_fft_fused_ex(n, 1, max_radix, wg_limit);
+  char *wgsl = gen_fft_fused(n, 1, max_radix, wg_limit);
   if (!wgsl) {
-    fprintf(stderr, "  N=%d mr=%d wg=%d: gen_fft_fused_ex failed\n",
+    fprintf(stderr, "  N=%d mr=%d wg=%d: gen_fft_fused failed\n",
             n, max_radix, wg_limit);
     return -1;
   }
@@ -246,7 +246,7 @@ static int bench_one(VkCtx *ctx, int n, int max_radix, int wg_limit,
   free(wgsl);
 
   /* LUT */
-  int lut_count = fft_fused_lut_size_ex(n, 1, max_radix); /* wg_limit doesn't affect LUT */
+  int lut_count = fft_fused_lut_size(n, 1, max_radix); /* wg_limit doesn't affect LUT */
   int num_bindings = (lut_count > 0) ? 3 : 2;
 
   /* Create pipeline */
@@ -259,7 +259,7 @@ static int bench_one(VkCtx *ctx, int n, int max_radix, int wg_limit,
   wgsl_lower_free(spirv);
 
   /* Batching: pad batch count to multiple of B */
-  int B = fft_fused_batch_per_wg_ex(n, max_radix, wg_limit);
+  int B = fft_fused_batch_per_wg(n, max_radix, wg_limit);
   if (B < 1) B = 1;
   int padded_batch = ((batch + B - 1) / B) * B;
   int dispatch_count = padded_batch / B;
@@ -301,7 +301,7 @@ static int bench_one(VkCtx *ctx, int n, int max_radix, int wg_limit,
 
   /* Upload twiddle LUT */
   if (lut_count > 0) {
-    float *lut_data = fft_fused_compute_lut_ex(n, 1, max_radix);
+    float *lut_data = fft_fused_compute_lut(n, 1, max_radix);
     VkDeviceSize lut_size = (VkDeviceSize)lut_count * 2 * sizeof(float);
     if (create_buffer(ctx, lut_size,
                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -482,8 +482,8 @@ int main(void) {
       for (int wi = 0; wi < n_wgl; wi++) {
         int wgl = wgl_values[wi];
 
-        int wg = fft_fused_workgroup_size_ex(n, mr, wgl);
-        int B = fft_fused_batch_per_wg_ex(n, mr, wgl);
+        int wg = fft_fused_workgroup_size(n, mr, wgl);
+        int B = fft_fused_batch_per_wg(n, mr, wgl);
         if (wg == 0) continue;
 
         /* Verify correctness */

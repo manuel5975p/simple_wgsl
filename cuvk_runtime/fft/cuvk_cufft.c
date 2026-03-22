@@ -15,55 +15,11 @@
 #include "fft_bda.h"
 #include "fft_butterfly.h"
 
+#include "cufft.h"
+
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* ============================================================================
- * cuFFT types (must match cufft.h)
- * ============================================================================ */
-
-typedef enum {
-    CUFFT_SUCCESS            = 0,
-    CUFFT_INVALID_PLAN       = 1,
-    CUFFT_ALLOC_FAILED       = 2,
-    CUFFT_INVALID_TYPE       = 3,
-    CUFFT_INVALID_VALUE      = 4,
-    CUFFT_INTERNAL_ERROR     = 5,
-    CUFFT_EXEC_FAILED        = 6,
-    CUFFT_SETUP_FAILED       = 7,
-    CUFFT_INVALID_SIZE       = 8,
-    CUFFT_UNALIGNED_DATA     = 9,
-    CUFFT_INCOMPLETE_PARAMETER_LIST = 10,
-    CUFFT_INVALID_DEVICE     = 11,
-    CUFFT_PARSE_ERROR        = 12,
-    CUFFT_NO_WORKSPACE       = 13,
-    CUFFT_NOT_IMPLEMENTED    = 14,
-    CUFFT_LICENSE_ERROR      = 15,
-    CUFFT_NOT_SUPPORTED      = 16,
-} cufftResult;
-
-typedef enum {
-    CUFFT_R2C = 0x2a,
-    CUFFT_C2R = 0x2c,
-    CUFFT_C2C = 0x29,
-    CUFFT_D2Z = 0x6a,
-    CUFFT_Z2D = 0x6c,
-    CUFFT_Z2Z = 0x69,
-} cufftType;
-
-#define CUFFT_FORWARD (-1)
-#define CUFFT_INVERSE  (1)
-
-typedef int cufftHandle;
-typedef float cufftReal;
-typedef struct { float x, y; } cufftComplex;
-typedef double cufftDoubleReal;
-typedef struct { double x, y; } cufftDoubleComplex;
-
-typedef enum {
-    CUFFT_COMPATIBILITY_FFTW_PADDING = 0x01,
-} cufftCompatibility;
 
 /* ============================================================================
  * Internal plan structure — Stockham codelet-based, multi-axis
@@ -897,19 +853,19 @@ static cufftResult build_fused_axis_mr(struct CUctx_st *ctx, FftAxis *axis,
     cufftResult cr;
 
     /* Check that the fused generator supports this max_radix for n */
-    int wg_size = fft_fused_workgroup_size_ex(n, max_radix, 0);
+    int wg_size = fft_fused_workgroup_size(n, max_radix, 0);
     if (wg_size <= 0) return CUFFT_INTERNAL_ERROR;
 
     /* Find wg_limit such that batch_per_wg divides batch_count */
-    int wpf = fft_fused_workgroup_size_ex(n, max_radix, 1);
+    int wpf = fft_fused_workgroup_size(n, max_radix, 1);
     if (wpf <= 0) return CUFFT_INTERNAL_ERROR;
-    int max_bpw = fft_fused_batch_per_wg_ex(n, max_radix, 0);
+    int max_bpw = fft_fused_batch_per_wg(n, max_radix, 0);
     int best_b = 1;
     for (int b = max_bpw; b >= 1; b--)
         if (batch_count % b == 0) { best_b = b; break; }
     int wg_limit = best_b * wpf;
 
-    int bpw = fft_fused_batch_per_wg_ex(n, max_radix, wg_limit);
+    int bpw = fft_fused_batch_per_wg(n, max_radix, wg_limit);
     if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
 
     axis->stage_info[0].type = FFT_STAGE_FUSED;
@@ -921,7 +877,7 @@ static cufftResult build_fused_axis_mr(struct CUctx_st *ctx, FftAxis *axis,
 
     /* Compile fused shader for each direction */
     for (int d = 0; d < 2; d++) {
-        char *wgsl = gen_fft_fused_ex(n, gen_dirs[d], max_radix, wg_limit);
+        char *wgsl = gen_fft_fused(n, gen_dirs[d], max_radix, wg_limit);
         if (!wgsl) return CUFFT_INTERNAL_ERROR;
         uint32_t *spirv = NULL; size_t sc = 0;
         cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -935,9 +891,9 @@ static cufftResult build_fused_axis_mr(struct CUctx_st *ctx, FftAxis *axis,
 
     /* Build LUT buffers if needed */
     for (int d = 0; d < 2; d++) {
-        int lut_count = fft_fused_lut_size_ex(n, gen_dirs[d], max_radix);
+        int lut_count = fft_fused_lut_size(n, gen_dirs[d], max_radix);
         if (lut_count > 0) {
-            float *lut_data = fft_fused_compute_lut_ex(n, gen_dirs[d], max_radix);
+            float *lut_data = fft_fused_compute_lut(n, gen_dirs[d], max_radix);
             if (!lut_data) return CUFFT_INTERNAL_ERROR;
             cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                                     &axis->stage_info[0].lut_buf[d],
@@ -1021,11 +977,11 @@ static cufftResult build_fused_axis(struct CUctx_st *ctx, FftAxis *axis,
  */
 static int aligned_wg_limit(int sub_n, int actual_batch) {
     /* wpf = threads per FFT (B=1 gives workgroup_size = wpf) */
-    int wpf = fft_fused_workgroup_size_ex(sub_n, 0, 1);
+    int wpf = fft_fused_workgroup_size(sub_n, 0, 1);
     if (wpf <= 0) return 0;
 
     /* Default max batch-per-wg */
-    int max_bpw = fft_fused_batch_per_wg(sub_n);
+    int max_bpw = fft_fused_batch_per_wg(sub_n, 0, 0);
 
     /* Find largest B <= max_bpw that divides actual_batch */
     int best_b = 1;
@@ -1068,7 +1024,7 @@ static cufftResult build_fourstep_2pass(struct CUctx_st *ctx, FftAxis *axis,
 
     int wg_limit_0 = aligned_wg_limit(n1, n2);
     if (wg_limit_0 <= 0) return CUFFT_INTERNAL_ERROR;
-    int bpw_0 = fft_fused_batch_per_wg_ex(n1, 0, wg_limit_0);
+    int bpw_0 = fft_fused_batch_per_wg(n1, 0, wg_limit_0);
     if (bpw_0 <= 0) return CUFFT_INTERNAL_ERROR;
     axis->dispatch_x[0] = (uint32_t)(n2 / bpw_0);
 
@@ -1089,9 +1045,9 @@ static cufftResult build_fourstep_2pass(struct CUctx_st *ctx, FftAxis *axis,
 
     /* LUT for N1-point fused sub-FFT */
     for (int d = 0; d < 2; d++) {
-        int lut_count = fft_fused_lut_size(n1, gen_dirs[d]);
+        int lut_count = fft_fused_lut_size(n1, gen_dirs[d], 0);
         if (lut_count > 0) {
-            float *lut_data = fft_fused_compute_lut(n1, gen_dirs[d]);
+            float *lut_data = fft_fused_compute_lut(n1, gen_dirs[d], 0);
             if (!lut_data) return CUFFT_INTERNAL_ERROR;
             cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                                     &axis->stage_info[0].lut_buf[d],
@@ -1108,7 +1064,7 @@ static cufftResult build_fourstep_2pass(struct CUctx_st *ctx, FftAxis *axis,
 
     int wg_limit_1 = aligned_wg_limit(n2, n1);
     if (wg_limit_1 <= 0) return CUFFT_INTERNAL_ERROR;
-    int bpw_1 = fft_fused_batch_per_wg_ex(n2, 0, wg_limit_1);
+    int bpw_1 = fft_fused_batch_per_wg(n2, 0, wg_limit_1);
     if (bpw_1 <= 0) return CUFFT_INTERNAL_ERROR;
     axis->dispatch_x[1] = (uint32_t)(n1 / bpw_1);
 
@@ -1129,9 +1085,9 @@ static cufftResult build_fourstep_2pass(struct CUctx_st *ctx, FftAxis *axis,
 
     /* LUT for N2-point fused sub-FFT */
     for (int d = 0; d < 2; d++) {
-        int lut_count = fft_fused_lut_size(n2, gen_dirs[d]);
+        int lut_count = fft_fused_lut_size(n2, gen_dirs[d], 0);
         if (lut_count > 0) {
-            float *lut_data = fft_fused_compute_lut(n2, gen_dirs[d]);
+            float *lut_data = fft_fused_compute_lut(n2, gen_dirs[d], 0);
             if (!lut_data) return CUFFT_INTERNAL_ERROR;
             cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                                     &axis->stage_info[1].lut_buf[d],
@@ -1195,12 +1151,12 @@ static cufftResult build_fourstep_5pass(struct CUctx_st *ctx, FftAxis *axis,
     int fused_batch_1 = n2 * batch;
     int wg_limit_1 = aligned_wg_limit(n1, fused_batch_1);
     if (wg_limit_1 <= 0) return CUFFT_INTERNAL_ERROR;
-    int bpw_1 = fft_fused_batch_per_wg_ex(n1, 0, wg_limit_1);
+    int bpw_1 = fft_fused_batch_per_wg(n1, 0, wg_limit_1);
     if (bpw_1 <= 0) return CUFFT_INTERNAL_ERROR;
     axis->dispatch_x[1] = (uint32_t)(fused_batch_1 / bpw_1);
 
     for (int d = 0; d < 2; d++) {
-        char *wgsl = gen_fft_fused_ex(n1, gen_dirs[d], 0, wg_limit_1);
+        char *wgsl = gen_fft_fused(n1, gen_dirs[d], 0, wg_limit_1);
         if (!wgsl) return CUFFT_INTERNAL_ERROR;
         uint32_t *spirv = NULL; size_t sc = 0;
         cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -1213,9 +1169,9 @@ static cufftResult build_fourstep_5pass(struct CUctx_st *ctx, FftAxis *axis,
     }
 
     for (int d = 0; d < 2; d++) {
-        int lut1_count = fft_fused_lut_size(n1, gen_dirs[d]);
+        int lut1_count = fft_fused_lut_size(n1, gen_dirs[d], 0);
         if (lut1_count > 0) {
-            float *lut1_data = fft_fused_compute_lut(n1, gen_dirs[d]);
+            float *lut1_data = fft_fused_compute_lut(n1, gen_dirs[d], 0);
             if (!lut1_data) return CUFFT_INTERNAL_ERROR;
             cr = create_lut_buffer(ctx, lut1_data, lut1_count * 2,
                                     &axis->stage_info[1].lut_buf[d],
@@ -1251,12 +1207,12 @@ static cufftResult build_fourstep_5pass(struct CUctx_st *ctx, FftAxis *axis,
     int fused_batch_3 = n1 * batch;
     int wg_limit_3 = aligned_wg_limit(n2, fused_batch_3);
     if (wg_limit_3 <= 0) return CUFFT_INTERNAL_ERROR;
-    int bpw_3 = fft_fused_batch_per_wg_ex(n2, 0, wg_limit_3);
+    int bpw_3 = fft_fused_batch_per_wg(n2, 0, wg_limit_3);
     if (bpw_3 <= 0) return CUFFT_INTERNAL_ERROR;
     axis->dispatch_x[3] = (uint32_t)(fused_batch_3 / bpw_3);
 
     for (int d = 0; d < 2; d++) {
-        char *wgsl = gen_fft_fused_ex(n2, gen_dirs[d], 0, wg_limit_3);
+        char *wgsl = gen_fft_fused(n2, gen_dirs[d], 0, wg_limit_3);
         if (!wgsl) return CUFFT_INTERNAL_ERROR;
         uint32_t *spirv = NULL; size_t sc = 0;
         cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -1269,9 +1225,9 @@ static cufftResult build_fourstep_5pass(struct CUctx_st *ctx, FftAxis *axis,
     }
 
     for (int d = 0; d < 2; d++) {
-        int lut3_count = fft_fused_lut_size(n2, gen_dirs[d]);
+        int lut3_count = fft_fused_lut_size(n2, gen_dirs[d], 0);
         if (lut3_count > 0) {
-            float *lut3_data = fft_fused_compute_lut(n2, gen_dirs[d]);
+            float *lut3_data = fft_fused_compute_lut(n2, gen_dirs[d], 0);
             if (!lut3_data) return CUFFT_INTERNAL_ERROR;
             cr = create_lut_buffer(ctx, lut3_data, lut3_count * 2,
                                     &axis->stage_info[3].lut_buf[d],
@@ -1442,7 +1398,7 @@ cufftResult cufftPlan1d(cufftHandle *plan, int nx, cufftType type, int batch)
             cr = build_fourstep_axis(ctx, &p->axes[0], nx, fs_n1, fs_n2,
                                       p->batch, p->pipe_layout);
         } else if (nx >= 4 && (nx & (nx - 1)) == 0 &&
-                   fft_fused_workgroup_size(nx) > 0) {
+                   fft_fused_workgroup_size(nx, 0, 0) > 0) {
             /* Fused single-dispatch path for power-of-2 sizes:
              * all radix stages in one shader, enables mega-CB replay.
              * N≤128: GPU-autotuned max_radix sweep.
@@ -2197,12 +2153,12 @@ static cufftResult build_2d_transpose_based(struct CUctx_st *ctx, FftAxis *axis,
 
         int wg_limit = aligned_wg_limit(ny, nx);
         if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
-        int bpw = fft_fused_batch_per_wg_ex(ny, 0, wg_limit);
+        int bpw = fft_fused_batch_per_wg(ny, 0, wg_limit);
         if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
         axis->dispatch_x[0] = (uint32_t)(nx / bpw);
 
         for (int d = 0; d < 2; d++) {
-            char *wgsl = gen_fft_fused_ex(ny, gen_dirs[d], 0, wg_limit);
+            char *wgsl = gen_fft_fused(ny, gen_dirs[d], 0, wg_limit);
             if (!wgsl) return CUFFT_INTERNAL_ERROR;
             uint32_t *spirv = NULL; size_t sc = 0;
             cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -2215,9 +2171,9 @@ static cufftResult build_2d_transpose_based(struct CUctx_st *ctx, FftAxis *axis,
         }
 
         for (int d = 0; d < 2; d++) {
-            int lut_count = fft_fused_lut_size(ny, gen_dirs[d]);
+            int lut_count = fft_fused_lut_size(ny, gen_dirs[d], 0);
             if (lut_count > 0) {
-                float *lut_data = fft_fused_compute_lut(ny, gen_dirs[d]);
+                float *lut_data = fft_fused_compute_lut(ny, gen_dirs[d], 0);
                 if (!lut_data) return CUFFT_INTERNAL_ERROR;
                 cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                                         &axis->stage_info[0].lut_buf[d],
@@ -2260,12 +2216,12 @@ static cufftResult build_2d_transpose_based(struct CUctx_st *ctx, FftAxis *axis,
 
         int wg_limit = aligned_wg_limit(nx, ny);
         if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
-        int bpw = fft_fused_batch_per_wg_ex(nx, 0, wg_limit);
+        int bpw = fft_fused_batch_per_wg(nx, 0, wg_limit);
         if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
         axis->dispatch_x[2] = (uint32_t)(ny / bpw);
 
         for (int d = 0; d < 2; d++) {
-            char *wgsl = gen_fft_fused_ex(nx, gen_dirs[d], 0, wg_limit);
+            char *wgsl = gen_fft_fused(nx, gen_dirs[d], 0, wg_limit);
             if (!wgsl) return CUFFT_INTERNAL_ERROR;
             uint32_t *spirv = NULL; size_t sc = 0;
             cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -2278,9 +2234,9 @@ static cufftResult build_2d_transpose_based(struct CUctx_st *ctx, FftAxis *axis,
         }
 
         for (int d = 0; d < 2; d++) {
-            int lut_count = fft_fused_lut_size(nx, gen_dirs[d]);
+            int lut_count = fft_fused_lut_size(nx, gen_dirs[d], 0);
             if (lut_count > 0) {
-                float *lut_data = fft_fused_compute_lut(nx, gen_dirs[d]);
+                float *lut_data = fft_fused_compute_lut(nx, gen_dirs[d], 0);
                 if (!lut_data) return CUFFT_INTERNAL_ERROR;
                 cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                                         &axis->stage_info[2].lut_buf[d],
@@ -2342,7 +2298,7 @@ static cufftResult build_2d_strided(struct CUctx_st *ctx, FftAxis *axis,
     {
         int wg_limit = aligned_wg_limit(ny, nx);
         if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
-        int bpw = fft_fused_batch_per_wg_ex(ny, 0, wg_limit);
+        int bpw = fft_fused_batch_per_wg(ny, 0, wg_limit);
         if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
 
         axis->stage_info[0].type = FFT_STAGE_FUSED;
@@ -2364,9 +2320,9 @@ static cufftResult build_2d_strided(struct CUctx_st *ctx, FftAxis *axis,
         }
 
         for (int d = 0; d < 2; d++) {
-            int lut_count = fft_fused_lut_size(ny, gen_dirs[d]);
+            int lut_count = fft_fused_lut_size(ny, gen_dirs[d], 0);
             if (lut_count > 0) {
-                float *lut_data = fft_fused_compute_lut(ny, gen_dirs[d]);
+                float *lut_data = fft_fused_compute_lut(ny, gen_dirs[d], 0);
                 if (!lut_data) return CUFFT_INTERNAL_ERROR;
                 cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                                         &axis->stage_info[0].lut_buf[d],
@@ -2385,7 +2341,7 @@ static cufftResult build_2d_strided(struct CUctx_st *ctx, FftAxis *axis,
     {
         int wg_limit = aligned_wg_limit(nx, ny);
         if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
-        int bpw = fft_fused_batch_per_wg_ex(nx, 0, wg_limit);
+        int bpw = fft_fused_batch_per_wg(nx, 0, wg_limit);
         if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
 
         axis->stage_info[1].type = FFT_STAGE_FUSED;
@@ -2407,9 +2363,9 @@ static cufftResult build_2d_strided(struct CUctx_st *ctx, FftAxis *axis,
         }
 
         for (int d = 0; d < 2; d++) {
-            int lut_count = fft_fused_lut_size(nx, gen_dirs[d]);
+            int lut_count = fft_fused_lut_size(nx, gen_dirs[d], 0);
             if (lut_count > 0) {
-                float *lut_data = fft_fused_compute_lut(nx, gen_dirs[d]);
+                float *lut_data = fft_fused_compute_lut(nx, gen_dirs[d], 0);
                 if (!lut_data) return CUFFT_INTERNAL_ERROR;
                 cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                                         &axis->stage_info[1].lut_buf[d],
@@ -2503,15 +2459,15 @@ static cufftResult build_2d_r2c_strided(struct CUctx_st *ctx, FftAxis *axis,
             if (mr1 < 2) mr1 = 2;
         }
 
-        int wpf1 = fft_fused_workgroup_size_ex(nx, mr1, 1);
+        int wpf1 = fft_fused_workgroup_size(nx, mr1, 1);
         if (wpf1 <= 0) return CUFFT_INTERNAL_ERROR;
-        int max_bpw1 = fft_fused_batch_per_wg_ex(nx, mr1, 256);
+        int max_bpw1 = fft_fused_batch_per_wg(nx, mr1, 256);
         int best_b1 = 1;
         for (int b = max_bpw1; b >= 1; b--)
             if (padded_y % b == 0) { best_b1 = b; break; }
         int wg_limit = best_b1 * wpf1;
         if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
-        int bpw = fft_fused_batch_per_wg_ex(nx, mr1, wg_limit);
+        int bpw = fft_fused_batch_per_wg(nx, mr1, wg_limit);
         if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
 
         axis->stage_info[1].type = FFT_STAGE_FUSED;
@@ -2530,9 +2486,9 @@ static cufftResult build_2d_r2c_strided(struct CUctx_st *ctx, FftAxis *axis,
         wgsl_lower_free(spirv);
         if (cr != CUFFT_SUCCESS) return cr;
 
-        int lut_count = fft_fused_lut_size_ex(nx, 1, mr1);
+        int lut_count = fft_fused_lut_size(nx, 1, mr1);
         if (lut_count > 0) {
-            float *lut_data = fft_fused_compute_lut_ex(nx, 1, mr1);
+            float *lut_data = fft_fused_compute_lut(nx, 1, mr1);
             if (!lut_data) return CUFFT_INTERNAL_ERROR;
             cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                                     &axis->stage_info[1].lut_buf[0],
@@ -2605,7 +2561,7 @@ static cufftResult build_col_fft_strided_fused(struct CUctx_st *ctx, FftAxis *ax
 
     int wg_limit = aligned_wg_limit(rows, cols);
     if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
-    int bpw = fft_fused_batch_per_wg_ex(rows, 0, wg_limit);
+    int bpw = fft_fused_batch_per_wg(rows, 0, wg_limit);
     if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
 
     axis->stage_info[0].type = FFT_STAGE_FUSED;
@@ -2630,9 +2586,9 @@ static cufftResult build_col_fft_strided_fused(struct CUctx_st *ctx, FftAxis *ax
     }
 
     for (int d = 0; d < 2; d++) {
-        int lut_count = fft_fused_lut_size(rows, gen_dirs[d]);
+        int lut_count = fft_fused_lut_size(rows, gen_dirs[d], 0);
         if (lut_count > 0) {
-            float *lut_data = fft_fused_compute_lut(rows, gen_dirs[d]);
+            float *lut_data = fft_fused_compute_lut(rows, gen_dirs[d], 0);
             if (!lut_data) return CUFFT_INTERNAL_ERROR;
             cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                 &axis->stage_info[0].lut_buf[d],
@@ -2675,7 +2631,7 @@ static cufftResult build_col_fft_transpose(struct CUctx_st *ctx, FftAxis *axis,
     /* Check fused FFT is available for rows-point */
     int wg_limit = aligned_wg_limit(rows, cols);
     if (wg_limit <= 0) return CUFFT_INTERNAL_ERROR;
-    int bpw = fft_fused_batch_per_wg_ex(rows, 0, wg_limit);
+    int bpw = fft_fused_batch_per_wg(rows, 0, wg_limit);
     if (bpw <= 0) return CUFFT_INTERNAL_ERROR;
 
     /* Stage 0: Transpose [rows][cols] → [cols][rows] */
@@ -2707,7 +2663,7 @@ static cufftResult build_col_fft_transpose(struct CUctx_st *ctx, FftAxis *axis,
         axis->dispatch_x[1] = (uint32_t)(cols / bpw);
 
         for (int d = 0; d < 2; d++) {
-            char *wgsl = gen_fft_fused_ex(rows, gen_dirs[d], 0, wg_limit);
+            char *wgsl = gen_fft_fused(rows, gen_dirs[d], 0, wg_limit);
             if (!wgsl) return CUFFT_INTERNAL_ERROR;
             uint32_t *spirv = NULL; size_t sc = 0;
             cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -2720,9 +2676,9 @@ static cufftResult build_col_fft_transpose(struct CUctx_st *ctx, FftAxis *axis,
         }
 
         for (int d = 0; d < 2; d++) {
-            int lut_count = fft_fused_lut_size(rows, gen_dirs[d]);
+            int lut_count = fft_fused_lut_size(rows, gen_dirs[d], 0);
             if (lut_count > 0) {
-                float *lut_data = fft_fused_compute_lut(rows, gen_dirs[d]);
+                float *lut_data = fft_fused_compute_lut(rows, gen_dirs[d], 0);
                 if (!lut_data) return CUFFT_INTERNAL_ERROR;
                 cr = create_lut_buffer(ctx, lut_data, lut_count * 2,
                     &axis->stage_info[1].lut_buf[d],

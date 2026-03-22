@@ -8,15 +8,9 @@
 #include "simple_wgsl_internal.h"
 #include <math.h>
 
-#ifndef STG_MALLOC
-#define STG_MALLOC(sz) calloc(1, (sz))
-#endif
-#ifndef STG_REALLOC
-#define STG_REALLOC(p, sz) realloc((p), (sz))
-#endif
-#ifndef STG_FREE
-#define STG_FREE(p) free((p))
-#endif
+#define STG_MALLOC  SW_MALLOC
+#define STG_REALLOC SW_REALLOC
+#define STG_FREE    SW_FREE
 
 typedef SwStringBuffer GlslBuf;
 #define gb_init sw_sb_init
@@ -73,33 +67,31 @@ static const char *glsl_get_name(GlslCtx *c, uint32_t id) {
     return sw_get_id_name(c->id_names, c->id_names_cap, id);
 }
 
-static int is_glsl_reserved(const char *n) {
-    static const char *kw[] = {
-        "input", "output", "attribute", "varying", "buffer",
-        "sampler", "filter", "sizeof", "cast", "namespace", "using",
-        "smooth", "flat", "noperspective", "patch", "subroutine",
-        "common", "partition", "active", "asm", "class", "union",
-        "enum", "typedef", "template", "this", "resource",
-        "goto", "inline", "noinline", "public", "static",
-        "extern", "external", "interface", "long", "short",
-        "half", "fixed", "unsigned", "superp", "lowp", "mediump", "highp",
-        NULL};
-    for (const char **p = kw; *p; p++)
-        if (strcmp(n, *p) == 0) return 1;
-    return 0;
-}
+static const char *const glsl_reserved[] = {
+    "input", "output", "attribute", "varying", "buffer",
+    "sampler", "filter", "sizeof", "cast", "namespace", "using",
+    "smooth", "flat", "noperspective", "patch", "subroutine",
+    "common", "partition", "active", "asm", "class", "union",
+    "enum", "typedef", "template", "this", "resource",
+    "goto", "inline", "noinline", "public", "static",
+    "extern", "external", "interface", "long", "short",
+    "half", "fixed", "unsigned", "superp", "lowp", "mediump", "highp",
+};
+static const int glsl_reserved_count = (int)(sizeof(glsl_reserved) / sizeof(glsl_reserved[0]));
 
 static void glsl_set_name(GlslCtx *c, uint32_t id, const char *n) {
     if (id >= c->id_names_cap) return;
     STG_FREE(c->id_names[id]);
-    if (n && (is_glsl_reserved(n) || strstr(n, "__"))) {
+    /* GLSL also forbids identifiers containing "__" */
+    if (n && strstr(n, "__")) {
         size_t len = strlen(n) + 2;
         char *tmp = (char *)STG_MALLOC(len);
-        snprintf(tmp, len, "_%s", n);
+        if (tmp) { tmp[0] = '_'; memcpy(tmp + 1, n, len - 1); }
         c->id_names[id] = tmp;
-    } else {
-        c->id_names[id] = n ? strdup(n) : NULL;
+        return;
     }
+    sw_set_name_escaped(c->id_names, c->id_names_cap, id, n,
+                        glsl_reserved, glsl_reserved_count, sw_malloc_fn);
 }
 
 /* ============================================================================
@@ -703,58 +695,27 @@ static void glsl_emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
             break;
 
         case SSIR_OP_ACCESS: {
-            SsirModule *amod = (SsirModule *)c->mod;
             glsl_emit_expr(c, inst->operands[0], b);
             /* Trace struct type through the access chain for member names */
-            uint32_t cur_type_id = 0;
-            {
-                SsirGlobalVar *ag = ssir_get_global(amod, inst->operands[0]);
-                if (ag) {
-                    SsirType *pt = ssir_get_type(amod, ag->type);
-                    if (pt && pt->kind == SSIR_TYPE_PTR)
-                        cur_type_id = pt->ptr.pointee;
-                }
-                if (!cur_type_id) {
-                    SsirInst *ai = glsl_find_inst(c, inst->operands[0]);
-                    if (ai && ai->op == SSIR_OP_LOAD) {
-                        SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
-                        if (lg) {
-                            SsirType *pt = ssir_get_type(amod, lg->type);
-                            if (pt && pt->kind == SSIR_TYPE_PTR)
-                                cur_type_id = pt->ptr.pointee;
-                        }
-                    }
-                }
-            }
+            uint32_t cur_type_id = sw_resolve_access_base_type(
+                (SsirModule *)c->mod, inst->operands[0],
+                (SsirInst *(*)(void *, uint32_t))glsl_find_inst, (void *)c);
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 uint32_t idx = inst->extra[i];
-                SsirConstant *ic = ssir_get_constant(amod, idx);
-                SsirType *cur_st = cur_type_id ? ssir_get_type(amod, cur_type_id) : NULL;
-                if (ic && (ic->kind == SSIR_CONST_U32 || ic->kind == SSIR_CONST_I32)) {
-                    uint32_t midx = (ic->kind == SSIR_CONST_U32) ? ic->u32_val : (uint32_t)ic->i32_val;
-                    const char *mname = NULL;
-                    if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
-                        cur_st->struc.member_names && midx < cur_st->struc.member_count)
-                        mname = cur_st->struc.member_names[midx];
+                uint32_t midx; const char *mname; int is_const;
+                uint32_t next_type = sw_advance_access_type(
+                    (SsirModule *)c->mod, cur_type_id, idx, &midx, &mname, &is_const);
+                if (is_const) {
                     if (mname)
                         gb_appendf(b, ".%s", mname);
                     else
                         gb_appendf(b, ".member%u", midx);
-                    /* Advance type through struct member */
-                    if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
-                        cur_type_id = cur_st->struc.members[midx];
-                    else
-                        cur_type_id = 0;
                 } else {
                     gb_append(b, "[");
                     glsl_emit_expr(c, idx, b);
                     gb_append(b, "]");
-                    /* Advance type through array element */
-                    if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
-                        cur_type_id = cur_st->array.elem;
-                    else
-                        cur_type_id = 0;
                 }
+                cur_type_id = next_type;
             }
             break;
         }
@@ -1434,29 +1395,7 @@ static void glsl_emit_function(GlslCtx *c, SsirFunction *fn) {
     c->sb.indent++;
     c->current_func = fn;
 
-    /* Compute use counts for inlining decisions */
-    STG_FREE(c->use_counts);
-    c->use_counts = (uint32_t *)STG_MALLOC(c->mod->next_id * sizeof(uint32_t));
-    if (c->use_counts) {
-        memset(c->use_counts, 0, c->mod->next_id * sizeof(uint32_t));
-        ssir_count_uses((SsirFunction *)fn, c->use_counts, c->mod->next_id);
-    }
-
-    /* Build instruction lookup map */
-    STG_FREE(c->inst_map);
-    c->inst_map_cap = c->mod->next_id;
-    c->inst_map = (SsirInst **)STG_MALLOC(c->inst_map_cap * sizeof(SsirInst *));
-    if (c->inst_map) {
-        memset(c->inst_map, 0, c->inst_map_cap * sizeof(SsirInst *));
-        for (uint32_t bi = 0; bi < fn->block_count; bi++) {
-            SsirBlock *blk = &fn->blocks[bi];
-            for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
-                uint32_t rid = blk->insts[ii].result;
-                if (rid && rid < c->inst_map_cap)
-                    c->inst_map[rid] = &blk->insts[ii];
-            }
-        }
-    }
+    sw_emitter_build_maps(c->mod, fn, &c->use_counts, &c->inst_map, &c->inst_map_cap, sw_free_fn, sw_malloc_fn);
 
     /* Local variables */
     for (uint32_t i = 0; i < fn->local_count; i++) {
@@ -1668,9 +1607,6 @@ SsirToGlslResult ssir_to_glsl(const SsirModule *mod,
     return SSIR_TO_GLSL_OK;
 }
 
-void ssir_to_glsl_free(void *p) {
-    STG_FREE(p);
-}
 
 const char *ssir_to_glsl_result_string(SsirToGlslResult result) {
     switch (result) {
@@ -1682,3 +1618,5 @@ const char *ssir_to_glsl_result_string(SsirToGlslResult result) {
         default: return "Unknown error";
     }
 }
+
+void ssir_to_glsl_free(void *p) { STG_FREE(p); }

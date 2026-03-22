@@ -211,6 +211,8 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
 
             if (f->params[i].is_pointer) {
                 /* Pointer param: write the BDA (device address) as u64 */
+                if (pc_offset + 8 > sizeof(pc_data))
+                    return CUDA_ERROR_INVALID_VALUE;
                 CUdeviceptr dptr = *(CUdeviceptr *)kernelParams[i];
                 CuvkAlloc *alloc = cuvk_alloc_lookup(ctx, dptr);
                 if (!alloc)
@@ -220,6 +222,8 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
                 memcpy(pc_data + pc_offset, &bda, 8);
             } else {
                 /* Scalar param: copy raw bytes */
+                if (pc_offset + sz > sizeof(pc_data))
+                    return CUDA_ERROR_INVALID_VALUE;
                 memcpy(pc_data + pc_offset, kernelParams[i], sz);
             }
             pc_offset += sz;
@@ -229,6 +233,8 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
         {
             uint32_t align = 4;
             pc_offset = (pc_offset + align - 1) & ~(align - 1);
+            if (pc_offset + 12 > sizeof(pc_data))
+                return CUDA_ERROR_INVALID_VALUE;
             memcpy(pc_data + pc_offset, &blockDimX, 4); pc_offset += 4;
             memcpy(pc_data + pc_offset, &blockDimY, 4); pc_offset += 4;
             memcpy(pc_data + pc_offset, &blockDimZ, 4); pc_offset += 4;

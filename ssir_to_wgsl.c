@@ -7,15 +7,9 @@
 #include "simple_wgsl_internal.h"
 #include <math.h>
 
-#ifndef STW_MALLOC
-#define STW_MALLOC(sz) calloc(1, (sz))
-#endif
-#ifndef STW_REALLOC
-#define STW_REALLOC(p, sz) realloc((p), (sz))
-#endif
-#ifndef STW_FREE
-#define STW_FREE(p) free((p))
-#endif
+#define STW_MALLOC  SW_MALLOC
+#define STW_REALLOC SW_REALLOC
+#define STW_FREE    SW_FREE
 
 typedef SwStringBuffer StwStringBuffer;
 #define stw_sb_init sw_sb_init
@@ -704,58 +698,27 @@ static void stw_emit_expression(SsirToWgslContext *ctx, uint32_t id, StwStringBu
             break;
 
         case SSIR_OP_ACCESS: {
-            SsirModule *amod = (SsirModule *)ctx->mod;
             stw_emit_expression(ctx, inst->operands[0], out);
             /* Trace struct type through the access chain for member names */
-            uint32_t cur_type_id = 0;
-            {
-                SsirGlobalVar *ag = ssir_get_global(amod, inst->operands[0]);
-                if (ag) {
-                    SsirType *pt = ssir_get_type(amod, ag->type);
-                    if (pt && pt->kind == SSIR_TYPE_PTR)
-                        cur_type_id = pt->ptr.pointee;
-                }
-                if (!cur_type_id) {
-                    SsirInst *ai = find_instruction(ctx, inst->operands[0]);
-                    if (ai && ai->op == SSIR_OP_LOAD) {
-                        SsirGlobalVar *lg = ssir_get_global(amod, ai->operands[0]);
-                        if (lg) {
-                            SsirType *pt = ssir_get_type(amod, lg->type);
-                            if (pt && pt->kind == SSIR_TYPE_PTR)
-                                cur_type_id = pt->ptr.pointee;
-                        }
-                    }
-                }
-            }
+            uint32_t cur_type_id = sw_resolve_access_base_type(
+                (SsirModule *)ctx->mod, inst->operands[0],
+                (SsirInst *(*)(void *, uint32_t))find_instruction, (void *)ctx);
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 uint32_t idx = inst->extra[i];
-                SsirConstant *idx_c = ssir_get_constant(amod, idx);
-                SsirType *cur_st = cur_type_id ? ssir_get_type(amod, cur_type_id) : NULL;
-                if (idx_c && (idx_c->kind == SSIR_CONST_U32 || idx_c->kind == SSIR_CONST_I32)) {
-                    uint32_t midx = (idx_c->kind == SSIR_CONST_U32) ? idx_c->u32_val : (uint32_t)idx_c->i32_val;
-                    const char *mname = NULL;
-                    if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
-                        cur_st->struc.member_names && midx < cur_st->struc.member_count)
-                        mname = cur_st->struc.member_names[midx];
+                uint32_t midx; const char *mname; int is_const;
+                uint32_t next_type = sw_advance_access_type(
+                    (SsirModule *)ctx->mod, cur_type_id, idx, &midx, &mname, &is_const);
+                if (is_const) {
                     if (mname)
                         stw_sb_appendf(out, ".%s", mname);
                     else
                         stw_sb_appendf(out, ".member%u", midx);
-                    /* Advance type through struct member */
-                    if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
-                        cur_type_id = cur_st->struc.members[midx];
-                    else
-                        cur_type_id = 0;
                 } else {
                     stw_sb_append(out, "[");
                     stw_emit_expression(ctx, idx, out);
                     stw_sb_append(out, "]");
-                    /* Advance type through array element */
-                    if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
-                        cur_type_id = cur_st->array.elem;
-                    else
-                        cur_type_id = 0;
                 }
+                cur_type_id = next_type;
             }
             break;
         }
@@ -1408,29 +1371,7 @@ static void stw_emit_function(SsirToWgslContext *ctx, SsirFunction *fn) {
     /* Set current function for expression lookup */
     ctx->current_func = fn;
 
-    /* Compute use counts for inlining decisions */
-    STW_FREE(ctx->use_counts);
-    ctx->use_counts = (uint32_t *)STW_MALLOC(ctx->mod->next_id * sizeof(uint32_t));
-    if (ctx->use_counts) {
-        memset(ctx->use_counts, 0, ctx->mod->next_id * sizeof(uint32_t));
-        ssir_count_uses((SsirFunction *)fn, ctx->use_counts, ctx->mod->next_id);
-    }
-
-    /* Build instruction lookup map */
-    STW_FREE(ctx->inst_map);
-    ctx->inst_map_cap = ctx->mod->next_id;
-    ctx->inst_map = (SsirInst **)STW_MALLOC(ctx->inst_map_cap * sizeof(SsirInst *));
-    if (ctx->inst_map) {
-        memset(ctx->inst_map, 0, ctx->inst_map_cap * sizeof(SsirInst *));
-        for (uint32_t bi = 0; bi < fn->block_count; bi++) {
-            SsirBlock *blk = &fn->blocks[bi];
-            for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
-                uint32_t rid = blk->insts[ii].result;
-                if (rid && rid < ctx->inst_map_cap)
-                    ctx->inst_map[rid] = &blk->insts[ii];
-            }
-        }
-    }
+    sw_emitter_build_maps(ctx->mod, fn, &ctx->use_counts, &ctx->inst_map, &ctx->inst_map_cap, sw_free_fn, sw_malloc_fn);
 
     /* Local variable declarations */
     for (uint32_t i = 0; i < fn->local_count; i++) {
@@ -1587,9 +1528,6 @@ SsirToWgslResult ssir_to_wgsl(const SsirModule *mod,
     return SSIR_TO_WGSL_OK;
 }
 
-void ssir_to_wgsl_free(void *p) {
-    STW_FREE(p);
-}
 
 const char *ssir_to_wgsl_result_string(SsirToWgslResult result) {
     switch (result) {
@@ -1601,3 +1539,5 @@ const char *ssir_to_wgsl_result_string(SsirToWgslResult result) {
         default: return "Unknown error";
     }
 }
+
+void ssir_to_wgsl_free(void *p) { STW_FREE(p); }

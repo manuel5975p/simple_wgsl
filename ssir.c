@@ -8,6 +8,22 @@
 #include <stdarg.h>
 
 /* ============================================================================
+ * SwResult
+ * ============================================================================ */
+
+const char *sw_result_string(SwResult r) {
+    switch (r) {
+        case SW_OK:                  return "OK";
+        case SW_ERROR_INVALID_INPUT: return "Invalid input";
+        case SW_ERROR_PARSE:         return "Parse error";
+        case SW_ERROR_UNSUPPORTED:   return "Unsupported feature";
+        case SW_ERROR_INTERNAL:      return "Internal error";
+        case SW_ERROR_OUT_OF_MEMORY: return "Out of memory";
+        default:                     return "Unknown error";
+    }
+}
+
+/* ============================================================================
  * Internal Helpers
  * ============================================================================ */
 
@@ -18,7 +34,11 @@ static int ssir_grow_array(void **data, uint32_t *capacity, uint32_t elem_size, 
     wgsl_compiler_assert(capacity != NULL, "ssir_grow_array: capacity is NULL");
     if (*capacity >= needed) return 1;
     uint32_t new_cap = *capacity ? *capacity : 8;
-    while (new_cap < needed) new_cap *= 2;
+    while (new_cap < needed) {
+        uint32_t doubled = new_cap * 2;
+        if (doubled <= new_cap) return 0;  /* overflow */
+        new_cap = doubled;
+    }
     void *new_data = SSIR_REALLOC(*data, (size_t)new_cap * elem_size);
     if (!new_data) return 0;
     *data = new_data;
@@ -1305,39 +1325,6 @@ uint32_t ssir_block_create_with_id(SsirModule *mod, uint32_t func_id, uint32_t b
     return b->id;
 }
 
-uint32_t ssir_block_insert_before_with_id(SsirModule *mod, uint32_t func_id,
-                                          uint32_t before_block_id, uint32_t block_id,
-                                          const char *name) {
-    wgsl_compiler_assert(mod != NULL, "ssir_block_insert_before_with_id: mod is NULL");
-    SsirFunction *f = ssir_get_function(mod, func_id);
-    if (!f) return 0;
-
-    uint32_t insert_pos = f->block_count;
-    for (uint32_t i = 0; i < f->block_count; i++) {
-        if (f->blocks[i].id == before_block_id) {
-            insert_pos = i;
-            break;
-        }
-    }
-
-    if (!ssir_grow_array((void **)&f->blocks, &f->block_capacity,
-            sizeof(SsirBlock), f->block_count + 1)) {
-        return 0;
-    }
-
-    if (insert_pos < f->block_count) {
-        memmove(&f->blocks[insert_pos + 1], &f->blocks[insert_pos],
-                (f->block_count - insert_pos) * sizeof(SsirBlock));
-    }
-
-    SsirBlock *b = &f->blocks[insert_pos];
-    memset(b, 0, sizeof(SsirBlock));
-    b->id = block_id;
-    b->name = ssir_strdup(name);
-    f->block_count++;
-    return b->id;
-}
-
 uint32_t ssir_block_insert_after_with_id(SsirModule *mod, uint32_t func_id,
                                          uint32_t after_block_id, uint32_t block_id,
                                          const char *name) {
@@ -1437,36 +1424,6 @@ static SsirInst *ssir_add_inst(SsirModule *mod, uint32_t func_id, uint32_t block
     SsirInst *inst = &b->insts[b->inst_count++];
     memset(inst, 0, sizeof(SsirInst));
     return inst;
-}
-
-void ssir_block_remove_inst_at(SsirBlock *b, uint32_t index) {
-    if (!b || index >= b->inst_count) return;
-    if (b->insts[index].extra) {
-        SSIR_FREE(b->insts[index].extra);
-        b->insts[index].extra = NULL;
-    }
-    if (index < b->inst_count - 1) {
-        memmove(&b->insts[index], &b->insts[index + 1],
-                (b->inst_count - index - 1) * sizeof(SsirInst));
-    }
-    b->inst_count--;
-}
-
-void ssir_block_insert_inst_at(SsirBlock *b, uint32_t pos, const SsirInst *inst) {
-    if (!b || !inst) return;
-    if (b->inst_count >= b->inst_capacity) {
-        uint32_t nc = b->inst_capacity ? b->inst_capacity * 2 : 8;
-        b->insts = (SsirInst *)SSIR_REALLOC(b->insts, nc * sizeof(SsirInst));
-        if (!b->insts) return;
-        b->inst_capacity = nc;
-    }
-    if (pos > b->inst_count) pos = b->inst_count;
-    if (pos < b->inst_count) {
-        memmove(&b->insts[pos + 1], &b->insts[pos],
-                (b->inst_count - pos) * sizeof(SsirInst));
-    }
-    b->insts[pos] = *inst;
-    b->inst_count++;
 }
 
 // mod nonnull
@@ -1768,13 +1725,6 @@ uint32_t ssir_build_shuffle(SsirModule *mod, uint32_t func_id, uint32_t block_id
         inst->extra_count = (uint16_t)index_count;
     }
     return inst->result;
-}
-
-// mod nonnull
-uint32_t ssir_build_splat(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-    uint32_t type, uint32_t scalar) {
-    wgsl_compiler_assert(mod != NULL, "ssir_build_splat: mod is NULL");
-    return ssir_emit_unary(mod, func_id, block_id, SSIR_OP_SPLAT, type, scalar);
 }
 
 // mod nonnull

@@ -33,6 +33,27 @@
 #endif
 
 /* ========================================================================== */
+/* Bit utilities                                                              */
+/* ========================================================================== */
+
+__attribute__((unused))
+static int is_po2(int n) { return n > 0 && (n & (n - 1)) == 0; }
+
+__attribute__((unused))
+static int ilog2(int n) {
+  int r = 0;
+  while (n > 1) { n >>= 1; r++; }
+  return r;
+}
+
+__attribute__((unused))
+static int bit_reverse(int v, int bits) {
+  int r = 0;
+  for (int i = 0; i < bits; i++) { r = (r << 1) | (v & 1); v >>= 1; }
+  return r;
+}
+
+/* ========================================================================== */
 /* Primality / primitive root                                                 */
 /* ========================================================================== */
 
@@ -165,6 +186,27 @@ static int effective_max_r(int n, int max_r) {
 __attribute__((unused))
 static int factorize_mr(int n, int *radices, int max_r) {
   return factorize_ex(n, radices, effective_max_r(n, max_r));
+}
+
+/* Threads (workgroup items) per 1D FFT of size n. */
+__attribute__((unused))
+static int wg_per_fft_mr(int n, int max_r) {
+  int radices[MAX_STAGES];
+  if (n < 2) return 0;
+  int ns = factorize_mr(n, radices, max_r);
+  if (ns == 0) return 0;
+
+  int mr = 0;
+  for (int i = 0; i < ns; i++)
+    if (radices[i] > mr) mr = radices[i];
+
+  int limit = n / mr;
+  if (limit > 256) limit = 256;
+
+  int wg = limit;
+  while (wg > 1 && n % wg != 0)
+    wg--;
+  return wg;
 }
 
 /* ========================================================================== */

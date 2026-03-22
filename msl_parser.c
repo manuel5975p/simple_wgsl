@@ -11,15 +11,9 @@
 #include <stdbool.h>
 #include <math.h>
 
-#ifndef MSL_MALLOC
-#define MSL_MALLOC(sz) calloc(1, (sz))
-#endif
-#ifndef MSL_REALLOC
-#define MSL_REALLOC(p, sz) realloc((p), (sz))
-#endif
-#ifndef MSL_FREE
-#define MSL_FREE(p) free((p))
-#endif
+#define MSL_MALLOC  SW_MALLOC
+#define MSL_REALLOC SW_REALLOC
+#define MSL_FREE    SW_FREE
 
 static void *sw_msl_alloc(size_t sz) { return MSL_MALLOC(sz); }
 static void *sw_msl_realloc(void *p, size_t sz) { return MSL_REALLOC(p, sz); }
@@ -2389,10 +2383,6 @@ MslToSsirResult msl_to_ssir(const char *msl_source, const MslToSsirOptions *opts
     return MSL_TO_SSIR_OK;
 }
 
-// str nullable
-void msl_to_ssir_free(char *str) {
-    MSL_FREE(str);
-}
 
 const char *msl_to_ssir_result_string(MslToSsirResult r) {
     switch (r) {
@@ -2403,3 +2393,5 @@ const char *msl_to_ssir_result_string(MslToSsirResult r) {
         default: return "Unknown error";
     }
 }
+
+void msl_to_ssir_free(char *str) { MSL_FREE(str); }

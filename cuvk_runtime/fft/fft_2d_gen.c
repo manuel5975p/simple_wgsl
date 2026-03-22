@@ -79,26 +79,7 @@ char *gen_transpose_tiled(int nx, int ny, int tile_dim) {
 /* 2D fused FFT helpers                                                       */
 /* ========================================================================== */
 
-/* Threads per 1D FFT of size n (before batching).
- * Same logic as wg_per_fft_mr in fft_fused_gen.c. */
-static int threads_per_fft(int n, int max_r) {
-  int radices[MAX_STAGES];
-  if (n < 2) return 0;
-  int ns = factorize_mr(n, radices, max_r);
-  if (ns == 0) return 0;
-
-  int mr = 0;
-  for (int i = 0; i < ns; i++)
-    if (radices[i] > mr) mr = radices[i];
-
-  int limit = n / mr;
-  if (limit > 256) limit = 256;
-
-  int wg = limit;
-  while (wg > 1 && n % wg != 0)
-    wg--;
-  return wg;
-}
+/* threads_per_fft is now wg_per_fft_mr in fft_butterfly.h */
 
 /* LUT size for one axis (same as lut_size_mr in fft_fused_gen.c but without
  * the direct-path check since we always use shared-memory stages for 2D). */
@@ -213,8 +194,8 @@ int fft_2d_fused_workgroup_size(int nx, int ny, int max_radix) {
   int mr_row = effective_max_r(ny, max_radix);
   int mr_col = effective_max_r(nx, max_radix);
 
-  int wpf_row = threads_per_fft(ny, mr_row);
-  int wpf_col = threads_per_fft(nx, mr_col);
+  int wpf_row = wg_per_fft_mr(ny, mr_row);
+  int wpf_col = wg_per_fft_mr(nx, mr_col);
   if (wpf_row == 0 || wpf_col == 0) return 0;
 
   int t_rows = nx * wpf_row;
@@ -512,8 +493,8 @@ char *gen_fft_2d_fused(int nx, int ny, int direction, int max_radix) {
   if (row_stages == 0 || col_stages == 0) return NULL;
 
   /* Compute thread counts */
-  int wpf_row = threads_per_fft(ny, mr_row);
-  int wpf_col = threads_per_fft(nx, mr_col);
+  int wpf_row = wg_per_fft_mr(ny, mr_row);
+  int wpf_col = wg_per_fft_mr(nx, mr_col);
   if (wpf_row == 0 || wpf_col == 0) return NULL;
 
   int t_rows = nx * wpf_row; /* threads needed for row phase */
@@ -632,8 +613,8 @@ char *gen_fft_2d_fused_looped(int nx, int ny, int direction, int max_radix) {
   int col_stages = factorize_mr(nx, col_radices, mr_col);
   if (row_stages == 0 || col_stages == 0) return NULL;
 
-  int wpf_row = threads_per_fft(ny, mr_row);
-  int wpf_col = threads_per_fft(nx, mr_col);
+  int wpf_row = wg_per_fft_mr(ny, mr_row);
+  int wpf_col = wg_per_fft_mr(nx, mr_col);
   if (wpf_row == 0 || wpf_col == 0) return NULL;
 
   int t_rows = nx * wpf_row;

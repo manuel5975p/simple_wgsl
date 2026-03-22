@@ -9,15 +9,9 @@
 #include <ctype.h>
 #include <stdbool.h>
 
-#ifndef PTX_MALLOC
-#define PTX_MALLOC(sz) calloc(1, (sz))
-#endif
-#ifndef PTX_REALLOC
-#define PTX_REALLOC(p, sz) realloc((p), (sz))
-#endif
-#ifndef PTX_FREE
-#define PTX_FREE(p) free((p))
-#endif
+#define PTX_MALLOC  SW_MALLOC
+#define PTX_REALLOC SW_REALLOC
+#define PTX_FREE    SW_FREE
 
 static void *sw_ptx_alloc(size_t sz) { return PTX_MALLOC(sz); }
 static char *ptx_strndup(const char *s, size_t n) {
@@ -62,7 +56,7 @@ static void plx_init(PtxLexer *L, const char *src) {
 }
 
 static char plx_peek(const PtxLexer *L) { return L->src[L->pos]; }
-static char plx_peek2(const PtxLexer *L) { return L->src[L->pos + 1]; }
+static char plx_peek2(const PtxLexer *L) { return L->src[L->pos] ? L->src[L->pos + 1] : '\0'; }
 
 static void plx_advance(PtxLexer *L) {
   if (L->src[L->pos] == '\n') { L->line++; L->col = 1; }
@@ -1879,3 +1873,5 @@ void ptx_parse_free(PtxModule *mod) {
   PTX_FREE(mod->refs);
   PTX_FREE(mod);
 }
+
+void ptx_to_ssir_free(char *str) { PTX_FREE(str); }

@@ -9,20 +9,10 @@
  */
 
 #include "fft_optimal_gen.h"
-#include "fft_strbuf.h"
+#include "fft_butterfly.h"
 #include "fft_bda.h"
 
 #include <math.h>
-
-/* ========================================================================== */
-/* Helpers                                                                     */
-/* ========================================================================== */
-
-static int ilog2(int n) {
-  int r = 0;
-  while (n > 1) { n >>= 1; r++; }
-  return r;
-}
 
 /* ========================================================================== */
 /* Inline DFT emitter                                                          */

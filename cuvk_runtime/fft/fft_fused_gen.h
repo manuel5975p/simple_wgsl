@@ -28,46 +28,29 @@ extern "C" {
  * Parameters:
  *   n         - FFT size (must factor into supported radices/primes)
  *   direction - 1 = forward, -1 = inverse
- *
- * Returns: malloc'd WGSL source string (caller frees), or NULL on error.
- */
-char *gen_fft_fused(int n, int direction);
-
-/* Total workgroup size (threads per workgroup). */
-int fft_fused_workgroup_size(int n);
-
-/* Number of FFTs computed per workgroup (>=1, larger for small N). */
-int fft_fused_batch_per_wg(int n);
-
-/* Number of vec2<f32> twiddle+kernel entries needed (0 means no LUT). */
-int fft_fused_lut_size(int n, int direction);
-
-/* Compute twiddle LUT on the host.  Returns malloc'd float array with
- * 2 * fft_fused_lut_size() floats (cos, sin pairs).  Caller frees. */
-float *fft_fused_compute_lut(int n, int direction);
-
-/*
- * Extended API: explicit control for planner convergence.
- *
- * max_radix controls the factorization strategy:
- *   0      - auto (uses built-in heuristic)
- *   2..16  - cap radix to this value; smaller = more threads per FFT
- *            (better memory coalescing, more barriers)
- *
- * wg_limit controls max threads per workgroup:
- *   0      - default (256)
- *   64..1024 - explicit cap; larger = more FFTs per workgroup
- *              (hides barrier latency, but may reduce occupancy)
+ *   max_radix - factorization cap: 0 = auto, 2..16 = explicit cap
+ *   wg_limit  - max threads per workgroup: 0 = default (256)
  *
  * The planner should sweep max_radix = {2, 4, 8, 16} and
  * wg_limit = {256, 512, 1024} for each N, benchmark each,
  * and pick the fastest for the target GPU.
+ *
+ * Returns: malloc'd WGSL source string (caller frees), or NULL on error.
  */
-char *gen_fft_fused_ex(int n, int direction, int max_radix, int wg_limit);
-int   fft_fused_workgroup_size_ex(int n, int max_radix, int wg_limit);
-int   fft_fused_batch_per_wg_ex(int n, int max_radix, int wg_limit);
-int   fft_fused_lut_size_ex(int n, int direction, int max_radix);
-float *fft_fused_compute_lut_ex(int n, int direction, int max_radix);
+char *gen_fft_fused(int n, int direction, int max_radix, int wg_limit);
+
+/* Total workgroup size (threads per workgroup). */
+int fft_fused_workgroup_size(int n, int max_radix, int wg_limit);
+
+/* Number of FFTs computed per workgroup (>=1, larger for small N). */
+int fft_fused_batch_per_wg(int n, int max_radix, int wg_limit);
+
+/* Number of vec2<f32> twiddle+kernel entries needed (0 means no LUT). */
+int fft_fused_lut_size(int n, int direction, int max_radix);
+
+/* Compute twiddle LUT on the host.  Returns malloc'd float array with
+ * 2 * fft_fused_lut_size() floats (cos, sin pairs).  Caller frees. */
+float *fft_fused_compute_lut(int n, int direction, int max_radix);
 
 /*
  * Bounded API: like gen_fft_fused but with an early-return guard

@@ -30,6 +30,7 @@ typedef struct {
 static void sb_init_cap(StrBuf *sb, size_t initial_cap) {
   sb->cap = initial_cap;
   sb->buf = (char *)malloc(sb->cap);
+  if (!sb->buf) { sb->cap = 0; sb->len = 0; return; }
   sb->buf[0] = '\0';
   sb->len = 0;
 }
@@ -45,7 +46,9 @@ static void sb_printf(StrBuf *sb, const char *fmt, ...) {
   if (needed < 0) return;
   while (sb->len + (size_t)needed + 1 > sb->cap) {
     sb->cap *= 2;
-    sb->buf = (char *)realloc(sb->buf, sb->cap);
+    char *new_buf = (char *)realloc(sb->buf, sb->cap);
+    if (!new_buf) return;
+    sb->buf = new_buf;
   }
   va_start(ap, fmt);
   vsnprintf(sb->buf + sb->len, sb->cap - sb->len, fmt, ap);

@@ -83,20 +83,20 @@ static double median_d(double *arr, int n) {
 }
 
 static double bench_fused(VkCtx *ctx, int n, int mr, int wgl, int batch) {
-    int wg = fft_fused_workgroup_size_ex(n, mr, wgl);
-    int bpw = fft_fused_batch_per_wg_ex(n, mr, wgl);
+    int wg = fft_fused_workgroup_size(n, mr, wgl);
+    int bpw = fft_fused_batch_per_wg(n, mr, wgl);
     if (wg <= 0 || bpw <= 0) return -1;
 
     int padded_batch = ((batch + bpw - 1) / bpw) * bpw;
     int dispatch_count = padded_batch / bpw;
 
-    char *wgsl = gen_fft_fused_ex(n, 1, mr, wgl);
+    char *wgsl = gen_fft_fused(n, 1, mr, wgl);
     if (!wgsl) return -1;
     uint32_t *spirv = NULL; size_t sc = 0;
     if (compile_wgsl(wgsl, &spirv, &sc) != 0) { free(wgsl); return -1; }
     free(wgsl);
 
-    int lut_count = fft_fused_lut_size_ex(n, 1, mr);
+    int lut_count = fft_fused_lut_size(n, 1, mr);
     int num_bindings = (lut_count > 0) ? 3 : 2;
 
     /* Pipeline */
@@ -148,7 +148,7 @@ static double bench_fused(VkCtx *ctx, int n, int mr, int wgl, int batch) {
     /* LUT */
     int has_lut = 0;
     if (lut_count > 0) {
-        float *lut_data = fft_fused_compute_lut_ex(n, 1, mr);
+        float *lut_data = fft_fused_compute_lut(n, 1, mr);
         VkDeviceSize lut_bytes = (VkDeviceSize)lut_count * 2 * sizeof(float);
         create_buf(ctx, lut_bytes, &lut_buf);
         has_lut = 1;
@@ -345,8 +345,8 @@ int main(void) {
         while (batch > 256 && (size_t)n * batch * 2 * sizeof(float) * 2 > 512ULL*1024*1024)
             batch /= 2;
 
-        int bpw = fft_fused_batch_per_wg_ex(n, mr, wgl);
-        int wg = fft_fused_workgroup_size_ex(n, mr, wgl);
+        int bpw = fft_fused_batch_per_wg(n, mr, wgl);
+        int wg = fft_fused_workgroup_size(n, mr, wgl);
         int disp = ((batch + bpw - 1) / bpw);
 
         double ns_per_disp = bench_fused(&ctx, n, mr, wgl, batch);

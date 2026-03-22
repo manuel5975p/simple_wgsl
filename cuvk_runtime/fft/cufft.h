@@ -44,6 +44,12 @@ typedef enum {
 typedef int cufftHandle;
 typedef float cufftReal;
 typedef struct { float x, y; } cufftComplex;
+typedef double cufftDoubleReal;
+typedef struct { double x, y; } cufftDoubleComplex;
+
+typedef enum {
+    CUFFT_COMPATIBILITY_FFTW_PADDING = 0x01,
+} cufftCompatibility;
 
 cufftResult cufftPlan1d(cufftHandle *plan, int nx, cufftType type, int batch);
 cufftResult cufftPlan2d(cufftHandle *plan, int nx, int ny, cufftType type);

@@ -8,7 +8,7 @@
  */
 
 #include "fft_stockham_gen.h"
-#include "fft_strbuf.h"
+#include "fft_butterfly.h"
 #include "fft_bda.h"
 
 #include <math.h>
@@ -16,20 +16,6 @@
 /* ========================================================================== */
 /* FFT helpers                                                                */
 /* ========================================================================== */
-
-static int is_po2(int n) { return n > 0 && (n & (n - 1)) == 0; }
-
-static int ilog2(int n) {
-  int r = 0;
-  while (n > 1) { n >>= 1; r++; }
-  return r;
-}
-
-static int bit_reverse(int v, int bits) {
-  int r = 0;
-  for (int i = 0; i < bits; i++) { r = (r << 1) | (v & 1); v >>= 1; }
-  return r;
-}
 
 /* ========================================================================== */
 /* Prologue: bindings, main entry, source indexing, element loads              */

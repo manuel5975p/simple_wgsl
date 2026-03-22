@@ -86,14 +86,14 @@ static int compile_wgsl(const char *src, uint32_t **out, size_t *out_count) {
 /* ============================================================ */
 
 static double bench_fused(VkCtx *ctx, int n) {
-    int wg = fft_fused_workgroup_size(n);
-    int bpw = fft_fused_batch_per_wg(n);
+    int wg = fft_fused_workgroup_size(n, 0, 0);
+    int bpw = fft_fused_batch_per_wg(n, 0, 0);
     if (wg <= 0 || bpw <= 0) return -1;
 
     int batch = 1;
     int dispatch_count = (batch + bpw - 1) / bpw;
 
-    char *wgsl = gen_fft_fused(n, 1);
+    char *wgsl = gen_fft_fused(n, 1, 0, 0);
     if (!wgsl) return -1;
     uint32_t *spirv = NULL; size_t sc = 0;
     if (compile_wgsl(wgsl, &spirv, &sc) != 0) { free(wgsl); return -1; }
@@ -144,10 +144,10 @@ static double bench_fused(VkCtx *ctx, int n) {
     create_buf(ctx, buf_bytes, &dst_buf);
 
     /* LUT */
-    int lut_count = fft_fused_lut_size(n, 1);
+    int lut_count = fft_fused_lut_size(n, 1, 0);
     int has_lut = 0;
     if (lut_count > 0) {
-        float *lut_data = fft_fused_compute_lut(n, 1);
+        float *lut_data = fft_fused_compute_lut(n, 1, 0);
         VkDeviceSize lut_bytes = (VkDeviceSize)lut_count * 2 * sizeof(float);
         create_buf(ctx, lut_bytes, &lut_buf);
 

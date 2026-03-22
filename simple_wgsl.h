@@ -47,6 +47,21 @@ extern "C" {
 #endif
 
 /* ============================================================================
+ * Unified Result Enum
+ * ============================================================================ */
+
+typedef enum SwResult {
+    SW_OK = 0,
+    SW_ERROR_INVALID_INPUT,
+    SW_ERROR_PARSE,
+    SW_ERROR_UNSUPPORTED,
+    SW_ERROR_INTERNAL,
+    SW_ERROR_OUT_OF_MEMORY,
+} SwResult;
+
+const char *sw_result_string(SwResult r);
+
+/* ============================================================================
  * Compiler Assert Macro (libc-independent portable trap)
  * ============================================================================ */
 
@@ -511,13 +526,12 @@ void wgsl_resolve_free(void *p);
 
 typedef struct WgslLower WgslLower;
 
-typedef enum {
-    WGSL_LOWER_OK = 0,
-    WGSL_LOWER_ERR_INVALID_INPUT,
-    WGSL_LOWER_ERR_UNSUPPORTED,
-    WGSL_LOWER_ERR_INTERNAL,
-    WGSL_LOWER_ERR_OOM
-} WgslLowerResult;
+typedef SwResult WgslLowerResult;
+#define WGSL_LOWER_OK                SW_OK
+#define WGSL_LOWER_ERR_INVALID_INPUT SW_ERROR_INVALID_INPUT
+#define WGSL_LOWER_ERR_UNSUPPORTED   SW_ERROR_UNSUPPORTED
+#define WGSL_LOWER_ERR_INTERNAL      SW_ERROR_INTERNAL
+#define WGSL_LOWER_ERR_OOM           SW_ERROR_OUT_OF_MEMORY
 
 typedef enum {
     WGSL_LOWER_ENV_VULKAN_1_1 = 1,
@@ -609,12 +623,11 @@ typedef struct WgslRaiseOptions {
     int inline_constants;
 } WgslRaiseOptions;
 
-typedef enum WgslRaiseResult {
-    WGSL_RAISE_SUCCESS = 0,
-    WGSL_RAISE_INVALID_SPIRV,
-    WGSL_RAISE_UNSUPPORTED_FEATURE,
-    WGSL_RAISE_INTERNAL_ERROR
-} WgslRaiseResult;
+typedef SwResult WgslRaiseResult;
+#define WGSL_RAISE_SUCCESS             SW_OK
+#define WGSL_RAISE_INVALID_SPIRV       SW_ERROR_INVALID_INPUT
+#define WGSL_RAISE_UNSUPPORTED_FEATURE SW_ERROR_UNSUPPORTED
+#define WGSL_RAISE_INTERNAL_ERROR      SW_ERROR_INTERNAL
 
 WgslRaiseResult wgsl_raise_to_wgsl(
     const uint32_t *spirv,
@@ -1190,21 +1203,20 @@ struct SsirModule {
 
 /* Result Codes */
 
-typedef enum SsirResult {
-    SSIR_OK = 0,
-    SSIR_ERROR_OUT_OF_MEMORY,
-    SSIR_ERROR_INVALID_TYPE,
-    SSIR_ERROR_INVALID_ID,
-    SSIR_ERROR_INVALID_OPERAND,
-    SSIR_ERROR_TYPE_MISMATCH,
-    SSIR_ERROR_INVALID_BLOCK,
-    SSIR_ERROR_INVALID_FUNCTION,
-    SSIR_ERROR_SSA_VIOLATION,
-    SSIR_ERROR_TERMINATOR_MISSING,
-    SSIR_ERROR_PHI_PLACEMENT,
-    SSIR_ERROR_ADDRESS_SPACE,
-    SSIR_ERROR_ENTRY_POINT,
-} SsirResult;
+typedef SwResult SsirResult;
+#define SSIR_OK                       SW_OK
+#define SSIR_ERROR_OUT_OF_MEMORY      SW_ERROR_OUT_OF_MEMORY
+#define SSIR_ERROR_INVALID_TYPE       SW_ERROR_INVALID_INPUT
+#define SSIR_ERROR_INVALID_ID         SW_ERROR_INVALID_INPUT
+#define SSIR_ERROR_INVALID_OPERAND    SW_ERROR_INVALID_INPUT
+#define SSIR_ERROR_TYPE_MISMATCH      SW_ERROR_INVALID_INPUT
+#define SSIR_ERROR_INVALID_BLOCK      SW_ERROR_INVALID_INPUT
+#define SSIR_ERROR_INVALID_FUNCTION   SW_ERROR_INVALID_INPUT
+#define SSIR_ERROR_SSA_VIOLATION      SW_ERROR_INTERNAL
+#define SSIR_ERROR_TERMINATOR_MISSING SW_ERROR_INTERNAL
+#define SSIR_ERROR_PHI_PLACEMENT      SW_ERROR_INTERNAL
+#define SSIR_ERROR_ADDRESS_SPACE      SW_ERROR_INVALID_INPUT
+#define SSIR_ERROR_ENTRY_POINT        SW_ERROR_INVALID_INPUT
 
 /* Module API */
 
@@ -1319,7 +1331,6 @@ uint32_t ssir_function_add_local(SsirModule *mod, uint32_t func_id,
 
 uint32_t ssir_block_create(SsirModule *mod, uint32_t func_id, const char *name);
 uint32_t ssir_block_create_with_id(SsirModule *mod, uint32_t func_id, uint32_t block_id, const char *name);
-uint32_t ssir_block_insert_before_with_id(SsirModule *mod, uint32_t func_id, uint32_t before_block_id, uint32_t block_id, const char *name);
 uint32_t ssir_block_insert_after_with_id(SsirModule *mod, uint32_t func_id, uint32_t after_block_id, uint32_t block_id, const char *name);
 uint32_t ssir_block_insert_after(SsirModule *mod, uint32_t func_id, uint32_t after_block_id, const char *name);
 SsirBlock *ssir_get_block(SsirModule *mod, uint32_t func_id, uint32_t block_id);
@@ -1388,8 +1399,6 @@ uint32_t ssir_build_insert(SsirModule *mod, uint32_t func_id, uint32_t block_id,
 uint32_t ssir_build_shuffle(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     uint32_t type, uint32_t v1, uint32_t v2,
     const uint32_t *indices, uint32_t index_count);
-uint32_t ssir_build_splat(SsirModule *mod, uint32_t func_id, uint32_t block_id,
-    uint32_t type, uint32_t scalar);
 uint32_t ssir_build_extract_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
     uint32_t type, uint32_t composite, uint32_t index);
 uint32_t ssir_build_insert_dyn(SsirModule *mod, uint32_t func_id, uint32_t block_id,
@@ -1546,11 +1555,6 @@ void ssir_validation_result_free(SsirValidationResult *result);
 void ssir_count_uses(SsirFunction *f, uint32_t *use_counts, uint32_t max_id);
 void ssir_module_build_lookup(SsirModule *mod);
 
-/* Block instruction manipulation */
-
-void ssir_block_remove_inst_at(SsirBlock *b, uint32_t index);
-void ssir_block_insert_inst_at(SsirBlock *b, uint32_t pos, const SsirInst *inst);
-
 /* Structurization API */
 
 void ssir_structurize_function(SsirModule *mod, uint32_t func_id);
@@ -1573,13 +1577,12 @@ typedef struct SsirToSpirvOptions {
     int enable_line_info;
 } SsirToSpirvOptions;
 
-typedef enum SsirToSpirvResult {
-    SSIR_TO_SPIRV_OK = 0,
-    SSIR_TO_SPIRV_ERR_INVALID_INPUT,
-    SSIR_TO_SPIRV_ERR_UNSUPPORTED,
-    SSIR_TO_SPIRV_ERR_INTERNAL,
-    SSIR_TO_SPIRV_ERR_OOM,
-} SsirToSpirvResult;
+typedef SwResult SsirToSpirvResult;
+#define SSIR_TO_SPIRV_OK                SW_OK
+#define SSIR_TO_SPIRV_ERR_INVALID_INPUT SW_ERROR_INVALID_INPUT
+#define SSIR_TO_SPIRV_ERR_UNSUPPORTED   SW_ERROR_UNSUPPORTED
+#define SSIR_TO_SPIRV_ERR_INTERNAL      SW_ERROR_INTERNAL
+#define SSIR_TO_SPIRV_ERR_OOM           SW_ERROR_OUT_OF_MEMORY
 
 SsirToSpirvResult ssir_to_spirv(const SsirModule *mod,
     const SsirToSpirvOptions *opts,
@@ -1594,13 +1597,12 @@ const char *ssir_to_spirv_result_string(SsirToSpirvResult result);
  * SSIR TO WGSL
  * ============================================================================ */
 
-typedef enum SsirToWgslResult {
-    SSIR_TO_WGSL_OK = 0,
-    SSIR_TO_WGSL_ERR_INVALID_INPUT,
-    SSIR_TO_WGSL_ERR_UNSUPPORTED,
-    SSIR_TO_WGSL_ERR_INTERNAL,
-    SSIR_TO_WGSL_ERR_OOM,
-} SsirToWgslResult;
+typedef SwResult SsirToWgslResult;
+#define SSIR_TO_WGSL_OK                SW_OK
+#define SSIR_TO_WGSL_ERR_INVALID_INPUT SW_ERROR_INVALID_INPUT
+#define SSIR_TO_WGSL_ERR_UNSUPPORTED   SW_ERROR_UNSUPPORTED
+#define SSIR_TO_WGSL_ERR_INTERNAL      SW_ERROR_INTERNAL
+#define SSIR_TO_WGSL_ERR_OOM           SW_ERROR_OUT_OF_MEMORY
 
 typedef struct SsirToWgslOptions {
     int preserve_names;
@@ -1619,13 +1621,12 @@ const char *ssir_to_wgsl_result_string(SsirToWgslResult result);
  * SSIR TO GLSL
  * ============================================================================ */
 
-typedef enum SsirToGlslResult {
-    SSIR_TO_GLSL_OK = 0,
-    SSIR_TO_GLSL_ERR_INVALID_INPUT,
-    SSIR_TO_GLSL_ERR_UNSUPPORTED,
-    SSIR_TO_GLSL_ERR_INTERNAL,
-    SSIR_TO_GLSL_ERR_OOM,
-} SsirToGlslResult;
+typedef SwResult SsirToGlslResult;
+#define SSIR_TO_GLSL_OK                SW_OK
+#define SSIR_TO_GLSL_ERR_INVALID_INPUT SW_ERROR_INVALID_INPUT
+#define SSIR_TO_GLSL_ERR_UNSUPPORTED   SW_ERROR_UNSUPPORTED
+#define SSIR_TO_GLSL_ERR_INTERNAL      SW_ERROR_INTERNAL
+#define SSIR_TO_GLSL_ERR_OOM           SW_ERROR_OUT_OF_MEMORY
 
 typedef struct SsirToGlslOptions {
     int preserve_names;
@@ -1646,13 +1647,12 @@ const char *ssir_to_glsl_result_string(SsirToGlslResult result);
  * SSIR TO MSL (Metal Shading Language)
  * ============================================================================ */
 
-typedef enum SsirToMslResult {
-    SSIR_TO_MSL_OK = 0,
-    SSIR_TO_MSL_ERR_INVALID_INPUT,
-    SSIR_TO_MSL_ERR_UNSUPPORTED,
-    SSIR_TO_MSL_ERR_INTERNAL,
-    SSIR_TO_MSL_ERR_OOM,
-} SsirToMslResult;
+typedef SwResult SsirToMslResult;
+#define SSIR_TO_MSL_OK                SW_OK
+#define SSIR_TO_MSL_ERR_INVALID_INPUT SW_ERROR_INVALID_INPUT
+#define SSIR_TO_MSL_ERR_UNSUPPORTED   SW_ERROR_UNSUPPORTED
+#define SSIR_TO_MSL_ERR_INTERNAL      SW_ERROR_INTERNAL
+#define SSIR_TO_MSL_ERR_OOM           SW_ERROR_OUT_OF_MEMORY
 
 typedef struct SsirToMslOptions {
     int preserve_names;
@@ -1671,12 +1671,11 @@ const char *ssir_to_msl_result_string(SsirToMslResult result);
  * SPIR-V TO SSIR
  * ============================================================================ */
 
-typedef enum {
-    SPIRV_TO_SSIR_SUCCESS = 0,
-    SPIRV_TO_SSIR_INVALID_SPIRV,
-    SPIRV_TO_SSIR_UNSUPPORTED_FEATURE,
-    SPIRV_TO_SSIR_INTERNAL_ERROR
-} SpirvToSsirResult;
+typedef SwResult SpirvToSsirResult;
+#define SPIRV_TO_SSIR_SUCCESS            SW_OK
+#define SPIRV_TO_SSIR_INVALID_SPIRV      SW_ERROR_INVALID_INPUT
+#define SPIRV_TO_SSIR_UNSUPPORTED_FEATURE SW_ERROR_UNSUPPORTED
+#define SPIRV_TO_SSIR_INTERNAL_ERROR     SW_ERROR_INTERNAL
 
 typedef struct {
     bool preserve_names;
@@ -1698,13 +1697,12 @@ void spirv_to_ssir_free(void *p);
  * SSIR TO HLSL
  * ============================================================================ */
 
-typedef enum SsirToHlslResult {
-    SSIR_TO_HLSL_OK = 0,
-    SSIR_TO_HLSL_ERR_INVALID_INPUT,
-    SSIR_TO_HLSL_ERR_UNSUPPORTED,
-    SSIR_TO_HLSL_ERR_INTERNAL,
-    SSIR_TO_HLSL_ERR_OOM,
-} SsirToHlslResult;
+typedef SwResult SsirToHlslResult;
+#define SSIR_TO_HLSL_OK                SW_OK
+#define SSIR_TO_HLSL_ERR_INVALID_INPUT SW_ERROR_INVALID_INPUT
+#define SSIR_TO_HLSL_ERR_UNSUPPORTED   SW_ERROR_UNSUPPORTED
+#define SSIR_TO_HLSL_ERR_INTERNAL      SW_ERROR_INTERNAL
+#define SSIR_TO_HLSL_ERR_OOM           SW_ERROR_OUT_OF_MEMORY
 
 typedef struct SsirToHlslOptions {
     int preserve_names;
@@ -1726,12 +1724,11 @@ const char *ssir_to_hlsl_result_string(SsirToHlslResult result);
  * MSL TO SSIR (Metal Shading Language Parser)
  * ============================================================================ */
 
-typedef enum {
-    MSL_TO_SSIR_OK = 0,
-    MSL_TO_SSIR_PARSE_ERROR,
-    MSL_TO_SSIR_TYPE_ERROR,
-    MSL_TO_SSIR_UNSUPPORTED,
-} MslToSsirResult;
+typedef SwResult MslToSsirResult;
+#define MSL_TO_SSIR_OK          SW_OK
+#define MSL_TO_SSIR_PARSE_ERROR SW_ERROR_PARSE
+#define MSL_TO_SSIR_TYPE_ERROR  SW_ERROR_INVALID_INPUT
+#define MSL_TO_SSIR_UNSUPPORTED SW_ERROR_UNSUPPORTED
 
 typedef struct {
     int preserve_names;
@@ -1982,11 +1979,10 @@ void ptx_parse_free(PtxModule *mod);
  * PTX → SSIR
  * ============================================================================ */
 
-typedef enum {
-    PTX_TO_SSIR_OK = 0,
-    PTX_TO_SSIR_PARSE_ERROR,
-    PTX_TO_SSIR_UNSUPPORTED,
-} PtxToSsirResult;
+typedef SwResult PtxToSsirResult;
+#define PTX_TO_SSIR_OK          SW_OK
+#define PTX_TO_SSIR_PARSE_ERROR SW_ERROR_PARSE
+#define PTX_TO_SSIR_UNSUPPORTED SW_ERROR_UNSUPPORTED
 
 typedef struct {
     int preserve_names;   /* keep PTX register names as debug names */

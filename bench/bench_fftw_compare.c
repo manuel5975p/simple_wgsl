@@ -113,13 +113,13 @@ static int compile_wgsl(const char *src, uint32_t **out, size_t *out_count) {
 static double bench_fused_vk(VkCtx *ctx, int n, int batch, float *out_err) {
     *out_err = -1.0f;
 
-    char *wgsl = gen_fft_fused(n, 1);
+    char *wgsl = gen_fft_fused(n, 1, 0, 0);
     if (!wgsl) return -1;
     uint32_t *spirv = NULL; size_t sc = 0;
     if (compile_wgsl(wgsl, &spirv, &sc) != 0) { free(wgsl); return -1; }
     free(wgsl);
 
-    int lut_count = fft_fused_lut_size(n, 1);
+    int lut_count = fft_fused_lut_size(n, 1, 0);
     int num_bindings = (lut_count > 0) ? 3 : 2;
 
     /* Shader + pipeline */
@@ -170,7 +170,7 @@ static double bench_fused_vk(VkCtx *ctx, int n, int batch, float *out_err) {
     }
 
     /* Batch setup */
-    int bpw = fft_fused_batch_per_wg(n);
+    int bpw = fft_fused_batch_per_wg(n, 0, 0);
     if (bpw < 1) bpw = 1;
     int padded_batch = ((batch + bpw - 1) / bpw) * bpw;
     int dispatch_count = padded_batch / bpw;
@@ -199,7 +199,7 @@ static double bench_fused_vk(VkCtx *ctx, int n, int batch, float *out_err) {
 
     /* LUT */
     if (lut_count > 0) {
-        float *lut_data = fft_fused_compute_lut(n, 1);
+        float *lut_data = fft_fused_compute_lut(n, 1, 0);
         VkDeviceSize lut_bytes = (VkDeviceSize)lut_count * 2 * sizeof(float);
         if (create_buffer(ctx, lut_bytes, buf_usage, mem_flags, &lut_buf) != 0) {
             free(lut_data); goto fail_cleanup;

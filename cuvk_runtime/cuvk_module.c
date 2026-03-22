@@ -140,6 +140,14 @@ static bool fixup_block_between(int inner, int header, int merge) {
  *   4. If not, replace with ipdom of header
  */
 static void cuvk_fixup_spirv_merges(uint32_t *words, size_t word_count) {
+    FixupBlock *blocks = (FixupBlock *)calloc(FIXUP_MAX_BLOCKS, sizeof(FixupBlock));
+    int *ipdom = (int *)calloc(FIXUP_MAX_BLOCKS, sizeof(int));
+    uint8_t *is_loop_merge = (uint8_t *)calloc(FIXUP_MAX_BLOCKS, sizeof(uint8_t));
+    if (!blocks || !ipdom || !is_loop_merge) {
+        free(blocks); free(ipdom); free(is_loop_merge);
+        return;
+    }
+
     /* Process each function */
     size_t i = 5; /* skip SPIR-V header */
     while (i < word_count) {
@@ -157,7 +165,7 @@ static void cuvk_fixup_spirv_merges(uint32_t *words, size_t word_count) {
         size_t func_start = i;
         i += wc;
 
-        FixupBlock blocks[FIXUP_MAX_BLOCKS];
+        memset(blocks, 0, FIXUP_MAX_BLOCKS * sizeof(FixupBlock));
         int block_count = 0;
         int cur_block = -1;
 
@@ -233,12 +241,10 @@ static void cuvk_fixup_spirv_merges(uint32_t *words, size_t word_count) {
         }
 
         /* Compute ipdom */
-        int ipdom[FIXUP_MAX_BLOCKS];
         fixup_compute_ipdom(blocks, block_count, ipdom);
 
         /* Collect all existing merge/loop merge targets */
-        uint8_t is_loop_merge[FIXUP_MAX_BLOCKS];
-        memset(is_loop_merge, 0, sizeof(is_loop_merge));
+        memset(is_loop_merge, 0, FIXUP_MAX_BLOCKS * sizeof(uint8_t));
         for (int bi = 0; bi < block_count; bi++) {
             size_t j = blocks[bi].word_offset;
             while (j < word_count) {
@@ -327,6 +333,10 @@ static void cuvk_fixup_spirv_merges(uint32_t *words, size_t word_count) {
             }
         }
     }
+
+    free(blocks);
+    free(ipdom);
+    free(is_loop_merge);
 }
 
 /* ============================================================================

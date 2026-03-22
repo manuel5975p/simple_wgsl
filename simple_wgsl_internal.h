@@ -15,6 +15,21 @@
 #include <stdarg.h>
 
 /* ============================================================================
+ * Unified allocator macros — backends can still override via #define before
+ * including this header (existing #ifndef guards are preserved).
+ * ============================================================================ */
+
+#ifndef SW_MALLOC
+#define SW_MALLOC(sz) calloc(1, (sz))
+#endif
+#ifndef SW_REALLOC
+#define SW_REALLOC(p, sz) realloc((p), (sz))
+#endif
+#ifndef SW_FREE
+#define SW_FREE(p) free((p))
+#endif
+
+/* ============================================================================
  * SW_GROW - Dynamic array growth macro
  * ============================================================================ */
 
@@ -22,8 +37,8 @@
     if ((count) >= (cap)) { \
         uint32_t _nc = (cap) ? (cap) * 2 : 8; \
         while (_nc < (count)) _nc *= 2; \
-        (ptr) = (T *)(realloc_fn)((ptr), _nc * sizeof(T)); \
-        (cap) = _nc; \
+        T *_np = (T *)(realloc_fn)((ptr), _nc * sizeof(T)); \
+        if (_np) { (ptr) = _np; (cap) = _nc; } \
     } \
 } while(0)
 
@@ -92,6 +107,17 @@ static inline void sw_sb_appendf_with(SwStringBuffer *sb,
     va_start(a, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, a);
     va_end(a);
+    if (n >= (int)sizeof(buf)) {
+        char *dyn = (char *)malloc(n + 1);
+        if (dyn) {
+            va_start(a, fmt);
+            vsnprintf(dyn, n + 1, fmt, a);
+            va_end(a);
+            sw_sb_append_with(sb, dyn, realloc_fn);
+            free(dyn);
+            return;
+        }
+    }
     if (n > 0) sw_sb_append_with(sb, buf, realloc_fn);
 }
 
@@ -101,6 +127,17 @@ static inline void sw_sb_appendf(SwStringBuffer *sb, const char *fmt, ...) {
     va_start(a, fmt);
     int n = vsnprintf(buf, sizeof(buf), fmt, a);
     va_end(a);
+    if (n >= (int)sizeof(buf)) {
+        char *dyn = (char *)malloc(n + 1);
+        if (dyn) {
+            va_start(a, fmt);
+            vsnprintf(dyn, n + 1, fmt, a);
+            va_end(a);
+            sw_sb_append(sb, dyn);
+            free(dyn);
+            return;
+        }
+    }
     if (n > 0) sw_sb_append(sb, buf);
 }
 
@@ -185,11 +222,138 @@ static inline void *sw_grow_array(void *p, int needed, int *cap, size_t elem,
     wgsl_compiler_assert(cap != NULL, "sw_grow_array: cap is NULL");
     if (needed <= *cap) return p;
     int nc = (*cap == 0) ? 4 : (*cap * 2);
-    while (nc < needed) nc *= 2;
+    while (nc < needed) {
+        int doubled = nc * 2;
+        if (doubled <= nc) return p;  /* overflow */
+        nc = doubled;
+    }
     void *np = realloc_fn(p, (size_t)nc * elem);
     if (!np) return p;
     *cap = nc;
     return np;
+}
+
+/* Function wrappers for allocator macros (for use as function pointers) */
+static inline void *sw_malloc_fn(size_t sz) { return SW_MALLOC(sz); }
+static inline void sw_free_fn(void *p) { SW_FREE(p); }
+
+/* ============================================================================
+ * Shared emitter helpers — use-count + inst-map building
+ * ============================================================================ */
+
+static inline void sw_emitter_build_maps(
+    const SsirModule *mod, const SsirFunction *fn,
+    uint32_t **use_counts, SsirInst ***inst_map, uint32_t *inst_map_cap,
+    void (*free_fn)(void *), void *(*malloc_fn)(size_t))
+{
+    uint32_t next_id = mod->next_id;
+
+    /* Compute use counts for inlining decisions */
+    free_fn(*use_counts);
+    *use_counts = (uint32_t *)malloc_fn(next_id * sizeof(uint32_t));
+    if (*use_counts) {
+        memset(*use_counts, 0, next_id * sizeof(uint32_t));
+        ssir_count_uses((SsirFunction *)fn, *use_counts, next_id);
+    }
+
+    /* Build instruction lookup map */
+    free_fn(*inst_map);
+    *inst_map_cap = next_id;
+    *inst_map = (SsirInst **)malloc_fn(next_id * sizeof(SsirInst *));
+    if (*inst_map) {
+        memset(*inst_map, 0, next_id * sizeof(SsirInst *));
+        for (uint32_t bi = 0; bi < fn->block_count; bi++) {
+            SsirBlock *blk = &fn->blocks[bi];
+            for (uint32_t ii = 0; ii < blk->inst_count; ii++) {
+                uint32_t rid = blk->insts[ii].result;
+                if (rid && rid < next_id)
+                    (*inst_map)[rid] = &blk->insts[ii];
+            }
+        }
+    }
+}
+
+/* Resolve base type for access chain type tracing */
+static inline uint32_t sw_resolve_access_base_type(
+    SsirModule *mod, uint32_t base_id,
+    SsirInst *(*find_inst)(void *ctx, uint32_t id), void *ctx)
+{
+    uint32_t cur_type_id = 0;
+    SsirGlobalVar *ag = ssir_get_global(mod, base_id);
+    if (ag) {
+        SsirType *pt = ssir_get_type(mod, ag->type);
+        if (pt && pt->kind == SSIR_TYPE_PTR)
+            cur_type_id = pt->ptr.pointee;
+    }
+    if (!cur_type_id) {
+        SsirInst *ai = find_inst(ctx, base_id);
+        if (ai && ai->op == SSIR_OP_LOAD) {
+            SsirGlobalVar *lg = ssir_get_global(mod, ai->operands[0]);
+            if (lg) {
+                SsirType *pt = ssir_get_type(mod, lg->type);
+                if (pt && pt->kind == SSIR_TYPE_PTR)
+                    cur_type_id = pt->ptr.pointee;
+            }
+        }
+    }
+    return cur_type_id;
+}
+
+/* Advance type through one access chain index, returning new type_id.
+ * Sets *out_member_idx and *out_member_name for struct member accesses. */
+static inline uint32_t sw_advance_access_type(
+    SsirModule *mod, uint32_t cur_type_id, uint32_t index_id,
+    uint32_t *out_member_idx, const char **out_member_name, int *out_is_const)
+{
+    *out_member_idx = 0;
+    *out_member_name = NULL;
+    *out_is_const = 0;
+
+    SsirConstant *ic = ssir_get_constant(mod, index_id);
+    SsirType *cur_st = cur_type_id ? ssir_get_type(mod, cur_type_id) : NULL;
+
+    if (ic && (ic->kind == SSIR_CONST_U32 || ic->kind == SSIR_CONST_I32)) {
+        *out_is_const = 1;
+        uint32_t midx = (ic->kind == SSIR_CONST_U32) ? ic->u32_val : (uint32_t)ic->i32_val;
+        *out_member_idx = midx;
+        if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
+            cur_st->struc.member_names && midx < cur_st->struc.member_count)
+            *out_member_name = cur_st->struc.member_names[midx];
+        /* Advance type through struct member */
+        if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
+            return cur_st->struc.members[midx];
+        return 0;
+    } else {
+        /* Advance type through array element */
+        if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
+            return cur_st->array.elem;
+        return 0;
+    }
+}
+
+/* ============================================================================
+ * sw_set_name_escaped - Shared reserved-word escaping for non-WGSL emitters
+ * ============================================================================ */
+
+static inline void sw_set_name_escaped(char **names, uint32_t cap, uint32_t id,
+                                        const char *name,
+                                        const char *const *reserved, int reserved_count,
+                                        void *(*malloc_fn)(size_t))
+{
+    if (id >= cap || !name) return;
+    for (int i = 0; i < reserved_count; i++) {
+        if (strcmp(name, reserved[i]) == 0) {
+            size_t len = strlen(name) + 2;
+            char *escaped = (char *)malloc_fn(len);
+            if (escaped) {
+                escaped[0] = '_';
+                memcpy(escaped + 1, name, len - 1);
+                names[id] = escaped;
+            }
+            return;
+        }
+    }
+    names[id] = sw_strdup(name, malloc_fn);
 }
 
 /* ============================================================================
