@@ -1,0 +1,5 @@
+#include <metal_stdlib>
+using namespace metal;
+kernel void add(device float *buf [[buffer(0)]], uint gid [[thread_position_in_grid]]) {
+    buf[gid] = buf[gid] + 1.0;
+}

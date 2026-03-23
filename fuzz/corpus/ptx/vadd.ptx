@@ -1,0 +1,22 @@
+.version 7.0
+.target sm_70
+.address_size 64
+.visible .entry vadd(.param .u64 a, .param .u64 b, .param .u64 c, .param .u32 n) {
+    .reg .u64 %ra, %rb, %rc;
+    .reg .u32 %tid, %n;
+    .reg .f32 %fa, %fb, %fc;
+    .reg .pred %p;
+    ld.param.u64 %ra, [a];
+    ld.param.u64 %rb, [b];
+    ld.param.u64 %rc, [c];
+    ld.param.u32 %n, [n];
+    mov.u32 %tid, %tid.x;
+    setp.ge.u32 %p, %tid, %n;
+    @%p bra done;
+    ld.global.f32 %fa, [%ra];
+    ld.global.f32 %fb, [%rb];
+    add.f32 %fc, %fa, %fb;
+    st.global.f32 [%rc], %fc;
+done:
+    ret;
+}
