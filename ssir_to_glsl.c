@@ -354,6 +354,11 @@ static void glsl_emit_type(GlslCtx *c, uint32_t tid, GlslBuf *b) {
             break;
         }
 
+        case SSIR_TYPE_BINDING_ARRAY:
+            glsl_emit_type(c, t->binding_array.elem, b);
+            gb_append(b, "[]");
+            break;
+
         default:
             gb_appendf(b, "_type%u", tid);
             break;

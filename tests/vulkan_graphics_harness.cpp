@@ -111,9 +111,18 @@ void GraphicsContext::createLogicalDevice() {
     vulkan13_features.dynamicRendering = VK_TRUE;
     vulkan13_features.synchronization2 = VK_TRUE;
 
+    // Enable Vulkan 1.2 descriptor indexing features (for binding_array)
+    VkPhysicalDeviceVulkan12Features vulkan12_features = {};
+    vulkan12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vulkan12_features.pNext = &vulkan13_features;
+    vulkan12_features.runtimeDescriptorArray = VK_TRUE;
+    vulkan12_features.descriptorBindingPartiallyBound = VK_TRUE;
+    vulkan12_features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    vulkan12_features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+
     VkPhysicalDeviceFeatures2 device_features2 = {};
     device_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    device_features2.pNext = &vulkan13_features;
+    device_features2.pNext = &vulkan12_features;
 
     VkDeviceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -139,11 +148,13 @@ void GraphicsContext::createDescriptorPool() {
     VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 100},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 100},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100}};
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 100},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 100},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 100}};
 
     VkDescriptorPoolCreateInfo pool_info = {};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.poolSizeCount = 3;
+    pool_info.poolSizeCount = 5;
     pool_info.pPoolSizes = pool_sizes;
     pool_info.maxSets = 100;
     pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;

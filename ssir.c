@@ -370,6 +370,18 @@ static uint32_t ssir_find_texture_depth_type(SsirModule *mod, SsirTextureDim dim
     return UINT32_MAX;
 }
 
+static uint32_t ssir_find_binding_array_type(SsirModule *mod, uint32_t elem, uint32_t length) {
+    wgsl_compiler_assert(mod != NULL, "ssir_find_binding_array_type: mod is NULL");
+    for (uint32_t i = 0; i < mod->type_count; i++) {
+        if (mod->types[i].kind == SSIR_TYPE_BINDING_ARRAY &&
+            mod->types[i].binding_array.elem == elem &&
+            mod->types[i].binding_array.length == length) {
+            return mod->types[i].id;
+        }
+    }
+    return UINT32_MAX;
+}
+
 /* ============================================================================
  * Type API - Public
  * ============================================================================ */
@@ -656,6 +668,17 @@ uint32_t ssir_type_texture_depth(SsirModule *mod, SsirTextureDim dim) {
     if (id != UINT32_MAX) return id;
     SsirType t = {.kind = SSIR_TYPE_TEXTURE_DEPTH};
     t.texture_depth.dim = dim;
+    return ssir_add_type(mod, &t);
+}
+
+// mod nonnull
+uint32_t ssir_type_binding_array(SsirModule *mod, uint32_t elem_type, uint32_t length) {
+    wgsl_compiler_assert(mod != NULL, "ssir_type_binding_array: mod is NULL");
+    uint32_t id = ssir_find_binding_array_type(mod, elem_type, length);
+    if (id != UINT32_MAX) return id;
+    SsirType t = {.kind = SSIR_TYPE_BINDING_ARRAY};
+    t.binding_array.elem = elem_type;
+    t.binding_array.length = length;
     return ssir_add_type(mod, &t);
 }
 
@@ -3258,6 +3281,13 @@ static void ssir_type_to_string(SsirModule *mod, uint32_t type_id, StringBuilder
             break;
         case SSIR_TYPE_TEXTURE_DEPTH:
             sb_append(sb, "texture_depth");
+            break;
+        case SSIR_TYPE_BINDING_ARRAY:
+            sb_append(sb, "binding_array<");
+            ssir_type_to_string(mod, t->binding_array.elem, sb);
+            if (t->binding_array.length > 0)
+                sb_appendf(sb, ", %u", t->binding_array.length);
+            sb_append(sb, ">");
             break;
     }
 }

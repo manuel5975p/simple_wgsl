@@ -357,6 +357,14 @@ static void stw_emit_type(SsirToWgslContext *ctx, uint32_t type_id, StwStringBuf
             stw_sb_appendf(out, "texture_depth_%s", texture_dim_to_wgsl(t->texture_depth.dim));
             break;
 
+        case SSIR_TYPE_BINDING_ARRAY:
+            stw_sb_append(out, "binding_array<");
+            stw_emit_type(ctx, t->binding_array.elem, out);
+            if (t->binding_array.length > 0)
+                stw_sb_appendf(out, ", %u", t->binding_array.length);
+            stw_sb_append(out, ">");
+            break;
+
         default:
             stw_sb_appendf(out, "_unknown_type_%u", type_id);
             break;

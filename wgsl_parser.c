@@ -685,7 +685,7 @@ static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
     WgslAstNode **eargs = NULL;
 
     int first = 1;
-    while (!check(P, TOK_GT) && !check(P, TOK_EOF)) {
+    while (!check(P, TOK_GT) && !check(P, TOK_SHR) && !check(P, TOK_EOF)) {
         const char *before = P->cur.start;
         if (!first) expect(P, TOK_COMMA, "expected ','");
         first = 0;
@@ -704,7 +704,16 @@ static WgslAstNode *parse_type_after_name(Parser *P, const Token *name_tok) {
             advance(P);
         }
     }
-    expect(P, TOK_GT, "expected '>'");
+    /* Handle >> (TOK_SHR) as two closing angle brackets for nested types
+       like binding_array<texture_2d<f32>>. Consume one '>' and rewrite
+       the current token to a single '>' at the next position. */
+    if (check(P, TOK_SHR)) {
+        P->cur.type = TOK_GT;
+        P->cur.start = P->cur.start + 1;
+        P->cur.length = 1;
+    } else {
+        expect(P, TOK_GT, "expected '>'");
+    }
 
     T->type_node.type_arg_count = tcount;
     T->type_node.type_args = targs;

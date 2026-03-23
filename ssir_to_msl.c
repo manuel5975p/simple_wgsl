@@ -389,6 +389,15 @@ static void msl_emit_type(MslCtx *c, uint32_t tid, MslBuf *b) {
             break;
         }
 
+        case SSIR_TYPE_BINDING_ARRAY:
+            mb_append(b, "array<");
+            msl_emit_type(c, t->binding_array.elem, b);
+            if (t->binding_array.length > 0)
+                mb_appendf(b, ", %u>", t->binding_array.length);
+            else
+                mb_append(b, ">");
+            break;
+
         default:
             mb_appendf(b, "_type%u", tid);
             break;

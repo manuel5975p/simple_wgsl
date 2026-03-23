@@ -161,6 +161,7 @@ typedef struct {
     int has_float16_cap;
     int has_image_query_cap;
     int has_psb_cap;       /* PhysicalStorageBufferAddresses */
+    int has_binding_array; /* RuntimeDescriptorArrayEXT */
     int glsl_ext_emitted;
 
     /* Pre-computed function type IDs (indexed by function index) */
@@ -391,6 +392,7 @@ static int sts_emit_member_decorate(Ctx *c, uint32_t struct_id, uint32_t member,
  * ============================================================================ */
 
 static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id);
+static uint32_t sts_emit_const_u32(Ctx *c, uint32_t value);
 
 /* Compute the size and alignment of a type (for std430 layout).
  * Returns the size in bytes, and stores alignment in *out_align. */
@@ -906,6 +908,19 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
             SsirTextureDim dim = t->texture_depth.dim;
             uint32_t arrayed = (dim == SSIR_TEX_2D_ARRAY || dim == SSIR_TEX_CUBE_ARRAY || dim == SSIR_TEX_1D_ARRAY) ? 1 : 0;
             spv_id = sts_emit_type_image(c, dim, f32_type, 1, arrayed, 0, 1, SpvImageFormatUnknown);
+            break;
+        }
+        case SSIR_TYPE_BINDING_ARRAY: {
+            uint32_t elem_spv = sts_emit_type(c, t->binding_array.elem);
+            if (t->binding_array.length > 0) {
+                /* Fixed-size binding array */
+                uint32_t len_id = sts_emit_const_u32(c, t->binding_array.length);
+                spv_id = sts_emit_type_array(c, elem_spv, len_id);
+            } else {
+                /* Unsized binding array → OpTypeRuntimeArray */
+                spv_id = sts_emit_type_runtime_array(c, elem_spv);
+            }
+            c->has_binding_array = 1;
             break;
         }
     }
@@ -4309,6 +4324,7 @@ SsirToSpirvResult ssir_to_spirv(const SsirModule *mod,
         sts_emit_capability(&c, SpvCapabilityPhysicalStorageBufferAddresses);
         sts_emit_capability(&c, SpvCapabilityInt64);
     }
+    /* binding_array capability emitted later (after types are processed) */
 
     /* Extensions */
     if (c.has_psb_cap) {
@@ -4421,6 +4437,20 @@ SsirToSpirvResult ssir_to_spirv(const SsirModule *mod,
     /* Emit entry points */
     for (uint32_t i = 0; i < mod->entry_point_count; ++i) {
         sts_emit_entry_point(&c, &mod->entry_points[i]);
+    }
+
+    /* Emit deferred capabilities (set during type/global emission) */
+    if (c.has_binding_array) {
+        sts_emit_capability(&c, 5302 /* RuntimeDescriptorArrayEXT */);
+        StsWordBuf *ewb = &c.sections.extensions;
+        uint32_t *str_words = NULL;
+        size_t str_count = 0;
+        encode_string("SPV_EXT_descriptor_indexing", &str_words, &str_count);
+        if (str_words) {
+            sts_emit_op(ewb, SpvOpExtension, 1 + (uint32_t)str_count);
+            sts_wb_push_many(ewb, str_words, str_count);
+            STS_FREE(str_words);
+        }
     }
 
     /* Finalize SPIR-V binary */

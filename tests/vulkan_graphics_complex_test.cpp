@@ -2278,4 +2278,511 @@ TEST_F(VulkanGraphicsComplexTest, MultiScaleBloomFog) {
     EXPECT_EQ(white_count, 0) << "ACES tonemap should prevent white clipping";
 }
 
+// ============================================================================
+// Texture Sampling Tests
+// ============================================================================
+
+// RAII wrapper for texture sampling pipeline resources
+struct TextureSamplingResources {
+    VkDevice device = VK_NULL_HANDLE;
+    VkImage tex_top = VK_NULL_HANDLE;
+    VkDeviceMemory tex_top_mem = VK_NULL_HANDLE;
+    VkImageView tex_top_view = VK_NULL_HANDLE;
+    VkImage tex_bottom = VK_NULL_HANDLE;
+    VkDeviceMemory tex_bottom_mem = VK_NULL_HANDLE;
+    VkImageView tex_bottom_view = VK_NULL_HANDLE;
+    VkSampler sampler = VK_NULL_HANDLE;
+    VkDescriptorPool desc_pool = VK_NULL_HANDLE;
+    VkDescriptorSetLayout desc_layout = VK_NULL_HANDLE;
+    VkShaderModule vert = VK_NULL_HANDLE;
+    VkShaderModule frag = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+
+    TextureSamplingResources() = default;
+    TextureSamplingResources(const TextureSamplingResources &) = delete;
+    TextureSamplingResources &operator=(const TextureSamplingResources &) = delete;
+
+    ~TextureSamplingResources() {
+        if (!device) return;
+        if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
+        if (pipeline_layout) vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
+        if (desc_layout) vkDestroyDescriptorSetLayout(device, desc_layout, nullptr);
+        if (desc_pool) vkDestroyDescriptorPool(device, desc_pool, nullptr);
+        if (frag) vkDestroyShaderModule(device, frag, nullptr);
+        if (vert) vkDestroyShaderModule(device, vert, nullptr);
+        if (sampler) vkDestroySampler(device, sampler, nullptr);
+        if (tex_top_view) vkDestroyImageView(device, tex_top_view, nullptr);
+        if (tex_top) vkDestroyImage(device, tex_top, nullptr);
+        if (tex_top_mem) vkFreeMemory(device, tex_top_mem, nullptr);
+        if (tex_bottom_view) vkDestroyImageView(device, tex_bottom_view, nullptr);
+        if (tex_bottom) vkDestroyImage(device, tex_bottom, nullptr);
+        if (tex_bottom_mem) vkFreeMemory(device, tex_bottom_mem, nullptr);
+    }
+};
+
+// Texture sampling with binding_array and conditional branching:
+// Top half of screen samples from texture_array_top[0] (red),
+// bottom half from texture_array_bottom[0] (blue).
+// Tests: binding_array<texture_2d<f32>>, binding_array<sampler>,
+// uniform index, textureSampleLevel, and conditional branching.
+TEST_F(VulkanGraphicsComplexTest, TextureSamplingConditional) {
+    using vk_graphics::VulkanError; // for VK_CHECK macro
+
+    // Vertex shader from the user's original shader
+    const char *vs_source = R"(
+        struct VertexInput {
+            @location(0) position: vec2<f32>,
+            @location(1) tex_coord: vec2<f32>,
+        };
+        struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+            @location(0) tex_coord: vec2<f32>,
+        };
+        @vertex
+        fn vert_main(vertex: VertexInput) -> VertexOutput {
+            var outval: VertexOutput;
+            outval.position = vec4<f32>(vertex.position.x, vertex.position.y, 0.0, 1.0);
+            outval.tex_coord = vertex.tex_coord;
+            return outval;
+        }
+    )";
+
+    // Fragment shader using binding_array (the user's original shader,
+    // minus the index vertex input since we use uniform index only)
+    const char *fs_source = R"(
+        @group(0) @binding(0)
+        var texture_array_top: binding_array<texture_2d<f32>>;
+        @group(0) @binding(1)
+        var texture_array_bottom: binding_array<texture_2d<f32>>;
+        @group(0) @binding(2)
+        var sampler_array: binding_array<sampler>;
+
+        struct Uniforms {
+            index: u32,
+        }
+
+        @group(0) @binding(3)
+        var<uniform> uniforms: Uniforms;
+
+        @fragment
+        fn uniform_main(@location(0) tex_coord: vec2<f32>) -> @location(0) vec4<f32> {
+            var outval: vec3<f32>;
+            if tex_coord.y <= 0.5 {
+                outval = textureSampleLevel(
+                    texture_array_top[uniforms.index],
+                    sampler_array[uniforms.index],
+                    tex_coord,
+                    0.0
+                ).rgb;
+            } else {
+                outval = textureSampleLevel(
+                    texture_array_bottom[uniforms.index],
+                    sampler_array[uniforms.index],
+                    tex_coord,
+                    0.0
+                ).rgb;
+            }
+
+            return vec4<f32>(outval.x, outval.y, outval.z, 1.0);
+        }
+    )";
+
+    auto vs = wgsl_test::CompileWgsl(vs_source);
+    ASSERT_TRUE(vs.success) << vs.error;
+    auto fs = wgsl_test::CompileWgsl(fs_source);
+    ASSERT_TRUE(fs.success) << fs.error;
+
+    VkDevice dev = ctx_->device();
+    TextureSamplingResources res;
+    res.device = dev;
+
+    // -- Create two 4x4 solid-color textures: red (top) and blue (bottom) --
+    auto createTexture = [&](const uint8_t rgba[4],
+                             VkImage &img, VkDeviceMemory &mem, VkImageView &view) {
+        VkImageCreateInfo img_ci = {};
+        img_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        img_ci.imageType = VK_IMAGE_TYPE_2D;
+        img_ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        img_ci.extent = {4, 4, 1};
+        img_ci.mipLevels = 1;
+        img_ci.arrayLayers = 1;
+        img_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        img_ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        img_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VK_CHECK(vkCreateImage(dev, &img_ci, nullptr, &img));
+
+        VkMemoryRequirements mreqs;
+        vkGetImageMemoryRequirements(dev, img, &mreqs);
+        VkMemoryAllocateInfo ma = {};
+        ma.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ma.allocationSize = mreqs.size;
+        ma.memoryTypeIndex = ctx_->findMemoryType(mreqs.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VK_CHECK(vkAllocateMemory(dev, &ma, nullptr, &mem));
+        VK_CHECK(vkBindImageMemory(dev, img, mem, 0));
+
+        VkImageViewCreateInfo vci = {};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = img;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VK_CHECK(vkCreateImageView(dev, &vci, nullptr, &view));
+
+        // Upload pixel data via staging buffer
+        uint8_t pixels[4 * 4 * 4];
+        for (int i = 0; i < 16; i++) {
+            pixels[i * 4 + 0] = rgba[0];
+            pixels[i * 4 + 1] = rgba[1];
+            pixels[i * 4 + 2] = rgba[2];
+            pixels[i * 4 + 3] = rgba[3];
+        }
+
+        vk_graphics::Buffer staging(*ctx_, sizeof(pixels), vk_graphics::BufferUsage::Staging);
+        staging.upload(pixels, sizeof(pixels));
+
+        ctx_->executeCommands([&](VkCommandBuffer cmd) {
+            ctx_->transitionImageLayout(cmd, img,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+            VkBufferImageCopy region = {};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {4, 4, 1};
+            vkCmdCopyBufferToImage(cmd, staging.handle(), img,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+            // Transition to shader-readable
+            VkImageMemoryBarrier2 barrier = {};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.image = img;
+            barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+            VkDependencyInfo dep = {};
+            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dep.imageMemoryBarrierCount = 1;
+            dep.pImageMemoryBarriers = &barrier;
+            vkCmdPipelineBarrier2(cmd, &dep);
+        });
+    };
+
+    const uint8_t red[] = {255, 0, 0, 255};
+    const uint8_t blue[] = {0, 0, 255, 255};
+    createTexture(red, res.tex_top, res.tex_top_mem, res.tex_top_view);
+    createTexture(blue, res.tex_bottom, res.tex_bottom_mem, res.tex_bottom_view);
+
+    // -- Sampler --
+    VkSamplerCreateInfo samp_ci = {};
+    samp_ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samp_ci.magFilter = VK_FILTER_NEAREST;
+    samp_ci.minFilter = VK_FILTER_NEAREST;
+    samp_ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    samp_ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samp_ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    samp_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    VK_CHECK(vkCreateSampler(dev, &samp_ci, nullptr, &res.sampler));
+
+    // -- Uniform buffer (index = 0) --
+    struct Uniforms { uint32_t index; };
+    Uniforms ubo_data = {0};
+    auto ubo = ctx_->createUniformBuffer(ubo_data);
+
+    // -- Descriptor pool, layout, set --
+    VkDescriptorPoolSize pool_sizes[] = {
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
+    };
+    VkDescriptorPoolCreateInfo dp_ci = {};
+    dp_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dp_ci.poolSizeCount = 3;
+    dp_ci.pPoolSizes = pool_sizes;
+    dp_ci.maxSets = 1;
+    VK_CHECK(vkCreateDescriptorPool(dev, &dp_ci, nullptr, &res.desc_pool));
+
+    VkDescriptorSetLayoutBinding layout_bindings[4] = {};
+    // binding 0: binding_array<texture_2d<f32>> (1 element)
+    layout_bindings[0].binding = 0;
+    layout_bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    layout_bindings[0].descriptorCount = 1;
+    layout_bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // binding 1: binding_array<texture_2d<f32>> (1 element)
+    layout_bindings[1].binding = 1;
+    layout_bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    layout_bindings[1].descriptorCount = 1;
+    layout_bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // binding 2: binding_array<sampler> (1 element)
+    layout_bindings[2].binding = 2;
+    layout_bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    layout_bindings[2].descriptorCount = 1;
+    layout_bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    // binding 3: uniform buffer (Uniforms)
+    layout_bindings[3].binding = 3;
+    layout_bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    layout_bindings[3].descriptorCount = 1;
+    layout_bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    VkDescriptorSetLayoutCreateInfo dsl_ci = {};
+    dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dsl_ci.bindingCount = 4;
+    dsl_ci.pBindings = layout_bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(dev, &dsl_ci, nullptr, &res.desc_layout));
+
+    VkDescriptorSet desc_set;
+    VkDescriptorSetAllocateInfo dsa = {};
+    dsa.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsa.descriptorPool = res.desc_pool;
+    dsa.descriptorSetCount = 1;
+    dsa.pSetLayouts = &res.desc_layout;
+    VK_CHECK(vkAllocateDescriptorSets(dev, &dsa, &desc_set));
+
+    VkDescriptorImageInfo img_infos[2] = {};
+    img_infos[0].imageView = res.tex_top_view;
+    img_infos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    img_infos[1].imageView = res.tex_bottom_view;
+    img_infos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo samp_desc = {};
+    samp_desc.sampler = res.sampler;
+
+    VkDescriptorBufferInfo ubo_info = {};
+    ubo_info.buffer = ubo.handle();
+    ubo_info.offset = 0;
+    ubo_info.range = sizeof(Uniforms);
+
+    VkWriteDescriptorSet writes[4] = {};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = desc_set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[0].pImageInfo = &img_infos[0];
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = desc_set;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[1].pImageInfo = &img_infos[1];
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = desc_set;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[2].pImageInfo = &samp_desc;
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = desc_set;
+    writes[3].dstBinding = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[3].pBufferInfo = &ubo_info;
+    vkUpdateDescriptorSets(dev, 4, writes, 0, nullptr);
+
+    // -- Shader modules --
+    VkShaderModuleCreateInfo vs_ci = {};
+    vs_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vs_ci.codeSize = vs.spirv.size() * sizeof(uint32_t);
+    vs_ci.pCode = vs.spirv.data();
+    VK_CHECK(vkCreateShaderModule(dev, &vs_ci, nullptr, &res.vert));
+
+    VkShaderModuleCreateInfo fs_ci = {};
+    fs_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fs_ci.codeSize = fs.spirv.size() * sizeof(uint32_t);
+    fs_ci.pCode = fs.spirv.data();
+    VK_CHECK(vkCreateShaderModule(dev, &fs_ci, nullptr, &res.frag));
+
+    // -- Pipeline --
+    VkPipelineLayoutCreateInfo pl_ci = {};
+    pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pl_ci.setLayoutCount = 1;
+    pl_ci.pSetLayouts = &res.desc_layout;
+    VK_CHECK(vkCreatePipelineLayout(dev, &pl_ci, nullptr, &res.pipeline_layout));
+
+    VkPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = res.vert;
+    stages[0].pName = "vert_main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = res.frag;
+    stages[1].pName = "uniform_main";
+
+    struct PosUV { float px, py, tx, ty; };
+
+    VkVertexInputBindingDescription vbd = {};
+    vbd.stride = sizeof(PosUV);
+    vbd.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription vad[2] = {};
+    vad[0] = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
+    vad[1] = {1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(PosUV, tx)};
+
+    VkPipelineVertexInputStateCreateInfo vi = {};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = &vbd;
+    vi.vertexAttributeDescriptionCount = 2;
+    vi.pVertexAttributeDescriptions = vad;
+
+    VkPipelineInputAssemblyStateCreateInfo ia = {};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo vps = {};
+    vps.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vps.viewportCount = 1;
+    vps.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rast = {};
+    rast.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rast.polygonMode = VK_POLYGON_MODE_FILL;
+    rast.cullMode = VK_CULL_MODE_NONE;
+    rast.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rast.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo msaa = {};
+    msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depth = {};
+    depth.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+    VkPipelineColorBlendAttachmentState cba = {};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo blend = {};
+    blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &cba;
+
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn_state = {};
+    dyn_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dyn_state.dynamicStateCount = 2;
+    dyn_state.pDynamicStates = dyn;
+
+    VkFormat color_fmt = VK_FORMAT_R8G8B8A8_UNORM;
+    VkPipelineRenderingCreateInfo rendering = {};
+    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &color_fmt;
+
+    VkGraphicsPipelineCreateInfo gpi = {};
+    gpi.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    gpi.pNext = &rendering;
+    gpi.stageCount = 2;
+    gpi.pStages = stages;
+    gpi.pVertexInputState = &vi;
+    gpi.pInputAssemblyState = &ia;
+    gpi.pViewportState = &vps;
+    gpi.pRasterizationState = &rast;
+    gpi.pMultisampleState = &msaa;
+    gpi.pDepthStencilState = &depth;
+    gpi.pColorBlendState = &blend;
+    gpi.pDynamicState = &dyn_state;
+    gpi.layout = res.pipeline_layout;
+
+    VK_CHECK(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, nullptr, &res.pipeline));
+
+    // -- Vertex buffer: full-screen quad with UVs 0..1 --
+    std::vector<PosUV> verts = {
+        {-1.0f, -1.0f, 0.0f, 0.0f},
+        { 1.0f, -1.0f, 1.0f, 0.0f},
+        {-1.0f,  1.0f, 0.0f, 1.0f},
+        { 1.0f, -1.0f, 1.0f, 0.0f},
+        { 1.0f,  1.0f, 1.0f, 1.0f},
+        {-1.0f,  1.0f, 0.0f, 1.0f},
+    };
+    auto vb = ctx_->createVertexBuffer(verts);
+
+    const uint32_t W = 128, H = 128;
+    auto target = ctx_->createColorTarget(W, H);
+
+    // -- Record and execute draw --
+    ctx_->executeCommands([&](VkCommandBuffer cmd) {
+        ctx_->transitionImageLayout(cmd, target.handle(),
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+        VkRenderingAttachmentInfo color_att = {};
+        color_att.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_att.imageView = target.view();
+        color_att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_att.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_att.clearValue.color = {{0, 0, 0, 1}};
+
+        VkRenderingInfo ri = {};
+        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.renderArea = {{0, 0}, {W, H}};
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 1;
+        ri.pColorAttachments = &color_att;
+
+        vkCmdBeginRendering(cmd, &ri);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, res.pipeline);
+
+        VkViewport vp = {0, 0, (float)W, (float)H, 0, 1};
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        VkRect2D sc = {{0, 0}, {W, H}};
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            res.pipeline_layout, 0, 1, &desc_set, 0, nullptr);
+
+        VkBuffer vbuf = vb.handle();
+        VkDeviceSize offset = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &vbuf, &offset);
+        vkCmdDraw(cmd, 6, 1, 0, 0);
+        vkCmdEndRendering(cmd);
+
+        ctx_->transitionImageLayout(cmd, target.handle(),
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    });
+
+    auto pixels = target.downloadAs<uint32_t>();
+    ASSERT_EQ(pixels.size(), W * H);
+
+    stbi_write_png("texture_sampling_conditional.png", W, H, 4, pixels.data(), W * 4);
+
+    uint8_t r, g, b, a;
+
+    // Top quarter (uv.y ~ 0.25): should be red (sampled from texture_top)
+    uint32_t top_px = pixels[(H / 4) * W + (W / 2)];
+    unpackRGBA(top_px, r, g, b, a);
+    EXPECT_GE(r, 240) << "Top half should sample red texture";
+    EXPECT_LE(g, 15) << "Top half green should be ~0";
+    EXPECT_LE(b, 15) << "Top half blue should be ~0";
+    EXPECT_GE(a, 250) << "Alpha should be 1.0";
+
+    // Bottom quarter (uv.y ~ 0.75): should be blue (sampled from texture_bottom)
+    uint32_t bot_px = pixels[(3 * H / 4) * W + (W / 2)];
+    unpackRGBA(bot_px, r, g, b, a);
+    EXPECT_LE(r, 15) << "Bottom half red should be ~0";
+    EXPECT_LE(g, 15) << "Bottom half green should be ~0";
+    EXPECT_GE(b, 240) << "Bottom half should sample blue texture";
+
+    // Verify the split boundary: row at y=0.5 (H/2)
+    // Rows just above should be red, rows just below should be blue
+    uint32_t above = pixels[(H / 2 - 4) * W + (W / 2)];
+    unpackRGBA(above, r, g, b, a);
+    EXPECT_GE(r, 200) << "Just above midpoint should still be red";
+    EXPECT_LE(b, 30);
+
+    uint32_t below = pixels[(H / 2 + 4) * W + (W / 2)];
+    unpackRGBA(below, r, g, b, a);
+    EXPECT_LE(r, 30) << "Just below midpoint should be blue";
+    EXPECT_GE(b, 200);
+}
+
 #endif // WGSL_HAS_VULKAN

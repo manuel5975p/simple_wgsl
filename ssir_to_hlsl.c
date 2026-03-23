@@ -214,6 +214,14 @@ static void hlsl_emit_type(HlslCtx *c, uint32_t tid, HlslBuf *b) {
             break;
         }
 
+        case SSIR_TYPE_BINDING_ARRAY:
+            hlsl_emit_type(c, t->binding_array.elem, b);
+            if (t->binding_array.length > 0)
+                hb_appendf(b, "[%u]", t->binding_array.length);
+            else
+                hb_append(b, "[]");
+            break;
+
         default:
             hb_appendf(b, "_type%u", tid);
             break;

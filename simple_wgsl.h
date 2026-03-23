@@ -687,6 +687,7 @@ typedef enum SsirTypeKind {
     SSIR_TYPE_TEXTURE,
     SSIR_TYPE_TEXTURE_STORAGE,
     SSIR_TYPE_TEXTURE_DEPTH,
+    SSIR_TYPE_BINDING_ARRAY,
 } SsirTypeKind;
 
 typedef enum SsirAddressSpace {
@@ -828,6 +829,10 @@ struct SsirType {
         struct {
             SsirTextureDim dim;
         } texture_depth;
+        struct {
+            uint32_t elem;   /* element type (texture, sampler, etc.) */
+            uint32_t length; /* 0 = runtime/unsized */
+        } binding_array;
     };
 };
 
@@ -1262,6 +1267,7 @@ uint32_t ssir_type_texture(SsirModule *mod, SsirTextureDim dim, uint32_t sampled
 uint32_t ssir_type_texture_storage(SsirModule *mod, SsirTextureDim dim,
     uint32_t format, SsirAccessMode access);
 uint32_t ssir_type_texture_depth(SsirModule *mod, SsirTextureDim dim);
+uint32_t ssir_type_binding_array(SsirModule *mod, uint32_t elem_type, uint32_t length);
 
 SsirType *ssir_get_type(SsirModule *mod, uint32_t type_id);
 

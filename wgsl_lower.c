@@ -164,6 +164,7 @@ typedef enum {
     TC_SAMPLER,
     TC_IMAGE,
     TC_SAMPLED_IMAGE,
+    TC_BINDING_ARRAY,
 } TypeCacheKind;
 
 typedef struct TypeCacheEntry {
@@ -647,6 +648,10 @@ static uint32_t spv_type_to_ssir_uncached(WgslLower *l, uint32_t spv_type) {
                     uint32_t elem = spv_type_to_ssir(l, e->runtime_array_type.element_type_id);
                     return ssir_type_runtime_array(l->ssir, elem);
                 }
+                case TC_BINDING_ARRAY: {
+                    uint32_t elem = spv_type_to_ssir(l, e->runtime_array_type.element_type_id);
+                    return ssir_type_binding_array(l->ssir, elem, 0);
+                }
                 case TC_STRUCT: {
                     // Convert struct members to SSIR types
                     int mcount = e->struct_type.member_count;
@@ -731,7 +736,28 @@ static int emit_capability(WgslLower *l, SpvCapability cap) {
     return 1;
 }
 
-
+// l nonnull
+// name nonnull
+static int emit_spv_extension(WgslLower *l, const char *name) {
+    wgsl_compiler_assert(l != NULL, "emit_spv_extension: l is NULL");
+    wgsl_compiler_assert(name != NULL, "emit_spv_extension: name is NULL");
+    WordBuf *wb = &l->sections.extensions;
+    uint32_t *strw = NULL;
+    size_t wn = 0;
+    make_string_lit(name, &strw, &wn);
+    if (!emit_op(wb, SpvOpExtension, 1 + wn)) {
+        WGSL_FREE(strw);
+        return 0;
+    }
+    for (size_t i = 0; i < wn; ++i) {
+        if (!wb_push_u32(wb, strw[i])) {
+            WGSL_FREE(strw);
+            return 0;
+        }
+    }
+    WGSL_FREE(strw);
+    return 1;
+}
 
 // l nonnull
 // name nonnull
@@ -1083,6 +1109,37 @@ static uint32_t emit_type_runtime_array(WgslLower *l, uint32_t element_type) {
     TypeCacheEntry *e = (TypeCacheEntry *)WGSL_MALLOC(sizeof(TypeCacheEntry));
     if (e) {
         e->kind = TC_RUNTIME_ARRAY;
+        e->spv_id = id;
+        e->runtime_array_type.element_type_id = element_type;
+        e->next = l->type_cache.buckets[bucket];
+        l->type_cache.buckets[bucket] = e;
+    }
+
+    return id;
+}
+
+// Emit a binding_array type (descriptor array).
+// Uses OpTypeRuntimeArray in SPIR-V but tracked as TC_BINDING_ARRAY
+// so ssir_to_spirv emits the RuntimeDescriptorArrayEXT capability.
+// l nonnull
+static uint32_t emit_type_binding_array(WgslLower *l, uint32_t element_type) {
+    wgsl_compiler_assert(l != NULL, "emit_type_binding_array: l is NULL");
+    uint32_t bucket = type_hash(TC_BINDING_ARRAY, &element_type, sizeof(element_type));
+    for (TypeCacheEntry *e = l->type_cache.buckets[bucket]; e; e = e->next) {
+        if (e->kind == TC_BINDING_ARRAY && e->runtime_array_type.element_type_id == element_type) {
+            return e->spv_id;
+        }
+    }
+
+    WordBuf *wb = &l->sections.types_constants;
+    uint32_t id = fresh_id(l);
+    if (!emit_op(wb, SpvOpTypeRuntimeArray, 3)) return 0;
+    if (!wb_push_u32(wb, id)) return 0;
+    if (!wb_push_u32(wb, element_type)) return 0;
+
+    TypeCacheEntry *e = (TypeCacheEntry *)WGSL_MALLOC(sizeof(TypeCacheEntry));
+    if (e) {
+        e->kind = TC_BINDING_ARRAY;
         e->spv_id = id;
         e->runtime_array_type.element_type_id = element_type;
         e->next = l->type_cache.buckets[bucket];
@@ -1620,6 +1677,23 @@ static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
             } else {
                 // Runtime array
                 return emit_type_runtime_array(l, elem);
+            }
+        }
+    }
+
+    // Binding array types: binding_array<T> or binding_array<T, N>
+    if (strcmp(name, "binding_array") == 0) {
+        if (tn->type_arg_count > 0) {
+            uint32_t elem = lower_type(l, tn->type_args[0]);
+            if (tn->expr_arg_count > 0 && tn->expr_args[0]->type == WGSL_NODE_LITERAL) {
+                // Fixed-size: binding_array<T, N> — use regular array but track as binding
+                const char *lex = tn->expr_args[0]->literal.lexeme;
+                int len = lex ? atoi(lex) : 0;
+                uint32_t len_id = emit_const_u32(l, len);
+                return emit_type_array(l, elem, len_id);
+            } else {
+                // Unsized: binding_array<T>
+                return emit_type_binding_array(l, elem);
             }
         }
     }
@@ -2883,7 +2957,7 @@ static uint32_t get_runtime_array_element_type(WgslLower *l, uint32_t type_id) {
     for (int b = 0; b < TYPE_CACHE_SIZE; ++b) {
         for (TypeCacheEntry *e = l->type_cache.buckets[b]; e; e = e->next) {
             if (e->spv_id == type_id) {
-                if (e->kind == TC_RUNTIME_ARRAY)
+                if (e->kind == TC_RUNTIME_ARRAY || e->kind == TC_BINDING_ARRAY)
                     return e->runtime_array_type.element_type_id;
                 if (e->kind == TC_ARRAY)
                     return e->array_type.element_type_id;
@@ -5361,6 +5435,12 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
             // First, check if this is addressable array indexing (storage/uniform/workgroup/function)
             SpvStorageClass sc;
             ExprResult ptr = lower_ptr_expr(l, node, &sc);
+            if (ptr.id && sc == SpvStorageClassUniformConstant) {
+                // Binding array indexing - return pointer; sampling ops will load
+                r.id = ptr.id;
+                r.type_id = ptr.type_id;
+                return r;
+            }
             if (ptr.id && (sc == SpvStorageClassStorageBuffer || sc == SpvStorageClassUniform ||
                            sc == SpvStorageClassWorkgroup || sc == SpvStorageClassFunction ||
                            sc == SpvStorageClassPhysicalStorageBuffer ||
@@ -6607,6 +6687,9 @@ static int is_sampler_or_texture_type(const WgslAstNode *type_node) {
 
     // Texture types
     if (strncmp(name, "texture_", 8) == 0) return 1;
+
+    // Binding arrays of textures/samplers
+    if (strcmp(name, "binding_array") == 0) return 1;
 
     return 0;
 }
