@@ -11,7 +11,16 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     char *err = NULL;
     PtxModule *mod = ptx_parse(src, &err);
-    if (mod) ptx_parse_free(mod);
+    if (mod) {
+        SsirModule *ssir = NULL;
+        char *lower_err = NULL;
+        PtxToSsirOptions opts = {0};
+        PtxToSsirResult res = ptx_lower(mod, &opts, &ssir, &lower_err);
+        (void)res;
+        if (ssir) ssir_module_destroy(ssir);
+        free(lower_err);
+        ptx_parse_free(mod);
+    }
     free(err);
 
     free(src);

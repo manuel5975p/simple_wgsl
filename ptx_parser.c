@@ -1671,6 +1671,9 @@ static void pp_parse_instruction(PtxParser *p) {
       pp_parse_instruction(p);
     }
     pp_expect(p, PTK_RBRACE, "}");
+  } else if (!pp_check(p, PTK_EOF) && !pp_check(p, PTK_RBRACE)) {
+    /* Skip unrecognized token to guarantee forward progress */
+    pp_next(p);
   }
 }
 

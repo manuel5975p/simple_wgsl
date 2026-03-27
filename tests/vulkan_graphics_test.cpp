@@ -1361,4 +1361,79 @@ TEST_F(VulkanGraphicsTest, Immediate_VertexScale) {
     EXPECT_LE(b, 5);
 }
 
+// Test: Storage buffer point cloud — vertex shader reads from storage buffer
+// using @builtin(vertex_index), exercises bare runtime array wrapping and
+// struct member access with swizzle-like names (px, py, pz).
+TEST_F(VulkanGraphicsTest, StorageBufferPointCloud) {
+    // Vertex shader: reads Point structs from a storage buffer
+    const char *vs_source = R"(
+        struct Point {
+          px : f32, py : f32, pz : f32,
+          rgba : u32,
+        };
+        @group(0) @binding(0) var<storage> points : array<Point>;
+
+        @vertex
+        fn main(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4f {
+          let p = points[vi];
+          return vec4f(p.px, p.py, p.pz, 1.0);
+        }
+    )";
+
+    const char *fs_source = R"(
+        @fragment fn main() -> @location(0) vec4f {
+            return vec4f(1.0, 0.0, 0.0, 1.0);
+        }
+    )";
+
+    auto vs_result = wgsl_test::CompileWgsl(vs_source);
+    ASSERT_TRUE(vs_result.success) << vs_result.error;
+
+    auto fs_result = wgsl_test::CompileWgsl(fs_source);
+    ASSERT_TRUE(fs_result.success) << fs_result.error;
+
+    // Create a storage buffer with 3 points forming a full-screen triangle
+    struct Point {
+        float px, py, pz;
+        uint32_t rgba;
+    };
+    std::vector<Point> point_data = {
+        {-1.0f, -1.0f, 0.0f, 0xFF0000FFu},
+        { 3.0f, -1.0f, 0.0f, 0xFF0000FFu},
+        {-1.0f,  3.0f, 0.0f, 0xFF0000FFu},
+    };
+
+    auto ssbo = ctx_->createStorageBuffer(point_data.size() * sizeof(Point));
+    ssbo.upload(point_data);
+
+    const uint32_t width = 64, height = 64;
+    auto target = ctx_->createColorTarget(width, height);
+
+    vk_graphics::GraphicsPipelineConfig config;
+    config.vertex_spirv = vs_result.spirv.data();
+    config.vertex_spirv_words = vs_result.spirv.size();
+    config.vertex_entry = "main";
+    config.fragment_spirv = fs_result.spirv.data();
+    config.fragment_spirv_words = fs_result.spirv.size();
+    config.fragment_entry = "main";
+    config.vertex_stride = 0; // No vertex attributes — data comes from storage buffer
+
+    auto pipeline = ctx_->createPipeline(config);
+
+    ctx_->draw(pipeline, target, nullptr, {.vertex_count = 3},
+        {{0, &ssbo, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}});
+
+    auto pixels = target.downloadAs<uint32_t>();
+    ASSERT_EQ(pixels.size(), width * height);
+
+    // Center pixel should be red (fragment shader outputs red)
+    uint32_t center = pixels[(height / 2) * width + (width / 2)];
+    uint8_t r, g, b, a;
+    unpackRGBA(center, r, g, b, a);
+    EXPECT_GE(r, 250) << "Red channel should be ~255";
+    EXPECT_LE(g, 5) << "Green channel should be ~0";
+    EXPECT_LE(b, 5) << "Blue channel should be ~0";
+    EXPECT_GE(a, 250) << "Alpha channel should be ~255";
+}
+
 #endif // WGSL_HAS_VULKAN

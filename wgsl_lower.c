@@ -365,6 +365,7 @@ struct WgslLower {
         uint32_t type_id;   // The element type (struct type for storage buffers)
         SpvStorageClass sc; // Storage class
         const char *name;   // Variable name for lookup
+        uint32_t inner_array_type; // Non-zero if var has a synthetic wrapper struct around a runtime array
     } *global_map;
     int global_map_count;
     int global_map_cap;
@@ -1941,8 +1942,8 @@ static int lower_structs(WgslLower *l) {
         uint32_t struct_id = emit_type_struct_with_offsets(l, sd->name, member_types, sd->field_count, uint_offsets);
         WGSL_FREE(uint_offsets);
 
-        // Add Block decoration for storage buffer compatibility
-        emit_decorate(l, struct_id, SpvDecorationBlock, NULL, 0);
+        // NOTE: Block decoration is added in lower_globals only for structs
+        // that are actually used as storage/uniform buffer variable types.
 
         // Add member offset decorations
         for (int f = 0; f < sd->field_count; ++f) {
@@ -2986,6 +2987,19 @@ static int find_global_by_name(WgslLower *l, const char *name, uint32_t *out_var
     return 0;
 }
 
+// Helper to find the inner runtime array type for a wrapped global variable
+// Returns 0 if the global is not a wrapped runtime array
+static uint32_t find_global_inner_array_type(WgslLower *l, const char *name) {
+    wgsl_compiler_assert(l != NULL, "find_global_inner_array_type: l is NULL");
+    wgsl_compiler_assert(name != NULL, "find_global_inner_array_type: name is NULL");
+    for (int i = l->global_map_count - 1; i >= 0; --i) {
+        if (l->global_map[i].name && strcmp(l->global_map[i].name, name) == 0) {
+            return l->global_map[i].inner_array_type;
+        }
+    }
+    return 0;
+}
+
 // Helper to find struct member index by name
 // l nonnull
 // struct_type_name nonnull
@@ -3336,6 +3350,33 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
             uint32_t var_id, elem_type_id;
             SpvStorageClass sc;
             if (find_global_by_name(l, name, &var_id, &elem_type_id, &sc)) {
+                // If this global has a wrapper struct around a runtime array,
+                // emit an AccessChain with index 0 to unwrap it.
+                uint32_t inner_arr = find_global_inner_array_type(l, name);
+                if (inner_arr) {
+                    uint32_t zero = emit_const_u32(l, 0);
+                    uint32_t arr_ptr_type = emit_type_pointer(l, sc, inner_arr);
+                    uint32_t chain_id;
+                    if (emit_access_chain(l, arr_ptr_type, &chain_id, var_id, &zero, 1)) {
+                        // SSIR path: emit access chain to unwrap wrapper struct
+                        if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                            uint32_t ssir_var = ssir_id_map_get(l, var_id);
+                            uint32_t ssir_arr_type = spv_type_to_ssir(l, inner_arr);
+                            if (ssir_var && ssir_arr_type) {
+                                SsirAddressSpace ssir_addr = spv_sc_to_ssir_addr(sc);
+                                uint32_t ssir_arr_ptr = ssir_type_ptr(l->ssir, ssir_arr_type, ssir_addr);
+                                uint32_t ssir_zero = ssir_const_u32(l->ssir, 0);
+                                uint32_t ssir_chain = ssir_build_access(WL_BCTX(l),
+                                    ssir_arr_ptr, ssir_var, &ssir_zero, 1);
+                                ssir_id_map_set(l, chain_id, ssir_chain);
+                            }
+                        }
+                        r.id = chain_id;
+                        r.type_id = inner_arr;
+                        if (out_sc) *out_sc = sc;
+                        return r;
+                    }
+                }
                 r.id = var_id;
                 r.type_id = elem_type_id;
                 if (out_sc) *out_sc = sc;
@@ -5358,8 +5399,9 @@ static ExprResult lower_expr_full(WgslLower *l, const WgslAstNode *node) {
                 }
             }
 
-            if (!valid) {
-                // Not a vector swizzle — try struct member extraction
+            if (!valid || get_vector_component_count(obj.type_id, l) == 0) {
+                // Not a vector swizzle (either invalid chars or base is not a vector)
+                // — try struct member extraction
                 const char *struct_name = find_struct_name_by_type_id(l, obj.type_id);
                 if (struct_name) {
                     int member_idx = find_struct_member_index(l, struct_name, mem->member);
@@ -6720,6 +6762,26 @@ static int lower_globals(WgslLower *l) {
         } else {
             sc = wgsl_address_space_to_storage_class(gv->address_space);
         }
+
+        // For storage/uniform buffers, ensure proper Block decoration.
+        uint32_t inner_array_type = 0;
+        if (sc == SpvStorageClassStorageBuffer || sc == SpvStorageClassUniform) {
+            if (get_runtime_array_element_type(l, elem_type) != 0) {
+                // Bare runtime array — Vulkan requires it wrapped in a Block-decorated struct.
+                inner_array_type = elem_type;
+                uint32_t offset_zero = 0;
+                char wrapper_name[256];
+                snprintf(wrapper_name, sizeof(wrapper_name), "_%s_block", gv->name ? gv->name : "anon");
+                uint32_t wrapper_struct = emit_type_struct_with_offsets(l, wrapper_name, &elem_type, 1, &offset_zero);
+                emit_decorate(l, wrapper_struct, SpvDecorationBlock, NULL, 0);
+                emit_member_decorate(l, wrapper_struct, 0, SpvDecorationOffset, &offset_zero, 1);
+                elem_type = wrapper_struct;
+            } else {
+                // Struct used directly as buffer type — add Block decoration.
+                emit_decorate(l, elem_type, SpvDecorationBlock, NULL, 0);
+            }
+        }
+
         uint32_t ptr_type = emit_type_pointer(l, sc, elem_type);
 
         // Emit variable
@@ -6738,9 +6800,19 @@ static int lower_globals(WgslLower *l) {
         // Create SSIR global variable
         uint32_t ssir_var = 0;
         {
-            uint32_t ssir_elem_type = spv_type_to_ssir(l, elem_type);
+            uint32_t ssir_pointee;
+            if (inner_array_type) {
+                // Wrap runtime array in an SSIR struct so ssir_to_spirv emits Block
+                uint32_t ssir_arr = spv_type_to_ssir(l, inner_array_type);
+                uint32_t offset_zero = 0;
+                char wrapper_name[256];
+                snprintf(wrapper_name, sizeof(wrapper_name), "_%s_block", gv->name ? gv->name : "anon");
+                ssir_pointee = ssir_type_struct(l->ssir, wrapper_name, &ssir_arr, 1, &offset_zero);
+            } else {
+                ssir_pointee = spv_type_to_ssir(l, elem_type);
+            }
             SsirAddressSpace ssir_addr = spv_sc_to_ssir_addr(sc);
-            uint32_t ssir_ptr_type = ssir_type_ptr(l->ssir, ssir_elem_type, ssir_addr);
+            uint32_t ssir_ptr_type = ssir_type_ptr(l->ssir, ssir_pointee, ssir_addr);
             ssir_var = ssir_global_var(l->ssir, gv->name, ssir_ptr_type);
             if (sym->has_group) {
                 ssir_global_set_group(l->ssir, ssir_var, (uint32_t)sym->group_index);
@@ -6761,12 +6833,14 @@ static int lower_globals(WgslLower *l) {
             }
         }
         if (l->global_map_count < l->global_map_cap) {
+            memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
             l->global_map[l->global_map_count].symbol_id = sym->id;
             l->global_map[l->global_map_count].spv_id = var_id;
             l->global_map[l->global_map_count].ssir_id = ssir_var;
             l->global_map[l->global_map_count].type_id = elem_type;
             l->global_map[l->global_map_count].sc = sc;
             l->global_map[l->global_map_count].name = gv->name ? strdup(gv->name) : NULL;
+            l->global_map[l->global_map_count].inner_array_type = inner_array_type;
             l->global_map_count++;
         }
     }
@@ -6787,12 +6861,14 @@ static void add_global_map_entry(WgslLower *l, int symbol_id, uint32_t spv_id,
         l->global_map = (__typeof__(l->global_map))p;
         l->global_map_cap = new_cap;
     }
+    memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
     l->global_map[l->global_map_count].symbol_id = symbol_id;
     l->global_map[l->global_map_count].spv_id = spv_id;
     l->global_map[l->global_map_count].ssir_id = ssir_id;
     l->global_map[l->global_map_count].type_id = type_id;
     l->global_map[l->global_map_count].sc = sc;
     l->global_map[l->global_map_count].name = name ? strdup(name) : NULL;
+    l->global_map[l->global_map_count].inner_array_type = 0;
     l->global_map_count++;
 }
 
@@ -7267,6 +7343,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     }
                 }
                 if (l->global_map_count < l->global_map_cap) {
+                    memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
                     l->global_map[l->global_map_count].symbol_id = -1;
                     l->global_map[l->global_map_count].spv_id = var_id;
                     l->global_map[l->global_map_count].ssir_id = ssir_var;
@@ -7325,6 +7402,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                             }
                         }
                         if (l->global_map_count < l->global_map_cap) {
+                            memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
                             l->global_map[l->global_map_count].symbol_id = -1;
                             l->global_map[l->global_map_count].spv_id = var_id;
                             l->global_map[l->global_map_count].ssir_id = ssir_var;
@@ -7398,6 +7476,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                                                 l->global_map_cap = new_cap;
                                             }
                                         }
+                                        memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
                                         l->global_map[l->global_map_count].symbol_id = -1;
                                         l->global_map[l->global_map_count].spv_id = var_id;
                                         l->global_map[l->global_map_count].ssir_id = ssir_var;
@@ -7455,6 +7534,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                                 }
                             }
                             if (l->global_map_count < l->global_map_cap) {
+                                memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
                                 l->global_map[l->global_map_count].symbol_id = -1;
                                 l->global_map[l->global_map_count].spv_id = var_id;
                                 l->global_map[l->global_map_count].ssir_id = ssir_var;
@@ -7520,6 +7600,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     }
                 }
                 if (l->global_map_count < l->global_map_cap) {
+                    memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
                     l->global_map[l->global_map_count].symbol_id = -1;
                     l->global_map[l->global_map_count].spv_id = var_id;
                     l->global_map[l->global_map_count].ssir_id = ssir_var;
@@ -7615,6 +7696,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                             }
                         }
                         if (l->global_map_count < l->global_map_cap) {
+                            memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
                             l->global_map[l->global_map_count].symbol_id = -1;
                             l->global_map[l->global_map_count].spv_id = var_id;
                             l->global_map[l->global_map_count].ssir_id = ssir_var;
@@ -7805,6 +7887,7 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                     }
                 }
                 if (l->global_map_count < l->global_map_cap) {
+                    memset(&l->global_map[l->global_map_count], 0, sizeof(l->global_map[0]));
                     l->global_map[l->global_map_count].symbol_id = -1;
                     l->global_map[l->global_map_count].spv_id = var_id;
                     l->global_map[l->global_map_count].ssir_id = ssir_var;

@@ -2803,3 +2803,99 @@ TEST(LowerTest, BitcastBuiltin) {
     auto result = wgsl_test::CompileWgsl(source);
     EXPECT_TRUE(result.success) << "bitcast: " << result.error;
 }
+
+// ---------- Storage buffer with bare runtime array ----------
+
+TEST(LowerTest, BareRuntimeArrayStorageBuffer) {
+    // var<storage> with a bare array<T> (not wrapped in a struct) must produce
+    // valid SPIR-V where the runtime array is inside a Block-decorated struct.
+    const char *source = R"(
+struct Point {
+  px : f32, py : f32, pz : f32,
+  rgba : u32,
+};
+@group(0) @binding(0) var<storage> points : array<Point>;
+
+@vertex
+fn vs(@builtin(vertex_index) vi : u32) -> @builtin(position) vec4f {
+  let p = points[vi];
+  return vec4f(p.px, p.py, p.pz, 1.0);
+}
+
+@fragment
+fn fs() -> @location(0) vec4f {
+  return vec4f(1.0, 0.0, 0.0, 1.0);
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << result.error;
+}
+
+TEST(LowerTest, BareRuntimeArrayStorageBufferReadWrite) {
+    // read_write variant of bare runtime array storage buffer
+    const char *source = R"(
+@group(0) @binding(0) var<storage, read_write> data : array<f32>;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    data[gid.x] = data[gid.x] * 2.0;
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << result.error;
+}
+
+TEST(LowerTest, BareRuntimeArrayStorageBufferU32) {
+    const char *source = R"(
+@group(0) @binding(0) var<storage> vals : array<u32>;
+@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let v = vals[gid.x];
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << result.error;
+}
+
+TEST(LowerTest, BareRuntimeArrayStorageBufferVec4f) {
+    const char *source = R"(
+@group(0) @binding(0) var<storage> colors : array<vec4f>;
+@fragment fn main(@builtin(position) pos: vec4f) -> @location(0) vec4f {
+    return colors[u32(pos.x)];
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << result.error;
+}
+
+// ---------- Struct member access with swizzle-like names ----------
+
+TEST(LowerTest, StructMemberSwizzleLikeNames) {
+    // Struct member names like px, py, pz look like vector swizzles
+    // (p=2,x=0 / p=2,y=1 / p=2,z=2) but must be treated as struct access.
+    const char *source = R"(
+struct V { px : f32, py : f32, pz : f32, pw : f32 };
+@compute @workgroup_size(1) fn main() {
+    var v : V;
+    v.px = 1.0;
+    v.py = 2.0;
+    v.pz = 3.0;
+    v.pw = 4.0;
+    let sum = v.px + v.py + v.pz + v.pw;
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << result.error;
+}
+
+TEST(LowerTest, StructMemberNamedRGBA) {
+    // Member name "rgba" looks like a 4-component swizzle
+    const char *source = R"(
+struct Pixel { rgba : u32 };
+struct Buf { data : array<Pixel> };
+@group(0) @binding(0) var<storage> buf : Buf;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let px = buf.data[gid.x];
+    let c = px.rgba;
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    EXPECT_TRUE(result.success) << result.error;
+}

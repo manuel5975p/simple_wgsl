@@ -1146,8 +1146,6 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
     SsirAddressSpace space = pl_mem_space(inst->space);
     uint32_t type = pl_map_type(p, inst->type);
 
-    fprintf(stderr, "[ptx_lower] ld vec=%d space=%d type=%d\n",
-            inst->vec_width, space, inst->type);
     if (inst->vec_width <= 1) {
         if (space == SSIR_ADDR_UNIFORM) {
             const char *param_name = inst->src[0].kind == PTX_OPER_ADDR
@@ -1345,9 +1343,6 @@ static void pl_lower_ld(PtxLower *p, const PtxInst *inst) {
 
         uint32_t vec_val;
         PlReg *base_reg = base_name[0] ? pl_find_reg(p, base_name) : NULL;
-        fprintf(stderr, "[ptx_lower] vec_ld: base='%s' reg=%p bda=%d use_bda=%d space=%d\n",
-                base_name, (void*)base_reg, base_reg ? base_reg->is_bda_ptr : -1,
-                p->use_bda, space);
         if (base_reg && base_reg->is_bda_ptr && p->use_bda &&
             space == SSIR_ADDR_STORAGE) {
             uint32_t psb_ptr_type = ssir_type_ptr(p->mod, vec_type,
