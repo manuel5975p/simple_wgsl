@@ -1031,7 +1031,7 @@ static cufftResult build_fourstep_2pass(struct CUctx_st *ctx, FftAxis *axis,
     for (int d = 0; d < 2; d++) {
         /* Column DFTs: in_bs=1, in_es=N2, out_bs=N1, out_es=1, no twiddle */
         char *wgsl = gen_fft_fused_strided(n1, gen_dirs[d], 0, wg_limit_0,
-                                            n2, 1, n2, n1, 1, 0);
+                                            n2, 1, n2, n1, 1, 0, NULL);
         if (!wgsl) return CUFFT_INTERNAL_ERROR;
         uint32_t *spirv = NULL; size_t sc = 0;
         cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -1071,7 +1071,7 @@ static cufftResult build_fourstep_2pass(struct CUctx_st *ctx, FftAxis *axis,
     for (int d = 0; d < 2; d++) {
         /* Row DFTs: in_bs=1, in_es=N1, out_bs=1, out_es=N1, twiddle=N */
         char *wgsl = gen_fft_fused_strided(n2, gen_dirs[d], 0, wg_limit_1,
-                                            n1, 1, n1, 1, n1, n);
+                                            n1, 1, n1, 1, n1, n, NULL);
         if (!wgsl) return CUFFT_INTERNAL_ERROR;
         uint32_t *spirv = NULL; size_t sc = 0;
         cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -2307,7 +2307,7 @@ static cufftResult build_2d_strided(struct CUctx_st *ctx, FftAxis *axis,
 
         for (int d = 0; d < 2; d++) {
             char *wgsl = gen_fft_fused_strided(ny, gen_dirs[d], 0, wg_limit,
-                                                nx, ny, 1, 1, nx, 0);
+                                                nx, ny, 1, 1, nx, 0, NULL);
             if (!wgsl) return CUFFT_INTERNAL_ERROR;
             uint32_t *spirv = NULL; size_t sc = 0;
             cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -2350,7 +2350,7 @@ static cufftResult build_2d_strided(struct CUctx_st *ctx, FftAxis *axis,
 
         for (int d = 0; d < 2; d++) {
             char *wgsl = gen_fft_fused_strided(nx, gen_dirs[d], 0, wg_limit,
-                                                ny, nx, 1, 1, ny, 0);
+                                                ny, nx, 1, 1, ny, 0, NULL);
             if (!wgsl) return CUFFT_INTERNAL_ERROR;
             uint32_t *spirv = NULL; size_t sc = 0;
             cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -2423,7 +2423,7 @@ static cufftResult build_2d_r2c_strided(struct CUctx_st *ctx, FftAxis *axis,
         /* total_batch=0: B divides nx exactly, no bounds guard needed
          * (avoids barrier divergence from early-return threads) */
         char *wgsl = gen_fft_fused_r2c_strided(half_y, 0, wg_limit,
-                                                0, half_y, 1, 1, nx);
+                                                0, half_y, 1, 1, nx, NULL);
         if (!wgsl) return CUFFT_INTERNAL_ERROR;
         uint32_t *spirv = NULL; size_t sc = 0;
         cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -2475,7 +2475,7 @@ static cufftResult build_2d_r2c_strided(struct CUctx_st *ctx, FftAxis *axis,
         axis->dispatch_x[1] = (uint32_t)(padded_y / bpw);
 
         char *wgsl = gen_fft_fused_strided(nx, 1, mr1, wg_limit,
-                                            padded_y, nx, 1, 1, padded_y, 0);
+                                            padded_y, nx, 1, 1, padded_y, 0, NULL);
         if (!wgsl) return CUFFT_INTERNAL_ERROR;
         uint32_t *spirv = NULL; size_t sc = 0;
         cr = compile_wgsl(wgsl, &spirv, &sc);
@@ -2573,7 +2573,7 @@ static cufftResult build_col_fft_strided_fused(struct CUctx_st *ctx, FftAxis *ax
 
     for (int d = 0; d < 2; d++) {
         char *wgsl = gen_fft_fused_strided(rows, gen_dirs[d], 0, wg_limit,
-                                            cols, 1, cols, 1, cols, 0);
+                                            cols, 1, cols, 1, cols, 0, NULL);
         if (!wgsl) return CUFFT_INTERNAL_ERROR;
         uint32_t *spirv = NULL; size_t sc = 0;
         cr = compile_wgsl(wgsl, &spirv, &sc);

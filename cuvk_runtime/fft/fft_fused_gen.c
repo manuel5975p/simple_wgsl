@@ -211,7 +211,10 @@ float *fft_fused_compute_lut(int n, int direction, int max_r) { return compute_l
 /* ========================================================================== */
 
 static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int total_batch,
-                               int in_bs, int in_es, int out_bs, int out_es, int tw_n) {
+                               int in_bs, int in_es, int out_bs, int out_es, int tw_n,
+                               const FftDeviceCaps *caps) {
+  FftDeviceCaps default_caps;
+  if (!caps) { default_caps = fft_default_caps(); caps = &default_caps; }
   int radices[MAX_STAGES];
   int n_stages;
 
@@ -239,7 +242,7 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int
                      out_es == 1 && out_bs == n && total_batch == 0;
     int shr_stride_dir = n; /* no padding for small N */
 
-    sb_emit_bda_src_dst(&sb, 0);
+    sb_emit_bufs_src_dst(&sb, 0, caps);
     sb_printf(&sb, "\n");
 
     if (use_hybrid) {
@@ -490,7 +493,7 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int
   sb_init_cap(&sb, 131072);
 
   /* Bindings */
-  sb_emit_bda_src_dst(&sb, has_lut);
+  sb_emit_bufs_src_dst(&sb, has_lut, caps);
   sb_printf(&sb, "\n");
 
   /* Shared memory */
@@ -977,12 +980,12 @@ static char *gen_fft_fused_mr(int n, int direction, int max_r, int wg_limit, int
 /* Public API — explicit max_radix + wg_limit (0 = auto/default) */
 char *gen_fft_fused(int n, int direction, int max_r, int wg_lim) {
   return gen_fft_fused_mr(n, direction, max_r, wg_lim > 0 ? wg_lim : DEFAULT_WG_LIMIT, 0,
-                           n, 1, n, 1, 0);
+                           n, 1, n, 1, 0, NULL);
 }
 
 /* Public API — with bounds guard for sub-batch dispatches (four-step FFT) */
 char *gen_fft_fused_bounded(int n, int direction, int total_batch) {
-  return gen_fft_fused_mr(n, direction, 0, DEFAULT_WG_LIMIT, total_batch, n, 1, n, 1, 0);
+  return gen_fft_fused_mr(n, direction, 0, DEFAULT_WG_LIMIT, total_batch, n, 1, n, 1, 0, NULL);
 }
 
 /*
@@ -1011,10 +1014,11 @@ char *gen_fft_fused_bounded(int n, int direction, int total_batch) {
 char *gen_fft_fused_strided(int n, int direction, int max_radix, int wg_limit,
                              int total_batch,
                              int in_bs, int in_es, int out_bs, int out_es,
-                             int tw_n) {
+                             int tw_n,
+                             const FftDeviceCaps *caps) {
   return gen_fft_fused_mr(n, direction, max_radix,
                            wg_limit > 0 ? wg_limit : DEFAULT_WG_LIMIT,
-                           total_batch, in_bs, in_es, out_bs, out_es, tw_n);
+                           total_batch, in_bs, in_es, out_bs, out_es, tw_n, caps);
 }
 
 /* ========================================================================== */
@@ -1094,7 +1098,11 @@ int fft_fused_r2c_workgroup_size(int half_n, int max_r, int wg_limit) {
 char *gen_fft_fused_r2c_strided(int half_n, int max_r, int wg_limit,
                                  int total_batch,
                                  int in_bs, int in_es,
-                                 int out_bs, int out_es) {
+                                 int out_bs, int out_es,
+                                 const FftDeviceCaps *caps) {
+  FftDeviceCaps default_caps;
+  if (!caps) { default_caps = fft_default_caps(); caps = &default_caps; }
+
   int radices[MAX_STAGES];
   int n_stages;
   const int direction = 1;  /* always forward */
@@ -1163,7 +1171,7 @@ char *gen_fft_fused_r2c_strided(int half_n, int max_r, int wg_limit,
   sb_init_cap(&sb, 131072);
 
   /* Bindings */
-  sb_emit_bda_src_dst(&sb, has_lut);
+  sb_emit_bufs_src_dst(&sb, has_lut, caps);
   sb_printf(&sb, "\n");
 
   /* Shared memory */

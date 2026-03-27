@@ -1,6 +1,8 @@
 #ifndef FFT_FUSED_GEN_H
 #define FFT_FUSED_GEN_H
 
+#include "fft_bda.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -74,7 +76,8 @@ char *gen_fft_fused_bounded(int n, int direction, int total_batch);
 char *gen_fft_fused_strided(int n, int direction, int max_radix, int wg_limit,
                              int total_batch,
                              int in_bs, int in_es, int out_bs, int out_es,
-                             int tw_n);
+                             int tw_n,
+                             const FftDeviceCaps *caps);
 
 /*
  * Fused R2C strided: half_n-point forward C2C + inline R2C post-process
@@ -85,7 +88,8 @@ char *gen_fft_fused_strided(int n, int direction, int max_radix, int wg_limit,
 char *gen_fft_fused_r2c_strided(int half_n, int max_radix, int wg_limit,
                                  int total_batch,
                                  int in_bs, int in_es,
-                                 int out_bs, int out_es);
+                                 int out_bs, int out_es,
+                                 const FftDeviceCaps *caps);
 int fft_fused_r2c_batch_per_wg(int half_n, int max_radix, int wg_limit);
 int fft_fused_r2c_workgroup_size(int half_n, int max_radix, int wg_limit);
 

@@ -28,10 +28,7 @@ char *gen_fft_twiddle_transpose(int n1, int n2, int direction, int workgroup_siz
   StrBuf sb;
   sb_init(&sb);
 
-  sb_printf(&sb, "enable device_address;\n");
-  sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "var<device, read> src: Buf;\n");
-  sb_printf(&sb, "var<device, read_write> dst: Buf;\n\n");
+  sb_emit_bda_src_dst(&sb, 0);
 
   sb_printf(&sb, "const N1: u32 = %du;\n", n1);
   sb_printf(&sb, "const N2: u32 = %du;\n", n2);
@@ -74,10 +71,7 @@ char *gen_fft_transpose(int n1, int n2, int workgroup_size) {
   StrBuf sb;
   sb_init(&sb);
 
-  sb_printf(&sb, "enable device_address;\n");
-  sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "var<device, read> src: Buf;\n");
-  sb_printf(&sb, "var<device, read_write> dst: Buf;\n\n");
+  sb_emit_bda_src_dst(&sb, 0);
 
   sb_printf(&sb, "const N1: u32 = %du;\n", n1);
   sb_printf(&sb, "const N2: u32 = %du;\n", n2);

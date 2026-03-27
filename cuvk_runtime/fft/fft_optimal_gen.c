@@ -181,9 +181,7 @@ char *gen_fft_optimal(int n, const FftOptPlan *plan_table, int direction) {
   sb_init(&sb);
 
   /* Prologue: buffer binding + main entry */
-  sb_printf(&sb, "enable device_address;\n");
-  sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "var<device, read_write> data: Buf;\n\n");
+  sb_emit_bda_inplace(&sb);
   sb_printf(&sb, "@compute @workgroup_size(1)\n");
   sb_printf(&sb, "fn main(@builtin(workgroup_id) wid: vec3<u32>) {\n");
   sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n", n * 2);
@@ -221,9 +219,7 @@ char *gen_fft_direct(int n, int direction) {
   StrBuf sb;
   sb_init(&sb);
 
-  sb_printf(&sb, "enable device_address;\n");
-  sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "var<device, read_write> data: Buf;\n\n");
+  sb_emit_bda_inplace(&sb);
   sb_printf(&sb, "@compute @workgroup_size(1)\n");
   sb_printf(&sb, "fn main(@builtin(workgroup_id) wid: vec3<u32>) {\n");
   sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n", n * 2);
@@ -310,9 +306,7 @@ char *gen_fft_bluestein(int n, const FftOptPlan *pow2_plan_table, int direction)
   int tc = 0;
 
   /* Prologue */
-  sb_printf(&sb, "enable device_address;\n");
-  sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "var<device, read_write> data: Buf;\n\n");
+  sb_emit_bda_inplace(&sb);
   sb_printf(&sb, "@compute @workgroup_size(1)\n");
   sb_printf(&sb, "fn main(@builtin(workgroup_id) wid: vec3<u32>) {\n");
   sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n", n * 2);
@@ -727,9 +721,7 @@ char *gen_fft(int n, const FftPlan *plans, int direction) {
   StrBuf sb;
   sb_init(&sb);
 
-  sb_printf(&sb, "enable device_address;\n");
-  sb_printf(&sb, "struct Buf { d: array<f32> };\n");
-  sb_printf(&sb, "var<device, read_write> data: Buf;\n\n");
+  sb_emit_bda_inplace(&sb);
   sb_printf(&sb, "@compute @workgroup_size(1)\n");
   sb_printf(&sb, "fn main(@builtin(workgroup_id) wid: vec3<u32>) {\n");
   sb_printf(&sb, "  let base: u32 = wid.x * %uu;\n", n * 2);

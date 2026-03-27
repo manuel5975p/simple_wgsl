@@ -25,13 +25,7 @@ static void emit_prologue(StrBuf *sb, int radix, int stride,
                            int n_total, int workgroup_size,
                            int element_stride, int batch_stride,
                            int batch_stride2) {
-  /* Storage bindings: use array<f32> (proven reliable) with vec2 locals.
-   * Two separate struct types to avoid NonWritable decoration bleeding. */
-  sb_printf(sb, "enable device_address;\n");
-  sb_printf(sb, "struct SrcBuf { d: array<f32> };\n");
-  sb_printf(sb, "struct DstBuf { d: array<f32> };\n");
-  sb_printf(sb, "var<device, read> src: SrcBuf;\n");
-  sb_printf(sb, "var<device, read_write> dst: DstBuf;\n\n");
+  sb_emit_bda_src_dst(sb, 0);
 
   /* Entry point */
   sb_printf(sb, "@compute @workgroup_size(%d)\n", workgroup_size);
@@ -364,11 +358,7 @@ char *gen_fft_r2c_postprocess(int n, int workgroup_size) {
   StrBuf sb;
   sb_init(&sb);
 
-  sb_printf(&sb, "enable device_address;\n");
-  sb_printf(&sb, "struct SrcBuf { d: array<f32> };\n");
-  sb_printf(&sb, "struct DstBuf { d: array<f32> };\n");
-  sb_printf(&sb, "var<device, read> src: SrcBuf;\n");
-  sb_printf(&sb, "var<device, read_write> dst: DstBuf;\n\n");
+  sb_emit_bda_src_dst(&sb, 0);
 
   sb_printf(&sb, "@compute @workgroup_size(%d)\n", workgroup_size);
   sb_printf(&sb, "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n");
@@ -434,11 +424,7 @@ char *gen_fft_c2r_preprocess(int n, int workgroup_size) {
   StrBuf sb;
   sb_init(&sb);
 
-  sb_printf(&sb, "enable device_address;\n");
-  sb_printf(&sb, "struct SrcBuf { d: array<f32> };\n");
-  sb_printf(&sb, "struct DstBuf { d: array<f32> };\n");
-  sb_printf(&sb, "var<device, read> src: SrcBuf;\n");
-  sb_printf(&sb, "var<device, read_write> dst: DstBuf;\n\n");
+  sb_emit_bda_src_dst(&sb, 0);
 
   sb_printf(&sb, "@compute @workgroup_size(%d)\n", workgroup_size);
   sb_printf(&sb, "fn main(@builtin(global_invocation_id) gid: vec3<u32>) {\n");
