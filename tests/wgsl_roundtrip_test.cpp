@@ -1961,6 +1961,39 @@ TEST(WgslRoundtrip, FullPipelineRoundtrip) {
 }
 
 // ============================================================================
+// 34b. Bare (non-struct) uniform types — must be wrapped in Block struct
+// ============================================================================
+
+TEST(WgslRoundtrip, BareUniformMatrix) {
+    // var<uniform> with a bare mat4x4f (not wrapped in a struct) must produce
+    // valid SPIR-V — the lowerer should synthesize a Block-decorated wrapper.
+    const char *source = R"(
+        struct VertexIn {
+            @location(0) aPos : vec2f,
+            @location(1) aTex : vec2f,
+            @location(2) aCol : vec3f,
+        }
+        struct VertexOut {
+            @builtin(position) vPos : vec4f,
+            @location(0)       vTex : vec2f,
+            @location(1)       vCol : vec3f,
+        }
+        @group(0) @binding(0) var<uniform> uTransform : mat4x4f;
+        @vertex
+        fn vs(in : VertexIn) -> VertexOut {
+            var out : VertexOut;
+            out.vPos = uTransform * vec4f(in.aPos, 0.0, 1.0);
+            out.vTex = in.aTex;
+            out.vCol = in.aCol;
+            return out;
+        }
+    )";
+
+    auto compile = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(compile.success) << compile.error;
+}
+
+// ============================================================================
 // 35. Stress test: many constructs in one shader
 // ============================================================================
 

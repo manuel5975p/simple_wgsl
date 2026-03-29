@@ -3217,11 +3217,42 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
             return r;
         }
 
-        // For storage buffers, return pointer info - actual load happens at element access
-        // This is a special case where we return the pointer as the "value"
-        // Member access will handle building the access chain
+        // If this global has a synthetic wrapper struct (bare non-struct type
+        // in a uniform/storage buffer), unwrap via AccessChain[0] + Load.
+        uint32_t inner = find_global_inner_array_type(l, name);
+        if (inner) {
+            uint32_t zero = emit_const_u32(l, 0);
+            uint32_t inner_ptr_type = emit_type_pointer(l, sc, inner);
+            uint32_t chain_id;
+            if (emit_access_chain(l, inner_ptr_type, &chain_id, var_id, &zero, 1)) {
+                uint32_t loaded;
+                if (emit_load(l, inner, &loaded, chain_id)) {
+                    if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
+                        uint32_t ssir_var = ssir_id_map_get(l, var_id);
+                        uint32_t ssir_inner_type = spv_type_to_ssir(l, inner);
+                        if (ssir_var && ssir_inner_type) {
+                            SsirAddressSpace ssir_addr = spv_sc_to_ssir_addr(sc);
+                            uint32_t ssir_inner_ptr = ssir_type_ptr(l->ssir, ssir_inner_type, ssir_addr);
+                            uint32_t ssir_zero = ssir_const_u32(l->ssir, 0);
+                            uint32_t ssir_chain = ssir_build_access(WL_BCTX(l),
+                                ssir_inner_ptr, ssir_var, &ssir_zero, 1);
+                            ssir_id_map_set(l, chain_id, ssir_chain);
+                            uint32_t ssir_loaded = ssir_build_load(WL_BCTX(l),
+                                ssir_inner_type, ssir_chain);
+                            ssir_id_map_set(l, loaded, ssir_loaded);
+                        }
+                    }
+                    r.id = loaded;
+                    r.type_id = inner;
+                    return r;
+                }
+            }
+        }
+
+        // For storage/uniform buffers with struct types, return pointer info —
+        // actual load happens at element access via member access chains.
         r.id = var_id;
-        r.type_id = elem_type_id; // The struct type
+        r.type_id = elem_type_id;
         return r;
     }
 
@@ -6776,9 +6807,32 @@ static int lower_globals(WgslLower *l) {
                 emit_decorate(l, wrapper_struct, SpvDecorationBlock, NULL, 0);
                 emit_member_decorate(l, wrapper_struct, 0, SpvDecorationOffset, &offset_zero, 1);
                 elem_type = wrapper_struct;
-            } else {
+            } else if (find_struct_name_by_type_id(l, elem_type) != NULL) {
                 // Struct used directly as buffer type — add Block decoration.
                 emit_decorate(l, elem_type, SpvDecorationBlock, NULL, 0);
+            } else {
+                // Non-struct type (scalar, vector, matrix, fixed array) — Vulkan
+                // requires Uniform/StorageBuffer variables to point to a
+                // Block-decorated struct, so wrap the bare type.
+                inner_array_type = elem_type;
+                uint32_t offset_zero = 0;
+                char wrapper_name[256];
+                snprintf(wrapper_name, sizeof(wrapper_name), "_%s_block", gv->name ? gv->name : "anon");
+                uint32_t wrapper_struct = emit_type_struct_with_offsets(l, wrapper_name, &elem_type, 1, &offset_zero);
+                emit_decorate(l, wrapper_struct, SpvDecorationBlock, NULL, 0);
+                emit_member_decorate(l, wrapper_struct, 0, SpvDecorationOffset, &offset_zero, 1);
+                if (is_matrix_type(elem_type, l)) {
+                    emit_member_decorate(l, wrapper_struct, 0, SpvDecorationColMajor, NULL, 0);
+                    uint32_t col_type;
+                    int col_count;
+                    if (get_matrix_info(elem_type, l, &col_type, &col_count)) {
+                        int vec_count = get_vector_component_count(col_type, l);
+                        uint32_t stride = (uint32_t)(vec_count * 4);
+                        if (stride < 16) stride = 16;
+                        emit_member_decorate(l, wrapper_struct, 0, SpvDecorationMatrixStride, &stride, 1);
+                    }
+                }
+                elem_type = wrapper_struct;
             }
         }
 
@@ -6802,7 +6856,7 @@ static int lower_globals(WgslLower *l) {
         {
             uint32_t ssir_pointee;
             if (inner_array_type) {
-                // Wrap runtime array in an SSIR struct so ssir_to_spirv emits Block
+                // Wrap bare type in an SSIR struct so ssir_to_spirv emits Block
                 uint32_t ssir_arr = spv_type_to_ssir(l, inner_array_type);
                 uint32_t offset_zero = 0;
                 char wrapper_name[256];
