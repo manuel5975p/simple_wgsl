@@ -2296,4 +2296,262 @@ TEST_F(VulkanComputeTest, Immediate_DynamicUpdate) {
     }
 }
 
+// =============================================================================
+// Regression Tests
+// =============================================================================
+
+TEST_F(VulkanComputeTest, ComputeLocalArrayInitializerProducesValues) {
+    const char *source = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    let a = array<f32, 4>(10.0, 20.0, 30.0, 40.0);
+    out.data[0] = a[0];
+    out.data[1] = a[1];
+    out.data[2] = a[2];
+    out.data[3] = a[3];
+}
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(4 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+
+    auto data = output.download<float>(4);
+    EXPECT_FLOAT_EQ(data[0], 10.0f);
+    EXPECT_FLOAT_EQ(data[1], 20.0f);
+    EXPECT_FLOAT_EQ(data[2], 30.0f);
+    EXPECT_FLOAT_EQ(data[3], 40.0f);
+}
+
+TEST_F(VulkanComputeTest, ComputeHelperFunctionCanWriteStorageBuffer) {
+    const char *source = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+fn write_value(idx: u32, val: f32) {
+    out.data[idx] = val;
+}
+@compute @workgroup_size(1)
+fn main() {
+    write_value(0u, 42.0);
+    write_value(1u, 99.0);
+}
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(2 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+
+    auto data = output.download<float>(2);
+    EXPECT_FLOAT_EQ(data[0], 42.0f);
+    EXPECT_FLOAT_EQ(data[1], 99.0f);
+}
+
+TEST_F(VulkanComputeTest, ComputeManyComputedWritesRemainCorrect) {
+    const char *source = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    for (var i: u32 = 0u; i < 32u; i = i + 1u) {
+        out.data[i] = f32(i) * 2.0 + 1.0;
+    }
+}
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(32 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+
+    auto data = output.download<float>(32);
+    for (uint32_t i = 0; i < 32; i++) {
+        EXPECT_FLOAT_EQ(data[i], static_cast<float>(i) * 2.0f + 1.0f) << "Mismatch at index " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, ForLoopBreakComputeCorrectResult) {
+    const char *source = R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    var result: u32 = 0u;
+    for (var i: u32 = 0u; i < 10u; i = i + 1u) {
+        if (i == 5u) { break; }
+        result = result + i;
+    }
+    out.data[0] = result;
+}
+    )";
+
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+
+    auto output = ctx_->createStorageBuffer(1 * sizeof(uint32_t));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+
+    auto data = output.download<uint32_t>(1);
+    EXPECT_EQ(data[0], 10u);
+}
+
+TEST_F(VulkanComputeTest, ComputeArrayOfVectorsInit) {
+    const char *source = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    let corners = array<vec2<f32>, 4>(
+        vec2<f32>(1.0, 2.0),
+        vec2<f32>(3.0, 4.0),
+        vec2<f32>(5.0, 6.0),
+        vec2<f32>(7.0, 8.0)
+    );
+    out.data[0] = corners[0].x;
+    out.data[1] = corners[0].y;
+    out.data[2] = corners[1].x;
+    out.data[3] = corners[1].y;
+    out.data[4] = corners[2].x;
+    out.data[5] = corners[2].y;
+    out.data[6] = corners[3].x;
+    out.data[7] = corners[3].y;
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+    auto output = ctx_->createStorageBuffer(8 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+    auto data = output.download<float>(8);
+    for (int i = 0; i < 8; i++) {
+        EXPECT_FLOAT_EQ(data[i], static_cast<float>(i + 1)) << "Mismatch at index " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, ComputeHelperReadWriteStorage) {
+    const char *source = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> buf: Buf;
+fn double_at(idx: u32) {
+    let v = buf.data[idx];
+    buf.data[idx] = v * 2.0;
+}
+@compute @workgroup_size(1)
+fn main() {
+    buf.data[0] = 5.0;
+    buf.data[1] = 10.0;
+    buf.data[2] = 25.0;
+    double_at(0u);
+    double_at(1u);
+    double_at(2u);
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+    auto output = ctx_->createStorageBuffer(3 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+    auto data = output.download<float>(3);
+    EXPECT_FLOAT_EQ(data[0], 10.0f);
+    EXPECT_FLOAT_EQ(data[1], 20.0f);
+    EXPECT_FLOAT_EQ(data[2], 50.0f);
+}
+
+TEST_F(VulkanComputeTest, ComputeManyComplexWrites128) {
+    const char *source = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    for (var i: u32 = 0u; i < 128u; i = i + 1u) {
+        let fi = f32(i);
+        let v = fi * fi + fi * 0.5 + 1.0;
+        out.data[i] = v;
+    }
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+    uint32_t count = 128;
+    auto output = ctx_->createStorageBuffer(static_cast<size_t>(count) * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+    auto data = output.download<float>(count);
+    for (uint32_t i = 0; i < count; i++) {
+        float fi = static_cast<float>(i);
+        float expected = fi * fi + fi * 0.5f + 1.0f;
+        EXPECT_FLOAT_EQ(data[i], expected) << "Mismatch at index " << i;
+    }
+}
+
+TEST_F(VulkanComputeTest, ForLoopBreakElseBranchRuntime) {
+    const char *source = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    var lo: f32 = 0.0;
+    var hi: f32 = 0.0;
+    for (var i: u32 = 0u; i < 10u; i = i + 1u) {
+        if (i >= 5u) {
+            hi = f32(i);
+            break;
+        } else {
+            lo = f32(i);
+        }
+    }
+    out.data[0] = lo;
+    out.data[1] = hi;
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+    auto output = ctx_->createStorageBuffer(2 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+    auto data = output.download<float>(2);
+    EXPECT_FLOAT_EQ(data[0], 4.0f);  // lo = last i before break (i=4)
+    EXPECT_FLOAT_EQ(data[1], 5.0f);  // hi = i when break (i=5)
+}
+
+TEST_F(VulkanComputeTest, ComputeMixedComplexity) {
+    const char *source = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+
+fn compute_value(base: f32, scale: f32) -> f32 {
+    return base * scale + 1.0;
+}
+
+@compute @workgroup_size(1)
+fn main() {
+    let scales = array<f32, 4>(2.0, 3.0, 4.0, 5.0);
+    for (var i: u32 = 0u; i < 4u; i = i + 1u) {
+        out.data[i] = compute_value(f32(i), scales[i]);
+    }
+}
+    )";
+    auto result = wgsl_test::CompileWgsl(source);
+    ASSERT_TRUE(result.success) << result.error;
+    auto output = ctx_->createStorageBuffer(4 * sizeof(float));
+    auto pipeline = ctx_->createPipeline(result.spirv);
+    ctx_->dispatch(pipeline, {{0, &output, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER}}, 1);
+    auto data = output.download<float>(4);
+    // i=0: 0*2+1=1, i=1: 1*3+1=4, i=2: 2*4+1=9, i=3: 3*5+1=16
+    EXPECT_FLOAT_EQ(data[0], 1.0f);
+    EXPECT_FLOAT_EQ(data[1], 4.0f);
+    EXPECT_FLOAT_EQ(data[2], 9.0f);
+    EXPECT_FLOAT_EQ(data[3], 16.0f);
+}
+
 #endif // WGSL_HAS_VULKAN

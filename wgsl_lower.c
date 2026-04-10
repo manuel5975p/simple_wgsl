@@ -2546,7 +2546,7 @@ static int emit_select(WgslLower *l, uint32_t result_type, uint32_t *out_id, uin
         uint32_t ssir_false = ssir_id_map_get(l, false_val);
         uint32_t ssir_type = spv_type_to_ssir(l, result_type);
         if (ssir_cond && ssir_true && ssir_false && ssir_type) {
-            uint32_t args[3] = {ssir_cond, ssir_true, ssir_false};
+            uint32_t args[3] = {ssir_false, ssir_true, ssir_cond};
             uint32_t ssir_result = ssir_build_builtin(WL_BCTX(l), ssir_type,
                 SSIR_BUILTIN_SELECT, args, 3);
             ssir_id_map_set(l, id, ssir_result);
@@ -2919,6 +2919,18 @@ static ExprResult lower_literal(WgslLower *l, const WgslAstNode *node) {
         int64_t val = 0;
         const char *s = lit->lexeme;
         if (!s) s = "0";
+
+        // Handle boolean literals from GLSL parser ("true"/"false" as LIT_INT)
+        if (strcmp(s, "true") == 0) {
+            r.id = emit_const_bool(l, 1);
+            r.type_id = emit_type_bool(l);
+            return r;
+        }
+        if (strcmp(s, "false") == 0) {
+            r.id = emit_const_bool(l, 0);
+            r.type_id = emit_type_bool(l);
+            return r;
+        }
         int is_unsigned = 0;
 
         // Check for suffix
@@ -3579,39 +3591,56 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
 
     if (!callee_name) return r;
 
-    // Generic vector constructor: vec2/vec3/vec4 with any element type
+    // Generic vector constructor: vec2/vec3/vec4/bvec2/bvec3/bvec4 with any element type
     {
         int vec_size = 0;
-        if (strncmp(callee_name, "vec2", 4) == 0) vec_size = 2;
+        int is_bvec = 0;
+        if (strncmp(callee_name, "bvec", 4) == 0) {
+            is_bvec = 1;
+            if (callee_name[4] == '2') vec_size = 2;
+            else if (callee_name[4] == '3') vec_size = 3;
+            else if (callee_name[4] == '4') vec_size = 4;
+        }
+        else if (strncmp(callee_name, "vec2", 4) == 0) vec_size = 2;
         else if (strncmp(callee_name, "vec3", 4) == 0) vec_size = 3;
         else if (strncmp(callee_name, "vec4", 4) == 0) vec_size = 4;
 
         if (vec_size > 0) {
             // Determine element type from suffix or type args
             uint32_t elem_type = 0;
-            char suffix = callee_name[4];
-            if (suffix == 'f' || suffix == '\0') {
-                // Check type args for vec3<u32> style
-                if (suffix == '\0' && call->callee && call->callee->type == WGSL_NODE_TYPE &&
-                    call->callee->type_node.type_arg_count > 0 && call->callee->type_node.type_args[0]) {
-                    const char *ta = call->callee->type_node.type_args[0]->type_node.name;
-                    if (strcmp(ta, "f32") == 0) elem_type = l->id_f32;
-                    else if (strcmp(ta, "f16") == 0) elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16);
-                    else if (strcmp(ta, "i32") == 0) elem_type = l->id_i32;
-                    else if (strcmp(ta, "u32") == 0) elem_type = l->id_u32;
-                    else if (strcmp(ta, "bool") == 0) elem_type = l->id_bool;
-                } else {
-                    elem_type = l->id_f32;
+            if (is_bvec) {
+                elem_type = emit_type_bool(l);
+            } else {
+                char suffix = callee_name[4];
+                if (suffix == 'f' || suffix == '\0' || suffix == '<') {
+                    // Check type args for vec3<u32> style
+                    if ((suffix == '\0' || suffix == '<') && call->callee && call->callee->type == WGSL_NODE_TYPE &&
+                        call->callee->type_node.type_arg_count > 0 && call->callee->type_node.type_args[0]) {
+                        const char *ta = call->callee->type_node.type_args[0]->type_node.name;
+                        if (strcmp(ta, "f32") == 0) elem_type = l->id_f32;
+                        else if (strcmp(ta, "f16") == 0) elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16);
+                        else if (strcmp(ta, "i32") == 0) elem_type = l->id_i32;
+                        else if (strcmp(ta, "u32") == 0) elem_type = l->id_u32;
+                        else if (strcmp(ta, "bool") == 0) elem_type = l->id_bool;
+                    } else if (suffix == '<') {
+                        // GLSL parser may encode type in callee name (e.g. "vec4<bool>")
+                        if (strstr(callee_name, "<bool>")) elem_type = emit_type_bool(l);
+                        else if (strstr(callee_name, "<i32>")) elem_type = l->id_i32;
+                        else if (strstr(callee_name, "<u32>")) elem_type = l->id_u32;
+                        else if (strstr(callee_name, "<f16>")) elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16);
+                        else elem_type = l->id_f32;
+                    } else {
+                        elem_type = l->id_f32;
+                    }
+                } else if (suffix == 'i') {
+                    elem_type = l->id_i32;
+                } else if (suffix == 'u') {
+                    elem_type = l->id_u32;
+                } else if (suffix == 'h') {
+                    elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16);
                 }
-            } else if (suffix == 'i') {
-                elem_type = l->id_i32;
-            } else if (suffix == 'u') {
-                elem_type = l->id_u32;
-            } else if (suffix == 'h') {
-                elem_type = l->id_f16 ? l->id_f16 : emit_type_float(l, 16);
+                if (!elem_type) elem_type = l->id_f32;
             }
-
-            if (!elem_type) elem_type = l->id_f32;
 
             uint32_t constituents[4] = {0, 0, 0, 0};
             uint32_t c_types[4] = {0, 0, 0, 0};
@@ -3938,6 +3967,35 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         return r;
     }
 
+    // select(false_val, true_val, condition) -> OpSelect
+    if (strcmp(callee_name, "select") == 0 && call->arg_count >= 3) {
+        ExprResult false_val = lower_expr_full(l, call->args[0]);
+        ExprResult true_val = lower_expr_full(l, call->args[1]);
+        ExprResult cond = lower_expr_full(l, call->args[2]);
+        if (false_val.id && true_val.id && cond.id) {
+            // SPIR-V requires the condition to be a bool vector matching the result
+            // vector size. WGSL allows scalar bool with vector operands (broadcast).
+            int vec_count = get_vector_component_count(false_val.type_id, l);
+            if (vec_count > 0 && cond.type_id == l->id_bool) {
+                uint32_t bool_vec_type = emit_type_vector(l, l->id_bool, vec_count);
+                uint32_t components[4];
+                for (int i = 0; i < vec_count && i < 4; ++i)
+                    components[i] = cond.id;
+                uint32_t broadcasted;
+                if (emit_composite_construct(l, bool_vec_type, &broadcasted, components, vec_count)) {
+                    cond.id = broadcasted;
+                    cond.type_id = bool_vec_type;
+                }
+            }
+            uint32_t result;
+            if (emit_select(l, false_val.type_id, &result, cond.id, true_val.id, false_val.id)) {
+                r.id = result;
+                r.type_id = false_val.type_id;
+            }
+        }
+        return r;
+    }
+
     // Math functions (float only)
     struct {
         const char *name;
@@ -4012,12 +4070,35 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         ExprResult b = lower_expr_full(l, call->args[1]);
         ExprResult t = lower_expr_full(l, call->args[2]);
         if (a.id && b.id && t.id) {
-            maybe_splat_scalar(l, a.type_id, &t.id, &t.type_id);
-            uint32_t result;
-            uint32_t operands[3] = {a.id, b.id, t.id};
-            if (emit_ext_inst(l, a.type_id, &result, l->id_extinst_glsl, GLSLstd450FMix, operands, 3)) {
-                r.id = result;
-                r.type_id = a.type_id;
+            // GLSL mix(x, y, bvec) is component-wise select, not interpolation.
+            // Use select when the third arg is not a float type (i.e. bool or bool vector).
+            if (!is_float_type(t.type_id, l)) {
+                // Broadcast scalar bool to bool vector if needed
+                int vec_count = get_vector_component_count(a.type_id, l);
+                if (vec_count > 0 && t.type_id == l->id_bool) {
+                    uint32_t bool_vec_type = emit_type_vector(l, l->id_bool, vec_count);
+                    uint32_t components[4];
+                    for (int i = 0; i < vec_count && i < 4; ++i)
+                        components[i] = t.id;
+                    uint32_t broadcasted;
+                    if (emit_composite_construct(l, bool_vec_type, &broadcasted, components, vec_count)) {
+                        t.id = broadcasted;
+                        t.type_id = bool_vec_type;
+                    }
+                }
+                uint32_t result;
+                if (emit_select(l, a.type_id, &result, t.id, b.id, a.id)) {
+                    r.id = result;
+                    r.type_id = a.type_id;
+                }
+            } else {
+                maybe_splat_scalar(l, a.type_id, &t.id, &t.type_id);
+                uint32_t result;
+                uint32_t operands[3] = {a.id, b.id, t.id};
+                if (emit_ext_inst(l, a.type_id, &result, l->id_extinst_glsl, GLSLstd450FMix, operands, 3)) {
+                    r.id = result;
+                    r.type_id = a.type_id;
+                }
             }
         }
         return r;
@@ -4333,19 +4414,28 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
         wb_push_u32(wb, loaded_tex);
         wb_push_u32(wb, loaded_samp);
 
+        // SPIR-V requires the Lod operand to be a float scalar
+        uint32_t lod_id = level.id;
+        if (!is_float_type(level.type_id, l)) {
+            uint32_t converted;
+            SpvOp conv_op = is_signed_int_type(level.type_id, l) ? SpvOpConvertSToF : SpvOpConvertUToF;
+            if (emit_unary_op(l, conv_op, l->id_f32, &converted, level.id))
+                lod_id = converted;
+        }
+
         emit_op(wb, SpvOpImageSampleExplicitLod, 7);
         wb_push_u32(wb, result_type);
         wb_push_u32(wb, result_id);
         wb_push_u32(wb, si_id);
         wb_push_u32(wb, coord.id);
         wb_push_u32(wb, 0x2); // ImageOperands: Lod
-        wb_push_u32(wb, level.id);
+        wb_push_u32(wb, lod_id);
 
         if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
             uint32_t ssir_tex = ssir_id_map_get(l, loaded_tex);
             uint32_t ssir_samp = ssir_id_map_get(l, loaded_samp);
             uint32_t ssir_coord = ssir_id_map_get(l, coord.id);
-            uint32_t ssir_level = ssir_id_map_get(l, level.id);
+            uint32_t ssir_level = ssir_id_map_get(l, lod_id);
             uint32_t ssir_result_type = spv_type_to_ssir(l, result_type);
             if (ssir_tex && ssir_samp && ssir_coord && ssir_level && ssir_result_type) {
                 uint32_t ssir_result = ssir_build_tex_sample_level(WL_BCTX(l), ssir_result_type, ssir_tex, ssir_samp,
@@ -7857,6 +7947,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
                                 SpvBuiltIn spv_bi;
                                 SsirBuiltinVar ssir_bi;
                                 if (resolve_builtin_name(builtin_name, &spv_bi, &ssir_bi)) {
+                                    // In fragment shaders, @builtin(position) maps to FragCoord
+                                    if (ep->stage == WGSL_STAGE_FRAGMENT && spv_bi == SpvBuiltInPosition) {
+                                        spv_bi = SpvBuiltInFragCoord;
+                                        ssir_bi = SSIR_BUILTIN_FRAG_COORD;
+                                    }
+
                                     uint32_t field_type = lower_type(l, field->type);
                                     uint32_t ptr_type = emit_type_pointer(l, SpvStorageClassInput, field_type);
                                     uint32_t var_id = emit_global_variable(l, ptr_type, SpvStorageClassInput, field->name, 0);

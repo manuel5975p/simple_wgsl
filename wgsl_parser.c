@@ -1574,6 +1574,7 @@ static WgslAstNode *parse_postfix(Parser *P) {
                 if (a)
                     vec_push_node(&args, &count, &cap, a);
                 while (match(P, TOK_COMMA)) {
+                    if (check(P, TOK_RPAREN)) break;  /* allow trailing comma */
                     WgslAstNode *a2 = parse_expr(P);
                     if (a2)
                         vec_push_node(&args, &count, &cap, a2);

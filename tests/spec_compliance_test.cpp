@@ -697,3 +697,149 @@ TEST(BitManipTest, ReverseBits_Vec) {
 })");
     EXPECT_TRUE(r.success) << r.error;
 }
+
+// =============================================================================
+// Regression Tests
+// =============================================================================
+
+TEST(RegressionTest, ForLoopBreakInComputeValidates) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    var result: u32 = 0u;
+    for (var i: u32 = 0u; i < 10u; i = i + 1u) {
+        if (i == 5u) { break; }
+        result = result + i;
+    }
+    out.data[0] = result;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(RegressionTest, ArrayConstructorAllowsTrailingComma) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@fragment fn main() -> @location(0) vec4<f32> {
+    let a = array<f32, 3>(1.0, 2.0, 3.0,);
+    return vec4<f32>(a[0], a[1], a[2], 1.0);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// Harder repro: break with else branch and post-loop store
+TEST(RegressionTest, ForLoopBreakElseBranch) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    var lo: f32 = 0.0;
+    var hi: f32 = 0.0;
+    for (var i: u32 = 0u; i < 10u; i = i + 1u) {
+        if (i >= 5u) {
+            hi = f32(i);
+            break;
+        } else {
+            lo = f32(i);
+        }
+    }
+    out.data[0] = lo;
+    out.data[1] = hi;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// Break in nested if inside for
+TEST(RegressionTest, ForLoopBreakNestedIf) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    var found: u32 = 0u;
+    for (var i: u32 = 0u; i < 100u; i = i + 1u) {
+        if (i > 10u) {
+            if (i % 7u == 0u) {
+                found = i;
+                break;
+            }
+        }
+    }
+    out.data[0] = found;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// Array of vectors constructor
+TEST(RegressionTest, ArrayOfVectorsConstructor) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+    let corners = array<vec2<f32>, 4>(
+        vec2<f32>(1.0, 2.0),
+        vec2<f32>(3.0, 4.0),
+        vec2<f32>(5.0, 6.0),
+        vec2<f32>(7.0, 8.0)
+    );
+    out.data[0] = corners[0].x;
+    out.data[1] = corners[0].y;
+    out.data[2] = corners[2].x;
+    out.data[3] = corners[3].y;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// Helper function writing AND reading storage
+TEST(RegressionTest, HelperFunctionReadWriteStorage) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> buf: Buf;
+fn double_and_store(idx: u32) {
+    let v = buf.data[idx];
+    buf.data[idx] = v * 2.0;
+}
+@compute @workgroup_size(1)
+fn main() {
+    buf.data[0] = 5.0;
+    buf.data[1] = 10.0;
+    double_and_store(0u);
+    double_and_store(1u);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// Many individual computed writes (not in a loop)
+TEST(RegressionTest, ManyComputedWritesUnrolled) {
+    // Generate a shader with 64 individual computed writes
+    std::string shader = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+)";
+    for (int i = 0; i < 64; i++) {
+        shader += "    out.data[" + std::to_string(i) + "] = f32(" + std::to_string(i) + "u) * 3.14 + 1.0;\n";
+    }
+    shader += "}\n";
+    auto r = wgsl_test::CompileWgsl(shader.c_str());
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+// Extreme: 256 computed writes
+TEST(RegressionTest, ExtremeManyComputedWrites) {
+    std::string shader = R"(
+struct Buf { data: array<f32> };
+@group(0) @binding(0) var<storage, read_write> out: Buf;
+@compute @workgroup_size(1)
+fn main() {
+)";
+    for (int i = 0; i < 256; i++) {
+        shader += "    out.data[" + std::to_string(i) + "] = f32(" + std::to_string(i) + "u) * 2.5 + f32(" + std::to_string(i*i % 100) + "u);\n";
+    }
+    shader += "}\n";
+    auto r = wgsl_test::CompileWgsl(shader.c_str());
+    EXPECT_TRUE(r.success) << r.error;
+}
