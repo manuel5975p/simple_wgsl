@@ -2006,6 +2006,45 @@ void ptx_to_ssir_free(char *str);
 
 const char *ptx_to_ssir_result_string(PtxToSsirResult r);
 
+/* ============================================================================
+ * SSIR TO V3D (VideoCore VII QPU binary)
+ * ============================================================================ */
+
+typedef enum SsirToV3dResult {
+    SSIR_TO_V3D_OK = 0,
+    SSIR_TO_V3D_ERR_INVALID_INPUT,
+    SSIR_TO_V3D_ERR_UNSUPPORTED,
+    SSIR_TO_V3D_ERR_INTERNAL,
+    SSIR_TO_V3D_ERR_OOM,
+    SSIR_TO_V3D_ERR_REG_PRESSURE,
+    SSIR_TO_V3D_ERR_CONTROL_FLOW,
+} SsirToV3dResult;
+
+typedef struct SsirToV3dOptions {
+    int max_unroll_iterations;   /* 0 = reject all loops; default 256 */
+} SsirToV3dOptions;
+
+typedef struct SsirToV3dOutput {
+    uint64_t *instructions;      /* QPU instruction array */
+    uint32_t  instruction_count;
+    uint32_t *uniforms;          /* uniform stream (uint32_t values) */
+    uint32_t  uniform_count;
+    uint32_t  workgroup_size[3]; /* from entry point */
+    struct { uint32_t group; uint32_t binding; uint32_t uniform_index; }
+        binding_map[8];
+    uint32_t  binding_count;
+} SsirToV3dOutput;
+
+SsirToV3dResult ssir_to_v3d(
+    const SsirModule *mod,
+    const SsirToV3dOptions *opts,
+    SsirToV3dOutput *out,
+    char **out_error);
+
+void ssir_to_v3d_free(SsirToV3dOutput *out);
+
+const char *ssir_to_v3d_result_string(SsirToV3dResult result);
+
 #ifdef __cplusplus
 }
 #endif

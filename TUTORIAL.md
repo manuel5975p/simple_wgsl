@@ -11,6 +11,7 @@ Step-by-step guides for every major use case of simple_wgsl.
   - [Parsing and Inspecting the AST](#parsing-and-inspecting-the-ast)
   - [Walking the AST Manually](#walking-the-ast-manually)
 - [2. Parsing GLSL Source](#2-parsing-glsl-source)
+  - [GLSL #include Resolution](#glsl-include-resolution)
 - [3. Resolving Symbols and Bindings](#3-resolving-symbols-and-bindings)
   - [Querying the Symbol Table](#querying-the-symbol-table)
   - [Extracting Resource Bindings](#extracting-resource-bindings)
@@ -60,6 +61,7 @@ Step-by-step guides for every major use case of simple_wgsl.
   - [Compute Shader: Double Array Values](#compute-shader-double-array-values)
   - [Vertex + Fragment Pipeline](#vertex--fragment-pipeline)
   - [Texture Sampling Shader](#texture-sampling-shader)
+- [16. Compiling to V3D QPU (Raspberry Pi 5)](#16-compiling-to-v3d-qpu-raspberry-pi-5)
 
 ---
 
@@ -179,7 +181,7 @@ int main(void) {
         "    fragColor = inColor;\n"
         "}\n";
 
-    WgslAstNode *ast = glsl_parse(glsl_source, WGSL_STAGE_VERTEX);
+    WgslAstNode *ast = glsl_parse(glsl_source, NULL, WGSL_STAGE_VERTEX, NULL);
     if (!ast) {
         fprintf(stderr, "GLSL parse error\n");
         return 1;
@@ -192,6 +194,43 @@ int main(void) {
 ```
 
 Because `glsl_parse()` produces the same `WgslAstNode*` tree, you can pass it through the same resolver and lowering pipeline as WGSL.
+
+### GLSL #include Resolution
+
+Pass `GlslIncludeOptions` to enable `#include` directives in GLSL source:
+
+```c
+int main(void) {
+    const char *glsl_source =
+        "#version 450\n"
+        "#include \"lighting.glsl\"\n"
+        "\n"
+        "void main() {\n"
+        "    gl_Position = apply_lighting(vec4(0.0));\n"
+        "}\n";
+
+    // Resolve includes relative to the source file's directory
+    GlslIncludeOptions includes = {0};
+    WgslAstNode *ast = glsl_parse(glsl_source, "shaders/main.glsl",
+                                   WGSL_STAGE_VERTEX, &includes);
+    // ...
+    wgsl_free_ast(ast);
+    return 0;
+}
+```
+
+Extra search directories and custom file readers:
+
+```c
+    const char *dirs[] = { "/usr/share/shaders", "vendor/includes" };
+    GlslIncludeOptions includes = {0};
+    includes.search_dirs = dirs;
+    includes.search_dir_count = 2;
+
+    // Optional: custom file reader (e.g., for virtual filesystems)
+    // includes.reader.read = my_read_func;
+    // includes.reader.userdata = my_ctx;
+```
 
 ---
 
@@ -1000,7 +1039,7 @@ int main(void) {
     printf("GLSL:\n%s\n", glsl);
 
     // Step 3: GLSL -> AST -> SPIR-V (validates the GLSL is compilable)
-    WgslAstNode *ast2 = glsl_parse(glsl, WGSL_STAGE_VERTEX);
+    WgslAstNode *ast2 = glsl_parse(glsl, NULL, WGSL_STAGE_VERTEX, NULL);
     WgslResolver *res2 = wgsl_resolver_build(ast2);
     WgslLowerOptions opts2 = {0};
     opts2.env = WGSL_LOWER_ENV_VULKAN_1_2;
@@ -1769,3 +1808,62 @@ int main(void) {
     return 0;
 }
 ```
+
+---
+
+## 16. Compiling to V3D QPU (Raspberry Pi 5)
+
+Compile SSIR compute shaders to native VideoCore VII QPU binary for bare-metal execution on Raspberry Pi 5.
+
+```c
+int main(void) {
+    const char *src =
+        "@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n"
+        "\n"
+        "@compute @workgroup_size(16)\n"
+        "fn main(@builtin(global_invocation_id) gid: vec3u) {\n"
+        "    data[gid.x] = data[gid.x] * 2.0;\n"
+        "}\n";
+
+    // Parse and lower to SSIR
+    WgslAstNode *ast = wgsl_parse(src);
+    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslLowerOptions lower_opts = {0};
+    lower_opts.env = WGSL_LOWER_ENV_VULKAN_1_2;
+    WgslLower *lower = wgsl_lower_create(ast, resolver, &lower_opts);
+    const SsirModule *ssir = wgsl_lower_get_ssir(lower);
+
+    // Compile to V3D QPU
+    SsirToV3dOptions v3d_opts = {0};
+    SsirToV3dOutput v3d_out = {0};
+    char *error = NULL;
+    SsirToV3dResult res = ssir_to_v3d(ssir, &v3d_opts, &v3d_out, &error);
+
+    if (res == SSIR_TO_V3D_OK) {
+        printf("Generated %u QPU instructions, %u uniforms\n",
+               v3d_out.instruction_count, v3d_out.uniform_count);
+        printf("Workgroup size: %u x %u x %u\n",
+               v3d_out.workgroup_size[0],
+               v3d_out.workgroup_size[1],
+               v3d_out.workgroup_size[2]);
+        for (uint32_t i = 0; i < v3d_out.binding_count; i++) {
+            printf("Binding (%u,%u) -> uniform[%u]\n",
+                   v3d_out.binding_map[i].group,
+                   v3d_out.binding_map[i].binding,
+                   v3d_out.binding_map[i].uniform_index);
+        }
+    } else {
+        fprintf(stderr, "V3D compilation failed: %s\n",
+                error ? error : ssir_to_v3d_result_string(res));
+    }
+
+    ssir_to_v3d_free(&v3d_out);
+    free(error);
+    wgsl_lower_destroy(lower);
+    wgsl_resolver_free(resolver);
+    wgsl_free_ast(ast);
+    return 0;
+}
+```
+
+Loops must be statically unrollable. Control the limit via `v3d_opts.max_unroll_iterations` (default 256, 0 rejects all loops).

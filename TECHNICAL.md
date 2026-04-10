@@ -19,6 +19,7 @@ Complete technical documentation for simple_wgsl: architecture, intermediate rep
   - [Symbol Table](#symbol-table)
   - [Binding Extraction](#binding-extraction)
   - [Entry Point Detection](#entry-point-detection)
+  - [Resolver: Call Graph Query](#resolver-call-graph-query)
   - [Vertex Input Reflection](#vertex-input-reflection)
   - [Fragment Output Reflection](#fragment-output-reflection)
 - [SSIR (Simple Shader Intermediate Representation)](#ssir-simple-shader-intermediate-representation)
@@ -40,12 +41,15 @@ Complete technical documentation for simple_wgsl: architecture, intermediate rep
 - [Raising (SPIR-V to WGSL)](#raising-spirv-to-wgsl)
   - [Raise Options](#raise-options)
   - [Incremental API](#incremental-api)
+- [GLSL Parser](#glsl-parser)
+  - [GLSL #include Support](#glsl-include-support)
 - [SSIR Emitters](#ssir-emitters)
   - [SSIR to SPIR-V](#ssir-to-spirv)
   - [SSIR to WGSL](#ssir-to-wgsl)
   - [SSIR to GLSL](#ssir-to-glsl)
   - [SSIR to MSL](#ssir-to-msl)
   - [SSIR to HLSL](#ssir-to-hlsl)
+  - [SSIR to V3D](#ssir-to-v3d)
 - [SPIR-V to SSIR Deserialization](#spirv-to-ssir-deserialization)
 - [MSL to SSIR Parser](#msl-to-ssir-parser)
 - [PTX to SSIR Parser](#ptx-to-ssir-parser)
@@ -108,7 +112,8 @@ Simple WGSL is organized around a central intermediate representation called SSI
                         ├──► ssir_to_wgsl  ──► WGSL source
                         ├──► ssir_to_glsl  ──► GLSL 450 source
                         ├──► ssir_to_msl   ──► Metal Shading Language
-                        └──► ssir_to_hlsl  ──► HLSL source
+                        ├──► ssir_to_hlsl  ──► HLSL source
+                        └──► ssir_to_v3d   ──► QPU machine code (BCM2712 / Raspberry Pi 5)
 ```
 
 Key architectural decisions:
@@ -308,6 +313,14 @@ typedef struct {
 ```
 
 Call `wgsl_resolver_fragment_outputs(r, "main", &outputs)` to get fragment output locations and formats.
+
+### Resolver: Call Graph Query
+
+```c
+int wgsl_resolver_is_called_by(const WgslResolver *r, const char *entry_name, const char *func_name);
+```
+
+DFS through the call graph starting from `entry_name`. Returns 1 if `func_name` is transitively called by the entry point, 0 otherwise. Useful for dead-code elimination and feature detection (e.g., "does this entry point use texture sampling?").
 
 ---
 
@@ -712,6 +725,41 @@ wgsl_raise_destroy(r);
 
 ---
 
+## GLSL Parser
+
+```c
+WgslAstNode *glsl_parse(const char *source, const char *source_path, WgslStage stage, const GlslIncludeOptions *includes);
+```
+
+Parses GLSL source into a `WgslAstNode` AST identical in structure to what `wgsl_parse()` produces. The resolved AST can be passed directly to `wgsl_resolver_build()` and then lowered via `wgsl_lower_*()`.
+
+Parameters:
+- `source` - null-terminated GLSL source text
+- `source_path` - file path used for error messages and `#include` resolution base directory; may be NULL
+- `stage` - `WGSL_STAGE_VERTEX`, `WGSL_STAGE_FRAGMENT`, or `WGSL_STAGE_COMPUTE`; drives built-in availability
+- `includes` - optional include configuration; pass NULL to disable `#include` support
+
+### GLSL #include Support
+
+```c
+typedef struct {
+    const char * const *search_paths;   // NULL-terminated array of directories to search
+    int search_path_count;
+    // Optional callback for virtual filesystem or embedded includes
+    const char *(*load_fn)(const char *path, void *userdata);
+    void *load_fn_userdata;
+} GlslIncludeOptions;
+```
+
+When `includes` is non-NULL, the parser resolves `#include "file"` directives. Search order:
+1. Directory of `source_path` (if set)
+2. `search_paths` entries in order
+3. `load_fn` callback (if set)
+
+Included files are parsed recursively. Include guards (`#ifndef`/`#pragma once`) are honored. Circular includes are detected and rejected.
+
+---
+
 ## SSIR Emitters
 
 ### SSIR to SPIR-V
@@ -772,6 +820,44 @@ SsirToHlslResult ssir_to_hlsl(const SsirModule *mod,
 ```
 
 Options: `preserve_names`, `shader_model_major`, `shader_model_minor`.
+
+---
+
+### SSIR to V3D
+
+Backend targeting BCM2712 VideoCore VII QPU (Raspberry Pi 5). Compiles SSIR compute shaders to native 64-bit QPU machine code.
+
+```c
+SsirToV3dResult ssir_to_v3d(
+    const SsirModule *mod,
+    const SsirToV3dOptions *opts,
+    SsirToV3dOutput *out,
+    char **out_error);
+
+void ssir_to_v3d_free(SsirToV3dOutput *out);
+const char *ssir_to_v3d_result_string(SsirToV3dResult result);
+```
+
+**Options:**
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_unroll_iterations` | 256 | Maximum loop unroll count; 0 rejects all loops |
+
+**Output (`SsirToV3dOutput`):**
+| Field | Description |
+|-------|-------------|
+| `instructions` / `instruction_count` | QPU 64-bit instruction array |
+| `uniforms` / `uniform_count` | Uniform stream values |
+| `workgroup_size[3]` | From entry point |
+| `binding_map[8]` / `binding_count` | Maps group/binding to uniform stream index |
+
+**Result codes:** `SSIR_TO_V3D_OK`, `_ERR_INVALID_INPUT`, `_ERR_UNSUPPORTED`, `_ERR_INTERNAL`, `_ERR_OOM`, `_ERR_REG_PRESSURE`, `_ERR_CONTROL_FLOW`.
+
+**Design notes:**
+- TMU protocol: TMUC+TMUA only (TMUAU waddr 13 broken in bare-metal)
+- Float opcodes: FADD=5, FSUB=69, FMUL=21 (F32_UNPACK_NONE=+5)
+- Loops must be statically unrollable; no divergent control flow
+- Workgroup size fixed at 16 QPU threads
 
 ---
 
@@ -1662,4 +1748,5 @@ ssir_to_hlsl_result_string(result)
 spirv_to_ssir_result_string(result)
 msl_to_ssir_result_string(result)
 ptx_to_ssir_result_string(result)
+ssir_to_v3d_result_string(result)
 ```

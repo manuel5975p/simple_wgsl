@@ -5,16 +5,17 @@ A feature-complete shader compiler library written in pure C99. Converts between
 ```
 WGSL ──┐              ┌── SPIR-V
 GLSL ──┤              ├── WGSL
-MSL  ──┼── [SSIR] ──┼── GLSL 450
+MSL  ──┼── [SSIR] ────┼── GLSL 450
 PTX  ──┤              ├── MSL
-SPIR-V ┘              └── HLSL
+SPIR-V ┘              ├── HLSL
+                      └── V3D (Pi 5)
 ```
 
 ### Why Simple WGSL?
 
 - **Single header, zero dependencies** -- include `simple_wgsl.h` and link the static library. No runtime dependencies beyond the C standard library.
-- **Seven languages, one pipeline** -- parse WGSL, GLSL, MSL, or PTX source; ingest SPIR-V binaries; emit to any of five output formats. Every conversion flows through the same intermediate representation.
-- **~43k lines of C99** -- no templates, no inheritance hierarchies, no build system complexity. Every compilation unit is a single `.c` file. Builds in under a second.
+- **Eight languages, one pipeline** -- parse WGSL, GLSL, MSL, or PTX source; ingest SPIR-V binaries; emit to any of six output formats. Every conversion flows through the same intermediate representation.
+- **~46k lines of C99** -- no templates, no inheritance hierarchies, no build system complexity. Every compilation unit is a single `.c` file. Builds in under a second.
 - **Embeddable** -- all memory allocation goes through overridable macros (`NODE_MALLOC`, `SSIR_MALLOC`, etc.), so you can plug in your own allocator for game engines, embedded systems, or WASM targets.
 - **Fuzz-hardened** -- eight libFuzzer targets with AddressSanitizer + UndefinedBehaviorSanitizer have been run continuously.
 
@@ -113,11 +114,13 @@ graph LR
     SSIR --> E3[ssir_to_glsl]
     SSIR --> E4[ssir_to_msl]
     SSIR --> E5[ssir_to_hlsl]
+    SSIR --> E6[ssir_to_v3d]
     E1 --> SPIRV2["SPIR-V"]
     E2 --> WGSL2["WGSL"]
     E3 --> GLSL2["GLSL 450"]
     E4 --> MSL2["MSL"]
     E5 --> HLSL2["HLSL"]
+    E6 --> V3D2["V3D QPU"]
 ```
 
 SSIR (Simple Shader Intermediate Representation) sits at the center. All source languages parse into it, all output formats emit from it. See [TECHNICAL.md](TECHNICAL.md) for the full architecture deep-dive.
@@ -126,7 +129,7 @@ SSIR (Simple Shader Intermediate Representation) sits at the center. All source 
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `simple_wgsl.h` | 1985 | Unified public API header |
+| `simple_wgsl.h` | 2024 | Unified public API header |
 | `wgsl_parser.c` | 2432 | WGSL lexer + recursive-descent parser |
 | `glsl_parser.c` | 2635 | GLSL 450 lexer + recursive-descent parser |
 | `msl_parser.c` | 2405 | MSL lexer + parser (produces SSIR directly) |
@@ -142,6 +145,7 @@ SSIR (Simple Shader Intermediate Representation) sits at the center. All source 
 | `ssir_to_msl.c` | 2068 | SSIR to Metal Shading Language emission |
 | `ssir_to_hlsl.c` | 1470 | SSIR to HLSL emission |
 | `spirv_to_ssir.c` | 2566 | SPIR-V to SSIR deserialization |
+| `ssir_to_v3d.c` | 2603 | SSIR to V3D QPU binary emission (Raspberry Pi 5) |
 
 ### Extensions
 
