@@ -22,8 +22,9 @@ static void vec_push_node(WgslAstNode ***arr, int *count, int *cap,
     wgsl_compiler_assert(arr != NULL, "vec_push_node: arr is NULL");
     wgsl_compiler_assert(count != NULL, "vec_push_node: count is NULL");
     wgsl_compiler_assert(cap != NULL, "vec_push_node: cap is NULL");
-    *arr = (WgslAstNode **)grow_ptr_array(*arr, *count + 1, cap,
-        sizeof(WgslAstNode *));
+    void *np = grow_ptr_array(*arr, *count + 1, cap, sizeof(WgslAstNode *));
+    if (!np) return;
+    *arr = (WgslAstNode **)np;
     (*arr)[(*count)++] = v;
 }
 
@@ -572,6 +573,13 @@ static WgslAstNode *new_literal(Parser *P, const Token *t) {
     WgslAstNode *n = new_node(P, WGSL_NODE_LITERAL);
     n->literal.lexeme = wgsl_strndup(t->start, (size_t)t->length);
     n->literal.kind = t->is_float ? WGSL_LIT_FLOAT : WGSL_LIT_INT;
+    if (n->literal.lexeme) {
+        if (t->is_float) {
+            n->literal.value.f = strtod(n->literal.lexeme, NULL);
+        } else {
+            n->literal.value.i = strtoll(n->literal.lexeme, NULL, 0);
+        }
+    }
     return n;
 }
 // P nonnull
@@ -646,6 +654,7 @@ static WgslAstNode *parse_attribute(Parser *P) {
     Token name = P->cur;
     advance(P);
     WgslAstNode *A = new_node(P, WGSL_NODE_ATTRIBUTE);
+    A->attribute.kind = sw_parse_attr_kind(name.start, (size_t)name.length);
     A->attribute.name = wgsl_strndup(name.start, (size_t)name.length);
     int cap = 0, count = 0;
     WgslAstNode **args = NULL;
@@ -785,40 +794,35 @@ static WgslAstNode *parse_global_var(Parser *P, WgslAstNode **attrs,
     int attr_count) {
     wgsl_compiler_assert(P != NULL, "parse_global_var: P is NULL");
     expect(P, TOK_VAR, "expected 'var'");
-    char *addr_space = NULL;
+    WgslAstAddrSpace addr_space = WGSL_ADDR_NONE;
     if (match(P, TOK_LT)) {
         if (!check(P, TOK_IDENT))
             parse_error(P, "expected identifier inside '<>'");
         Token firstTok = P->cur;
         advance(P);
-        char *first = wgsl_strndup(firstTok.start, (size_t)firstTok.length);
-        char *second = NULL;
+        Token secondTok = {0};
+        int has_second = 0;
         if (match(P, TOK_COMMA)) {
             if (!check(P, TOK_IDENT))
                 parse_error(P, "expected identifier after ','");
-            Token secondTok = P->cur;
+            secondTok = P->cur;
             advance(P);
-            second = wgsl_strndup(secondTok.start, (size_t)secondTok.length);
+            has_second = 1;
         }
         expect(P, TOK_GT, "expected '>'");
-        int first_addr =
-            (!strcmp(first, "uniform") || !strcmp(first, "storage") ||
-                !strcmp(first, "workgroup") || !strcmp(first, "private") ||
-                !strcmp(first, "immediate") || !strcmp(first, "device"));
-        int second_addr =
-            second
-                ? (!strcmp(second, "uniform") || !strcmp(second, "storage") ||
-                      !strcmp(second, "workgroup") || !strcmp(second, "private") ||
-                      !strcmp(second, "immediate") || !strcmp(second, "device"))
-                : 0;
-        if (second && second_addr && !first_addr) {
-            addr_space = second;
-            NODE_FREE(first);
-        } else {
-            addr_space = first;
-            if (second)
-                NODE_FREE(second);
-        }
+        WgslAstAddrSpace first_as =
+            sw_parse_addr_space(firstTok.start, (size_t)firstTok.length);
+        WgslAstAddrSpace second_as = has_second
+            ? sw_parse_addr_space(secondTok.start, (size_t)secondTok.length)
+            : WGSL_ADDR_NONE;
+        int first_is_addr = (first_as != WGSL_ADDR_NONE &&
+                             first_as != WGSL_ADDR_UNKNOWN);
+        int second_is_addr = (second_as != WGSL_ADDR_NONE &&
+                              second_as != WGSL_ADDR_UNKNOWN);
+        if (has_second && second_is_addr && !first_is_addr)
+            addr_space = second_as;
+        else
+            addr_space = first_is_addr ? first_as : WGSL_ADDR_NONE;
     }
     if (!check(P, TOK_IDENT)) {
         parse_error(P, "expected variable name");
@@ -1205,25 +1209,27 @@ static WgslAstNode *parse_assignment(Parser *P) {
     if (match(P, TOK_EQ)) {
         WgslAstNode *right = parse_assignment(P);
         WgslAstNode *A = new_node(P, WGSL_NODE_ASSIGN);
-        A->assign.op = wgsl_strdup("=");
+        A->assign.op = WGSL_ASSIGN_EQ;
         A->assign.lhs = left;
         A->assign.rhs = right;
         return A;
     }
     struct {
         TokenType tok;
-        const char *op;
+        WgslAssignOp op;
     } compounds[] = {
-        {TOK_PLUSEQ, "+="}, {TOK_MINUSEQ, "-="}, {TOK_STAREQ, "*="},
-        {TOK_SLASHEQ, "/="}, {TOK_PERCENTEQ, "%="},
-        {TOK_AMPEQ, "&="}, {TOK_PIPEEQ, "|="}, {TOK_CARETEQ, "^="},
-        {TOK_SHLEQ, "<<="}, {TOK_SHREQ, ">>="},
-        {TOK_EOF, NULL}};
-    for (int i = 0; compounds[i].op; i++) {
+        {TOK_PLUSEQ, WGSL_ASSIGN_ADD}, {TOK_MINUSEQ, WGSL_ASSIGN_SUB},
+        {TOK_STAREQ, WGSL_ASSIGN_MUL}, {TOK_SLASHEQ, WGSL_ASSIGN_DIV},
+        {TOK_PERCENTEQ, WGSL_ASSIGN_MOD},
+        {TOK_AMPEQ, WGSL_ASSIGN_AND}, {TOK_PIPEEQ, WGSL_ASSIGN_OR},
+        {TOK_CARETEQ, WGSL_ASSIGN_XOR},
+        {TOK_SHLEQ, WGSL_ASSIGN_SHL}, {TOK_SHREQ, WGSL_ASSIGN_SHR},
+        {TOK_EOF, WGSL_ASSIGN_EQ}};
+    for (int i = 0; compounds[i].tok != TOK_EOF; i++) {
         if (match(P, compounds[i].tok)) {
             WgslAstNode *right = parse_assignment(P);
             WgslAstNode *A = new_node(P, WGSL_NODE_ASSIGN);
-            A->assign.op = wgsl_strdup(compounds[i].op);
+            A->assign.op = compounds[i].op;
             A->assign.lhs = left;
             A->assign.rhs = right;
             return A;
@@ -1256,7 +1262,7 @@ static WgslAstNode *parse_logical_or(Parser *P) {
     while (match(P, TOK_OROR)) {
         WgslAstNode *right = parse_logical_and(P);
         WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = wgsl_strdup("||");
+        B->binary.op = WGSL_BIN_LOR;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1271,7 +1277,7 @@ static WgslAstNode *parse_logical_and(Parser *P) {
     while (match(P, TOK_ANDAND)) {
         WgslAstNode *right = parse_equality(P);
         WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = wgsl_strdup("&&");
+        B->binary.op = WGSL_BIN_LAND;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1286,7 +1292,7 @@ static WgslAstNode *parse_or_expr(Parser *P) {
     while (match(P, TOK_OR)) {
         WgslAstNode *right = parse_xor_expr(P);
         WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = wgsl_strdup("|");
+        B->binary.op = WGSL_BIN_OR;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1301,7 +1307,7 @@ static WgslAstNode *parse_xor_expr(Parser *P) {
     while (match(P, TOK_XOR)) {
         WgslAstNode *right = parse_and_expr(P);
         WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = wgsl_strdup("^");
+        B->binary.op = WGSL_BIN_XOR;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1316,7 +1322,7 @@ static WgslAstNode *parse_and_expr(Parser *P) {
     while (match(P, TOK_AND)) {
         WgslAstNode *right = parse_equality(P);
         WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = wgsl_strdup("&");
+        B->binary.op = WGSL_BIN_AND;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1332,7 +1338,7 @@ static WgslAstNode *parse_equality(Parser *P) {
         if (match(P, TOK_EQEQ)) {
             WgslAstNode *r = parse_relational(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("==");
+            B->binary.op = WGSL_BIN_EQ;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1341,7 +1347,7 @@ static WgslAstNode *parse_equality(Parser *P) {
         if (match(P, TOK_NEQ)) {
             WgslAstNode *r = parse_relational(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("!=");
+            B->binary.op = WGSL_BIN_NE;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1360,7 +1366,7 @@ static WgslAstNode *parse_relational(Parser *P) {
         if (match(P, TOK_LT)) {
             WgslAstNode *r = parse_shift(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("<");
+            B->binary.op = WGSL_BIN_LT;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1369,7 +1375,7 @@ static WgslAstNode *parse_relational(Parser *P) {
         if (match(P, TOK_GT)) {
             WgslAstNode *r = parse_shift(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup(">");
+            B->binary.op = WGSL_BIN_GT;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1378,7 +1384,7 @@ static WgslAstNode *parse_relational(Parser *P) {
         if (match(P, TOK_LE)) {
             WgslAstNode *r = parse_shift(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("<=");
+            B->binary.op = WGSL_BIN_LE;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1387,7 +1393,7 @@ static WgslAstNode *parse_relational(Parser *P) {
         if (match(P, TOK_GE)) {
             WgslAstNode *r = parse_shift(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup(">=");
+            B->binary.op = WGSL_BIN_GE;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1406,7 +1412,7 @@ static WgslAstNode *parse_shift(Parser *P) {
         if (match(P, TOK_SHL)) {
             WgslAstNode *r = parse_additive(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("<<");
+            B->binary.op = WGSL_BIN_SHL;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1415,7 +1421,7 @@ static WgslAstNode *parse_shift(Parser *P) {
         if (match(P, TOK_SHR)) {
             WgslAstNode *r = parse_additive(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup(">>");
+            B->binary.op = WGSL_BIN_SHR;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1434,7 +1440,7 @@ static WgslAstNode *parse_additive(Parser *P) {
         if (match(P, TOK_PLUS)) {
             WgslAstNode *r = parse_multiplicative(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("+");
+            B->binary.op = WGSL_BIN_ADD;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1443,7 +1449,7 @@ static WgslAstNode *parse_additive(Parser *P) {
         if (match(P, TOK_MINUS)) {
             WgslAstNode *r = parse_multiplicative(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("-");
+            B->binary.op = WGSL_BIN_SUB;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1462,7 +1468,7 @@ static WgslAstNode *parse_multiplicative(Parser *P) {
         if (match(P, TOK_STAR)) {
             WgslAstNode *r = parse_unary(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("*");
+            B->binary.op = WGSL_BIN_MUL;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1471,7 +1477,7 @@ static WgslAstNode *parse_multiplicative(Parser *P) {
         if (match(P, TOK_SLASH)) {
             WgslAstNode *r = parse_unary(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("/");
+            B->binary.op = WGSL_BIN_DIV;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1480,7 +1486,7 @@ static WgslAstNode *parse_multiplicative(Parser *P) {
         if (match(P, TOK_PERCENT)) {
             WgslAstNode *r = parse_unary(P);
             WgslAstNode *B = new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = wgsl_strdup("%");
+            B->binary.op = WGSL_BIN_MOD;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1494,69 +1500,24 @@ static WgslAstNode *parse_multiplicative(Parser *P) {
 // P nonnull
 static WgslAstNode *parse_unary(Parser *P) {
     wgsl_compiler_assert(P != NULL, "parse_unary: P is NULL");
-    if (match(P, TOK_PLUSPLUS)) {
-        WgslAstNode *e = parse_unary(P);
-        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = wgsl_strdup("++");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (match(P, TOK_MINUSMINUS)) {
-        WgslAstNode *e = parse_unary(P);
-        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = wgsl_strdup("--");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (match(P, TOK_PLUS)) {
-        WgslAstNode *e = parse_unary(P);
-        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = wgsl_strdup("+");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (match(P, TOK_MINUS)) {
-        WgslAstNode *e = parse_unary(P);
-        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = wgsl_strdup("-");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (match(P, TOK_BANG)) {
-        WgslAstNode *e = parse_unary(P);
-        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = wgsl_strdup("!");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (match(P, TOK_TILDE)) {
-        WgslAstNode *e = parse_unary(P);
-        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = wgsl_strdup("~");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (match(P, TOK_AND)) {
-        WgslAstNode *e = parse_unary(P);
-        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = wgsl_strdup("&");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (match(P, TOK_STAR)) {
-        WgslAstNode *e = parse_unary(P);
-        WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = wgsl_strdup("*");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
+    struct {
+        TokenType tok;
+        WgslUnaryOp op;
+    } prefixes[] = {
+        {TOK_PLUSPLUS, WGSL_UN_PREINC}, {TOK_MINUSMINUS, WGSL_UN_PREDEC},
+        {TOK_PLUS, WGSL_UN_POS}, {TOK_MINUS, WGSL_UN_NEG},
+        {TOK_BANG, WGSL_UN_NOT}, {TOK_TILDE, WGSL_UN_BITNOT},
+        {TOK_AND, WGSL_UN_ADDR}, {TOK_STAR, WGSL_UN_DEREF},
+        {TOK_EOF, WGSL_UN_NONE}};
+    for (int i = 0; prefixes[i].tok != TOK_EOF; i++) {
+        if (match(P, prefixes[i].tok)) {
+            WgslAstNode *e = parse_unary(P);
+            WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
+            U->unary.op = prefixes[i].op;
+            U->unary.is_postfix = 0;
+            U->unary.expr = e;
+            return U;
+        }
     }
     return parse_postfix(P);
 }
@@ -1612,7 +1573,7 @@ static WgslAstNode *parse_postfix(Parser *P) {
         }
         if (match(P, TOK_PLUSPLUS)) {
             WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-            U->unary.op = wgsl_strdup("++");
+            U->unary.op = WGSL_UN_POSTINC;
             U->unary.is_postfix = 1;
             U->unary.expr = expr;
             expr = U;
@@ -1620,7 +1581,7 @@ static WgslAstNode *parse_postfix(Parser *P) {
         }
         if (match(P, TOK_MINUSMINUS)) {
             WgslAstNode *U = new_node(P, WGSL_NODE_UNARY);
-            U->unary.op = wgsl_strdup("--");
+            U->unary.op = WGSL_UN_POSTDEC;
             U->unary.is_postfix = 1;
             U->unary.expr = expr;
             expr = U;
@@ -1783,6 +1744,7 @@ static WgslAstNode *parse_decl_or_stmt(Parser *P) {
             advance(P);
             /* Store extension name as an attribute node so the program can read it */
             WgslAstNode *marker = new_node(P, WGSL_NODE_ATTRIBUTE);
+            marker->attribute.kind = WGSL_ATTR_UNKNOWN;
             marker->attribute.name = wgsl_strndup(ext.start, (size_t)ext.length);
             marker->attribute.arg_count = 0;
             marker->attribute.args = NULL;
@@ -1946,7 +1908,6 @@ static void free_global_var(GlobalVar *g) {
     /* PRE: g != NULL */
     wgsl_compiler_assert(g != NULL, "free_global_var: g is NULL");
     free_node_list(g->attrs, g->attr_count);
-    free_string(g->address_space);
     free_string(g->name);
     free_node(g->type);
 }
@@ -1986,7 +1947,6 @@ static void free_function(Function *f) {
 static void free_binary(Binary *b) {
     /* PRE: b != NULL */
     wgsl_compiler_assert(b != NULL, "free_binary: b is NULL");
-    free_string(b->op);
     free_node(b->left);
     free_node(b->right);
 }
@@ -2014,7 +1974,6 @@ static void free_index(Index *i) {
 static void free_unary(Unary *u) {
     /* PRE: u != NULL */
     wgsl_compiler_assert(u != NULL, "free_unary: u is NULL");
-    free_string(u->op);
     free_node(u->expr);
 }
 // t nonnull
@@ -2076,7 +2035,6 @@ static void free_node(WgslAstNode *n) {
             free_binary(&n->binary);
             break;
         case WGSL_NODE_ASSIGN:
-            free_string(n->assign.op);
             free_node(n->assign.lhs);
             free_node(n->assign.rhs);
             break;
@@ -2249,9 +2207,10 @@ static void dbg_print_node(const WgslAstNode *n, int ind) {
             print_indent(ind + 1);
             printf("name: %s\n", n->global_var.name);
             print_indent(ind + 1);
-            printf("address_space: %s\n", n->global_var.address_space
-                                              ? n->global_var.address_space
-                                              : "(none)");
+            {
+                const char *as = sw_addr_space_name(n->global_var.address_space);
+                printf("address_space: %s\n", as ? as : "(none)");
+            }
             print_indent(ind + 1);
             puts("type:");
             dbg_print_node(n->global_var.type, ind + 2);
@@ -2344,7 +2303,7 @@ static void dbg_print_node(const WgslAstNode *n, int ind) {
             break;
         case WGSL_NODE_BINARY:
             print_indent(ind + 1);
-            printf("op: %s\n", n->binary.op);
+            printf("op: %d\n", (int)n->binary.op);
             dbg_print_node(n->binary.left, ind + 1);
             dbg_print_node(n->binary.right, ind + 1);
             break;
@@ -2419,7 +2378,7 @@ static void dbg_print_node(const WgslAstNode *n, int ind) {
             break;
         case WGSL_NODE_UNARY:
             print_indent(ind + 1);
-            printf("op: %s%s\n", n->unary.op,
+            printf("op: %d%s\n", (int)n->unary.op,
                 n->unary.is_postfix ? " (post)" : " (pre)");
             dbg_print_node(n->unary.expr, ind + 1);
             break;

@@ -396,9 +396,12 @@ static uint32_t sts_emit_const_u32(Ctx *c, uint32_t value);
 
 /* Compute the size and alignment of a type (for std430 layout).
  * Returns the size in bytes, and stores alignment in *out_align. */
-// c nonnull
-static uint32_t compute_type_size(Ctx *c, uint32_t ssir_type_id, uint32_t *out_align) {
-    wgsl_compiler_assert(c != NULL, "compute_type_size: c is NULL");
+static uint32_t compute_type_size_depth(Ctx *c, uint32_t ssir_type_id,
+                                        uint32_t *out_align, int depth) {
+    if (depth > 64) {
+        if (out_align) *out_align = 4;
+        return 4; /* runaway / cyclic type — bail */
+    }
     SsirType *t = ssir_get_type((SsirModule *)c->mod, ssir_type_id);
     if (!t) {
         if (out_align) *out_align = 4;
@@ -415,48 +418,44 @@ static uint32_t compute_type_size(Ctx *c, uint32_t ssir_type_id, uint32_t *out_a
             if (out_align) *out_align = 2;
             return 2;
         case SSIR_TYPE_VEC: {
-            uint32_t elem_size = compute_type_size(c, t->vec.elem, NULL);
+            uint32_t elem_size = compute_type_size_depth(c, t->vec.elem, NULL, depth + 1);
             uint32_t size = t->vec.size;
-            /* vec2 aligns to 2N, vec3/vec4 align to 4N */
             uint32_t align_factor = (size == 2) ? 2 : 4;
             if (out_align) *out_align = elem_size * align_factor;
             return elem_size * size;
         }
         case SSIR_TYPE_MAT: {
-            /* Matrix is array of columns (vectors) */
             uint32_t col_align;
-            uint32_t col_size = compute_type_size(c, t->mat.elem, &col_align);
-            /* Round up column size to alignment */
+            uint32_t col_size = compute_type_size_depth(c, t->mat.elem, &col_align, depth + 1);
             uint32_t stride = (col_size + col_align - 1) & ~(col_align - 1);
             if (out_align) *out_align = col_align;
             return stride * t->mat.cols;
         }
         case SSIR_TYPE_ARRAY: {
             uint32_t elem_align;
-            uint32_t elem_size = compute_type_size(c, t->array.elem, &elem_align);
-            /* Stride is at least element size rounded up to element alignment */
+            uint32_t elem_size = compute_type_size_depth(c, t->array.elem, &elem_align, depth + 1);
             uint32_t stride = (elem_size + elem_align - 1) & ~(elem_align - 1);
             if (out_align) *out_align = elem_align;
-            return stride * t->array.length;
+            uint64_t total = (uint64_t)stride * (uint64_t)t->array.length;
+            if (total > UINT32_MAX) return 0;
+            return (uint32_t)total;
         }
         case SSIR_TYPE_RUNTIME_ARRAY: {
             uint32_t elem_align;
-            compute_type_size(c, t->runtime_array.elem, &elem_align);
+            compute_type_size_depth(c, t->runtime_array.elem, &elem_align, depth + 1);
             if (out_align) *out_align = elem_align;
-            return 0; /* Runtime arrays have unknown size */
+            return 0;
         }
         case SSIR_TYPE_STRUCT: {
-            /* Compute struct size based on members */
             uint32_t max_align = 1;
             uint32_t offset = 0;
             for (uint32_t i = 0; i < t->struc.member_count; ++i) {
                 uint32_t mem_align;
-                uint32_t mem_size = compute_type_size(c, t->struc.members[i], &mem_align);
+                uint32_t mem_size = compute_type_size_depth(c, t->struc.members[i], &mem_align, depth + 1);
                 if (mem_align > max_align) max_align = mem_align;
                 offset = (offset + mem_align - 1) & ~(mem_align - 1);
                 offset += mem_size;
             }
-            /* Final size is offset rounded up to struct alignment */
             offset = (offset + max_align - 1) & ~(max_align - 1);
             if (out_align) *out_align = max_align;
             return offset;
@@ -465,6 +464,12 @@ static uint32_t compute_type_size(Ctx *c, uint32_t ssir_type_id, uint32_t *out_a
             if (out_align) *out_align = 4;
             return 4;
     }
+}
+
+// c nonnull
+static uint32_t compute_type_size(Ctx *c, uint32_t ssir_type_id, uint32_t *out_align) {
+    wgsl_compiler_assert(c != NULL, "compute_type_size: c is NULL");
+    return compute_type_size_depth(c, ssir_type_id, out_align, 0);
 }
 
 /* Compute the array stride for a given element type */
@@ -3071,13 +3076,6 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                                 break;
                             }
                         }
-                        if (bk->name && strstr(bk->name, "L__BB0_4") &&
-                            (strstr(bk->name, "BB0_41") || strstr(bk->name, "BB0_42") ||
-                             strstr(bk->name, "BB0_40")))
-                            fprintf(stderr, "[late-loop] idx=%d (%s) id=%u "
-                                "npred=%d has_lm=%d be=%d idom=%d\n",
-                                bi, bk->name, bk->id,
-                                npred[bi], has_lm, has_backedge_to, idom_fwd[bi]);
                         if (!has_backedge_to) continue;
 
                         /* bi is a back-edge target (loop header) without

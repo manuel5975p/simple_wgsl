@@ -553,7 +553,9 @@ static void sc_split_duplicate_merge_targets(SsirModule *mod, SsirFunction *func
                 tramp.inst_count = 1;
                 if (func->block_count >= func->block_capacity) {
                     uint32_t nc = func->block_capacity ? func->block_capacity * 2 : 16;
-                    func->blocks = (SsirBlock *)STRUCT_REALLOC(func->blocks, nc * sizeof(SsirBlock));
+                    SsirBlock *np = (SsirBlock *)STRUCT_REALLOC(func->blocks, nc * sizeof(SsirBlock));
+                    if (!np) continue;
+                    func->blocks = np;
                     func->block_capacity = nc;
                     b = &func->blocks[bi2]; s = &b->insts[ii];
                     mp = (s->op == SSIR_OP_SELECTION_MERGE) ? &s->operands[0] : &s->operands[3];
@@ -588,7 +590,9 @@ static void sc_ensure_term(SC *c) {
         add_unreach:
         if (b->inst_count >= b->inst_capacity) {
             uint32_t nc = b->inst_capacity ? b->inst_capacity * 2 : 4;
-            b->insts = (SsirInst *)STRUCT_REALLOC(b->insts, nc * sizeof(SsirInst));
+            SsirInst *np = (SsirInst *)STRUCT_REALLOC(b->insts, nc * sizeof(SsirInst));
+            if (!np) continue;
+            b->insts = np;
             b->inst_capacity = nc;
         }
         memset(&b->insts[b->inst_count], 0, sizeof(SsirInst));
@@ -707,7 +711,9 @@ void ssir_structurize_function(SsirModule *mod, uint32_t func_id) {
             for (int k = 0; k < c->n; k++)
                 if (body[k]) loops[existing].body[k] = true;
         } else {
-            loops = STRUCT_REALLOC(loops, (nloops + 1) * sizeof(LoopInfo));
+            LoopInfo *np = (LoopInfo *)STRUCT_REALLOC(loops, (nloops + 1) * sizeof(LoopInfo));
+            if (!np) continue;
+            loops = np;
             memset(&loops[nloops], 0, sizeof(LoopInfo));
             loops[nloops].header = h;
             sc_collect_body(c, h, back_edges[i].latch, loops[nloops].body);
@@ -1216,26 +1222,6 @@ void ssir_structurize_function(SsirModule *mod, uint32_t func_id) {
                     merge_exit_id = mb_term->operands[0];
                     split_after_merge_tail = true;
                 }
-            }
-        }
-
-        if (debug_phase3) {
-            const char *mname = func->blocks[mi].name ? func->blocks[mi].name : "";
-            if (strcmp(mname, "$L__BB0_42") == 0 ||
-                strcmp(mname, "$L__BB0_223") == 0 ||
-                strcmp(mname, "$L__BB0_277") == 0 ||
-                strcmp(mname, "$L__BB0_278") == 0) {
-                const char *hname = b->name ? b->name : "<anon>";
-                fprintf(stderr,
-                        "[ssir_struct] inspect func=%s header=%s(%u) merge=%s(%u) continue=%d header=%d bridge=%d direct=%d tail=%d term=%d\n",
-                        func->name ? func->name : "<anon-func>",
-                        hname, b->id, mname, merge_id,
-                        merge_is_continue ? 1 : 0,
-                        merge_is_header ? 1 : 0,
-                        merge_is_bridge ? 1 : 0,
-                        merge_is_branch_target ? 1 : 0,
-                        split_after_merge_tail ? 1 : 0,
-                        (int)term->op);
             }
         }
 

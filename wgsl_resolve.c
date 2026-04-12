@@ -657,9 +657,9 @@ static void declare_global_from_globalvar(WgslResolver *r, const WgslAstNode *gv
     WgslSymbolInfo s;
     memset(&s, 0, sizeof(s));
     s.id = next_id(r);
-    s.kind = (gv->global_var.address_space && str_eq(gv->global_var.address_space, "immediate"))
+    s.kind = (gv->global_var.address_space == WGSL_ADDR_IMMEDIATE)
         ? WGSL_SYM_IMMEDIATE
-        : (gv->global_var.address_space && str_eq(gv->global_var.address_space, "device"))
+        : (gv->global_var.address_space == WGSL_ADDR_DEVICE)
         ? WGSL_SYM_DEVICE
         : WGSL_SYM_GLOBAL;
     s.name = gv->global_var.name;
@@ -679,9 +679,8 @@ static void declare_global_from_globalvar(WgslResolver *r, const WgslAstNode *gv
     /* New: compute minBindingSize for buffer bindings. */
     s.has_min_binding_size = 0;
     s.min_binding_size = 0;
-    if (gv->global_var.address_space &&
-        (str_eq(gv->global_var.address_space, "uniform") ||
-            str_eq(gv->global_var.address_space, "storage"))) {
+    if (gv->global_var.address_space == WGSL_ADDR_UNIFORM ||
+        gv->global_var.address_space == WGSL_ADDR_STORAGE) {
         int bytes = 0;
         if (type_min_size_bytes(r, gv->global_var.type, &bytes) && bytes > 0) {
             s.has_min_binding_size = 1;
@@ -1322,9 +1321,6 @@ const WgslDeviceVarInfo *wgsl_resolver_entrypoint_device_vars(
 }
 
 /* free helper */
-void wgsl_resolve_free(void *p) {
-    if (p)
-        NODE_FREE(p);
-}
+void wgsl_resolve_free(void *p) { sw_free(p); }
 
 // end file wgsl_resolve.c

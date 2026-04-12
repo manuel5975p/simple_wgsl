@@ -2143,6 +2143,4 @@ const char *wgsl_raise_entry_point_name(WgslRaiser *r, int index) {
     return NULL;
 }
 
-void wgsl_raise_free(void *p) {
-    WGSL_FREE(p);
-}
+void wgsl_raise_free(void *p) { sw_free(p); }

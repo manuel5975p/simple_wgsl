@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdlib.h>
 
 /* ============================================================================
  * SwResult
@@ -13,7 +14,7 @@
 
 const char *sw_result_string(SwResult r) {
     switch (r) {
-        case SW_OK:                  return "OK";
+        case SW_OK:                  return "Success";
         case SW_ERROR_INVALID_INPUT: return "Invalid input";
         case SW_ERROR_PARSE:         return "Parse error";
         case SW_ERROR_UNSUPPORTED:   return "Unsupported feature";
@@ -22,6 +23,8 @@ const char *sw_result_string(SwResult r) {
         default:                     return "Unknown error";
     }
 }
+
+void sw_free(void *p) { free(p); }
 
 /* ============================================================================
  * Internal Helpers

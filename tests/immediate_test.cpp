@@ -125,8 +125,7 @@ TEST_F(ImmediateParserTest, VarImmediateDeclaration) {
     for (int i = 0; i < node->program.decl_count; i++) {
         WgslAstNode *decl = node->program.decls[i];
         if (decl->type == WGSL_NODE_GLOBAL_VAR &&
-            decl->global_var.address_space &&
-            strcmp(decl->global_var.address_space, "immediate") == 0) {
+            decl->global_var.address_space == WGSL_ADDR_IMMEDIATE) {
             found_immediate = true;
             EXPECT_STREQ(decl->global_var.name, "scale");
         }
@@ -147,8 +146,7 @@ TEST_F(ImmediateParserTest, MultipleImmediateVars) {
     for (int i = 0; i < node->program.decl_count; i++) {
         WgslAstNode *decl = node->program.decls[i];
         if (decl->type == WGSL_NODE_GLOBAL_VAR &&
-            decl->global_var.address_space &&
-            strcmp(decl->global_var.address_space, "immediate") == 0) {
+            decl->global_var.address_space == WGSL_ADDR_IMMEDIATE) {
             imm_count++;
         }
     }

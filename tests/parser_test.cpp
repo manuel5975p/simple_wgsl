@@ -63,5 +63,5 @@ TEST_F(ParserTest, ParseBinaryExpressions) {
     ASSERT_EQ(var_decl->type, WGSL_NODE_VAR_DECL);
     auto *init = var_decl->var_decl.init;
     ASSERT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "+");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_ADD);
 }

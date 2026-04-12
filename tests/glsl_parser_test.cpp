@@ -139,7 +139,7 @@ TEST_F(GlslParserTest, InputVariable) {
     auto *g = node->program.decls[0];
     EXPECT_EQ(g->type, WGSL_NODE_GLOBAL_VAR);
     EXPECT_STREQ(g->global_var.name, "position");
-    EXPECT_STREQ(g->global_var.address_space, "in");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_IN);
     EXPECT_STREQ(g->global_var.type->type_node.name, "vec3f");
 }
 
@@ -149,7 +149,7 @@ TEST_F(GlslParserTest, OutputVariable) {
     auto *g = node->program.decls[0];
     EXPECT_EQ(g->type, WGSL_NODE_GLOBAL_VAR);
     EXPECT_STREQ(g->global_var.name, "fragColor");
-    EXPECT_STREQ(g->global_var.address_space, "out");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_OUT);
 }
 
 TEST_F(GlslParserTest, InputWithLayoutLocation) {
@@ -158,7 +158,7 @@ TEST_F(GlslParserTest, InputWithLayoutLocation) {
     auto *g = node->program.decls[0];
     EXPECT_EQ(g->type, WGSL_NODE_GLOBAL_VAR);
     EXPECT_STREQ(g->global_var.name, "pos");
-    EXPECT_STREQ(g->global_var.address_space, "in");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_IN);
     ASSERT_GE(g->global_var.attr_count, 1);
     EXPECT_STREQ(g->global_var.attrs[0]->attribute.name, "location");
     EXPECT_EQ(g->global_var.attrs[0]->attribute.arg_count, 1);
@@ -169,7 +169,7 @@ TEST_F(GlslParserTest, OutputWithLayoutLocation) {
     ASSERT_NE(node, nullptr);
     auto *g = node->program.decls[0];
     EXPECT_STREQ(g->global_var.name, "outColor");
-    EXPECT_STREQ(g->global_var.address_space, "out");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_OUT);
     EXPECT_STREQ(g->global_var.attrs[0]->attribute.name, "location");
 }
 
@@ -179,7 +179,7 @@ TEST_F(GlslParserTest, UniformVariable) {
     auto *g = node->program.decls[0];
     EXPECT_EQ(g->type, WGSL_NODE_GLOBAL_VAR);
     EXPECT_STREQ(g->global_var.name, "time");
-    EXPECT_STREQ(g->global_var.address_space, "uniform");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_UNIFORM);
 }
 
 TEST_F(GlslParserTest, LayoutSetBinding) {
@@ -205,7 +205,7 @@ TEST_F(GlslParserTest, FlatInterpolation) {
     auto *g = node->program.decls[0];
     EXPECT_EQ(g->type, WGSL_NODE_GLOBAL_VAR);
     EXPECT_STREQ(g->global_var.name, "instanceId");
-    EXPECT_STREQ(g->global_var.address_space, "in");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_IN);
     /* Should have flat interpolation attribute */
     int found_flat = 0;
     for (int i = 0; i < g->global_var.attr_count; i++) {
@@ -219,7 +219,7 @@ TEST_F(GlslParserTest, SharedVariable) {
     auto *node = Parse("shared uint counter;");
     ASSERT_NE(node, nullptr);
     auto *g = node->program.decls[0];
-    EXPECT_STREQ(g->global_var.address_space, "workgroup");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_WORKGROUP);
 }
 
 TEST_F(GlslParserTest, BufferVariable) {
@@ -284,7 +284,7 @@ TEST_F(GlslParserTest, UniformBlock) {
     EXPECT_EQ(g->type, WGSL_NODE_GLOBAL_VAR);
     EXPECT_STREQ(g->global_var.name, "ubo");
     EXPECT_STREQ(g->global_var.type->type_node.name, "UBO");
-    EXPECT_STREQ(g->global_var.address_space, "uniform");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_UNIFORM);
 }
 
 TEST_F(GlslParserTest, StorageBlock) {
@@ -296,7 +296,7 @@ TEST_F(GlslParserTest, StorageBlock) {
     ASSERT_NE(node, nullptr);
     ASSERT_GE(node->program.decl_count, 2);
     auto *g = node->program.decls[1];
-    EXPECT_STREQ(g->global_var.address_space, "storage");
+    EXPECT_EQ(g->global_var.address_space, WGSL_ADDR_STORAGE);
 }
 
 TEST_F(GlslParserTest, InterfaceBlockNoInstanceName) {
@@ -621,7 +621,7 @@ TEST_F(GlslParserTest, BinaryAdd) {
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     ASSERT_NE(init, nullptr);
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "+");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_ADD);
 }
 
 TEST_F(GlslParserTest, BinaryModulo) {
@@ -629,7 +629,7 @@ TEST_F(GlslParserTest, BinaryModulo) {
     ASSERT_NE(node, nullptr);
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "%");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_MOD);
 }
 
 TEST_F(GlslParserTest, BitwiseOperators) {
@@ -638,7 +638,7 @@ TEST_F(GlslParserTest, BitwiseOperators) {
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     /* Precedence: & before ^ before | */
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "|");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_OR);
 }
 
 TEST_F(GlslParserTest, PrecedenceChain) {
@@ -647,9 +647,9 @@ TEST_F(GlslParserTest, PrecedenceChain) {
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     /* Should parse as 1 + (2 * 3) */
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "+");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_ADD);
     EXPECT_EQ(init->binary.right->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.right->binary.op, "*");
+    EXPECT_EQ(init->binary.right->binary.op, WGSL_BIN_MUL);
 }
 
 TEST_F(GlslParserTest, CompoundAssignment) {
@@ -659,7 +659,7 @@ TEST_F(GlslParserTest, CompoundAssignment) {
     EXPECT_EQ(stmt->type, WGSL_NODE_EXPR_STMT);
     auto *assign = stmt->expr_stmt.expr;
     EXPECT_EQ(assign->type, WGSL_NODE_ASSIGN);
-    EXPECT_STREQ(assign->assign.op, "+=");
+    EXPECT_EQ(assign->assign.op, WGSL_ASSIGN_ADD);
 }
 
 TEST_F(GlslParserTest, CompoundAssignmentVariants) {
@@ -678,11 +678,11 @@ TEST_F(GlslParserTest, CompoundAssignmentVariants) {
     auto *body = node->program.decls[0]->function.body;
     ASSERT_GE(body->block.stmt_count, 7);
 
-    const char *expected_ops[] = {"-=", "*=", "/=", "%=", "&=", "|=", "^="};
+    const WgslAssignOp expected_ops[] = {WGSL_ASSIGN_SUB, WGSL_ASSIGN_MUL, WGSL_ASSIGN_DIV, WGSL_ASSIGN_MOD, WGSL_ASSIGN_AND, WGSL_ASSIGN_OR, WGSL_ASSIGN_XOR};
     for (int i = 0; i < 7; i++) {
         auto *assign = body->block.stmts[i]->expr_stmt.expr;
         EXPECT_EQ(assign->type, WGSL_NODE_ASSIGN) << "stmt " << i;
-        EXPECT_STREQ(assign->assign.op, expected_ops[i]) << "stmt " << i;
+        EXPECT_EQ(assign->assign.op, expected_ops[i]) << "stmt " << i;
     }
 }
 
@@ -757,7 +757,7 @@ TEST_F(GlslParserTest, UnaryNeg) {
     ASSERT_NE(node, nullptr);
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_UNARY);
-    EXPECT_STREQ(init->unary.op, "-");
+    EXPECT_EQ(init->unary.op, WGSL_UN_NEG);
     EXPECT_EQ(init->unary.is_postfix, 0);
 }
 
@@ -766,7 +766,7 @@ TEST_F(GlslParserTest, UnaryLogicalNot) {
     ASSERT_NE(node, nullptr);
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_UNARY);
-    EXPECT_STREQ(init->unary.op, "!");
+    EXPECT_EQ(init->unary.op, WGSL_UN_NOT);
 }
 
 TEST_F(GlslParserTest, UnaryBitwiseNot) {
@@ -774,7 +774,7 @@ TEST_F(GlslParserTest, UnaryBitwiseNot) {
     ASSERT_NE(node, nullptr);
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_UNARY);
-    EXPECT_STREQ(init->unary.op, "~");
+    EXPECT_EQ(init->unary.op, WGSL_UN_BITNOT);
 }
 
 TEST_F(GlslParserTest, PostfixIncrement) {
@@ -782,7 +782,7 @@ TEST_F(GlslParserTest, PostfixIncrement) {
     ASSERT_NE(node, nullptr);
     auto *expr = node->program.decls[0]->function.body->block.stmts[0]->expr_stmt.expr;
     EXPECT_EQ(expr->type, WGSL_NODE_UNARY);
-    EXPECT_STREQ(expr->unary.op, "++");
+    EXPECT_EQ(expr->unary.op, WGSL_UN_POSTINC);
     EXPECT_EQ(expr->unary.is_postfix, 1);
 }
 
@@ -791,7 +791,7 @@ TEST_F(GlslParserTest, PrefixDecrement) {
     ASSERT_NE(node, nullptr);
     auto *expr = node->program.decls[0]->function.body->block.stmts[0]->expr_stmt.expr;
     EXPECT_EQ(expr->type, WGSL_NODE_UNARY);
-    EXPECT_STREQ(expr->unary.op, "--");
+    EXPECT_EQ(expr->unary.op, WGSL_UN_PREDEC);
     EXPECT_EQ(expr->unary.is_postfix, 0);
 }
 
@@ -800,9 +800,9 @@ TEST_F(GlslParserTest, ParenthesizedExpression) {
     ASSERT_NE(node, nullptr);
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "*");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_MUL);
     EXPECT_EQ(init->binary.left->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.left->binary.op, "+");
+    EXPECT_EQ(init->binary.left->binary.op, WGSL_BIN_ADD);
 }
 
 TEST_F(GlslParserTest, LogicalOperators) {
@@ -811,9 +811,9 @@ TEST_F(GlslParserTest, LogicalOperators) {
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     /* || has lower precedence than && */
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "||");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_LOR);
     EXPECT_EQ(init->binary.left->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.left->binary.op, "&&");
+    EXPECT_EQ(init->binary.left->binary.op, WGSL_BIN_LAND);
 }
 
 TEST_F(GlslParserTest, ShiftOperators) {
@@ -821,7 +821,7 @@ TEST_F(GlslParserTest, ShiftOperators) {
     ASSERT_NE(node, nullptr);
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "<<");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_SHL);
 }
 
 TEST_F(GlslParserTest, ComparisonOperators) {
@@ -829,7 +829,7 @@ TEST_F(GlslParserTest, ComparisonOperators) {
     ASSERT_NE(node, nullptr);
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "<=");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_LE);
 }
 
 TEST_F(GlslParserTest, NestedFunctionCalls) {
@@ -1108,7 +1108,7 @@ TEST_F(GlslParserTest, SimpleAssignment) {
     ASSERT_NE(node, nullptr);
     auto *expr = node->program.decls[0]->function.body->block.stmts[0]->expr_stmt.expr;
     EXPECT_EQ(expr->type, WGSL_NODE_ASSIGN);
-    EXPECT_STREQ(expr->assign.op, "=");
+    EXPECT_EQ(expr->assign.op, WGSL_ASSIGN_EQ);
 }
 
 TEST_F(GlslParserTest, StructVariableDecl) {
@@ -1153,7 +1153,7 @@ TEST_F(GlslParserTest, ComplexExpression) {
     ASSERT_NE(node, nullptr);
     auto *init = node->program.decls[0]->function.body->block.stmts[0]->var_decl.init;
     EXPECT_EQ(init->type, WGSL_NODE_BINARY);
-    EXPECT_STREQ(init->binary.op, "*");
+    EXPECT_EQ(init->binary.op, WGSL_BIN_MUL);
 }
 
 TEST_F(GlslParserTest, ConstLocalDecl) {

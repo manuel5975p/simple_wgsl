@@ -31,8 +31,9 @@ static void gp_vec_push_node(WgslAstNode ***arr, int *count, int *cap,
     wgsl_compiler_assert(arr != NULL, "gp_vec_push_node: arr is NULL");
     wgsl_compiler_assert(count != NULL, "gp_vec_push_node: count is NULL");
     wgsl_compiler_assert(cap != NULL, "gp_vec_push_node: cap is NULL");
-    *arr = (WgslAstNode **)gp_grow_ptr_array(*arr, *count + 1, cap,
-        sizeof(WgslAstNode *));
+    void *np = gp_grow_ptr_array(*arr, *count + 1, cap, sizeof(WgslAstNode *));
+    if (!np) return;
+    *arr = (WgslAstNode **)np;
     (*arr)[(*count)++] = v;
 }
 
@@ -563,6 +564,13 @@ static WgslAstNode *gp_new_literal(GpParser *P, const GpToken *t) {
     WgslAstNode *n = gp_new_node(P, WGSL_NODE_LITERAL);
     n->literal.lexeme = glsl_strndup(t->start, (size_t)t->length);
     n->literal.kind = t->is_float ? WGSL_LIT_FLOAT : WGSL_LIT_INT;
+    if (n->literal.lexeme) {
+        if (t->is_float) {
+            n->literal.value.f = strtod(n->literal.lexeme, NULL);
+        } else {
+            n->literal.value.i = strtoll(n->literal.lexeme, NULL, 0);
+        }
+    }
     return n;
 }
 // P nonnull, name nonnull
@@ -749,6 +757,7 @@ static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
         /* Map layout qualifiers to WGSL-style attributes */
         if (tok_eq(&name, "set") && value) {
             WgslAstNode *attr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+            attr->attribute.kind = WGSL_ATTR_GROUP;
             attr->attribute.name = glsl_strdup("group");
             attr->attribute.arg_count = 1;
             attr->attribute.args = (WgslAstNode **)NODE_MALLOC(sizeof(WgslAstNode *));
@@ -756,6 +765,7 @@ static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
             gp_vec_push_node(&attrs, &count, &cap, attr);
         } else if (tok_eq(&name, "binding") && value) {
             WgslAstNode *attr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+            attr->attribute.kind = WGSL_ATTR_BINDING;
             attr->attribute.name = glsl_strdup("binding");
             attr->attribute.arg_count = 1;
             attr->attribute.args = (WgslAstNode **)NODE_MALLOC(sizeof(WgslAstNode *));
@@ -763,6 +773,7 @@ static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
             gp_vec_push_node(&attrs, &count, &cap, attr);
         } else if (tok_eq(&name, "location") && value) {
             WgslAstNode *attr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+            attr->attribute.kind = WGSL_ATTR_LOCATION;
             attr->attribute.name = glsl_strdup("location");
             attr->attribute.arg_count = 1;
             attr->attribute.args = (WgslAstNode **)NODE_MALLOC(sizeof(WgslAstNode *));
@@ -785,12 +796,14 @@ static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
             wgsl_free_ast(value);
         } else if (tok_eq(&name, "push_constant")) {
             WgslAstNode *attr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+            attr->attribute.kind = WGSL_ATTR_PUSH_CONSTANT;
             attr->attribute.name = glsl_strdup("push_constant");
             gp_vec_push_node(&attrs, &count, &cap, attr);
             if (value) wgsl_free_ast(value);
         } else {
             /* Unknown layout qualifier - store as-is */
             WgslAstNode *attr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+            attr->attribute.kind = sw_parse_attr_kind(name.start, (size_t)name.length);
             attr->attribute.name = glsl_strndup(name.start, (size_t)name.length);
             if (value) {
                 attr->attribute.arg_count = 1;
@@ -805,6 +818,7 @@ static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
     /* Emit workgroup_size attribute if local_size was found */
     if (has_wg) {
         WgslAstNode *attr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+        attr->attribute.kind = WGSL_ATTR_WORKGROUP_SIZE;
         attr->attribute.name = glsl_strdup("workgroup_size");
 
         char buf_x[32], buf_y[32], buf_z[32];
@@ -817,12 +831,15 @@ static int parse_layout_qualifier(GpParser *P, WgslAstNode ***out_attrs) {
         WgslAstNode *ax = gp_new_node(P, WGSL_NODE_LITERAL);
         ax->literal.lexeme = glsl_strdup(buf_x);
         ax->literal.kind = WGSL_LIT_INT;
+        ax->literal.value.i = wg_x;
         WgslAstNode *ay = gp_new_node(P, WGSL_NODE_LITERAL);
         ay->literal.lexeme = glsl_strdup(buf_y);
         ay->literal.kind = WGSL_LIT_INT;
+        ay->literal.value.i = wg_y;
         WgslAstNode *az = gp_new_node(P, WGSL_NODE_LITERAL);
         az->literal.lexeme = glsl_strdup(buf_z);
         az->literal.kind = WGSL_LIT_INT;
+        az->literal.value.i = wg_z;
         attr->attribute.args[0] = ax;
         attr->attribute.args[1] = ay;
         attr->attribute.args[2] = az;
@@ -999,7 +1016,7 @@ static WgslAstNode *parse_struct_def(GpParser *P) {
 static void parse_interface_block(GpParser *P, WgslAstNode **out_struct,
     WgslAstNode **out_var,
     WgslAstNode **attrs, int attr_count,
-    const char *address_space) {
+    WgslAstAddrSpace address_space) {
     wgsl_compiler_assert(P != NULL, "parse_interface_block: P is NULL");
     wgsl_compiler_assert(out_struct != NULL, "parse_interface_block: out_struct is NULL");
     wgsl_compiler_assert(out_var != NULL, "parse_interface_block: out_var is NULL");
@@ -1068,7 +1085,7 @@ static void parse_interface_block(GpParser *P, WgslAstNode **out_struct,
     WgslAstNode *G = gp_new_node(P, WGSL_NODE_GLOBAL_VAR);
     G->global_var.name = inst_name;
     G->global_var.type = gp_new_type(P, bname);
-    G->global_var.address_space = address_space ? glsl_strdup(address_space) : NULL;
+    G->global_var.address_space = address_space;
     G->global_var.attr_count = attr_count;
     G->global_var.attrs = attrs;
     *out_var = G;
@@ -1111,6 +1128,7 @@ static WgslAstNode *gp_parse_param(GpParser *P) {
         Par->param.attr_count = 1;
         Par->param.attrs = (WgslAstNode **)NODE_MALLOC(sizeof(WgslAstNode *));
         WgslAstNode *attr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+        attr->attribute.kind = sw_parse_attr_kind(param_qual, strlen(param_qual));
         attr->attribute.name = param_qual;
         Par->param.attrs[0] = attr;
     } else {
@@ -1252,11 +1270,11 @@ static WgslAstNode *parse_external_declaration(GpParser *P,
         GpToken t2 = gp_lx_next(&L2);
         if (t2.type == GP_TOK_LBRACE) {
             /* Map storage qualifier to address space */
-            const char *addr = NULL;
-            if (strcmp(storage, "uniform") == 0) addr = "uniform";
-            else if (strcmp(storage, "buffer") == 0) addr = "storage";
-            else if (strcmp(storage, "shared") == 0) addr = "workgroup";
-            else addr = storage;
+            WgslAstAddrSpace addr = WGSL_ADDR_NONE;
+            if (strcmp(storage, "uniform") == 0) addr = WGSL_ADDR_UNIFORM;
+            else if (strcmp(storage, "buffer") == 0) addr = WGSL_ADDR_STORAGE;
+            else if (strcmp(storage, "shared") == 0) addr = WGSL_ADDR_WORKGROUP;
+            else addr = sw_parse_addr_space(storage, strlen(storage));
 
             WgslAstNode *s_node = NULL, *v_node = NULL;
             parse_interface_block(P, &s_node, &v_node, attrs, attr_count, addr);
@@ -1276,7 +1294,8 @@ static WgslAstNode *parse_external_declaration(GpParser *P,
         /* Create a global var node with the attributes (e.g. workgroup_size) */
         WgslAstNode *gv = gp_new_node(P, WGSL_NODE_GLOBAL_VAR);
         gv->global_var.name = glsl_strdup("__layout_decl");
-        gv->global_var.address_space = storage; /* transfer ownership */
+        gv->global_var.address_space = sw_parse_addr_space(storage, strlen(storage));
+        NODE_FREE(storage);
         gv->global_var.type = NULL;
         gv->global_var.attrs = attrs;
         gv->global_var.attr_count = attr_count;
@@ -1320,6 +1339,7 @@ static WgslAstNode *parse_external_declaration(GpParser *P,
         /* Add interpolation as attribute if present */
         if (interp) {
             WgslAstNode *iattr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+            iattr->attribute.kind = sw_parse_attr_kind(interp, strlen(interp));
             iattr->attribute.name = interp;
             gp_vec_push_node(&attrs, &attr_count, &(int){0}, iattr);
         }
@@ -1356,18 +1376,19 @@ static WgslAstNode *parse_external_declaration(GpParser *P,
     }
 
     /* Map storage qualifier to address space */
-    char *addr_space = NULL;
-    if (strcmp(storage, "in") == 0) addr_space = glsl_strdup("in");
-    else if (strcmp(storage, "out") == 0) addr_space = glsl_strdup("out");
-    else if (strcmp(storage, "uniform") == 0) addr_space = glsl_strdup("uniform");
-    else if (strcmp(storage, "buffer") == 0) addr_space = glsl_strdup("storage");
-    else if (strcmp(storage, "shared") == 0) addr_space = glsl_strdup("workgroup");
-    else addr_space = glsl_strdup(storage);
+    WgslAstAddrSpace addr_space = WGSL_ADDR_NONE;
+    if (strcmp(storage, "in") == 0) addr_space = WGSL_ADDR_IN;
+    else if (strcmp(storage, "out") == 0) addr_space = WGSL_ADDR_OUT;
+    else if (strcmp(storage, "uniform") == 0) addr_space = WGSL_ADDR_UNIFORM;
+    else if (strcmp(storage, "buffer") == 0) addr_space = WGSL_ADDR_STORAGE;
+    else if (strcmp(storage, "shared") == 0) addr_space = WGSL_ADDR_WORKGROUP;
+    else addr_space = sw_parse_addr_space(storage, strlen(storage));
     NODE_FREE(storage);
 
     /* Add interpolation as attribute */
     if (interp) {
         WgslAstNode *iattr = gp_new_node(P, WGSL_NODE_ATTRIBUTE);
+        iattr->attribute.kind = sw_parse_attr_kind(interp, strlen(interp));
         iattr->attribute.name = interp;
         int acap = attr_count;
         gp_vec_push_node(&attrs, &attr_count, &acap, iattr);
@@ -1711,7 +1732,7 @@ static WgslAstNode *gp_parse_assignment(GpParser *P) {
     if (gp_match(P, GP_TOK_EQ)) {
         WgslAstNode *right = gp_parse_assignment(P);
         WgslAstNode *A = gp_new_node(P, WGSL_NODE_ASSIGN);
-        A->assign.op = glsl_strdup("=");
+        A->assign.op = WGSL_ASSIGN_EQ;
         A->assign.lhs = left;
         A->assign.rhs = right;
         return A;
@@ -1720,18 +1741,20 @@ static WgslAstNode *gp_parse_assignment(GpParser *P) {
     /* Compound assignment operators */
     struct {
         GpTokenType tok;
-        const char *op;
+        WgslAssignOp op;
     } compounds[] = {
-        {GP_TOK_PLUSEQ, "+="}, {GP_TOK_MINUSEQ, "-="}, {GP_TOK_STAREQ, "*="},
-        {GP_TOK_SLASHEQ, "/="}, {GP_TOK_PERCENTEQ, "%="},
-        {GP_TOK_AMPEQ, "&="}, {GP_TOK_PIPEEQ, "|="}, {GP_TOK_CARETEQ, "^="},
-        {GP_TOK_SHLEQ, "<<="}, {GP_TOK_SHREQ, ">>="},
-        {GP_TOK_EOF, NULL}};
-    for (int i = 0; compounds[i].op; i++) {
+        {GP_TOK_PLUSEQ, WGSL_ASSIGN_ADD}, {GP_TOK_MINUSEQ, WGSL_ASSIGN_SUB},
+        {GP_TOK_STAREQ, WGSL_ASSIGN_MUL}, {GP_TOK_SLASHEQ, WGSL_ASSIGN_DIV},
+        {GP_TOK_PERCENTEQ, WGSL_ASSIGN_MOD},
+        {GP_TOK_AMPEQ, WGSL_ASSIGN_AND}, {GP_TOK_PIPEEQ, WGSL_ASSIGN_OR},
+        {GP_TOK_CARETEQ, WGSL_ASSIGN_XOR},
+        {GP_TOK_SHLEQ, WGSL_ASSIGN_SHL}, {GP_TOK_SHREQ, WGSL_ASSIGN_SHR},
+        {GP_TOK_EOF, WGSL_ASSIGN_EQ}};
+    for (int i = 0; compounds[i].tok != GP_TOK_EOF; i++) {
         if (gp_match(P, compounds[i].tok)) {
             WgslAstNode *right = gp_parse_assignment(P);
             WgslAstNode *A = gp_new_node(P, WGSL_NODE_ASSIGN);
-            A->assign.op = glsl_strdup(compounds[i].op);
+            A->assign.op = compounds[i].op;
             A->assign.lhs = left;
             A->assign.rhs = right;
             return A;
@@ -1764,7 +1787,7 @@ static WgslAstNode *gp_parse_logical_or(GpParser *P) {
     while (gp_match(P, GP_TOK_OROR)) {
         WgslAstNode *right = gp_parse_logical_and(P);
         WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = glsl_strdup("||");
+        B->binary.op = WGSL_BIN_LOR;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1779,7 +1802,7 @@ static WgslAstNode *gp_parse_logical_and(GpParser *P) {
     while (gp_match(P, GP_TOK_ANDAND)) {
         WgslAstNode *right = parse_bitwise_or(P);
         WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = glsl_strdup("&&");
+        B->binary.op = WGSL_BIN_LAND;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1794,7 +1817,7 @@ static WgslAstNode *parse_bitwise_or(GpParser *P) {
     while (gp_match(P, GP_TOK_PIPE)) {
         WgslAstNode *right = parse_bitwise_xor(P);
         WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = glsl_strdup("|");
+        B->binary.op = WGSL_BIN_OR;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1809,7 +1832,7 @@ static WgslAstNode *parse_bitwise_xor(GpParser *P) {
     while (gp_match(P, GP_TOK_CARET)) {
         WgslAstNode *right = parse_bitwise_and(P);
         WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = glsl_strdup("^");
+        B->binary.op = WGSL_BIN_XOR;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1824,7 +1847,7 @@ static WgslAstNode *parse_bitwise_and(GpParser *P) {
     while (gp_match(P, GP_TOK_AMP)) {
         WgslAstNode *right = gp_parse_equality(P);
         WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-        B->binary.op = glsl_strdup("&");
+        B->binary.op = WGSL_BIN_AND;
         B->binary.left = left;
         B->binary.right = right;
         left = B;
@@ -1840,7 +1863,7 @@ static WgslAstNode *gp_parse_equality(GpParser *P) {
         if (gp_match(P, GP_TOK_EQEQ)) {
             WgslAstNode *r = gp_parse_relational(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("==");
+            B->binary.op = WGSL_BIN_EQ;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1849,7 +1872,7 @@ static WgslAstNode *gp_parse_equality(GpParser *P) {
         if (gp_match(P, GP_TOK_NEQ)) {
             WgslAstNode *r = gp_parse_relational(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("!=");
+            B->binary.op = WGSL_BIN_NE;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1868,7 +1891,7 @@ static WgslAstNode *gp_parse_relational(GpParser *P) {
         if (gp_match(P, GP_TOK_LT)) {
             WgslAstNode *r = gp_parse_shift(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("<");
+            B->binary.op = WGSL_BIN_LT;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1877,7 +1900,7 @@ static WgslAstNode *gp_parse_relational(GpParser *P) {
         if (gp_match(P, GP_TOK_GT)) {
             WgslAstNode *r = gp_parse_shift(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup(">");
+            B->binary.op = WGSL_BIN_GT;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1886,7 +1909,7 @@ static WgslAstNode *gp_parse_relational(GpParser *P) {
         if (gp_match(P, GP_TOK_LE)) {
             WgslAstNode *r = gp_parse_shift(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("<=");
+            B->binary.op = WGSL_BIN_LE;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1895,7 +1918,7 @@ static WgslAstNode *gp_parse_relational(GpParser *P) {
         if (gp_match(P, GP_TOK_GE)) {
             WgslAstNode *r = gp_parse_shift(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup(">=");
+            B->binary.op = WGSL_BIN_GE;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1914,7 +1937,7 @@ static WgslAstNode *gp_parse_shift(GpParser *P) {
         if (gp_match(P, GP_TOK_SHL)) {
             WgslAstNode *r = gp_parse_additive(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("<<");
+            B->binary.op = WGSL_BIN_SHL;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1923,7 +1946,7 @@ static WgslAstNode *gp_parse_shift(GpParser *P) {
         if (gp_match(P, GP_TOK_SHR)) {
             WgslAstNode *r = gp_parse_additive(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup(">>");
+            B->binary.op = WGSL_BIN_SHR;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1942,7 +1965,7 @@ static WgslAstNode *gp_parse_additive(GpParser *P) {
         if (gp_match(P, GP_TOK_PLUS)) {
             WgslAstNode *r = gp_parse_multiplicative(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("+");
+            B->binary.op = WGSL_BIN_ADD;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1951,7 +1974,7 @@ static WgslAstNode *gp_parse_additive(GpParser *P) {
         if (gp_match(P, GP_TOK_MINUS)) {
             WgslAstNode *r = gp_parse_multiplicative(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("-");
+            B->binary.op = WGSL_BIN_SUB;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1970,7 +1993,7 @@ static WgslAstNode *gp_parse_multiplicative(GpParser *P) {
         if (gp_match(P, GP_TOK_STAR)) {
             WgslAstNode *r = gp_parse_unary(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("*");
+            B->binary.op = WGSL_BIN_MUL;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1979,7 +2002,7 @@ static WgslAstNode *gp_parse_multiplicative(GpParser *P) {
         if (gp_match(P, GP_TOK_SLASH)) {
             WgslAstNode *r = gp_parse_unary(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("/");
+            B->binary.op = WGSL_BIN_DIV;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -1988,7 +2011,7 @@ static WgslAstNode *gp_parse_multiplicative(GpParser *P) {
         if (gp_match(P, GP_TOK_PERCENT)) {
             WgslAstNode *r = gp_parse_unary(P);
             WgslAstNode *B = gp_new_node(P, WGSL_NODE_BINARY);
-            B->binary.op = glsl_strdup("%");
+            B->binary.op = WGSL_BIN_MOD;
             B->binary.left = left;
             B->binary.right = r;
             left = B;
@@ -2002,53 +2025,23 @@ static WgslAstNode *gp_parse_multiplicative(GpParser *P) {
 // P nonnull
 static WgslAstNode *gp_parse_unary(GpParser *P) {
     wgsl_compiler_assert(P != NULL, "gp_parse_unary: P is NULL");
-    if (gp_match(P, GP_TOK_PLUSPLUS)) {
-        WgslAstNode *e = gp_parse_unary(P);
-        WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("++");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (gp_match(P, GP_TOK_MINUSMINUS)) {
-        WgslAstNode *e = gp_parse_unary(P);
-        WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("--");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (gp_match(P, GP_TOK_PLUS)) {
-        WgslAstNode *e = gp_parse_unary(P);
-        WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("+");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (gp_match(P, GP_TOK_MINUS)) {
-        WgslAstNode *e = gp_parse_unary(P);
-        WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("-");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (gp_match(P, GP_TOK_BANG)) {
-        WgslAstNode *e = gp_parse_unary(P);
-        WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("!");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
-    }
-    if (gp_match(P, GP_TOK_TILDE)) {
-        WgslAstNode *e = gp_parse_unary(P);
-        WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-        U->unary.op = glsl_strdup("~");
-        U->unary.is_postfix = 0;
-        U->unary.expr = e;
-        return U;
+    struct {
+        GpTokenType tok;
+        WgslUnaryOp op;
+    } prefixes[] = {
+        {GP_TOK_PLUSPLUS, WGSL_UN_PREINC}, {GP_TOK_MINUSMINUS, WGSL_UN_PREDEC},
+        {GP_TOK_PLUS, WGSL_UN_POS}, {GP_TOK_MINUS, WGSL_UN_NEG},
+        {GP_TOK_BANG, WGSL_UN_NOT}, {GP_TOK_TILDE, WGSL_UN_BITNOT},
+        {GP_TOK_EOF, WGSL_UN_NONE}};
+    for (int i = 0; prefixes[i].tok != GP_TOK_EOF; i++) {
+        if (gp_match(P, prefixes[i].tok)) {
+            WgslAstNode *e = gp_parse_unary(P);
+            WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
+            U->unary.op = prefixes[i].op;
+            U->unary.is_postfix = 0;
+            U->unary.expr = e;
+            return U;
+        }
     }
     return gp_parse_postfix(P);
 }
@@ -2102,7 +2095,7 @@ static WgslAstNode *gp_parse_postfix(GpParser *P) {
         }
         if (gp_match(P, GP_TOK_PLUSPLUS)) {
             WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-            U->unary.op = glsl_strdup("++");
+            U->unary.op = WGSL_UN_POSTINC;
             U->unary.is_postfix = 1;
             U->unary.expr = expr;
             expr = U;
@@ -2110,7 +2103,7 @@ static WgslAstNode *gp_parse_postfix(GpParser *P) {
         }
         if (gp_match(P, GP_TOK_MINUSMINUS)) {
             WgslAstNode *U = gp_new_node(P, WGSL_NODE_UNARY);
-            U->unary.op = glsl_strdup("--");
+            U->unary.op = WGSL_UN_POSTDEC;
             U->unary.is_postfix = 1;
             U->unary.expr = expr;
             expr = U;
@@ -2144,10 +2137,12 @@ static WgslAstNode *gp_parse_primary(GpParser *P) {
     /* Boolean literals */
     if (gp_check(P, GP_TOK_IDENT) && (tok_eq(&P->cur, "true") || tok_eq(&P->cur, "false"))) {
         GpToken t = P->cur;
+        int bv = tok_eq(&t, "true") ? 1 : 0;
         gp_advance(P);
         WgslAstNode *n = gp_new_node(P, WGSL_NODE_LITERAL);
         n->literal.lexeme = glsl_strndup(t.start, (size_t)t.length);
-        n->literal.kind = WGSL_LIT_INT; /* treat booleans as int-like for now */
+        n->literal.kind = WGSL_LIT_BOOL;
+        n->literal.value.b = bv;
         return n;
     }
 
@@ -2223,23 +2218,23 @@ typedef struct {
     const char *glsl_name;
     const char *builtin_name;
     const char *wgsl_type;
-    const char *addr_space; /* "in" or "out" */
+    WgslAstAddrSpace addr_space; /* WGSL_ADDR_IN or WGSL_ADDR_OUT */
     WgslStage stage;
 } GlslBuiltinDef;
 
 static const GlslBuiltinDef glsl_builtins[] = {
-    {"gl_Position", "position", "vec4f", "out", WGSL_STAGE_VERTEX},
-    {"gl_VertexIndex", "vertex_index", "u32", "in", WGSL_STAGE_VERTEX},
-    {"gl_InstanceIndex", "instance_index", "u32", "in", WGSL_STAGE_VERTEX},
-    {"gl_FragCoord", "position", "vec4f", "in", WGSL_STAGE_FRAGMENT},
-    {"gl_FrontFacing", "front_facing", "bool", "in", WGSL_STAGE_FRAGMENT},
-    {"gl_FragDepth", "frag_depth", "f32", "out", WGSL_STAGE_FRAGMENT},
-    {"gl_GlobalInvocationID", "global_invocation_id", "vec3u", "in", WGSL_STAGE_COMPUTE},
-    {"gl_LocalInvocationID", "local_invocation_id", "vec3u", "in", WGSL_STAGE_COMPUTE},
-    {"gl_WorkGroupID", "workgroup_id", "vec3u", "in", WGSL_STAGE_COMPUTE},
-    {"gl_NumWorkGroups", "num_workgroups", "vec3u", "in", WGSL_STAGE_COMPUTE},
-    {"gl_LocalInvocationIndex", "local_invocation_index", "u32", "in", WGSL_STAGE_COMPUTE},
-    {NULL, NULL, NULL, NULL, WGSL_STAGE_UNKNOWN}};
+    {"gl_Position", "position", "vec4f", WGSL_ADDR_OUT, WGSL_STAGE_VERTEX},
+    {"gl_VertexIndex", "vertex_index", "u32", WGSL_ADDR_IN, WGSL_STAGE_VERTEX},
+    {"gl_InstanceIndex", "instance_index", "u32", WGSL_ADDR_IN, WGSL_STAGE_VERTEX},
+    {"gl_FragCoord", "position", "vec4f", WGSL_ADDR_IN, WGSL_STAGE_FRAGMENT},
+    {"gl_FrontFacing", "front_facing", "bool", WGSL_ADDR_IN, WGSL_STAGE_FRAGMENT},
+    {"gl_FragDepth", "frag_depth", "f32", WGSL_ADDR_OUT, WGSL_STAGE_FRAGMENT},
+    {"gl_GlobalInvocationID", "global_invocation_id", "vec3u", WGSL_ADDR_IN, WGSL_STAGE_COMPUTE},
+    {"gl_LocalInvocationID", "local_invocation_id", "vec3u", WGSL_ADDR_IN, WGSL_STAGE_COMPUTE},
+    {"gl_WorkGroupID", "workgroup_id", "vec3u", WGSL_ADDR_IN, WGSL_STAGE_COMPUTE},
+    {"gl_NumWorkGroups", "num_workgroups", "vec3u", WGSL_ADDR_IN, WGSL_STAGE_COMPUTE},
+    {"gl_LocalInvocationIndex", "local_invocation_index", "u32", WGSL_ADDR_IN, WGSL_STAGE_COMPUTE},
+    {NULL, NULL, NULL, WGSL_ADDR_NONE, WGSL_STAGE_UNKNOWN}};
 
 // name nonnull
 static int ast_uses_ident(const WgslAstNode *n, const char *name) {
@@ -2313,7 +2308,7 @@ static WgslAstNode *make_builtin_global(const GlslBuiltinDef *def) {
     memset(gv, 0, sizeof(*gv));
     gv->type = WGSL_NODE_GLOBAL_VAR;
     gv->global_var.name = glsl_strdup(def->glsl_name);
-    gv->global_var.address_space = glsl_strdup(def->addr_space);
+    gv->global_var.address_space = def->addr_space;
     gv->global_var.type = NODE_ALLOC(WgslAstNode);
     memset(gv->global_var.type, 0, sizeof(WgslAstNode));
     gv->global_var.type->type = WGSL_NODE_TYPE;
@@ -2323,6 +2318,7 @@ static WgslAstNode *make_builtin_global(const GlslBuiltinDef *def) {
     WgslAstNode *attr = NODE_ALLOC(WgslAstNode);
     memset(attr, 0, sizeof(*attr));
     attr->type = WGSL_NODE_ATTRIBUTE;
+    attr->attribute.kind = WGSL_ATTR_BUILTIN;
     attr->attribute.name = glsl_strdup("builtin");
     attr->attribute.arg_count = 1;
     attr->attribute.args = (WgslAstNode **)NODE_MALLOC(sizeof(WgslAstNode *));
@@ -2399,6 +2395,7 @@ static void inject_stage_attr(WgslAstNode *ast, WgslStage stage) {
         WgslAstNode *attr = NODE_ALLOC(WgslAstNode);
         memset(attr, 0, sizeof(*attr));
         attr->type = WGSL_NODE_ATTRIBUTE;
+        attr->attribute.kind = sw_parse_attr_kind(attr_name, strlen(attr_name));
         attr->attribute.name = glsl_strdup(attr_name);
 
         int old_count = d->function.attr_count;

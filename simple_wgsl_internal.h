@@ -43,6 +43,228 @@
 } while(0)
 
 /* ============================================================================
+ * Vector swizzle char -> index
+ * ============================================================================ */
+
+static inline int sw_swizzle_char_to_idx(char c) {
+    switch (c) {
+        case 'x': case 'r': case 's': return 0;
+        case 'y': case 'g': case 't': return 1;
+        case 'z': case 'b': case 'p': return 2;
+        case 'w': case 'a': case 'q': return 3;
+        default: return -1;
+    }
+}
+
+/* ============================================================================
+ * WGSL AST address-space name <-> enum conversion
+ * ============================================================================ */
+
+static inline int sw_str_eq_n(const char *s, size_t n, const char *lit) {
+    size_t ll = strlen(lit);
+    return n == ll && memcmp(s, lit, ll) == 0;
+}
+
+static inline WgslAstAddrSpace sw_parse_addr_space(const char *s, size_t n) {
+    if (!s || n == 0) return WGSL_ADDR_NONE;
+    if (sw_str_eq_n(s, n, "function")) return WGSL_ADDR_FUNCTION;
+    if (sw_str_eq_n(s, n, "private")) return WGSL_ADDR_PRIVATE;
+    if (sw_str_eq_n(s, n, "workgroup")) return WGSL_ADDR_WORKGROUP;
+    if (sw_str_eq_n(s, n, "uniform")) return WGSL_ADDR_UNIFORM;
+    if (sw_str_eq_n(s, n, "storage")) return WGSL_ADDR_STORAGE;
+    if (sw_str_eq_n(s, n, "immediate")) return WGSL_ADDR_IMMEDIATE;
+    if (sw_str_eq_n(s, n, "device")) return WGSL_ADDR_DEVICE;
+    if (sw_str_eq_n(s, n, "in")) return WGSL_ADDR_IN;
+    if (sw_str_eq_n(s, n, "out")) return WGSL_ADDR_OUT;
+    if (sw_str_eq_n(s, n, "push_constant")) return WGSL_ADDR_PUSH_CONSTANT;
+    if (sw_str_eq_n(s, n, "handle")) return WGSL_ADDR_HANDLE;
+    return WGSL_ADDR_UNKNOWN;
+}
+
+/* ============================================================================
+ * WGSL built-in type name parsing
+ * ============================================================================ */
+
+typedef enum WgslScalarKind {
+    WGSL_SCALAR_NONE = 0,
+    WGSL_SCALAR_VOID,
+    WGSL_SCALAR_BOOL,
+    WGSL_SCALAR_I32,
+    WGSL_SCALAR_U32,
+    WGSL_SCALAR_F32,
+    WGSL_SCALAR_F16
+} WgslScalarKind;
+
+typedef enum WgslTypeTag {
+    WGSL_TYPE_UNKNOWN = 0,
+    WGSL_TYPE_SCALAR,
+    WGSL_TYPE_VEC,
+    WGSL_TYPE_MAT,
+    WGSL_TYPE_ARRAY,
+    WGSL_TYPE_BINDING_ARRAY,
+    WGSL_TYPE_PTR,
+    WGSL_TYPE_ATOMIC,
+    WGSL_TYPE_SAMPLER,
+    WGSL_TYPE_SAMPLER_COMPARISON,
+    WGSL_TYPE_TEXTURE_1D,
+    WGSL_TYPE_TEXTURE_2D,
+    WGSL_TYPE_TEXTURE_3D,
+    WGSL_TYPE_TEXTURE_CUBE,
+    WGSL_TYPE_TEXTURE_2D_ARRAY,
+    WGSL_TYPE_TEXTURE_CUBE_ARRAY,
+    WGSL_TYPE_TEXTURE_MULTISAMPLED_2D,
+    WGSL_TYPE_TEXTURE_DEPTH_2D,
+    WGSL_TYPE_TEXTURE_DEPTH_MULTISAMPLED_2D,
+    WGSL_TYPE_TEXTURE_DEPTH_CUBE,
+    WGSL_TYPE_TEXTURE_STORAGE_1D,
+    WGSL_TYPE_TEXTURE_STORAGE_2D,
+    WGSL_TYPE_TEXTURE_STORAGE_3D,
+    WGSL_TYPE_TEXTURE_STORAGE_2D_ARRAY
+} WgslTypeTag;
+
+typedef struct WgslBuiltinTypeInfo {
+    WgslTypeTag tag;
+    WgslScalarKind scalar;   /* for SCALAR/VEC: element kind; 0 if no implicit */
+    uint8_t vec_n;            /* for VEC: 2/3/4 */
+    uint8_t mat_c;            /* for MAT: 2/3/4 */
+    uint8_t mat_r;            /* for MAT: 2/3/4 */
+} WgslBuiltinTypeInfo;
+
+static inline WgslScalarKind sw_parse_scalar_name(const char *s, size_t n) {
+    if (sw_str_eq_n(s, n, "void")) return WGSL_SCALAR_VOID;
+    if (sw_str_eq_n(s, n, "bool")) return WGSL_SCALAR_BOOL;
+    if (sw_str_eq_n(s, n, "i32")) return WGSL_SCALAR_I32;
+    if (sw_str_eq_n(s, n, "u32")) return WGSL_SCALAR_U32;
+    if (sw_str_eq_n(s, n, "f32")) return WGSL_SCALAR_F32;
+    if (sw_str_eq_n(s, n, "f16")) return WGSL_SCALAR_F16;
+    return WGSL_SCALAR_NONE;
+}
+
+static inline WgslScalarKind sw_vec_suffix_to_scalar(char c) {
+    switch (c) {
+        case 'f': return WGSL_SCALAR_F32;
+        case 'i': return WGSL_SCALAR_I32;
+        case 'u': return WGSL_SCALAR_U32;
+        case 'h': return WGSL_SCALAR_F16;
+        default:  return WGSL_SCALAR_NONE;
+    }
+}
+
+static inline int sw_parse_builtin_type_name(const char *s, size_t n,
+                                             WgslBuiltinTypeInfo *out) {
+    out->tag = WGSL_TYPE_UNKNOWN;
+    out->scalar = WGSL_SCALAR_NONE;
+    out->vec_n = 0; out->mat_c = 0; out->mat_r = 0;
+    if (!s || n == 0) return 0;
+    WgslScalarKind sk = sw_parse_scalar_name(s, n);
+    if (sk != WGSL_SCALAR_NONE) {
+        out->tag = WGSL_TYPE_SCALAR;
+        out->scalar = sk;
+        return 1;
+    }
+    if (n >= 4 && s[0] == 'v' && s[1] == 'e' && s[2] == 'c') {
+        char d = s[3];
+        if (d >= '2' && d <= '4') {
+            out->tag = WGSL_TYPE_VEC;
+            out->vec_n = (uint8_t)(d - '0');
+            if (n == 4) { out->scalar = WGSL_SCALAR_NONE; return 1; }
+            if (n == 5) {
+                WgslScalarKind ss = sw_vec_suffix_to_scalar(s[4]);
+                if (ss != WGSL_SCALAR_NONE) { out->scalar = ss; return 1; }
+            }
+            out->tag = WGSL_TYPE_UNKNOWN;
+            out->vec_n = 0;
+        }
+    }
+    if (n >= 5 && s[0] == 'm' && s[1] == 'a' && s[2] == 't') {
+        char c = s[3], x = s[4];
+        if (c >= '2' && c <= '4' && x == 'x' && n >= 6) {
+            char r = s[5];
+            if (r >= '2' && r <= '4') {
+                if (n == 6) {
+                    out->tag = WGSL_TYPE_MAT;
+                    out->mat_c = (uint8_t)(c - '0');
+                    out->mat_r = (uint8_t)(r - '0');
+                    out->scalar = WGSL_SCALAR_NONE;
+                    return 1;
+                }
+                if (n == 7) {
+                    WgslScalarKind ss = sw_vec_suffix_to_scalar(s[6]);
+                    if (ss != WGSL_SCALAR_NONE) {
+                        out->tag = WGSL_TYPE_MAT;
+                        out->mat_c = (uint8_t)(c - '0');
+                        out->mat_r = (uint8_t)(r - '0');
+                        out->scalar = ss;
+                        return 1;
+                    }
+                }
+            }
+        }
+    }
+    if (sw_str_eq_n(s, n, "array"))         { out->tag = WGSL_TYPE_ARRAY; return 1; }
+    if (sw_str_eq_n(s, n, "binding_array")) { out->tag = WGSL_TYPE_BINDING_ARRAY; return 1; }
+    if (sw_str_eq_n(s, n, "ptr"))           { out->tag = WGSL_TYPE_PTR; return 1; }
+    if (sw_str_eq_n(s, n, "atomic"))        { out->tag = WGSL_TYPE_ATOMIC; return 1; }
+    if (sw_str_eq_n(s, n, "sampler"))       { out->tag = WGSL_TYPE_SAMPLER; return 1; }
+    if (sw_str_eq_n(s, n, "sampler_comparison")) { out->tag = WGSL_TYPE_SAMPLER_COMPARISON; return 1; }
+    if (sw_str_eq_n(s, n, "texture_1d"))    { out->tag = WGSL_TYPE_TEXTURE_1D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_2d"))    { out->tag = WGSL_TYPE_TEXTURE_2D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_3d"))    { out->tag = WGSL_TYPE_TEXTURE_3D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_cube"))  { out->tag = WGSL_TYPE_TEXTURE_CUBE; return 1; }
+    if (sw_str_eq_n(s, n, "texture_2d_array")) { out->tag = WGSL_TYPE_TEXTURE_2D_ARRAY; return 1; }
+    if (sw_str_eq_n(s, n, "texture_cube_array")) { out->tag = WGSL_TYPE_TEXTURE_CUBE_ARRAY; return 1; }
+    if (sw_str_eq_n(s, n, "texture_multisampled_2d")) { out->tag = WGSL_TYPE_TEXTURE_MULTISAMPLED_2D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_depth_2d")) { out->tag = WGSL_TYPE_TEXTURE_DEPTH_2D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_depth_multisampled_2d")) { out->tag = WGSL_TYPE_TEXTURE_DEPTH_MULTISAMPLED_2D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_depth_cube")) { out->tag = WGSL_TYPE_TEXTURE_DEPTH_CUBE; return 1; }
+    if (sw_str_eq_n(s, n, "texture_storage_1d")) { out->tag = WGSL_TYPE_TEXTURE_STORAGE_1D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_storage_2d")) { out->tag = WGSL_TYPE_TEXTURE_STORAGE_2D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_storage_3d")) { out->tag = WGSL_TYPE_TEXTURE_STORAGE_3D; return 1; }
+    if (sw_str_eq_n(s, n, "texture_storage_2d_array")) { out->tag = WGSL_TYPE_TEXTURE_STORAGE_2D_ARRAY; return 1; }
+    return 0;
+}
+
+static inline WgslAttrKind sw_parse_attr_kind(const char *s, size_t n) {
+    if (!s || n == 0) return WGSL_ATTR_UNKNOWN;
+    if (sw_str_eq_n(s, n, "group")) return WGSL_ATTR_GROUP;
+    if (sw_str_eq_n(s, n, "binding")) return WGSL_ATTR_BINDING;
+    if (sw_str_eq_n(s, n, "location")) return WGSL_ATTR_LOCATION;
+    if (sw_str_eq_n(s, n, "builtin")) return WGSL_ATTR_BUILTIN;
+    if (sw_str_eq_n(s, n, "workgroup_size")) return WGSL_ATTR_WORKGROUP_SIZE;
+    if (sw_str_eq_n(s, n, "interpolate")) return WGSL_ATTR_INTERPOLATE;
+    if (sw_str_eq_n(s, n, "align")) return WGSL_ATTR_ALIGN;
+    if (sw_str_eq_n(s, n, "size")) return WGSL_ATTR_SIZE;
+    if (sw_str_eq_n(s, n, "id")) return WGSL_ATTR_ID;
+    if (sw_str_eq_n(s, n, "vertex")) return WGSL_ATTR_VERTEX;
+    if (sw_str_eq_n(s, n, "fragment")) return WGSL_ATTR_FRAGMENT;
+    if (sw_str_eq_n(s, n, "compute")) return WGSL_ATTR_COMPUTE;
+    if (sw_str_eq_n(s, n, "invariant")) return WGSL_ATTR_INVARIANT;
+    if (sw_str_eq_n(s, n, "must_use")) return WGSL_ATTR_MUST_USE;
+    if (sw_str_eq_n(s, n, "stride")) return WGSL_ATTR_STRIDE;
+    if (sw_str_eq_n(s, n, "flat")) return WGSL_ATTR_FLAT;
+    if (sw_str_eq_n(s, n, "push_constant")) return WGSL_ATTR_PUSH_CONSTANT;
+    return WGSL_ATTR_UNKNOWN;
+}
+
+static inline const char *sw_addr_space_name(WgslAstAddrSpace a) {
+    switch (a) {
+        case WGSL_ADDR_FUNCTION: return "function";
+        case WGSL_ADDR_PRIVATE: return "private";
+        case WGSL_ADDR_WORKGROUP: return "workgroup";
+        case WGSL_ADDR_UNIFORM: return "uniform";
+        case WGSL_ADDR_STORAGE: return "storage";
+        case WGSL_ADDR_IMMEDIATE: return "immediate";
+        case WGSL_ADDR_DEVICE: return "device";
+        case WGSL_ADDR_IN: return "in";
+        case WGSL_ADDR_OUT: return "out";
+        case WGSL_ADDR_PUSH_CONSTANT: return "push_constant";
+        case WGSL_ADDR_HANDLE: return "handle";
+        case WGSL_ADDR_UNKNOWN: return "unknown";
+        case WGSL_ADDR_NONE: default: return NULL;
+    }
+}
+
+/* ============================================================================
  * SwStringBuffer - Growable text buffer (replaces 4 backend copies)
  * ============================================================================ */
 
@@ -224,11 +446,11 @@ static inline void *sw_grow_array(void *p, int needed, int *cap, size_t elem,
     int nc = (*cap == 0) ? 4 : (*cap * 2);
     while (nc < needed) {
         int doubled = nc * 2;
-        if (doubled <= nc) return p;  /* overflow */
+        if (doubled <= nc) return NULL;  /* overflow */
         nc = doubled;
     }
     void *np = realloc_fn(p, (size_t)nc * elem);
-    if (!np) return p;
+    if (!np) return NULL;  /* OOM: old pointer preserved in *p, caller must check */
     *cap = nc;
     return np;
 }

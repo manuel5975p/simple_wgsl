@@ -60,6 +60,7 @@ typedef enum SwResult {
 } SwResult;
 
 const char *sw_result_string(SwResult r);
+void sw_free(void *p);
 
 /* ============================================================================
  * Compiler Assert Macro (libc-independent portable trap)
@@ -84,18 +85,7 @@ const char *sw_result_string(SwResult r);
 #endif
 #else
 #ifndef wgsl_compiler_assert
-#if defined(__clang__)
-#define wgsl_compiler_assert(cond, fmt, ...) __builtin_assume(cond)
-#elif defined(__GNUC__)
-#define wgsl_compiler_assert(cond, fmt, ...)  \
-    do {                                      \
-        if (!(cond)) __builtin_unreachable(); \
-    } while (0)
-#elif defined(_MSC_VER)
-#define wgsl_compiler_assert(cond, fmt, ...) __assume(cond)
-#else
-#define wgsl_compiler_assert(cond, fmt, ...) ((void)0)
-#endif
+#define wgsl_compiler_assert(cond, fmt, ...) ((void)(cond))
 #endif
 #endif
 
@@ -138,8 +128,30 @@ typedef enum WgslNodeType {
 
 typedef struct WgslAstNode WgslAstNode;
 
+typedef enum WgslAttrKind {
+    WGSL_ATTR_UNKNOWN = 0,
+    WGSL_ATTR_GROUP,
+    WGSL_ATTR_BINDING,
+    WGSL_ATTR_LOCATION,
+    WGSL_ATTR_BUILTIN,
+    WGSL_ATTR_WORKGROUP_SIZE,
+    WGSL_ATTR_INTERPOLATE,
+    WGSL_ATTR_ALIGN,
+    WGSL_ATTR_SIZE,
+    WGSL_ATTR_ID,
+    WGSL_ATTR_VERTEX,
+    WGSL_ATTR_FRAGMENT,
+    WGSL_ATTR_COMPUTE,
+    WGSL_ATTR_INVARIANT,
+    WGSL_ATTR_MUST_USE,
+    WGSL_ATTR_STRIDE,
+    WGSL_ATTR_FLAT,
+    WGSL_ATTR_PUSH_CONSTANT
+} WgslAttrKind;
+
 typedef struct Attribute {
-    char *name;
+    WgslAttrKind kind;
+    char *name;                /* kept for UNKNOWN / extensions */
     int arg_count;
     WgslAstNode **args;
 } Attribute;
@@ -167,10 +179,26 @@ typedef struct StructDecl {
     WgslAstNode **fields;
 } StructDecl;
 
+typedef enum WgslAstAddrSpace {
+    WGSL_ADDR_NONE = 0,
+    WGSL_ADDR_FUNCTION,
+    WGSL_ADDR_PRIVATE,
+    WGSL_ADDR_WORKGROUP,
+    WGSL_ADDR_UNIFORM,
+    WGSL_ADDR_STORAGE,
+    WGSL_ADDR_IMMEDIATE,     /* extension: push-constant */
+    WGSL_ADDR_DEVICE,        /* extension: BDA */
+    WGSL_ADDR_IN,            /* GLSL-style IO */
+    WGSL_ADDR_OUT,
+    WGSL_ADDR_PUSH_CONSTANT, /* GLSL-style explicit push_constant */
+    WGSL_ADDR_HANDLE,        /* samplers, textures (UniformConstant) */
+    WGSL_ADDR_UNKNOWN
+} WgslAstAddrSpace;
+
 typedef struct GlobalVar {
     int attr_count;
     WgslAstNode **attrs;
-    char *address_space;
+    WgslAstAddrSpace address_space;
     char *name;
     WgslAstNode *type;
     int is_alias;
@@ -246,22 +274,80 @@ typedef struct Ident {
     char *name;
 } Ident;
 
-typedef enum WgslLiteralKind { WGSL_LIT_INT,
-    WGSL_LIT_FLOAT } WgslLiteralKind;
+typedef enum WgslLiteralKind {
+    WGSL_LIT_INT = 0,
+    WGSL_LIT_FLOAT,
+    WGSL_LIT_BOOL
+} WgslLiteralKind;
 
 typedef struct Literal {
     WgslLiteralKind kind;
     char *lexeme;
+    union {
+        int64_t i;
+        double  f;
+        int     b;
+    } value;
 } Literal;
 
+typedef enum WgslBinOp {
+    WGSL_BIN_NONE = 0,
+    WGSL_BIN_ADD,       /* + */
+    WGSL_BIN_SUB,       /* - */
+    WGSL_BIN_MUL,       /* * */
+    WGSL_BIN_DIV,       /* / */
+    WGSL_BIN_MOD,       /* % */
+    WGSL_BIN_EQ,        /* == */
+    WGSL_BIN_NE,        /* != */
+    WGSL_BIN_LT,        /* <  */
+    WGSL_BIN_LE,        /* <= */
+    WGSL_BIN_GT,        /* >  */
+    WGSL_BIN_GE,        /* >= */
+    WGSL_BIN_AND,       /* &  */
+    WGSL_BIN_OR,        /* |  */
+    WGSL_BIN_XOR,       /* ^  */
+    WGSL_BIN_SHL,       /* << */
+    WGSL_BIN_SHR,       /* >> */
+    WGSL_BIN_LAND,      /* && */
+    WGSL_BIN_LOR        /* || */
+} WgslBinOp;
+
+typedef enum WgslUnaryOp {
+    WGSL_UN_NONE = 0,
+    WGSL_UN_POS,        /* +  (unary) */
+    WGSL_UN_NEG,        /* -  (unary) */
+    WGSL_UN_NOT,        /* !  */
+    WGSL_UN_BITNOT,     /* ~  */
+    WGSL_UN_ADDR,       /* &  (address-of) */
+    WGSL_UN_DEREF,      /* *  (deref) */
+    WGSL_UN_PREINC,     /* ++ prefix */
+    WGSL_UN_PREDEC,     /* -- prefix */
+    WGSL_UN_POSTINC,    /* ++ postfix */
+    WGSL_UN_POSTDEC     /* -- postfix */
+} WgslUnaryOp;
+
+typedef enum WgslAssignOp {
+    WGSL_ASSIGN_EQ = 0, /* = */
+    WGSL_ASSIGN_ADD,    /* += */
+    WGSL_ASSIGN_SUB,    /* -= */
+    WGSL_ASSIGN_MUL,    /* *= */
+    WGSL_ASSIGN_DIV,    /* /= */
+    WGSL_ASSIGN_MOD,    /* %= */
+    WGSL_ASSIGN_AND,    /* &= */
+    WGSL_ASSIGN_OR,     /* |= */
+    WGSL_ASSIGN_XOR,    /* ^= */
+    WGSL_ASSIGN_SHL,    /* <<= */
+    WGSL_ASSIGN_SHR     /* >>= */
+} WgslAssignOp;
+
 typedef struct Binary {
-    char *op;
+    WgslBinOp op;
     WgslAstNode *left;
     WgslAstNode *right;
 } Binary;
 
 typedef struct Assign {
-    char *op; /* "=" or "+=" etc. NULL treated as "=" */
+    WgslAssignOp op;
     WgslAstNode *lhs;
     WgslAstNode *rhs;
 } Assign;
@@ -283,7 +369,7 @@ typedef struct Index {
 } Index;
 
 typedef struct Unary {
-    char *op;
+    WgslUnaryOp op;
     int is_postfix;
     WgslAstNode *expr;
 } Unary;
@@ -312,11 +398,6 @@ typedef struct CaseClause {
     WgslAstNode **stmts;
 } CaseClause;
 
-typedef struct WgslTypeAlias {
-    char *name;
-    WgslAstNode *type; /* TYPE node */
-} WgslTypeAlias;
-
 /* WGSL extension flags */
 #define WGSL_EXT_IMMEDIATE_ADDRESS_SPACE 0x1u
 #define WGSL_EXT_IMMEDIATE_ARRAYS        0x2u
@@ -325,8 +406,6 @@ typedef struct WgslTypeAlias {
 typedef struct Program {
     int decl_count;
     WgslAstNode **decls;
-    int alias_count;
-    WgslTypeAlias *aliases;
     uint32_t extensions; /* bitmask of WGSL_EXT_* */
 } Program;
 
@@ -587,24 +666,11 @@ WgslLowerResult wgsl_lower_emit_spirv(const WgslAstNode *program,
     uint32_t **out_words,
     size_t *out_word_count);
 
-WgslLowerResult wgsl_lower_serialize(const WgslLower *lower,
-    uint32_t **out_words,
-    size_t *out_word_count);
-
-WgslLowerResult wgsl_lower_serialize_into(const WgslLower *lower,
-    uint32_t *out_words,
-    size_t max_words,
-    size_t *out_written);
-
 const char *wgsl_lower_last_error(const WgslLower *lower);
 
 const WgslLowerModuleFeatures *wgsl_lower_module_features(const WgslLower *lower);
 
 const WgslLowerEntrypointInfo *wgsl_lower_entrypoints(const WgslLower *lower, int *out_count);
-
-uint32_t wgsl_lower_node_result_id(const WgslLower *lower, const WgslAstNode *node);
-
-uint32_t wgsl_lower_symbol_result_id(const WgslLower *lower, int symbol_id);
 
 void wgsl_lower_free(void *p);
 
