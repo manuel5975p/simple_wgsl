@@ -1819,28 +1819,35 @@ static wgsl_test::CompileResult CompileImmediate(const char *source,
     wgsl_test::CompileResult result;
     result.success = false;
 
-    WgslAstNode *ast = wgsl_parse(source);
-    if (!ast) { result.error = "Parse failed"; return result; }
+    WgslParseResult pr = wgsl_parse(source);
+    WgslAstNode *ast = pr.value;
+    if (!ast) { result.error = "Parse failed"; wgsl_diagnostic_list_free(pr.diags); return result; }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
-    if (!resolver) { wgsl_free_ast(ast); result.error = "Resolve failed"; return result; }
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
+    if (!resolver) { wgsl_free_ast(ast); wgsl_diagnostic_list_free(pr.diags); wgsl_diagnostic_list_free(rr.diags); result.error = "Resolve failed"; return result; }
 
-    uint32_t *spirv = nullptr;
-    size_t spirv_size = 0;
     WgslLowerOptions opts = {};
     opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
     opts.entry_point = entry_point;
     opts.immediate_layout = layout;
 
-    WgslLowerResult lower_result =
-        wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &spirv_size);
+    WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast, resolver, &opts);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 
-    if (lower_result != WGSL_LOWER_OK) { result.error = "Lower failed"; return result; }
+    if (lsr.code != SW_OK) {
+        result.error = "Lower failed";
+        wgsl_diagnostic_list_free(lsr.diags);
+        if (lsr.words) wgsl_lower_free(lsr.words);
+        return result;
+    }
 
-    result.spirv.assign(spirv, spirv + spirv_size);
-    wgsl_lower_free(spirv);
+    result.spirv.assign(lsr.words, lsr.words + lsr.word_count);
+    wgsl_lower_free(lsr.words);
+    wgsl_diagnostic_list_free(lsr.diags);
 
     if (!wgsl_test::ValidateSpirv(result.spirv.data(), result.spirv.size(), &result.error))
         return result;

@@ -16,15 +16,13 @@ TEST(IntegrationTest, BuildLoweringEntrypoints) {
     WgslLowerOptions opts = {};
     opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
 
-    WgslLower *lower = wgsl_lower_create(ast.get(), resolver.get(), &opts);
-    ASSERT_NE(lower, nullptr);
+    wgsl_test::LowerGuard lower(wgsl_lower_create(ast.get(), resolver.get(), &opts));
+    ASSERT_NE(lower.get(), nullptr);
 
     int count = 0;
-    const WgslLowerEntrypointInfo *eps = wgsl_lower_entrypoints(lower, &count);
+    const WgslLowerEntrypointInfo *eps = wgsl_lower_entrypoints(lower.get(), &count);
     ASSERT_NE(eps, nullptr);
     EXPECT_EQ(count, 2);
     EXPECT_NE(eps[0].function_id, 0u);
     EXPECT_NE(eps[1].function_id, 0u);
-
-    wgsl_lower_destroy(lower);
 }

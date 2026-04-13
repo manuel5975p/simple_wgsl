@@ -7,22 +7,36 @@ class ResolverTest : public ::testing::Test {
   protected:
     WgslAstNode *ast = nullptr;
     WgslResolver *resolver = nullptr;
+    WgslDiagnosticList *diags = nullptr;
+    WgslDiagnosticList *resolver_diags = nullptr;
 
     void TearDown() override {
         if (resolver) {
             wgsl_resolver_free(resolver);
             resolver = nullptr;
         }
+        if (resolver_diags) {
+            wgsl_diagnostic_list_free(resolver_diags);
+            resolver_diags = nullptr;
+        }
         if (ast) {
             wgsl_free_ast(ast);
             ast = nullptr;
         }
+        if (diags) {
+            wgsl_diagnostic_list_free(diags);
+            diags = nullptr;
+        }
     }
 
     void ParseAndResolve(const char *source) {
-        ast = wgsl_parse(source);
+        WgslParseResult pr = wgsl_parse(source);
+        ast = pr.value;
+        diags = pr.diags;
         ASSERT_NE(ast, nullptr);
-        resolver = wgsl_resolver_build(ast);
+        WgslResolveResult rr = wgsl_resolver_build(ast);
+        resolver = rr.value;
+        resolver_diags = rr.diags;
         ASSERT_NE(resolver, nullptr);
     }
 };

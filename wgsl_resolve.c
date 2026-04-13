@@ -1,6 +1,9 @@
 // begin file wgsl_resolve.c
 #include "simple_wgsl.h"
+#include "simple_wgsl_internal.h"
 #include <ctype.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -53,6 +56,9 @@ struct WgslResolver {
 
     Scope *scopes;
     int scope_count, scope_cap;
+
+    WgslDiagnosticList *diags;
+    int had_error;
 };
 
 /* basic utils */
@@ -514,6 +520,50 @@ static WgslStage detect_stage(const WgslAstNode *fn) {
 }
 
 /* walkers */
+static void resolve_emit_diag(WgslResolver *r,
+                              WgslDiagnosticSeverity sev,
+                              WgslDiagnosticCode code,
+                              const WgslAstNode *node,
+                              const char *fmt, ...);
+
+/* Builtin constants, type names, and predeclared identifiers the resolver
+ * treats as implicit globals. Idents matching these are NOT flagged as
+ * undefined when they appear unbound in value context. */
+static int is_wgsl_builtin_ident(const char *name) {
+    if (!name)
+        return 0;
+    static const char *const kBuiltins[] = {
+        "true", "false",
+        "_",
+        "bool", "f16", "f32", "i32", "u32",
+        "vec2", "vec3", "vec4",
+        "vec2f", "vec3f", "vec4f",
+        "vec2i", "vec3i", "vec4i",
+        "vec2u", "vec3u", "vec4u",
+        "vec2h", "vec3h", "vec4h",
+        "vec2<f32>", "vec3<f32>", "vec4<f32>",
+        "mat2x2", "mat2x3", "mat2x4",
+        "mat3x2", "mat3x3", "mat3x4",
+        "mat4x2", "mat4x3", "mat4x4",
+        "array",
+        "atomic",
+        "ptr",
+        "sampler", "sampler_comparison",
+        "texture_1d", "texture_2d", "texture_2d_array",
+        "texture_3d", "texture_cube", "texture_cube_array",
+        "texture_multisampled_2d",
+        "texture_depth_2d", "texture_depth_2d_array",
+        "texture_depth_cube", "texture_depth_cube_array",
+        "texture_depth_multisampled_2d",
+        "texture_storage_1d", "texture_storage_2d",
+        "texture_storage_2d_array", "texture_storage_3d",
+    };
+    for (size_t i = 0; i < sizeof(kBuiltins)/sizeof(kBuiltins[0]); i++)
+        if (strcmp(name, kBuiltins[i]) == 0)
+            return 1;
+    return 0;
+}
+
 // r nonnull
 static void walk_expr(WgslResolver *r, FnInfo *fi, const WgslAstNode *e) {
     wgsl_compiler_assert(r != NULL, "walk_expr: r is NULL");
@@ -529,6 +579,10 @@ static void walk_expr(WgslResolver *r, FnInfo *fi, const WgslAstNode *e) {
                      r->symbols[id - 1].kind == WGSL_SYM_IMMEDIATE ||
                      r->symbols[id - 1].kind == WGSL_SYM_DEVICE))
                     record_fn_ref(fi, id);
+            } else if (e->ident.name && !is_wgsl_builtin_ident(e->ident.name)) {
+                resolve_emit_diag(r, WGSL_DIAG_ERROR,
+                                  WGSL_DIAG_RESOLVE_UNDEFINED_SYMBOL, e,
+                                  "undefined symbol '%s'", e->ident.name);
             }
         } break;
         case WGSL_NODE_CALL: {
@@ -726,9 +780,55 @@ static void declare_param(WgslResolver *r, const WgslAstNode *fn, const WgslAstN
 /* stages */
 static int has_attr(const WgslAstNode *fn, const char *name);
 static WgslStage detect_stage(const WgslAstNode *fn);
+static WgslResolver *wgsl_resolver_build_internal(const WgslAstNode *program);
+
+/* diagnostics */
+static void resolve_emit_diag(WgslResolver *r,
+                              WgslDiagnosticSeverity sev,
+                              WgslDiagnosticCode code,
+                              const WgslAstNode *node,
+                              const char *fmt, ...) {
+    if (!r)
+        return;
+    if (!r->diags)
+        r->diags = wgsl_diag_list_new();
+    if (!r->diags)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    char *msg = wgsl_diag_vformat(fmt, ap);
+    va_end(ap);
+    const char *begin = node ? node->source_begin : NULL;
+    const char *end   = node ? node->source_end   : NULL;
+    wgsl_diag_list_append(r->diags, sev, code, msg, begin, end);
+    if (sev == WGSL_DIAG_ERROR)
+        r->had_error = 1;
+}
 
 /* build */
-WgslResolver *wgsl_resolver_build(const WgslAstNode *program) {
+WgslResolveResult wgsl_resolver_build(const WgslAstNode *program) {
+    WgslResolveResult rr;
+    rr.code  = SW_OK;
+    rr.value = NULL;
+    rr.diags = NULL;
+    if (!program || program->type != WGSL_NODE_PROGRAM) {
+        rr.code = SW_ERROR_RESOLVE;
+        return rr;
+    }
+    WgslResolver *r = wgsl_resolver_build_internal(program);
+    rr.value = r;
+    if (r) {
+        rr.diags = r->diags;
+        r->diags = NULL;
+        if (r->had_error)
+            rr.code = SW_ERROR_RESOLVE;
+    } else {
+        rr.code = SW_ERROR_RESOLVE;
+    }
+    return rr;
+}
+
+static WgslResolver *wgsl_resolver_build_internal(const WgslAstNode *program) {
     if (!program || program->type != WGSL_NODE_PROGRAM)
         return NULL;
     WgslResolver *r = (WgslResolver *)NODE_ALLOC(WgslResolver);

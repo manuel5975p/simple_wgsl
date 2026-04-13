@@ -54,6 +54,8 @@ typedef enum SwResult {
     SW_OK = 0,
     SW_ERROR_INVALID_INPUT,
     SW_ERROR_PARSE,
+    SW_ERROR_RESOLVE,
+    SW_ERROR_LOWER,
     SW_ERROR_UNSUPPORTED,
     SW_ERROR_INTERNAL,
     SW_ERROR_OUT_OF_MEMORY,
@@ -88,6 +90,108 @@ void sw_free(void *p);
 #define wgsl_compiler_assert(cond, fmt, ...) ((void)(cond))
 #endif
 #endif
+
+/* ============================================================================
+ * WGSL DIAGNOSTICS
+ * ============================================================================ */
+
+typedef enum WgslDiagnosticSeverity {
+    WGSL_DIAG_ERROR = 0,
+    WGSL_DIAG_WARNING,
+    WGSL_DIAG_NOTE
+} WgslDiagnosticSeverity;
+
+typedef enum WgslDiagnosticCode {
+    WGSL_DIAG_CODE_NONE = 0,
+
+    /* Parser --------------------------------------------------------- */
+    WGSL_DIAG_PARSE_UNEXPECTED_TOKEN = 1000,
+    WGSL_DIAG_PARSE_EXPECTED_IDENT,
+    WGSL_DIAG_PARSE_EXPECTED_TYPE,
+    WGSL_DIAG_PARSE_EXPECTED_EXPRESSION,
+    WGSL_DIAG_PARSE_MISSING_INITIALIZER,
+    WGSL_DIAG_PARSE_INVALID_ATTRIBUTE,
+    WGSL_DIAG_PARSE_INVALID_LITERAL,
+
+    /* Resolver ------------------------------------------------------- */
+    WGSL_DIAG_RESOLVE_UNDEFINED_SYMBOL = 2000,
+    WGSL_DIAG_RESOLVE_DUPLICATE_SYMBOL,
+    WGSL_DIAG_RESOLVE_TYPE_MISMATCH,
+    WGSL_DIAG_RESOLVE_INVALID_ENTRY_POINT,
+    WGSL_DIAG_RESOLVE_INVALID_BINDING,
+
+    /* Lower (WGSL -> SSIR / SPIR-V) ---------------------------------- */
+    WGSL_DIAG_LOWER_UNSUPPORTED_BUILTIN = 3000,
+    WGSL_DIAG_LOWER_UNSUPPORTED_TYPE,
+    WGSL_DIAG_LOWER_INVALID_ENTRY_POINT,
+    WGSL_DIAG_LOWER_INTERNAL
+} WgslDiagnosticCode;
+
+typedef struct WgslDiagnostic {
+    WgslDiagnosticSeverity severity;
+    WgslDiagnosticCode     code;
+    const char            *message;             /* heap, owned by list */
+    const char            *code_section_begin;  /* aliases caller source (inclusive) */
+    const char            *code_section_end;    /* aliases caller source (exclusive) */
+} WgslDiagnostic;
+
+typedef struct WgslDiagnosticList {
+    WgslDiagnostic *items;
+    int             count;
+    int             capacity;
+} WgslDiagnosticList;
+
+void wgsl_diagnostic_list_free(WgslDiagnosticList *list);
+const char *wgsl_diagnostic_severity_string(WgslDiagnosticSeverity s);
+const char *wgsl_diagnostic_code_string(WgslDiagnosticCode c);
+
+/* ============================================================================
+ * Per-stage Result structs
+ *
+ * Returned by the four pipeline entry points (wgsl_parse,
+ * wgsl_resolver_build, wgsl_lower_create, wgsl_lower_emit_spirv) and the
+ * one-shot wgsl_compile_to_ssir. `diags` is always caller-owned and must
+ * be freed with wgsl_diagnostic_list_free regardless of `code`. `value`
+ * may be non-NULL on error to support downstream recovery, but callers
+ * must free it with the stage's destructor either way.
+ * ============================================================================ */
+
+typedef struct WgslAstNode        WgslAstNode;
+typedef struct WgslResolver       WgslResolver;
+typedef struct WgslLower          WgslLower;
+struct SsirModule;
+
+typedef struct WgslParseResult {
+    SwResult            code;
+    WgslAstNode        *value;
+    WgslDiagnosticList *diags;
+} WgslParseResult;
+
+typedef struct WgslResolveResult {
+    SwResult            code;
+    WgslResolver       *value;
+    WgslDiagnosticList *diags;
+} WgslResolveResult;
+
+typedef struct WgslLowerResult {
+    SwResult            code;
+    WgslLower          *value;
+    WgslDiagnosticList *diags;
+} WgslLowerResult;
+
+typedef struct WgslLowerSpirvResult {
+    SwResult            code;
+    uint32_t           *words;       /* heap; free with wgsl_lower_free */
+    size_t              word_count;
+    WgslDiagnosticList *diags;
+} WgslLowerSpirvResult;
+
+typedef struct WgslCompileResult {
+    SwResult                 code;
+    const struct SsirModule *ssir;   /* borrowed from `lower`; do not free */
+    WgslLower               *lower;  /* owns ssir; free with wgsl_lower_destroy */
+    WgslDiagnosticList      *diags;  /* merged across all stages, in order */
+} WgslCompileResult;
 
 /* ============================================================================
  * WGSL PARSER
@@ -125,8 +229,6 @@ typedef enum WgslNodeType {
     WGSL_NODE_CONTINUE,
     WGSL_NODE_DISCARD
 } WgslNodeType;
-
-typedef struct WgslAstNode WgslAstNode;
 
 typedef enum WgslAttrKind {
     WGSL_ATTR_UNKNOWN = 0,
@@ -413,6 +515,11 @@ struct WgslAstNode {
     WgslNodeType type;
     int line;
     int col;
+    /* Source span aliases the caller's source buffer. Either both may be
+     * NULL when the node was constructed on an error-recovery path.
+     * `source_end` is exclusive. */
+    const char *source_begin;
+    const char *source_end;
     union {
         Program program;
         Attribute attribute;
@@ -444,7 +551,7 @@ struct WgslAstNode {
     };
 };
 
-WgslAstNode *wgsl_parse(const char *source);
+WgslParseResult wgsl_parse(const char *source);
 void wgsl_free_ast(WgslAstNode *node);
 const char *wgsl_node_type_name(WgslNodeType t);
 void wgsl_debug_print(const WgslAstNode *node, int indent);
@@ -548,9 +655,7 @@ typedef struct WgslResolverEntrypoint {
     const WgslAstNode *function_node;
 } WgslResolverEntrypoint;
 
-typedef struct WgslResolver WgslResolver;
-
-WgslResolver *wgsl_resolver_build(const WgslAstNode *program);
+WgslResolveResult wgsl_resolver_build(const WgslAstNode *program);
 void wgsl_resolver_free(WgslResolver *r);
 
 const WgslSymbolInfo *wgsl_resolver_all_symbols(const WgslResolver *r, int *out_count);
@@ -603,9 +708,7 @@ void wgsl_resolve_free(void *p);
  * WGSL LOWER (WGSL -> SPIR-V)
  * ============================================================================ */
 
-typedef struct WgslLower WgslLower;
-
-typedef SwResult WgslLowerResult;
+typedef SwResult WgslLowerStatus;
 #define WGSL_LOWER_OK                SW_OK
 #define WGSL_LOWER_ERR_INVALID_INPUT SW_ERROR_INVALID_INPUT
 #define WGSL_LOWER_ERR_UNSUPPORTED   SW_ERROR_UNSUPPORTED
@@ -654,19 +757,22 @@ typedef struct {
     const char *const *extensions;
 } WgslLowerModuleFeatures;
 
-WgslLower *wgsl_lower_create(const WgslAstNode *program,
+WgslLowerResult wgsl_lower_create(const WgslAstNode *program,
     const WgslResolver *resolver,
     const WgslLowerOptions *opts);
 
 void wgsl_lower_destroy(WgslLower *lower);
 
-WgslLowerResult wgsl_lower_emit_spirv(const WgslAstNode *program,
+WgslLowerSpirvResult wgsl_lower_emit_spirv(const WgslAstNode *program,
     const WgslResolver *resolver,
-    const WgslLowerOptions *opts,
-    uint32_t **out_words,
-    size_t *out_word_count);
+    const WgslLowerOptions *opts);
 
-const char *wgsl_lower_last_error(const WgslLower *lower);
+/* One-shot: parse → resolve → lower → SSIR. All diagnostics merged into
+ * compile_result.diags. On success, ssir is borrowed from `lower`; free
+ * the whole thing with wgsl_compile_free. */
+WgslCompileResult wgsl_compile_to_ssir(const char *source,
+                                       const WgslLowerOptions *opts);
+void wgsl_compile_free(WgslCompileResult *result);
 
 const WgslLowerModuleFeatures *wgsl_lower_module_features(const WgslLower *lower);
 

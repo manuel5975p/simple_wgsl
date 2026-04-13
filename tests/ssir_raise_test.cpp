@@ -24,6 +24,7 @@ struct SsirCompileResult {
     std::string error;
     const SsirModule *ssir; // Valid only while lower context is alive
     WgslLower *lower;       // Caller must destroy
+    WgslDiagnosticList *lower_diags; // Caller must free
 };
 
 // Compile WGSL to SSIR using the lowering context
@@ -32,16 +33,22 @@ SsirCompileResult CompileToSsir(const char *source) {
     result.success = false;
     result.ssir = nullptr;
     result.lower = nullptr;
+    result.lower_diags = nullptr;
 
-    WgslAstNode *ast = wgsl_parse(source);
+    WgslParseResult pr = wgsl_parse(source);
+    WgslAstNode *ast = pr.value;
     if (!ast) {
         result.error = "Parse failed";
+        wgsl_diagnostic_list_free(pr.diags);
         return result;
     }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     if (!resolver) {
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
+        wgsl_diagnostic_list_free(rr.diags);
         result.error = "Resolve failed";
         return result;
     }
@@ -50,11 +57,15 @@ SsirCompileResult CompileToSsir(const char *source) {
     opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
     opts.enable_debug_names = 1;
 
-    result.lower = wgsl_lower_create(ast, resolver, &opts);
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &opts);
+    result.lower = lr.value;
+    result.lower_diags = lr.diags;
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 
-    if (!result.lower) {
+    if (lr.code != SW_OK || !result.lower) {
         result.error = "Lower failed";
         return result;
     }
@@ -77,6 +88,7 @@ class SsirCompileGuard {
     explicit SsirCompileGuard(const SsirCompileResult &r) : r_(r) {}
     ~SsirCompileGuard() {
         if (r_.lower) wgsl_lower_destroy(r_.lower);
+        wgsl_diagnostic_list_free(r_.lower_diags);
     }
     const SsirCompileResult &get() { return r_; }
 

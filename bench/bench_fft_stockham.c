@@ -81,11 +81,13 @@ static double median_d(double *arr, int n) {
 
 static int compile_wgsl_to_spirv(const char *src, uint32_t **out_words,
                                  size_t *out_count) {
-  WgslAstNode *ast = wgsl_parse(src);
-  if (!ast) return -1;
+  WgslParseResult pr = wgsl_parse(src);
+  WgslAstNode *ast = pr.value;
+  if (!ast) { wgsl_diagnostic_list_free(pr.diags); return -1; }
 
-  WgslResolver *res = wgsl_resolver_build(ast);
-  if (!res) { wgsl_free_ast(ast); return -1; }
+  WgslResolveResult rr = wgsl_resolver_build(ast);
+  WgslResolver *res = rr.value;
+  if (!res) { wgsl_free_ast(ast); wgsl_diagnostic_list_free(pr.diags); wgsl_diagnostic_list_free(rr.diags); return -1; }
 
   WgslLowerOptions opts = {0};
   opts.spirv_version = 0x00010300;
@@ -93,11 +95,20 @@ static int compile_wgsl_to_spirv(const char *src, uint32_t **out_words,
   opts.packing = WGSL_LOWER_PACK_STD430;
   opts.enable_debug_names = 0;
 
-  WgslLowerResult lr = wgsl_lower_emit_spirv(ast, res, &opts,
-                                              out_words, out_count);
+  WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast, res, &opts);
   wgsl_resolver_free(res);
+  wgsl_diagnostic_list_free(rr.diags);
   wgsl_free_ast(ast);
-  return lr == WGSL_LOWER_OK ? 0 : -1;
+  wgsl_diagnostic_list_free(pr.diags);
+  if (lsr.code != SW_OK) {
+    wgsl_diagnostic_list_free(lsr.diags);
+    if (lsr.words) wgsl_lower_free(lsr.words);
+    return -1;
+  }
+  *out_words = lsr.words;
+  *out_count = lsr.word_count;
+  wgsl_diagnostic_list_free(lsr.diags);
+  return 0;
 }
 
 

@@ -94,15 +94,19 @@ int main(void) {
         "}\n";
 
     /* First, convert WGSL → MSL */
-    WgslAstNode *ast = wgsl_parse(wgsl2);
+    WgslParseResult pr = wgsl_parse(wgsl2);
+    WgslAstNode *ast = pr.value;
     if (!ast) {
         fprintf(stderr, "WGSL parse failed\n");
+        wgsl_diagnostic_list_free(pr.diags);
         return 1;
     }
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     WgslLowerOptions lower_opts = {0};
     lower_opts.enable_debug_names = 1;
-    WgslLower *lower = wgsl_lower_create(ast, resolver, &lower_opts);
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &lower_opts);
+    WgslLower *lower = lr.value;
     const SsirModule *ssir = wgsl_lower_get_ssir(lower);
 
     char *msl_vf = NULL, *msl_err = NULL;
@@ -111,8 +115,11 @@ int main(void) {
     ssir_to_msl(ssir, &msl_opts2, &msl_vf, &msl_err);
     ssir_to_msl_free(msl_err);
     wgsl_lower_destroy(lower);
+    wgsl_diagnostic_list_free(lr.diags);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 
     if (!msl_vf) {
         printf("FAIL: WGSL to MSL conversion failed\n");

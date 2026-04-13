@@ -69,6 +69,7 @@ add_library(wgsl_compiler STATIC
     wgsl_resolve.c
     wgsl_lower.c
     wgsl_raise.c
+    wgsl_diagnostics.c
     glsl_parser.c
     ssir.c
     ssir_to_spirv.c

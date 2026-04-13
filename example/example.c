@@ -12,26 +12,36 @@ static void print_ssir_for_wgsl(const char *name, const char *wgsl_source) {
     printf("=== %s ===\n", name);
     printf("WGSL:\n%s\n", wgsl_source);
 
-    WgslAstNode *ast = wgsl_parse(wgsl_source);
+    WgslParseResult pr = wgsl_parse(wgsl_source);
+    WgslAstNode *ast = pr.value;
     if (!ast) {
         printf("Parse error!\n\n");
+        wgsl_diagnostic_list_free(pr.diags);
         return;
     }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     if (!resolver) {
         printf("Resolve error!\n\n");
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
+        wgsl_diagnostic_list_free(rr.diags);
         return;
     }
 
     WgslLowerOptions opts = {0};
     opts.enable_debug_names = 1;
-    WgslLower *lower = wgsl_lower_create(ast, resolver, &opts);
-    if (!lower) {
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &opts);
+    WgslLower *lower = lr.value;
+    if (lr.code != SW_OK || !lower) {
         printf("Lower error!\n\n");
+        wgsl_diagnostic_list_free(lr.diags);
+        if (lower) wgsl_lower_destroy(lower);
         wgsl_resolver_free(resolver);
+        wgsl_diagnostic_list_free(rr.diags);
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
         return;
     }
 
@@ -45,8 +55,11 @@ static void print_ssir_for_wgsl(const char *name, const char *wgsl_source) {
     }
 
     wgsl_lower_destroy(lower);
+    wgsl_diagnostic_list_free(lr.diags);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
     printf("\n");
 }
 

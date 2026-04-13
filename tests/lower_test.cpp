@@ -18,18 +18,17 @@ TEST(LowerTest, EmitMinimalSpirv) {
     wgsl_test::ResolverGuard resolver(wgsl_resolver_build(ast.get()));
     ASSERT_NE(resolver.get(), nullptr);
 
-    uint32_t *spirv = nullptr;
-    size_t spirv_size = 0;
     WgslLowerOptions opts = {};
     opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
 
-    WgslLowerResult result = wgsl_lower_emit_spirv(ast.get(), resolver.get(), &opts, &spirv, &spirv_size);
-    EXPECT_EQ(result, WGSL_LOWER_OK);
-    ASSERT_NE(spirv, nullptr);
-    ASSERT_GE(spirv_size, static_cast<size_t>(5));
-    EXPECT_EQ(spirv[0], 0x07230203u);
+    WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast.get(), resolver.get(), &opts);
+    EXPECT_EQ(lsr.code, SW_OK);
+    ASSERT_NE(lsr.words, nullptr);
+    ASSERT_GE(lsr.word_count, static_cast<size_t>(5));
+    EXPECT_EQ(lsr.words[0], 0x07230203u);
 
-    wgsl_lower_free(spirv);
+    wgsl_lower_free(lsr.words);
+    wgsl_diagnostic_list_free(lsr.diags);
 }
 
 TEST(LowerTest, ValidateMinimalSpirvModule) {
@@ -2239,27 +2238,30 @@ static void CompileStockhamShader(int radix, int stride, int n_total,
         << " stride=" << stride << " n_total=" << n_total
         << " dir=" << direction << " wg=" << workgroup_size;
 
-    WgslAstNode *ast = wgsl_parse(src);
+    WgslParseResult pr = wgsl_parse(src);
+    WgslAstNode *ast = pr.value;
     ASSERT_NE(ast, nullptr) << "wgsl_parse failed for radix=" << radix;
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     ASSERT_NE(resolver, nullptr) << "wgsl_resolver_build failed for radix=" << radix;
 
-    uint32_t *spirv = nullptr;
-    size_t spirv_size = 0;
     WgslLowerOptions opts = {};
     opts.spirv_version = 0x00010300;
     opts.env = WGSL_LOWER_ENV_VULKAN_1_1;
     opts.packing = WGSL_LOWER_PACK_STD430;
 
-    WgslLowerResult result = wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &spirv_size);
-    EXPECT_EQ(result, WGSL_LOWER_OK)
+    WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast, resolver, &opts);
+    EXPECT_EQ(lsr.code, SW_OK)
         << "wgsl_lower_emit_spirv failed for radix=" << radix
         << " stride=" << stride << " n_total=" << n_total;
 
-    if (spirv) wgsl_lower_free(spirv);
+    if (lsr.words) wgsl_lower_free(lsr.words);
+    wgsl_diagnostic_list_free(lsr.diags);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
     free(src);
 }
 

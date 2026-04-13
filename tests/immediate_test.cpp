@@ -19,38 +19,45 @@ ImmediateCompileResult CompileImmediate(const char *source,
     ImmediateCompileResult result;
     result.success = false;
 
-    WgslAstNode *ast = wgsl_parse(source);
+    WgslParseResult pr = wgsl_parse(source);
+    WgslAstNode *ast = pr.value;
     if (!ast) {
         result.error = "Parse failed";
+        wgsl_diagnostic_list_free(pr.diags);
         return result;
     }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     if (!resolver) {
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
+        wgsl_diagnostic_list_free(rr.diags);
         result.error = "Resolve failed";
         return result;
     }
 
-    uint32_t *spirv = nullptr;
-    size_t spirv_size = 0;
     WgslLowerOptions opts = {};
     opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
     opts.entry_point = entry_point;
     opts.immediate_layout = layout;
 
-    WgslLowerResult lower_result =
-        wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &spirv_size);
+    WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast, resolver, &opts);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 
-    if (lower_result != WGSL_LOWER_OK) {
+    if (lsr.code != SW_OK) {
         result.error = "Lower failed";
+        wgsl_diagnostic_list_free(lsr.diags);
+        if (lsr.words) wgsl_lower_free(lsr.words);
         return result;
     }
 
-    result.spirv.assign(spirv, spirv + spirv_size);
-    wgsl_lower_free(spirv);
+    result.spirv.assign(lsr.words, lsr.words + lsr.word_count);
+    wgsl_lower_free(lsr.words);
+    wgsl_diagnostic_list_free(lsr.diags);
 
     if (!wgsl_test::ValidateSpirv(result.spirv.data(), result.spirv.size(),
                                   &result.error)) {
@@ -81,11 +88,15 @@ std::string Disassemble(const std::vector<uint32_t> &spirv) {
 class ImmediateParserTest : public ::testing::Test {
   protected:
     WgslAstNode *ast = nullptr;
+    WgslDiagnosticList *diags = nullptr;
     void TearDown() override {
         if (ast) wgsl_free_ast(ast);
+        if (diags) wgsl_diagnostic_list_free(diags);
     }
     WgslAstNode *Parse(const char *source) {
-        ast = wgsl_parse(source);
+        WgslParseResult pr = wgsl_parse(source);
+        ast = pr.value;
+        diags = pr.diags;
         return ast;
     }
 };
@@ -172,16 +183,24 @@ class ImmediateResolverTest : public ::testing::Test {
   protected:
     WgslAstNode *ast = nullptr;
     WgslResolver *resolver = nullptr;
+    WgslDiagnosticList *diags = nullptr;
+    WgslDiagnosticList *resolver_diags = nullptr;
 
     void TearDown() override {
         if (resolver) wgsl_resolver_free(resolver);
+        if (resolver_diags) wgsl_diagnostic_list_free(resolver_diags);
         if (ast) wgsl_free_ast(ast);
+        if (diags) wgsl_diagnostic_list_free(diags);
     }
 
     void ParseAndResolve(const char *source) {
-        ast = wgsl_parse(source);
+        WgslParseResult pr = wgsl_parse(source);
+        ast = pr.value;
+        diags = pr.diags;
         ASSERT_NE(ast, nullptr) << "Parse failed";
-        resolver = wgsl_resolver_build(ast);
+        WgslResolveResult rr = wgsl_resolver_build(ast);
+        resolver = rr.value;
+        resolver_diags = rr.diags;
         ASSERT_NE(resolver, nullptr) << "Resolve failed";
     }
 };
@@ -718,9 +737,11 @@ TEST(DeviceAddressResolverTest, DeviceVarGetsDeviceKind) {
         var<device, read> src: Buf;
         @compute @workgroup_size(1) fn main() { let p = src.d[0u]; }
     )";
-    WgslAstNode *ast = wgsl_parse(source);
+    WgslParseResult pr = wgsl_parse(source);
+    WgslAstNode *ast = pr.value;
     ASSERT_NE(ast, nullptr);
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     ASSERT_NE(resolver, nullptr);
 
     int count = 0;
@@ -733,7 +754,9 @@ TEST(DeviceAddressResolverTest, DeviceVarGetsDeviceKind) {
 
     wgsl_resolve_free((void *)devs);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 }
 
 TEST(DeviceAddressResolverTest, TwoDeviceVars) {
@@ -746,9 +769,11 @@ TEST(DeviceAddressResolverTest, TwoDeviceVars) {
             dst.d[0u] = src.d[0u];
         }
     )";
-    WgslAstNode *ast = wgsl_parse(source);
+    WgslParseResult pr = wgsl_parse(source);
+    WgslAstNode *ast = pr.value;
     ASSERT_NE(ast, nullptr);
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     ASSERT_NE(resolver, nullptr);
 
     int count = 0;
@@ -763,7 +788,9 @@ TEST(DeviceAddressResolverTest, TwoDeviceVars) {
 
     wgsl_resolve_free((void *)devs);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 }
 
 TEST(DeviceAddressResolverTest, ThreeDeviceVars) {
@@ -778,9 +805,11 @@ TEST(DeviceAddressResolverTest, ThreeDeviceVars) {
             dst.d[0u] = src.d[0u] + lut.d[0u];
         }
     )";
-    WgslAstNode *ast = wgsl_parse(source);
+    WgslParseResult pr = wgsl_parse(source);
+    WgslAstNode *ast = pr.value;
     ASSERT_NE(ast, nullptr);
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     ASSERT_NE(resolver, nullptr);
 
     int count = 0;
@@ -794,7 +823,9 @@ TEST(DeviceAddressResolverTest, ThreeDeviceVars) {
 
     wgsl_resolve_free((void *)devs);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 }
 
 // ============================================================================

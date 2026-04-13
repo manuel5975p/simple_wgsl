@@ -26,15 +26,20 @@ GlslResult WgslToOpenGlsl(const char *wgsl_source) {
     GlslResult r;
     r.success = false;
 
-    WgslAstNode *ast = wgsl_parse(wgsl_source);
+    WgslParseResult pr = wgsl_parse(wgsl_source);
+    WgslAstNode *ast = pr.value;
     if (!ast) {
         r.error = "WGSL parse failed";
+        wgsl_diagnostic_list_free(pr.diags);
         return r;
     }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     if (!resolver) {
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
+        wgsl_diagnostic_list_free(rr.diags);
         r.error = "Resolve failed";
         return r;
     }
@@ -43,17 +48,23 @@ GlslResult WgslToOpenGlsl(const char *wgsl_source) {
     lopts.env = WGSL_LOWER_ENV_VULKAN_1_3;
     lopts.enable_debug_names = 1;
 
-    WgslLower *lower = wgsl_lower_create(ast, resolver, &lopts);
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &lopts);
+    WgslLower *lower = lr.value;
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
-    if (!lower) {
+    wgsl_diagnostic_list_free(pr.diags);
+    if (lr.code != SW_OK || !lower) {
         r.error = "Lower failed";
+        wgsl_diagnostic_list_free(lr.diags);
+        if (lower) wgsl_lower_destroy(lower);
         return r;
     }
 
     const SsirModule *ssir = wgsl_lower_get_ssir(lower);
     if (!ssir) {
         wgsl_lower_destroy(lower);
+        wgsl_diagnostic_list_free(lr.diags);
         r.error = "No SSIR";
         return r;
     }
@@ -66,6 +77,7 @@ GlslResult WgslToOpenGlsl(const char *wgsl_source) {
 
     SsirToGlslResult gres = ssir_to_glsl(ssir, SSIR_STAGE_COMPUTE, &gopts, &glsl, &glsl_err);
     wgsl_lower_destroy(lower);
+    wgsl_diagnostic_list_free(lr.diags);
 
     if (gres != SSIR_TO_GLSL_OK) {
         r.error = glsl_err ? glsl_err : "GLSL emit failed";

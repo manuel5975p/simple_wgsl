@@ -466,6 +466,30 @@ static inline void *sw_malloc_fn(size_t sz) { return SW_MALLOC(sz); }
 static inline void sw_free_fn(void *p) { SW_FREE(p); }
 
 /* ============================================================================
+ * Diagnostic emission — implemented in wgsl_diagnostics.c
+ * Internal; not part of the public simple_wgsl.h API.
+ * ============================================================================ */
+
+WgslDiagnosticList *wgsl_diag_list_new(void);
+
+void wgsl_diag_list_append(WgslDiagnosticList *list,
+                           WgslDiagnosticSeverity sev,
+                           WgslDiagnosticCode code,
+                           const char *owned_message,
+                           const char *begin,
+                           const char *end);
+
+/* Append all items of `b` to `a`, then free the outer struct of `b`.
+ * Transfers item ownership. If a is NULL, returns b unchanged. If b is
+ * NULL, returns a unchanged. On OOM while growing a, b's items are still
+ * freed (message + struct) and a is returned as-is. */
+WgslDiagnosticList *wgsl_diag_list_concat(WgslDiagnosticList *a,
+                                          WgslDiagnosticList *b);
+
+/* Format into a newly SW_MALLOC'd heap buffer. Returns NULL on failure. */
+char *wgsl_diag_vformat(const char *fmt, va_list ap);
+
+/* ============================================================================
  * Shared emitter helpers — use-count + inst-map building
  * ============================================================================ */
 

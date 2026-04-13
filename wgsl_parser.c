@@ -506,6 +506,7 @@ typedef struct Parser {
     Lexer L;
     Token cur;
     bool had_error;
+    WgslDiagnosticList *diags;
 } Parser;
 
 // P nonnull
@@ -528,13 +529,28 @@ static bool match(Parser *P, TokenType t) {
     return false;
 }
 // P nonnull
+// tok allowed to be NULL
+static void emit_diag(Parser *P, WgslDiagnosticSeverity sev, WgslDiagnosticCode code,
+                      const Token *tok, const char *fmt, ...) {
+    wgsl_compiler_assert(P != NULL, "emit_diag: P is NULL");
+    va_list ap;
+    va_start(ap, fmt);
+    char *msg = wgsl_diag_vformat(fmt, ap);
+    va_end(ap);
+    if (!P->diags) P->diags = wgsl_diag_list_new();
+    const char *b = tok ? tok->start : NULL;
+    const char *e = (tok && tok->start) ? tok->start + tok->length : NULL;
+    wgsl_diag_list_append(P->diags, sev, code, msg, b, e);
+    if (sev == WGSL_DIAG_ERROR) P->had_error = true;
+}
+
+// P nonnull
 // msg nonnull
 static void parse_error(Parser *P, const char *msg) {
     wgsl_compiler_assert(P != NULL, "parse_error: P is NULL");
     wgsl_compiler_assert(msg != NULL, "parse_error: msg is NULL");
-    fprintf(stderr, "[wgsl-parser] error at %d:%d: %s\n", P->cur.line,
-        P->cur.col, msg);
-    P->had_error = true;
+    emit_diag(P, WGSL_DIAG_ERROR, WGSL_DIAG_PARSE_UNEXPECTED_TOKEN,
+              &P->cur, "%s", msg);
 }
 // P nonnull
 // msg nonnull
@@ -554,6 +570,8 @@ static WgslAstNode *new_node(Parser *P, WgslNodeType k) {
     n->type = k;
     n->line = P->cur.line;
     n->col = P->cur.col;
+    n->source_begin = P->cur.start;
+    n->source_end = P->cur.start ? P->cur.start + P->cur.length : NULL;
     return n;
 }
 // P nonnull
@@ -563,6 +581,12 @@ static WgslAstNode *new_ident(Parser *P, const Token *t) {
     wgsl_compiler_assert(t != NULL, "new_ident: t is NULL");
     WgslAstNode *n = new_node(P, WGSL_NODE_IDENT);
     n->ident.name = wgsl_strndup(t->start, (size_t)t->length);
+    /* Span should cover the identifier itself, not whichever token the
+     * parser happens to be sitting on when the node is constructed. */
+    n->line = t->line;
+    n->col = t->col;
+    n->source_begin = t->start;
+    n->source_end = t->start ? t->start + t->length : NULL;
     return n;
 }
 // P nonnull
@@ -883,6 +907,7 @@ static WgslAstNode *parse_function(Parser *P, WgslAstNode **attrs,
         if (par)
             vec_push_node(&params, &pcount, &pcap, par);
         while (match(P, TOK_COMMA)) {
+            if (check(P, TOK_RPAREN)) break;  /* allow trailing comma */
             WgslAstNode *par2 = parse_param(P);
             if (par2)
                 vec_push_node(&params, &pcount, &pcap, par2);
@@ -1846,7 +1871,7 @@ static WgslAstNode *parse_program(Parser *P) {
 }
 
 // source allowed to be NULL
-WgslAstNode *wgsl_parse(const char *source) {
+WgslParseResult wgsl_parse(const char *source) {
     Parser P;
     memset(&P, 0, sizeof(P));
     P.L.src = source ? source : "";
@@ -1855,7 +1880,12 @@ WgslAstNode *wgsl_parse(const char *source) {
     P.L.col = 1;
     advance(&P);
     WgslAstNode *ast = parse_program(&P);
-    return ast;
+
+    WgslParseResult r;
+    r.value = ast;
+    r.diags = P.diags;          /* transfer ownership */
+    r.code  = P.had_error ? SW_ERROR_PARSE : SW_OK;
+    return r;
 }
 
 static void free_node(WgslAstNode *n);

@@ -11,26 +11,36 @@
 #include <stdio.h>
 
 static char *wgsl_to_msl(const char *wgsl_source) {
-    WgslAstNode *ast = wgsl_parse(wgsl_source);
+    WgslParseResult pr = wgsl_parse(wgsl_source);
+    WgslAstNode *ast = pr.value;
     if (!ast) {
         fprintf(stderr, "WGSL parse error\n");
+        wgsl_diagnostic_list_free(pr.diags);
         return NULL;
     }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     if (!resolver) {
         fprintf(stderr, "WGSL resolve error\n");
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
+        wgsl_diagnostic_list_free(rr.diags);
         return NULL;
     }
 
     WgslLowerOptions lower_opts = {0};
     lower_opts.enable_debug_names = 1;
-    WgslLower *lower = wgsl_lower_create(ast, resolver, &lower_opts);
-    if (!lower) {
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &lower_opts);
+    WgslLower *lower = lr.value;
+    if (lr.code != SW_OK || !lower) {
         fprintf(stderr, "WGSL lower error\n");
+        wgsl_diagnostic_list_free(lr.diags);
+        if (lower) wgsl_lower_destroy(lower);
         wgsl_resolver_free(resolver);
+        wgsl_diagnostic_list_free(rr.diags);
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
         return NULL;
     }
 
@@ -38,8 +48,11 @@ static char *wgsl_to_msl(const char *wgsl_source) {
     if (!ssir) {
         fprintf(stderr, "Failed to get SSIR module\n");
         wgsl_lower_destroy(lower);
+        wgsl_diagnostic_list_free(lr.diags);
         wgsl_resolver_free(resolver);
+        wgsl_diagnostic_list_free(rr.diags);
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
         return NULL;
     }
 
@@ -53,15 +66,21 @@ static char *wgsl_to_msl(const char *wgsl_source) {
         fprintf(stderr, "SSIR to MSL error: %s\n", error ? error : ssir_to_msl_result_string(result));
         ssir_to_msl_free(error);
         wgsl_lower_destroy(lower);
+        wgsl_diagnostic_list_free(lr.diags);
         wgsl_resolver_free(resolver);
+        wgsl_diagnostic_list_free(rr.diags);
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
         return NULL;
     }
 
     ssir_to_msl_free(error);
     wgsl_lower_destroy(lower);
+    wgsl_diagnostic_list_free(lr.diags);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
     return msl_source;
 }
 

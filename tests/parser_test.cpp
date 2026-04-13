@@ -6,16 +6,23 @@ extern "C" {
 class ParserTest : public ::testing::Test {
   protected:
     WgslAstNode *ast = nullptr;
+    WgslDiagnosticList *diags = nullptr;
 
     void TearDown() override {
         if (ast) {
             wgsl_free_ast(ast);
             ast = nullptr;
         }
+        if (diags) {
+            wgsl_diagnostic_list_free(diags);
+            diags = nullptr;
+        }
     }
 
     WgslAstNode *Parse(const char *source) {
-        ast = wgsl_parse(source);
+        WgslParseResult pr = wgsl_parse(source);
+        ast = pr.value;
+        diags = pr.diags;
         return ast;
     }
 };

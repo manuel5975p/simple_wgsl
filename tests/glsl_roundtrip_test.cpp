@@ -19,6 +19,7 @@ struct SsirCompileResult {
     std::string error;
     const SsirModule *ssir;
     WgslLower *lower;
+    WgslDiagnosticList *lower_diags;
 };
 
 SsirCompileResult CompileToSsir(const char *source) {
@@ -26,20 +27,27 @@ SsirCompileResult CompileToSsir(const char *source) {
     r.success = false;
     r.ssir = nullptr;
     r.lower = nullptr;
+    r.lower_diags = nullptr;
 
-    WgslAstNode *ast = wgsl_parse(source);
-    if (!ast) { r.error = "Parse failed"; return r; }
-    WgslResolver *resolver = wgsl_resolver_build(ast);
-    if (!resolver) { wgsl_free_ast(ast); r.error = "Resolve failed"; return r; }
+    WgslParseResult pr = wgsl_parse(source);
+    WgslAstNode *ast = pr.value;
+    if (!ast) { r.error = "Parse failed"; wgsl_diagnostic_list_free(pr.diags); return r; }
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
+    if (!resolver) { wgsl_free_ast(ast); wgsl_diagnostic_list_free(pr.diags); wgsl_diagnostic_list_free(rr.diags); r.error = "Resolve failed"; return r; }
 
     WgslLowerOptions opts = {};
     opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
     opts.enable_debug_names = 1;
 
-    r.lower = wgsl_lower_create(ast, resolver, &opts);
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &opts);
+    r.lower = lr.value;
+    r.lower_diags = lr.diags;
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
-    if (!r.lower) { r.error = "Lower create failed"; return r; }
+    wgsl_diagnostic_list_free(pr.diags);
+    if (lr.code != SW_OK || !r.lower) { r.error = "Lower create failed"; return r; }
 
     r.ssir = wgsl_lower_get_ssir(r.lower);
     if (!r.ssir) {
@@ -55,7 +63,10 @@ SsirCompileResult CompileToSsir(const char *source) {
 class SsirCompileGuard {
   public:
     explicit SsirCompileGuard(const SsirCompileResult &r) : r_(r) {}
-    ~SsirCompileGuard() { if (r_.lower) wgsl_lower_destroy(r_.lower); }
+    ~SsirCompileGuard() {
+        if (r_.lower) wgsl_lower_destroy(r_.lower);
+        wgsl_diagnostic_list_free(r_.lower_diags);
+    }
   private:
     SsirCompileResult r_;
 };
@@ -95,31 +106,35 @@ RoundtripResult GlslRoundtrip(const char *wgsl_source, WgslStage stage, SsirStag
     }
     r.glsl_parse_ok = true;
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr2 = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr2.value;
     if (!resolver) {
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(rr2.diags);
         r.error = "Resolve of re-parsed GLSL failed";
         return r;
     }
 
-    uint32_t *spirv = nullptr;
-    size_t spirv_size = 0;
     WgslLowerOptions lower_opts = {};
     lower_opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
 
-    WgslLowerResult lower_result = wgsl_lower_emit_spirv(ast, resolver, &lower_opts, &spirv, &spirv_size);
+    WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast, resolver, &lower_opts);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr2.diags);
     wgsl_free_ast(ast);
 
-    if (lower_result != WGSL_LOWER_OK) {
+    if (lsr.code != SW_OK) {
         r.error = "Lower of re-parsed GLSL failed";
+        wgsl_diagnostic_list_free(lsr.diags);
+        if (lsr.words) wgsl_lower_free(lsr.words);
         return r;
     }
     r.spirv_ok = true;
 
     std::string val_err;
-    r.spirv_valid = wgsl_test::ValidateSpirv(spirv, spirv_size, &val_err);
-    wgsl_lower_free(spirv);
+    r.spirv_valid = wgsl_test::ValidateSpirv(lsr.words, lsr.word_count, &val_err);
+    wgsl_lower_free(lsr.words);
+    wgsl_diagnostic_list_free(lsr.diags);
 
     if (!r.spirv_valid) {
         r.error = "SPIR-V validation failed: " + val_err;

@@ -269,6 +269,7 @@ struct SsirCompileResult {
     std::string error;
     const SsirModule *ssir;
     WgslLower *lower;
+    WgslDiagnosticList *lower_diags;
 };
 
 SsirCompileResult CompileToSsir(const char *source) {
@@ -276,20 +277,27 @@ SsirCompileResult CompileToSsir(const char *source) {
     r.success = false;
     r.ssir = nullptr;
     r.lower = nullptr;
+    r.lower_diags = nullptr;
 
-    WgslAstNode *ast = wgsl_parse(source);
-    if (!ast) { r.error = "Parse failed"; return r; }
-    WgslResolver *resolver = wgsl_resolver_build(ast);
-    if (!resolver) { wgsl_free_ast(ast); r.error = "Resolve failed"; return r; }
+    WgslParseResult pr = wgsl_parse(source);
+    WgslAstNode *ast = pr.value;
+    if (!ast) { r.error = "Parse failed"; wgsl_diagnostic_list_free(pr.diags); return r; }
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
+    if (!resolver) { wgsl_free_ast(ast); wgsl_diagnostic_list_free(pr.diags); wgsl_diagnostic_list_free(rr.diags); r.error = "Resolve failed"; return r; }
 
     WgslLowerOptions opts = {};
     opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
     opts.enable_debug_names = 1;
 
-    r.lower = wgsl_lower_create(ast, resolver, &opts);
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &opts);
+    r.lower = lr.value;
+    r.lower_diags = lr.diags;
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
-    if (!r.lower) { r.error = "Lower create failed"; return r; }
+    wgsl_diagnostic_list_free(pr.diags);
+    if (lr.code != SW_OK || !r.lower) { r.error = "Lower create failed"; return r; }
 
     r.ssir = wgsl_lower_get_ssir(r.lower);
     if (!r.ssir) {
@@ -305,7 +313,10 @@ SsirCompileResult CompileToSsir(const char *source) {
 class SsirCompileGuard {
   public:
     explicit SsirCompileGuard(const SsirCompileResult &r) : r_(r) {}
-    ~SsirCompileGuard() { if (r_.lower) wgsl_lower_destroy(r_.lower); }
+    ~SsirCompileGuard() {
+        if (r_.lower) wgsl_lower_destroy(r_.lower);
+        wgsl_diagnostic_list_free(r_.lower_diags);
+    }
   private:
     SsirCompileResult r_;
 };

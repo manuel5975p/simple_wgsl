@@ -58,25 +58,35 @@ RoundtripResult WgslToMslRoundtrip(const std::string &wgsl) {
     RoundtripResult res = {false, "", "", ""};
 
     // 1. WGSL -> AST -> Lower -> SSIR
-    WgslAstNode *ast = wgsl_parse(wgsl.c_str());
+    WgslParseResult pr1 = wgsl_parse(wgsl.c_str());
+    WgslAstNode *ast = pr1.value;
     if (!ast) {
         res.error = "WGSL parse failed";
+        wgsl_diagnostic_list_free(pr1.diags);
         return res;
     }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     if (!resolver) {
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr1.diags);
+        wgsl_diagnostic_list_free(rr.diags);
         res.error = "Resolve failed";
         return res;
     }
 
     WgslLowerOptions lower_opts = {};
     lower_opts.enable_debug_names = 1;
-    WgslLower *lower = wgsl_lower_create(ast, resolver, &lower_opts);
-    if (!lower) {
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &lower_opts);
+    WgslLower *lower = lr.value;
+    if (lr.code != SW_OK || !lower) {
+        wgsl_diagnostic_list_free(lr.diags);
+        if (lower) wgsl_lower_destroy(lower);
         wgsl_resolver_free(resolver);
+        wgsl_diagnostic_list_free(rr.diags);
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr1.diags);
         res.error = "Lower failed";
         return res;
     }
@@ -93,16 +103,22 @@ RoundtripResult WgslToMslRoundtrip(const std::string &wgsl) {
         res.error = "SSIR -> MSL (pass 1) failed: " + std::string(err ? err : "unknown");
         ssir_to_msl_free(err);
         wgsl_lower_destroy(lower);
+        wgsl_diagnostic_list_free(lr.diags);
         wgsl_resolver_free(resolver);
+        wgsl_diagnostic_list_free(rr.diags);
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr1.diags);
         return res;
     }
     res.original_msl = msl1;
     ssir_to_msl_free(msl1);
 
     wgsl_lower_destroy(lower);
+    wgsl_diagnostic_list_free(lr.diags);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr1.diags);
 
     // 3. Parse MSL -> SSIR
     SsirModule *mod2 = nullptr;

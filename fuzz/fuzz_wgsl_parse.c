@@ -9,8 +9,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     memcpy(src, data, size);
     src[size] = '\0';
 
-    WgslAstNode *ast = wgsl_parse(src);
+    WgslParseResult pr = wgsl_parse(src);
+    WgslAstNode *ast = pr.value;
     if (ast) wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 
     free(src);
     return 0;

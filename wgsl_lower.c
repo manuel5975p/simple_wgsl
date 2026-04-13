@@ -1,4 +1,5 @@
 // BEGIN FILE wgsl_lower.c
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -179,7 +180,8 @@ struct WgslLower {
     WgslLowerEntrypointInfo *eps;
     int ep_count;
 
-    char last_error[256];
+    WgslDiagnosticList *diags;
+    int had_error;
 
     // Type cache
     TypeCache type_cache;
@@ -5990,6 +5992,25 @@ static void add_global_map_entry(WgslLower *l, int symbol_id, uint32_t spv_id,
     l->global_map_count++;
 }
 
+// Emit a diagnostic on the lower context. `node` may be NULL (no source span).
+static void lower_emit_diag(WgslLower *l, WgslDiagnosticSeverity sev,
+                            WgslDiagnosticCode code, const WgslAstNode *node,
+                            const char *fmt, ...) {
+    if (!l) return;
+    if (!l->diags) {
+        l->diags = wgsl_diag_list_new();
+        if (!l->diags) return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    char *msg = wgsl_diag_vformat(fmt, ap);
+    va_end(ap);
+    const char *begin = node ? node->source_begin : NULL;
+    const char *end = node ? node->source_end : NULL;
+    wgsl_diag_list_append(l->diags, sev, code, msg, begin, end);
+    if (sev == WGSL_DIAG_ERROR) l->had_error = 1;
+}
+
 // name nonnull
 // out_spv nonnull
 // out_ssir nonnull
@@ -7039,8 +7060,12 @@ static int lower_function(WgslLower *l, const WgslResolverEntrypoint *ep, uint32
 
                     SpvBuiltIn spv_bi;
                     SsirBuiltinVar ssir_bi;
-                    if (!resolve_builtin_name(builtin_name, &spv_bi, &ssir_bi))
+                    if (!resolve_builtin_name(builtin_name, &spv_bi, &ssir_bi)) {
+                        lower_emit_diag(l, WGSL_DIAG_ERROR,
+                                        WGSL_DIAG_LOWER_UNSUPPORTED_BUILTIN, attr,
+                                        "unsupported builtin '%s'", builtin_name);
                         continue;
+                    }
 
                     // In fragment shaders, @builtin(position) maps to FragCoord
                     if (ep->stage == WGSL_STAGE_FRAGMENT && spv_bi == SpvBuiltInPosition) {
@@ -7361,9 +7386,37 @@ static int lower_immediates_for_entry(WgslLower *l, const char *entry_name) {
 
 // ---------- Public API ----------
 
+static WgslLower *wgsl_lower_create_internal(const WgslAstNode *program,
+    const WgslResolver *resolver,
+    const WgslLowerOptions *opts);
+
+WgslLowerResult wgsl_lower_create(const WgslAstNode *program,
+    const WgslResolver *resolver,
+    const WgslLowerOptions *opts) {
+    WgslLowerResult r;
+    r.code  = SW_OK;
+    r.value = NULL;
+    r.diags = NULL;
+    if (!program || !resolver) {
+        r.code = SW_ERROR_INVALID_INPUT;
+        return r;
+    }
+    WgslLower *l = wgsl_lower_create_internal(program, resolver, opts);
+    r.value = l;
+    if (l) {
+        r.diags = l->diags;
+        l->diags = NULL;
+        if (l->had_error)
+            r.code = SW_ERROR_LOWER;
+    } else {
+        r.code = SW_ERROR_LOWER;
+    }
+    return r;
+}
+
 // program nonnull
 // resolver nonnull
-WgslLower *wgsl_lower_create(const WgslAstNode *program,
+static WgslLower *wgsl_lower_create_internal(const WgslAstNode *program,
     const WgslResolver *resolver,
     const WgslLowerOptions *opts) {
     wgsl_compiler_assert(program != NULL, "wgsl_lower_create: program is NULL");
@@ -7797,45 +7850,99 @@ void wgsl_lower_destroy(WgslLower *lower) {
     WGSL_FREE(lower);
 }
 
-// program nonnull
-// resolver nonnull
-// out_word_count nonnull
-WgslLowerResult wgsl_lower_emit_spirv(const WgslAstNode *program,
+WgslLowerSpirvResult wgsl_lower_emit_spirv(const WgslAstNode *program,
     const WgslResolver *resolver,
-    const WgslLowerOptions *opts,
-    uint32_t **out_words,
-    size_t *out_word_count) {
-    wgsl_compiler_assert(program != NULL, "wgsl_lower_emit_spirv: program is NULL");
-    wgsl_compiler_assert(resolver != NULL, "wgsl_lower_emit_spirv: resolver is NULL");
-    wgsl_compiler_assert(out_word_count != NULL, "wgsl_lower_emit_spirv: out_word_count is NULL");
-    if (!out_word_count) return WGSL_LOWER_ERR_INVALID_INPUT;
-    *out_word_count = 0;
-    if (out_words) *out_words = NULL;
+    const WgslLowerOptions *opts) {
+    WgslLowerSpirvResult r;
+    r.code       = SW_OK;
+    r.words      = NULL;
+    r.word_count = 0;
+    r.diags      = NULL;
+    if (!program || !resolver) {
+        r.code = SW_ERROR_INVALID_INPUT;
+        return r;
+    }
 
-    WgslLower *l = wgsl_lower_create(program, resolver, opts);
-    if (!l) return WGSL_LOWER_ERR_INTERNAL;
+    WgslLower *l = wgsl_lower_create_internal(program, resolver, opts);
+    if (!l) {
+        r.code = SW_ERROR_LOWER;
+        return r;
+    }
+    r.diags = l->diags;
+    l->diags = NULL;
+    if (l->had_error) {
+        r.code = SW_ERROR_LOWER;
+        wgsl_lower_destroy(l);
+        return r;
+    }
 
     uint32_t *words = NULL;
     size_t count = 0;
     if (!finalize_spirv(l, &words, &count)) {
         wgsl_lower_destroy(l);
-        return WGSL_LOWER_ERR_OOM;
+        r.code = SW_ERROR_OUT_OF_MEMORY;
+        return r;
     }
 
-    if (out_words) {
-        *out_words = words;
-    } else {
-        WGSL_FREE(words);
-    }
-    *out_word_count = count;
-
+    r.words      = words;
+    r.word_count = count;
     wgsl_lower_destroy(l);
-    return WGSL_LOWER_OK;
+    return r;
 }
 
-const char *wgsl_lower_last_error(const WgslLower *lower) {
-    if (!lower) return "invalid";
-    return lower->last_error[0] ? lower->last_error : "";
+WgslCompileResult wgsl_compile_to_ssir(const char *source,
+                                       const WgslLowerOptions *opts) {
+    WgslCompileResult out;
+    out.code  = SW_OK;
+    out.ssir  = NULL;
+    out.lower = NULL;
+    out.diags = NULL;
+
+    WgslParseResult pr = wgsl_parse(source);
+    out.diags = pr.diags;
+    pr.diags = NULL;
+    if (pr.code != SW_OK || !pr.value) {
+        if (pr.value) wgsl_free_ast(pr.value);
+        out.code = pr.code != SW_OK ? pr.code : SW_ERROR_PARSE;
+        return out;
+    }
+
+    WgslResolveResult rr = wgsl_resolver_build(pr.value);
+    out.diags = wgsl_diag_list_concat(out.diags, rr.diags);
+    if (rr.code != SW_OK || !rr.value) {
+        if (rr.value) wgsl_resolver_free(rr.value);
+        wgsl_free_ast(pr.value);
+        out.code = rr.code != SW_OK ? rr.code : SW_ERROR_RESOLVE;
+        return out;
+    }
+
+    WgslLowerResult lr = wgsl_lower_create(pr.value, rr.value, opts);
+    out.diags = wgsl_diag_list_concat(out.diags, lr.diags);
+    wgsl_resolver_free(rr.value);
+    wgsl_free_ast(pr.value);
+    if (lr.code != SW_OK || !lr.value) {
+        if (lr.value) wgsl_lower_destroy(lr.value);
+        out.code = lr.code != SW_OK ? lr.code : SW_ERROR_LOWER;
+        return out;
+    }
+
+    out.lower = lr.value;
+    out.ssir  = wgsl_lower_get_ssir(lr.value);
+    if (!out.ssir) {
+        wgsl_lower_destroy(out.lower);
+        out.lower = NULL;
+        out.code  = SW_ERROR_LOWER;
+    }
+    return out;
+}
+
+void wgsl_compile_free(WgslCompileResult *result) {
+    if (!result) return;
+    if (result->lower) wgsl_lower_destroy(result->lower);
+    wgsl_diagnostic_list_free(result->diags);
+    result->lower = NULL;
+    result->ssir  = NULL;
+    result->diags = NULL;
 }
 
 const WgslLowerModuleFeatures *wgsl_lower_module_features(const WgslLower *lower) {

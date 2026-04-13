@@ -18,25 +18,35 @@ struct MslResult {
 MslResult WgslToMsl(const std::string &wgsl) {
     MslResult res = {false, "", ""};
 
-    WgslAstNode *ast = wgsl_parse(wgsl.c_str());
+    WgslParseResult pr = wgsl_parse(wgsl.c_str());
+    WgslAstNode *ast = pr.value;
     if (!ast) {
         res.error = "WGSL parse failed";
+        wgsl_diagnostic_list_free(pr.diags);
         return res;
     }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     if (!resolver) {
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
+        wgsl_diagnostic_list_free(rr.diags);
         res.error = "WGSL resolve failed";
         return res;
     }
 
     WgslLowerOptions lower_opts = {};
     lower_opts.enable_debug_names = 1;
-    WgslLower *lower = wgsl_lower_create(ast, resolver, &lower_opts);
-    if (!lower) {
+    WgslLowerResult lr = wgsl_lower_create(ast, resolver, &lower_opts);
+    WgslLower *lower = lr.value;
+    if (lr.code != SW_OK || !lower) {
+        wgsl_diagnostic_list_free(lr.diags);
+        if (lower) wgsl_lower_destroy(lower);
         wgsl_resolver_free(resolver);
+        wgsl_diagnostic_list_free(rr.diags);
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
         res.error = "WGSL lower failed";
         return res;
     }
@@ -44,8 +54,11 @@ MslResult WgslToMsl(const std::string &wgsl) {
     const SsirModule *ssir = wgsl_lower_get_ssir(lower);
     if (!ssir) {
         wgsl_lower_destroy(lower);
+        wgsl_diagnostic_list_free(lr.diags);
         wgsl_resolver_free(resolver);
+        wgsl_diagnostic_list_free(rr.diags);
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
         res.error = "No SSIR module";
         return res;
     }
@@ -58,8 +71,11 @@ MslResult WgslToMsl(const std::string &wgsl) {
     SsirToMslResult mres = ssir_to_msl(ssir, &msl_opts, &msl, &err);
 
     wgsl_lower_destroy(lower);
+    wgsl_diagnostic_list_free(lr.diags);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 
     if (mres != SSIR_TO_MSL_OK) {
         res.error = "SSIR -> MSL failed: " + std::string(err ? err : "unknown");

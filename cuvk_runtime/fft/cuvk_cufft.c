@@ -142,16 +142,21 @@ static cufftResult compile_wgsl(const char *wgsl_source,
                                 uint32_t **out_words,
                                 size_t *out_count)
 {
-    WgslAstNode *ast = wgsl_parse(wgsl_source);
+    WgslParseResult pr = wgsl_parse(wgsl_source);
+    WgslAstNode *ast = pr.value;
     if (!ast) {
         CUVK_LOG("[cufft] wgsl_parse failed\n");
+        wgsl_diagnostic_list_free(pr.diags);
         return CUFFT_INTERNAL_ERROR;
     }
 
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    WgslResolver *resolver = rr.value;
     if (!resolver) {
         CUVK_LOG("[cufft] wgsl_resolver_build failed\n");
         wgsl_free_ast(ast);
+        wgsl_diagnostic_list_free(pr.diags);
+        wgsl_diagnostic_list_free(rr.diags);
         return CUFFT_INTERNAL_ERROR;
     }
 
@@ -161,16 +166,22 @@ static cufftResult compile_wgsl(const char *wgsl_source,
     opts.packing = WGSL_LOWER_PACK_STD430;
     opts.enable_debug_names = 0;
 
-    WgslLowerResult lr = wgsl_lower_emit_spirv(ast, resolver, &opts,
-                                                out_words, out_count);
+    WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast, resolver, &opts);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(rr.diags);
     wgsl_free_ast(ast);
+    wgsl_diagnostic_list_free(pr.diags);
 
-    if (lr != WGSL_LOWER_OK) {
-        CUVK_LOG("[cufft] wgsl_lower_emit_spirv failed: %d\n", lr);
+    if (lsr.code != SW_OK) {
+        CUVK_LOG("[cufft] wgsl_lower_emit_spirv failed: %d\n", (int)lsr.code);
+        wgsl_diagnostic_list_free(lsr.diags);
+        if (lsr.words) wgsl_lower_free(lsr.words);
         return CUFFT_INTERNAL_ERROR;
     }
 
+    *out_words = lsr.words;
+    *out_count = lsr.word_count;
+    wgsl_diagnostic_list_free(lsr.diags);
     return CUFFT_SUCCESS;
 }
 

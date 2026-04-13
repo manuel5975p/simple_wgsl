@@ -48,6 +48,7 @@ if(WGSL_BUILD_COMPILER_TESTS)
         slug_pattern_test.cpp
         wgsl_roundtrip_test.cpp
         glsl_roundtrip_test.cpp
+        wgsl_diagnostics_test.cpp
     )
 
     if(WGSL_BUILD_EXPRESSION_TESTS)
@@ -109,11 +110,9 @@ if(WGSL_BUILD_COMPILER_TESTS)
         ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
     )
 
-    if(WGSL_BUILD_EXPRESSION_TESTS)
-        target_compile_definitions(wgsl_tests PRIVATE
-            WGSL_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-        )
-    endif()
+    target_compile_definitions(wgsl_tests PRIVATE
+        WGSL_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    )
 
     gtest_discover_tests(wgsl_tests
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}

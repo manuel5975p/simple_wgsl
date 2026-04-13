@@ -17,6 +17,8 @@ const char *sw_result_string(SwResult r) {
         case SW_OK:                  return "Success";
         case SW_ERROR_INVALID_INPUT: return "Invalid input";
         case SW_ERROR_PARSE:         return "Parse error";
+        case SW_ERROR_RESOLVE:       return "Resolve error";
+        case SW_ERROR_LOWER:         return "Lower error";
         case SW_ERROR_UNSUPPORTED:   return "Unsupported feature";
         case SW_ERROR_INTERNAL:      return "Internal error";
         case SW_ERROR_OUT_OF_MEMORY: return "Out of memory";
