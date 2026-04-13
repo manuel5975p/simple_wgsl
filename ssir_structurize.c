@@ -601,17 +601,6 @@ static void sc_ensure_term(SC *c) {
     }
 }
 
-static bool sc_inside_loop(SC *c, int bi) {
-    int ancestor = c->idom[bi];
-    int steps = 0;
-    while (ancestor >= 0 && ancestor != c->idom[ancestor] && steps < c->n) {
-        SsirBlock *ab = &c->func->blocks[ancestor];
-        for (uint32_t aii = 0; aii < ab->inst_count; aii++)
-            if (ab->insts[aii].op == SSIR_OP_LOOP_MERGE) return true;
-        ancestor = c->idom[ancestor]; steps++;
-    }
-    return false;
-}
 
 /* ============================================================================
  * Public API

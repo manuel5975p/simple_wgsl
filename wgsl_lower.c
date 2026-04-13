@@ -1713,6 +1713,7 @@ static int emit_access_chain(WgslLower *l, uint32_t result_type, uint32_t *out_i
 static int emit_local_variable(WgslLower *l, uint32_t ptr_type, uint32_t elem_type, uint32_t *out_id, uint32_t initializer) {
     wgsl_compiler_assert(l != NULL, "emit_local_variable: l is NULL");
     wgsl_compiler_assert(out_id != NULL, "emit_local_variable: out_id is NULL");
+    (void)ptr_type;
     (void)initializer;
     uint32_t id = fresh_id(l);
     // Build SSIR local variable
@@ -2492,6 +2493,7 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
             uint32_t idx = emit_const_u32(l, l->imm_map[i].member_index);
             uint32_t member_ptr_type = emit_type_pointer(l, SpvStorageClassPushConstant,
                 l->imm_map[i].member_type);
+            (void)idx; (void)member_ptr_type;
             uint32_t chain_id = fresh_id(l);
             /* Load the value */
             uint32_t loaded;
@@ -2524,6 +2526,7 @@ static ExprResult lower_ident(WgslLower *l, const WgslAstNode *node) {
             uint32_t addr_id = fresh_id(l);
             uint32_t psb_ptr_type = emit_type_pointer(l,
                 SpvStorageClassPhysicalStorageBuffer, l->dev_map[i].pointee_type);
+            (void)idx; (void)pc_ptr_type; (void)chain_id; (void)addr_id; (void)psb_ptr_type;
             uint32_t ptr_id = fresh_id(l);
 
             /* SSIR path */
@@ -2635,6 +2638,7 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
                     uint32_t idx = emit_const_u32(l, l->imm_map[i].member_index);
                     uint32_t member_ptr_type = emit_type_pointer(l, SpvStorageClassPushConstant,
                         l->imm_map[i].member_type);
+                    (void)idx; (void)member_ptr_type;
                     uint32_t chain_id = fresh_id(l);
                     // SSIR: emit access chain
                     if (l->fn_ctx.ssir_func_id && l->fn_ctx.ssir_block_id) {
@@ -2667,6 +2671,7 @@ static ExprResult lower_ptr_expr(WgslLower *l, const WgslAstNode *node, SpvStora
                     /* Step 3: OpConvertUToPtr — u64 → ptr<PhysicalStorageBuffer, T> */
                     uint32_t psb_ptr_type = emit_type_pointer(l,
                         SpvStorageClassPhysicalStorageBuffer, l->dev_map[i].pointee_type);
+                    (void)idx; (void)pc_ptr_type; (void)chain_id; (void)addr_id; (void)psb_ptr_type;
                     uint32_t ptr_id = fresh_id(l);
 
                     /* SSIR: same sequence */
@@ -5551,6 +5556,7 @@ static int lower_switch_stmt(WgslLower *l, const WgslAstNode *node) {
         if (!sw->cases[i] || sw->cases[i]->case_clause.expr_count == 0)
             default_label = case_labels[i];
     }
+    (void)default_label;
 
     /* Count total literal entries (sum of expr_count across non-default cases) */
     int literal_count = 0;

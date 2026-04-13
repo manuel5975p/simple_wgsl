@@ -1701,10 +1701,13 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuMemAllocAsync_v2", (void *)cuMemAllocAsync},
     {"cuMemFreeAsync", (void *)cuMemFreeAsync},
     /* Module extras */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     {"cuModuleGetTexRef", (void *)cuModuleGetTexRef},
     {"cuModuleGetSurfRef", (void *)cuModuleGetSurfRef},
     /* Function config */
     {"cuFuncSetSharedMemConfig", (void *)cuFuncSetSharedMemConfig},
+#pragma GCC diagnostic pop
     {"cuFuncGetParamInfo", (void *)cuKernelGetParamInfo},
     /* Launch extras */
     {"cuLaunchCooperativeKernel", (void *)cuLaunchCooperativeKernel},
@@ -1739,6 +1742,8 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuSurfObjectCreate", (void *)cuSurfObjectCreate},
     {"cuSurfObjectDestroy", (void *)cuSurfObjectDestroy},
     /* Texture references (deprecated) */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     {"cuTexRefSetAddress", (void *)cuTexRefSetAddress},
     {"cuTexRefSetAddress_v2", (void *)cuTexRefSetAddress},
     {"cuTexRefSetAddress2D", (void *)cuTexRefSetAddress2D},
@@ -1757,6 +1762,7 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuTexRefDestroy", (void *)cuTexRefDestroy},
     {"cuSurfRefSetArray", (void *)cuSurfRefSetArray},
     {"cuSurfRefGetArray", (void *)cuSurfRefGetArray},
+#pragma GCC diagnostic pop
     /* Array management */
     {"cuArrayCreate", (void *)cuArrayCreate},
     {"cuArrayCreate_v2", (void *)cuArrayCreate},
@@ -1822,6 +1828,7 @@ static CUresult generic_noop_fn(void);
 CUresult CUDAAPI cuGetProcAddress(const char *symbol, void **pfn,
     int cudaVersion, cuuint64_t flags,
     CUdriverProcAddressQueryResult *symbolStatus) {
+    (void)flags;
 
     if (!symbol || !pfn)
         return CUDA_ERROR_INVALID_VALUE;
@@ -2042,6 +2049,7 @@ static CUresult unk1_fn2(void) {
 static void *g_unk1_fn3_buf = NULL;
 static CUresult unk1_fn3(void *a, void *b, void *c, void *d) {
     uintptr_t size = (uintptr_t)c;
+    (void)a; (void)d;
     CUVK_LOG("[cuvk] UNK1[3]: ctx=%p frame=%p size=0x%lx d=%p\n",
         a, b, (unsigned long)size, d);
     if (b) {
@@ -2136,6 +2144,7 @@ static int unk2_fn6(void *a, void *b, void *c, void *d, void *e, void *f) {
 
     if (f) {
         void **vtbl = (void **)f;
+        (void)vtbl;
         for (int i = 0; i < 16; i++)
             CUVK_LOG("[cuvk]   vtbl[%d] = %p\n", i, vtbl[i]);
     }
@@ -2722,7 +2731,7 @@ static const void *g_context_checks_table[4] = {
     (const void *)check_fn3,
 };
 
-static const void *g_unknown_table[16] = {
+static SW_UNUSED const void *g_unknown_table[16] = {
     (const void *)(16 * sizeof(void *)),
     (const void *)generic_noop_fn,
     (const void *)generic_noop_fn,
@@ -2775,6 +2784,7 @@ CUresult CUDAAPI cuGetExportTable(const void **ppExportTable,
     const CUuuid *pExportTableId) {
     if (!ppExportTable || !pExportTableId) return CUDA_ERROR_INVALID_VALUE;
     const unsigned char *b = (const unsigned char *)pExportTableId->bytes;
+    (void)b;
     CUVK_LOG("[cuvk] cuGetExportTable: uuid="
              "%02x%02x%02x%02x-%02x%02x-%02x%02x-"
              "%02x%02x-%02x%02x%02x%02x%02x%02x\n",

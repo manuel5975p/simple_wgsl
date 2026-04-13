@@ -22,6 +22,14 @@
 #define CUVK_LOG(...) ((void)0)
 #endif
 
+#ifndef SW_UNUSED
+#if defined(__GNUC__) || defined(__clang__)
+#  define SW_UNUSED __attribute__((unused))
+#else
+#  define SW_UNUSED
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif

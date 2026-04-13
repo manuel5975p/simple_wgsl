@@ -2537,9 +2537,9 @@ static void pl_trace_range_subtree(const PtxStmt *body, int body_count,
      * 3. @%pM bra TARGET (range match)
      * Also: setp.eq %pM, %selector, VALUE; @pM bra TARGET (exact match)
      * And: bra.uni DEFAULT (unmatched values) */
+    (void)outer_default;
     char offset_reg[PTX_NAME_MAX] = {0};
     int32_t offset_val = 0;
-    const char *default_label = outer_default;
     PtxCmpOp last_cmp = PTX_CMP_NONE;
     int32_t last_lt_range = 0;
     int32_t last_eq_val = 0;
@@ -2840,6 +2840,7 @@ static int pl_emit_switch_cascade(PtxLower *p, int cascade_idx,
                                    const PtxStmt *body, int body_count,
                                    int stmt_idx) {
     (void)body_count;
+    (void)stmt_idx;
     struct PlSwitchCascade *sc = &p->switch_cascades[cascade_idx];
 
     /* Load the selector register value */

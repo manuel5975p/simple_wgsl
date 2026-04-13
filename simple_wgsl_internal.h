@@ -29,6 +29,12 @@
 #define SW_FREE(p) free((p))
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#  define SW_UNUSED __attribute__((unused))
+#else
+#  define SW_UNUSED
+#endif
+
 /* ============================================================================
  * SW_GROW - Dynamic array growth macro
  * ============================================================================ */

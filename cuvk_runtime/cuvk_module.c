@@ -125,13 +125,6 @@ static void fixup_compute_ipdom(FixupBlock *blocks, int n, int *ipdom) {
     }
 }
 
-/* Check if block 'inner' is dominated by 'header' using the block order
- * (blocks within a construct should appear between header and merge). */
-static bool fixup_block_between(int inner, int header, int merge) {
-    if (merge < 0) return false;
-    return inner > header && inner < merge;
-}
-
 /* Fix SPIR-V selection merge annotations in-place.
  * For each function:
  *   1. Parse block structure and edges
@@ -189,9 +182,9 @@ static void cuvk_fixup_spirv_merges(uint32_t *words, size_t word_count) {
                 } else if (opcode == SPV_OP_LOOP_MERGE) {
                     blocks[cur_block].has_loop_merge = true;
                 } else if (opcode == SPV_OP_BRANCH && wc >= 2) {
-                    int target = fixup_find_block(blocks, block_count, words[i + 1]);
                     /* Target might not be found yet if it's a forward reference */
                     /* We'll handle this in second pass */
+                    (void)fixup_find_block(blocks, block_count, words[i + 1]);
                 } else if (opcode == SPV_OP_BRANCH_COND && wc >= 4) {
                     /* targets will be resolved in second pass */
                 } else if (opcode == SPV_OP_RETURN || opcode == SPV_OP_RETURN_VALUE ||
@@ -209,7 +202,6 @@ static void cuvk_fixup_spirv_merges(uint32_t *words, size_t word_count) {
         for (int bi = 0; bi < block_count; bi++) {
             /* Scan instructions in block bi */
             size_t start = blocks[bi].word_offset;
-            size_t end = (bi + 1 < block_count) ? blocks[bi + 1].word_offset : i - (words[(i > 0 ? i - 1 : 0)] >> 16 != 0 ? 0 : 0);
             /* More robust: scan from OpLabel to next OpLabel or OpFunctionEnd */
             size_t j = start;
             while (j < word_count) {

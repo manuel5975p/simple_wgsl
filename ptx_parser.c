@@ -14,9 +14,6 @@
 #define PTX_FREE    SW_FREE
 
 static void *sw_ptx_alloc(size_t sz) { return PTX_MALLOC(sz); }
-static char *ptx_strndup(const char *s, size_t n) {
-  return sw_strndup(s, n, sw_ptx_alloc);
-}
 static char *ptx_strdup(const char *s) {
   return sw_strdup(s, sw_ptx_alloc);
 }
@@ -288,10 +285,6 @@ static bool pp_check_dot(PtxParser *p, const char *s) {
 }
 static bool pp_eat(PtxParser *p, PtxTokType t) {
   if (p->cur.type == t) { pp_next(p); return true; }
-  return false;
-}
-static bool pp_eat_dot(PtxParser *p, const char *s) {
-  if (dot_eq(&p->cur, s)) { pp_next(p); return true; }
   return false;
 }
 static void pp_expect(PtxParser *p, PtxTokType t, const char *what) {

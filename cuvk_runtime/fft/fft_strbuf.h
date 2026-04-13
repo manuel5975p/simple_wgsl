@@ -21,6 +21,14 @@
 #define M_PI 3.14159265358979323846
 #endif
 
+#ifndef SW_UNUSED
+#if defined(__GNUC__) || defined(__clang__)
+#  define SW_UNUSED __attribute__((unused))
+#else
+#  define SW_UNUSED
+#endif
+#endif
+
 typedef struct {
   char *buf;
   size_t len;
@@ -35,7 +43,7 @@ static void sb_init_cap(StrBuf *sb, size_t initial_cap) {
   sb->len = 0;
 }
 
-static void sb_init(StrBuf *sb) { sb_init_cap(sb, 4096); }
+static SW_UNUSED void sb_init(StrBuf *sb) { sb_init_cap(sb, 4096); }
 
 __attribute__((format(printf, 2, 3)))
 static void sb_printf(StrBuf *sb, const char *fmt, ...) {
@@ -56,7 +64,7 @@ static void sb_printf(StrBuf *sb, const char *fmt, ...) {
   sb->len += (size_t)needed;
 }
 
-static char *sb_finish(StrBuf *sb) { return sb->buf; }
+static SW_UNUSED char *sb_finish(StrBuf *sb) { return sb->buf; }
 
 /*
  * sb_float: emit a float literal that WGSL will parse as f32, not i32.
