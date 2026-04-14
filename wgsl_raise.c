@@ -1339,28 +1339,71 @@ static void emit_expression(WgslRaiser *r, uint32_t id, StringBuffer *out) {
                 case SpvOpInBoundsAccessChain:
                     if (op_count >= 1) {
                         emit_expression(r, ops[0], out);
+                        /* Track the current pointee type so we can resolve struct
+                         * member names and emit vector component swizzles correctly. */
+                        uint32_t cur_type = 0;
+                        {
+                            uint32_t base_id = ops[0];
+                            uint32_t ptr_type = 0;
+                            if (base_id < r->id_bound) {
+                                if (r->ids[base_id].kind == SPV_ID_VARIABLE)
+                                    ptr_type = r->ids[base_id].variable.type_id;
+                                else if (r->ids[base_id].kind == SPV_ID_INSTRUCTION)
+                                    ptr_type = r->ids[base_id].instruction.type_id;
+                            }
+                            if (ptr_type < r->id_bound && r->ids[ptr_type].kind == SPV_ID_TYPE &&
+                                r->ids[ptr_type].type_info.kind == SPV_TYPE_POINTER)
+                                cur_type = r->ids[ptr_type].type_info.pointer.pointee_type;
+                        }
                         for (int i = 1; i < op_count; i++) {
                             uint32_t idx_id = ops[i];
-                            if (idx_id < r->id_bound && r->ids[idx_id].kind == SPV_ID_CONSTANT) {
-                                uint32_t idx = r->ids[idx_id].constant.value[0];
-                                uint32_t base_id = ops[0];
-                                if (base_id < r->id_bound && r->ids[base_id].kind == SPV_ID_VARIABLE) {
-                                    uint32_t ptr_type = r->ids[base_id].variable.type_id;
-                                    if (ptr_type < r->id_bound && r->ids[ptr_type].kind == SPV_ID_TYPE &&
-                                        r->ids[ptr_type].type_info.kind == SPV_TYPE_POINTER) {
-                                        uint32_t pointee = r->ids[ptr_type].type_info.pointer.pointee_type;
-                                        if (pointee < r->id_bound && r->ids[pointee].kind == SPV_ID_TYPE &&
-                                            r->ids[pointee].type_info.kind == SPV_TYPE_STRUCT) {
-                                            wr_sb_appendf(out, ".member%u", idx);
-                                            continue;
-                                        }
-                                    }
-                                }
+                            int is_const = (idx_id < r->id_bound && r->ids[idx_id].kind == SPV_ID_CONSTANT);
+                            uint32_t idx = is_const ? r->ids[idx_id].constant.value[0] : 0;
+                            int ctk = (cur_type < r->id_bound && r->ids[cur_type].kind == SPV_ID_TYPE)
+                                      ? (int)r->ids[cur_type].type_info.kind : -1;
+                            if (ctk == SPV_TYPE_STRUCT && is_const) {
+                                SpvIdInfo *sinfo = &r->ids[cur_type];
+                                const char *mname = NULL;
+                                if (sinfo->member_names && (int)idx < sinfo->member_name_count)
+                                    mname = sinfo->member_names[idx];
+                                if (mname && mname[0])
+                                    wr_sb_appendf(out, ".%s", mname);
+                                else
+                                    wr_sb_appendf(out, ".member%u", idx);
+                                if ((int)idx < sinfo->type_info.struct_type.member_count)
+                                    cur_type = sinfo->type_info.struct_type.member_types[idx];
+                                else
+                                    cur_type = 0;
+                            } else if (ctk == SPV_TYPE_VECTOR && is_const && idx < 4) {
+                                static const char *swiz = "xyzw";
+                                wr_sb_appendf(out, ".%c", swiz[idx]);
+                                cur_type = r->ids[cur_type].type_info.vector.component_type;
+                            } else if (is_const) {
                                 wr_sb_appendf(out, "[%u]", idx);
+                                if (ctk == SPV_TYPE_ARRAY)
+                                    cur_type = r->ids[cur_type].type_info.array.element_type;
+                                else if (ctk == SPV_TYPE_RUNTIME_ARRAY)
+                                    cur_type = r->ids[cur_type].type_info.runtime_array.element_type;
+                                else if (ctk == SPV_TYPE_MATRIX)
+                                    cur_type = r->ids[cur_type].type_info.matrix.column_type;
+                                else if (ctk == SPV_TYPE_VECTOR)
+                                    cur_type = r->ids[cur_type].type_info.vector.component_type;
+                                else
+                                    cur_type = 0;
                             } else {
                                 wr_sb_append(out, "[");
                                 emit_expression(r, idx_id, out);
                                 wr_sb_append(out, "]");
+                                if (ctk == SPV_TYPE_ARRAY)
+                                    cur_type = r->ids[cur_type].type_info.array.element_type;
+                                else if (ctk == SPV_TYPE_RUNTIME_ARRAY)
+                                    cur_type = r->ids[cur_type].type_info.runtime_array.element_type;
+                                else if (ctk == SPV_TYPE_MATRIX)
+                                    cur_type = r->ids[cur_type].type_info.matrix.column_type;
+                                else if (ctk == SPV_TYPE_VECTOR)
+                                    cur_type = r->ids[cur_type].type_info.vector.component_type;
+                                else
+                                    cur_type = 0;
                             }
                         }
                     }

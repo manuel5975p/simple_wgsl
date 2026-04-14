@@ -704,7 +704,8 @@ static void glsl_emit_expr(GlslCtx *c, uint32_t id, GlslBuf *b) {
             /* Trace struct type through the access chain for member names */
             uint32_t cur_type_id = sw_resolve_access_base_type(
                 (SsirModule *)c->mod, inst->operands[0],
-                (SsirInst *(*)(void *, uint32_t))glsl_find_inst, (void *)c);
+                (SsirInst *(*)(void *, uint32_t))glsl_find_inst, (void *)c,
+                c->current_func);
             for (uint16_t i = 0; i < inst->extra_count; i++) {
                 uint32_t idx = inst->extra[i];
                 uint32_t midx; const char *mname; int is_const;

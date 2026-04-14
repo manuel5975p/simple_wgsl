@@ -525,10 +525,20 @@ static inline void sw_emitter_build_maps(
     }
 }
 
-/* Resolve base type for access chain type tracing */
+/* Resolve base type for access chain type tracing.
+ *
+ * The access-chain base is one of: a global variable (pointer), a function-
+ * local variable (pointer), a function parameter, or an intermediate
+ * instruction (typically SSIR_OP_LOAD of a pointer, or another SSIR_OP_ACCESS
+ * producing a pointer). This resolves whichever case applies and returns the
+ * pointee type id so callers can walk the access chain member-by-member.
+ *
+ * `fn` may be NULL, in which case local/parameter lookup is skipped.
+ */
 static inline uint32_t sw_resolve_access_base_type(
     SsirModule *mod, uint32_t base_id,
-    SsirInst *(*find_inst)(void *ctx, uint32_t id), void *ctx)
+    SsirInst *(*find_inst)(void *ctx, uint32_t id), void *ctx,
+    const SsirFunction *fn)
 {
     uint32_t cur_type_id = 0;
     SsirGlobalVar *ag = ssir_get_global(mod, base_id);
@@ -537,15 +547,43 @@ static inline uint32_t sw_resolve_access_base_type(
         if (pt && pt->kind == SSIR_TYPE_PTR)
             cur_type_id = pt->ptr.pointee;
     }
+    if (!cur_type_id && fn) {
+        SsirLocalVar *lv = sw_find_local(fn, base_id);
+        if (lv) {
+            SsirType *pt = ssir_get_type(mod, lv->type);
+            cur_type_id = (pt && pt->kind == SSIR_TYPE_PTR) ? pt->ptr.pointee : lv->type;
+        }
+    }
+    if (!cur_type_id && fn) {
+        for (uint32_t i = 0; i < fn->param_count; i++) {
+            if (fn->params[i].id == base_id) {
+                SsirType *pt = ssir_get_type(mod, fn->params[i].type);
+                cur_type_id = (pt && pt->kind == SSIR_TYPE_PTR) ? pt->ptr.pointee : fn->params[i].type;
+                break;
+            }
+        }
+    }
     if (!cur_type_id) {
         SsirInst *ai = find_inst(ctx, base_id);
         if (ai && ai->op == SSIR_OP_LOAD) {
-            SsirGlobalVar *lg = ssir_get_global(mod, ai->operands[0]);
+            uint32_t src = ai->operands[0];
+            SsirGlobalVar *lg = ssir_get_global(mod, src);
             if (lg) {
                 SsirType *pt = ssir_get_type(mod, lg->type);
                 if (pt && pt->kind == SSIR_TYPE_PTR)
                     cur_type_id = pt->ptr.pointee;
             }
+            if (!cur_type_id && fn) {
+                SsirLocalVar *lv = sw_find_local(fn, src);
+                if (lv) {
+                    SsirType *pt = ssir_get_type(mod, lv->type);
+                    cur_type_id = (pt && pt->kind == SSIR_TYPE_PTR) ? pt->ptr.pointee : lv->type;
+                }
+            }
+        } else if (ai && ai->type) {
+            /* Fallback: use the instruction's own type (strip pointer if any). */
+            SsirType *pt = ssir_get_type(mod, ai->type);
+            cur_type_id = (pt && pt->kind == SSIR_TYPE_PTR) ? pt->ptr.pointee : ai->type;
         }
     }
     return cur_type_id;
@@ -571,14 +609,35 @@ static inline uint32_t sw_advance_access_type(
         if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT &&
             cur_st->struc.member_names && midx < cur_st->struc.member_count)
             *out_member_name = cur_st->struc.member_names[midx];
+        /* Vector component access: emit as .x/.y/.z/.w swizzle (common to all
+         * target languages) rather than as a struct-style .memberN reference. */
+        if (cur_st && cur_st->kind == SSIR_TYPE_VEC && midx < 4) {
+            static const char *const kSwizzle[4] = {"x", "y", "z", "w"};
+            *out_member_name = kSwizzle[midx];
+            return cur_st->vec.elem;
+        }
+        /* Matrix column access with a constant index: fall back to subscript
+         * form (m[idx]) since matrices have no member names in target languages. */
+        if (cur_st && cur_st->kind == SSIR_TYPE_MAT) {
+            *out_is_const = 0;
+            return 0;
+        }
         /* Advance type through struct member */
         if (cur_st && cur_st->kind == SSIR_TYPE_STRUCT && midx < cur_st->struc.member_count)
             return cur_st->struc.members[midx];
+        /* Constant access into an array also advances type. */
+        if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY)) {
+            *out_is_const = 0;
+            return cur_st->array.elem;
+        }
         return 0;
     } else {
         /* Advance type through array element */
         if (cur_st && (cur_st->kind == SSIR_TYPE_ARRAY || cur_st->kind == SSIR_TYPE_RUNTIME_ARRAY))
             return cur_st->array.elem;
+        /* Dynamic index into a vector/matrix: advance type to the element/column. */
+        if (cur_st && cur_st->kind == SSIR_TYPE_VEC)
+            return cur_st->vec.elem;
         return 0;
     }
 }
