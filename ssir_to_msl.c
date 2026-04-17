@@ -788,10 +788,15 @@ static void msl_emit_expr(MslCtx *c, uint32_t id, MslBuf *b) {
                 uint32_t next_type = sw_advance_access_type(
                     (SsirModule *)c->mod, cur_type_id, idx, &midx, &mname, &is_const);
                 if (is_const) {
-                    if (mname)
+                    if (mname) {
                         mb_appendf(b, ".%s", mname);
-                    else
+                    } else if (cur_type_id && ssir_get_type((SsirModule *)c->mod, cur_type_id) &&
+                               ssir_get_type((SsirModule *)c->mod, cur_type_id)->kind == SSIR_TYPE_VEC && midx < 4) {
+                        static const char swizzle[] = "xyzw";
+                        mb_appendf(b, ".%c", swizzle[midx]);
+                    } else {
                         mb_appendf(b, ".member%u", midx);
+                    }
                 } else {
                     mb_append(b, "[");
                     msl_emit_expr(c, idx, b);
