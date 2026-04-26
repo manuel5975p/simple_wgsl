@@ -1484,6 +1484,10 @@ typedef struct {
     void *fn;
 } CuvkProcEntry;
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
 static const CuvkProcEntry g_proc_table[] = {
     {"cuInit", (void *)cuInit},
     {"cuDriverGetVersion", (void *)cuDriverGetVersion},
@@ -1701,13 +1705,10 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuMemAllocAsync_v2", (void *)cuMemAllocAsync},
     {"cuMemFreeAsync", (void *)cuMemFreeAsync},
     /* Module extras */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     {"cuModuleGetTexRef", (void *)cuModuleGetTexRef},
     {"cuModuleGetSurfRef", (void *)cuModuleGetSurfRef},
     /* Function config */
     {"cuFuncSetSharedMemConfig", (void *)cuFuncSetSharedMemConfig},
-#pragma GCC diagnostic pop
     {"cuFuncGetParamInfo", (void *)cuKernelGetParamInfo},
     /* Launch extras */
     {"cuLaunchCooperativeKernel", (void *)cuLaunchCooperativeKernel},
@@ -1742,8 +1743,6 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuSurfObjectCreate", (void *)cuSurfObjectCreate},
     {"cuSurfObjectDestroy", (void *)cuSurfObjectDestroy},
     /* Texture references (deprecated) */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     {"cuTexRefSetAddress", (void *)cuTexRefSetAddress},
     {"cuTexRefSetAddress_v2", (void *)cuTexRefSetAddress},
     {"cuTexRefSetAddress2D", (void *)cuTexRefSetAddress2D},
@@ -1762,7 +1761,6 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuTexRefDestroy", (void *)cuTexRefDestroy},
     {"cuSurfRefSetArray", (void *)cuSurfRefSetArray},
     {"cuSurfRefGetArray", (void *)cuSurfRefGetArray},
-#pragma GCC diagnostic pop
     /* Array management */
     {"cuArrayCreate", (void *)cuArrayCreate},
     {"cuArrayCreate_v2", (void *)cuArrayCreate},
@@ -1822,6 +1820,9 @@ static const CuvkProcEntry g_proc_table[] = {
     {"cuMemRangeGetAttribute", (void *)cuMemRangeGetAttribute},
     {"cuMemRangeGetAttributes", (void *)cuMemRangeGetAttributes},
     {NULL, NULL}};
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 static CUresult generic_noop_fn(void);
 

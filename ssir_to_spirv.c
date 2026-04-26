@@ -234,6 +234,53 @@ static uint32_t get_ssir_type(Ctx *c, uint32_t ssir_id) {
     return 0;
 }
 
+static int sts_block_index_by_id(const SsirFunction *func, int block_count,
+                                 uint32_t block_id) {
+    if (!func || block_count <= 0) return -1;
+    for (int i = 0; i < block_count; i++) {
+        if (func->blocks[i].id == block_id) return i;
+    }
+    return -1;
+}
+
+static bool sts_dominates(const int *idom_fwd, int block_count,
+                          int header, int block) {
+    if (!idom_fwd || block_count <= 0 ||
+        header < 0 || header >= block_count ||
+        block < 0 || block >= block_count) {
+        return false;
+    }
+
+    int x = block;
+    int steps = 0;
+    while (x >= 0 && x < block_count && steps < block_count + 1) {
+        if (x == header) return true;
+        if (idom_fwd[x] < 0 || idom_fwd[x] == x) break;
+        x = idom_fwd[x];
+        steps++;
+    }
+    return false;
+}
+
+static bool sts_postdominates(const int *ipdom, int block_count,
+                              int merge, int block) {
+    if (!ipdom || block_count <= 0 ||
+        merge < 0 || merge >= block_count ||
+        block < 0 || block >= block_count) {
+        return false;
+    }
+
+    int x = block;
+    int steps = 0;
+    while (x >= 0 && x < block_count && steps < block_count + 1) {
+        if (x == merge) return true;
+        if (ipdom[x] < 0 || ipdom[x] == x) break;
+        x = ipdom[x];
+        steps++;
+    }
+    return false;
+}
+
 /* ============================================================================
  * String Literal Encoding
  * ============================================================================ */
@@ -2763,12 +2810,6 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
             if (is_active_merge) memset(is_active_merge, 0, n);
             if (is_continue_target) memset(is_continue_target, 0, n);
 
-            /* Helper: find block index by ID */
-            #define BO_IDX(id_val) ({ \
-                int _r = -1; \
-                for (int _i = 0; _i < n; _i++) \
-                    if (func->blocks[_i].id == (id_val)) { _r = _i; break; } \
-                _r; })
             #define BO_SUCC(bi, si) succ_flat[(bi) * 140 + (si)]
             #define BO_PRED(bi, pi) pred_flat[(bi) * 140 + (pi)]
             #define BO_ADD_EDGE(f, t) do { \
@@ -2794,38 +2835,38 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                 for (uint32_t ii = 0; ii < b->inst_count; ii++) {
                     const SsirInst *si = &b->insts[ii];
                     if (si->op == SSIR_OP_BRANCH && si->operand_count >= 1)
-                        BO_ADD_EDGE(bi, BO_IDX(si->operands[0]));
+                        BO_ADD_EDGE(bi, sts_block_index_by_id(func, n, si->operands[0]));
                     else if (si->op == SSIR_OP_BRANCH_COND && si->operand_count >= 2) {
-                        BO_ADD_EDGE(bi, BO_IDX(si->operands[1]));
+                        BO_ADD_EDGE(bi, sts_block_index_by_id(func, n, si->operands[1]));
                         if (si->operand_count >= 3)
-                            BO_ADD_EDGE(bi, BO_IDX(si->operands[2]));
+                            BO_ADD_EDGE(bi, sts_block_index_by_id(func, n, si->operands[2]));
                         if (si->operand_count >= 4 &&
                             si->operands[3] != 0 &&
                             is_known_merge_target) {
-                            int mi = BO_IDX(si->operands[3]);
+                            int mi = sts_block_index_by_id(func, n, si->operands[3]);
                             if (mi >= 0 && mi < n)
                                 is_known_merge_target[mi] = 1;
                         }
                     } else if (si->op == SSIR_OP_SWITCH) {
                         if (si->operand_count >= 2)
-                            BO_ADD_EDGE(bi, BO_IDX(si->operands[1]));
+                            BO_ADD_EDGE(bi, sts_block_index_by_id(func, n, si->operands[1]));
                         for (uint32_t ei = 1; ei < si->extra_count; ei += 2)
-                            BO_ADD_EDGE(bi, BO_IDX(si->extra[ei]));
+                            BO_ADD_EDGE(bi, sts_block_index_by_id(func, n, si->extra[ei]));
                     } else if (si->op == SSIR_OP_SELECTION_MERGE &&
                                si->operand_count >= 1 &&
                                is_known_merge_target) {
-                        int mi = BO_IDX(si->operands[0]);
+                        int mi = sts_block_index_by_id(func, n, si->operands[0]);
                         if (mi >= 0 && mi < n)
                             is_known_merge_target[mi] = 1;
                     } else if (si->op == SSIR_OP_LOOP_MERGE &&
                                si->operand_count >= 1) {
                         if (is_known_merge_target) {
-                            int mi = BO_IDX(si->operands[0]);
+                            int mi = sts_block_index_by_id(func, n, si->operands[0]);
                             if (mi >= 0 && mi < n)
                                 is_known_merge_target[mi] = 1;
                         }
                         if (si->operand_count >= 2 && is_continue_target) {
-                            int ci = BO_IDX(si->operands[1]);
+                            int ci = sts_block_index_by_id(func, n, si->operands[1]);
                             if (ci >= 0 && ci < n)
                                 is_continue_target[ci] = 1;
                         }
@@ -3029,30 +3070,6 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                 }
 
 
-                /* Check if 'header' dominates 'block' using idom_fwd[] */
-                #define BO_DOMINATES(header, block) ({ \
-                    bool _dom = false; \
-                    if (idom_fwd) { \
-                        int _x = (block), _s = 0; \
-                        while (_x >= 0 && _s < n + 1) { \
-                            if (_x == (header)) { _dom = true; break; } \
-                            if (_x == idom_fwd[_x]) break; \
-                            _x = idom_fwd[_x]; _s++; \
-                        } \
-                    } \
-                    _dom; })
-                #define BO_POSTDOMINATES(merge, block) ({ \
-                    bool _pdom = false; \
-                    if (ipdom && (merge) >= 0 && (merge) < n) { \
-                        int _x = (block), _s = 0; \
-                        while (_x >= 0 && _s < n + 1) { \
-                            if (_x == (merge)) { _pdom = true; break; } \
-                            if (ipdom[_x] < 0 || ipdom[_x] == _x) break; \
-                            _x = ipdom[_x]; _s++; \
-                        } \
-                    } \
-                    _pdom; })
-
                 /* --- Late loop detection: add OpLoopMerge to blocks that ---
                  * --- are back-edge targets but were not annotated by the  ---
                  * --- structurizer (non-trivial headers or loops created   ---
@@ -3071,7 +3088,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                         for (int pi = 0; pi < npred[bi]; pi++) {
                             int p = BO_PRED(bi, pi);
                             if (p < 0 || p == bi) continue;
-                            if (BO_DOMINATES(bi, p)) {
+                            if (sts_dominates(idom_fwd, n, bi, p)) {
                                 has_backedge_to = true;
                                 break;
                             }
@@ -3092,7 +3109,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                         int lsp = 0;
                         for (int pi = 0; pi < npred[bi]; pi++) {
                             int p = BO_PRED(bi, pi);
-                            if (p >= 0 && BO_DOMINATES(bi, p) && !lbody[p]) {
+                            if (p >= 0 && sts_dominates(idom_fwd, n, bi, p) && !lbody[p]) {
                                 lbody[p] = 1;
                                 if (lsp < 512) lstack[lsp++] = p;
                             }
@@ -3135,7 +3152,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                         for (int pi = 0; pi < npred[bi]; pi++) {
                             int p = BO_PRED(bi, pi);
                             if (p >= 0 && p < n && lbody[p] &&
-                                BO_DOMINATES(bi, p) &&
+                                sts_dominates(idom_fwd, n, bi, p) &&
                                 rpo_num[p] > best_rpo_cont) {
                                 best_rpo_cont = rpo_num[p];
                                 lcont = p;
@@ -3264,7 +3281,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                                 for (uint32_t ii = 0; ii < b->inst_count; ii++) {
                                     const SsirInst *si = &b->insts[ii];
                                     if (si->op == SSIR_OP_LOOP_MERGE && si->operand_count >= 1) {
-                                        loop_merge_idx = BO_IDX(si->operands[0]);
+                                        loop_merge_idx = sts_block_index_by_id(func, n, si->operands[0]);
                                         has_loop_merge = true;
                                     }
                                 }
@@ -3298,14 +3315,14 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                                         const SsirInst *ai = &b->insts[ii];
                                         if (ai->op == SSIR_OP_SELECTION_MERGE &&
                                             ai->operand_count >= 1) {
-                                            merge_idx = BO_IDX(ai->operands[0]);
+                                            merge_idx = sts_block_index_by_id(func, n, ai->operands[0]);
                                             has_explicit_merge = true;
                                             break;
                                         }
                                         if (ai->op == SSIR_OP_BRANCH_COND &&
                                             ai->operand_count >= 4 &&
                                             ai->operands[3] != 0) {
-                                            merge_idx = BO_IDX(ai->operands[3]);
+                                            merge_idx = sts_block_index_by_id(func, n, ai->operands[3]);
                                             has_explicit_merge = true;
                                             break;
                                         }
@@ -3374,7 +3391,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                                 for (uint32_t ii = 0; ii < b->inst_count; ii++) {
                                     const SsirInst *si = &b->insts[ii];
                                     if (si->op == SSIR_OP_LOOP_MERGE && si->operand_count >= 1) {
-                                        lm_idx = BO_IDX(si->operands[0]);
+                                        lm_idx = sts_block_index_by_id(func, n, si->operands[0]);
                                         break;
                                     }
                                 }
@@ -3395,13 +3412,13 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                                     const SsirInst *ai = &b3->insts[ii];
                                     if (ai->op == SSIR_OP_SELECTION_MERGE &&
                                         ai->operand_count >= 1) {
-                                        merge_idx = BO_IDX(ai->operands[0]);
+                                        merge_idx = sts_block_index_by_id(func, n, ai->operands[0]);
                                         break;
                                     }
                                     if (ai->op == SSIR_OP_BRANCH_COND &&
                                         ai->operand_count >= 4 &&
                                         ai->operands[3] != 0) {
-                                        merge_idx = BO_IDX(ai->operands[3]);
+                                        merge_idx = sts_block_index_by_id(func, n, ai->operands[3]);
                                         break;
                                     }
                                 }
@@ -3425,8 +3442,8 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                                         int bp = bfs_q[bfs_head++];
                                         if (bp < 0 || bp >= n || visited[bp]) continue;
                                         if (bp == bi || bp == merge_idx) continue;
-                                        if (!BO_DOMINATES(bi, bp)) continue;
-                                        if (!BO_POSTDOMINATES(merge_idx, bp)) continue;
+                                        if (!sts_dominates(idom_fwd, n, bi, bp)) continue;
+                                        if (!sts_postdominates(ipdom, n, merge_idx, bp)) continue;
                                         /* Dedup */
                                         bool dup = false;
                                         for (int ri = 0; ri < resc_count; ri++)
@@ -3463,11 +3480,11 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                                         if (rbb->inst_count < 1) continue;
                                         if (rbb->insts[rbb->inst_count-1].op != SSIR_OP_BRANCH)
                                             continue;
-                                        int tgt = BO_IDX(rbb->insts[rbb->inst_count-1].operands[0]);
+                                        int tgt = sts_block_index_by_id(func, n, rbb->insts[rbb->inst_count-1].operands[0]);
                                         if (tgt < 0 || tgt >= n || visited[tgt]) continue;
                                         if (tgt == merge_idx) continue;
-                                        if (!BO_DOMINATES(bi, tgt)) continue;
-                                        if (!BO_POSTDOMINATES(merge_idx, tgt)) continue;
+                                        if (!sts_dominates(idom_fwd, n, bi, tgt)) continue;
+                                        if (!sts_postdominates(ipdom, n, merge_idx, tgt)) continue;
                                         bool dup = false;
                                         for (int ri2 = 0; ri2 < resc_count; ri2++)
                                             if (rescue[ri2] == tgt) { dup = true; break; }
@@ -3577,7 +3594,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                             }
                             if (!cb_bridge) break;
                             chain[chain_len++] = cur;
-                            int tgt = BO_IDX(cb->insts[cb->inst_count - 1].operands[0]);
+                            int tgt = sts_block_index_by_id(func, n, cb->insts[cb->inst_count - 1].operands[0]);
                             if (tgt >= 0 && tgt < n && visited[tgt]) {
                                 connect = tgt;
                                 break;
@@ -3780,7 +3797,7 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
                                     if (!cb_bridge) break;
 
                                     chain[chain_len++] = cur;
-                                    int tgt = BO_IDX(cb->insts[cb->inst_count - 1].operands[0]);
+                                    int tgt = sts_block_index_by_id(func, n, cb->insts[cb->inst_count - 1].operands[0]);
                                     if (tgt < 0 || tgt >= n) {
                                         final_target = -1;
                                         break;
@@ -4034,12 +4051,9 @@ static int sts_emit_function(Ctx *c, const SsirFunction *func, uint32_t func_typ
         if (is_active_merge) STS_FREE(is_active_merge);
         if (is_continue_target) STS_FREE(is_continue_target);
 
-        #undef BO_IDX
         #undef BO_SUCC
         #undef BO_PRED
         #undef BO_ADD_EDGE
-        #undef BO_DOMINATES
-        #undef BO_POSTDOMINATES
     }
     /* Append any blocks not reached by DFS (unreachable / bounce blocks).
      * Instead of falling back to original order (which loses DFS ordering),

@@ -107,11 +107,11 @@ if(WGSL_BUILD_COMPILER_TESTS)
 
     target_include_directories(wgsl_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
+        ${PROJECT_SOURCE_DIR}/cuvk_runtime/fft
     )
 
     target_compile_definitions(wgsl_tests PRIVATE
-        WGSL_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+        WGSL_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
     )
 
     gtest_discover_tests(wgsl_tests
@@ -167,7 +167,7 @@ if(WGSL_BUILD_FFT_TESTS)
         if(FFTW3F_FOUND)
             add_executable(cufft_test
                 cufft_test.cpp
-                ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft/cuvk_cufft.c
+                ${PROJECT_SOURCE_DIR}/cuvk_runtime/fft/cuvk_cufft.c
             )
             target_link_libraries(cufft_test
                 gtest_main
@@ -181,9 +181,9 @@ if(WGSL_BUILD_FFT_TESTS)
                 m
             )
             target_include_directories(cufft_test PRIVATE
-                ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
-                ${CMAKE_SOURCE_DIR}/cuvk_runtime
-                ${CMAKE_SOURCE_DIR}
+                ${PROJECT_SOURCE_DIR}/cuvk_runtime/fft
+                ${PROJECT_SOURCE_DIR}/cuvk_runtime
+                ${PROJECT_SOURCE_DIR}
                 ${FFTW3F_INCLUDE_DIRS}
             )
             gtest_discover_tests(cufft_test
@@ -202,8 +202,8 @@ if(WGSL_BUILD_FFT_TESTS)
             m
         )
         target_include_directories(fourstep_gen_test PRIVATE
-            ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
-            ${CMAKE_SOURCE_DIR}
+            ${PROJECT_SOURCE_DIR}/cuvk_runtime/fft
+            ${PROJECT_SOURCE_DIR}
         )
         gtest_discover_tests(fourstep_gen_test)
     endif()
@@ -218,8 +218,8 @@ if(WGSL_BUILD_FFT_TESTS)
             m
         )
         target_include_directories(fft_2d_gen_test PRIVATE
-            ${CMAKE_SOURCE_DIR}/cuvk_runtime/fft
-            ${CMAKE_SOURCE_DIR}
+            ${PROJECT_SOURCE_DIR}/cuvk_runtime/fft
+            ${PROJECT_SOURCE_DIR}
         )
         gtest_discover_tests(fft_2d_gen_test)
     endif()
