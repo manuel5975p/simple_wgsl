@@ -1181,6 +1181,138 @@ static uint32_t lower_scalar_by_kind(WgslLower *l, WgslScalarKind k) {
     }
 }
 
+static const char *wgsl_type_arg_name(const TypeNode *tn, int index) {
+    if (!tn || index < 0 || index >= tn->type_arg_count) return NULL;
+    const WgslAstNode *arg = tn->type_args[index];
+    if (!arg || arg->type != WGSL_NODE_TYPE) return NULL;
+    return arg->type_node.name;
+}
+
+static SpvImageFormat wgsl_storage_texture_format_from_name(const char *name) {
+    if (!name) return SpvImageFormatRgba8;
+
+    if (strcmp(name, "rgba8unorm") == 0) return SpvImageFormatRgba8;
+    if (strcmp(name, "rgba8snorm") == 0) return SpvImageFormatRgba8Snorm;
+    if (strcmp(name, "rgba8uint") == 0) return SpvImageFormatRgba8ui;
+    if (strcmp(name, "rgba8sint") == 0) return SpvImageFormatRgba8i;
+    if (strcmp(name, "rgba16uint") == 0) return SpvImageFormatRgba16ui;
+    if (strcmp(name, "rgba16sint") == 0) return SpvImageFormatRgba16i;
+    if (strcmp(name, "rgba16float") == 0) return SpvImageFormatRgba16f;
+    if (strcmp(name, "rgba32uint") == 0) return SpvImageFormatRgba32ui;
+    if (strcmp(name, "rgba32sint") == 0) return SpvImageFormatRgba32i;
+    if (strcmp(name, "rgba32float") == 0) return SpvImageFormatRgba32f;
+    if (strcmp(name, "rg32uint") == 0) return SpvImageFormatRg32ui;
+    if (strcmp(name, "rg32sint") == 0) return SpvImageFormatRg32i;
+    if (strcmp(name, "rg32float") == 0) return SpvImageFormatRg32f;
+    if (strcmp(name, "r32uint") == 0) return SpvImageFormatR32ui;
+    if (strcmp(name, "r32sint") == 0) return SpvImageFormatR32i;
+    if (strcmp(name, "r32float") == 0) return SpvImageFormatR32f;
+
+    if (strcmp(name, "r8unorm") == 0) return SpvImageFormatR8;
+    if (strcmp(name, "r8snorm") == 0) return SpvImageFormatR8Snorm;
+    if (strcmp(name, "r8uint") == 0) return SpvImageFormatR8ui;
+    if (strcmp(name, "r8sint") == 0) return SpvImageFormatR8i;
+    if (strcmp(name, "r16unorm") == 0) return SpvImageFormatR16;
+    if (strcmp(name, "r16snorm") == 0) return SpvImageFormatR16Snorm;
+    if (strcmp(name, "r16uint") == 0) return SpvImageFormatR16ui;
+    if (strcmp(name, "r16sint") == 0) return SpvImageFormatR16i;
+    if (strcmp(name, "r16float") == 0) return SpvImageFormatR16f;
+    if (strcmp(name, "rg8unorm") == 0) return SpvImageFormatRg8;
+    if (strcmp(name, "rg8snorm") == 0) return SpvImageFormatRg8Snorm;
+    if (strcmp(name, "rg8uint") == 0) return SpvImageFormatRg8ui;
+    if (strcmp(name, "rg8sint") == 0) return SpvImageFormatRg8i;
+    if (strcmp(name, "rg16unorm") == 0) return SpvImageFormatRg16;
+    if (strcmp(name, "rg16snorm") == 0) return SpvImageFormatRg16Snorm;
+    if (strcmp(name, "rg16uint") == 0) return SpvImageFormatRg16ui;
+    if (strcmp(name, "rg16sint") == 0) return SpvImageFormatRg16i;
+    if (strcmp(name, "rg16float") == 0) return SpvImageFormatRg16f;
+    if (strcmp(name, "rgba16unorm") == 0) return SpvImageFormatRgba16;
+    if (strcmp(name, "rgba16snorm") == 0) return SpvImageFormatRgba16Snorm;
+    if (strcmp(name, "rgb10a2uint") == 0) return SpvImageFormatRgb10a2ui;
+    if (strcmp(name, "rgb10a2unorm") == 0) return SpvImageFormatRgb10A2;
+
+    return SpvImageFormatUnknown;
+}
+
+static uint32_t wgsl_storage_texture_sampled_type(WgslLower *l, SpvImageFormat format) {
+    switch (format) {
+        case SpvImageFormatRgba32i:
+        case SpvImageFormatRgba16i:
+        case SpvImageFormatRgba8i:
+        case SpvImageFormatR32i:
+        case SpvImageFormatRg32i:
+        case SpvImageFormatRg16i:
+        case SpvImageFormatRg8i:
+        case SpvImageFormatR16i:
+        case SpvImageFormatR8i:
+            return l->id_i32 ? l->id_i32 : emit_type_int(l, 32, 1);
+        case SpvImageFormatRgba32ui:
+        case SpvImageFormatRgba16ui:
+        case SpvImageFormatRgba8ui:
+        case SpvImageFormatR32ui:
+        case SpvImageFormatRgb10a2ui:
+        case SpvImageFormatRg32ui:
+        case SpvImageFormatRg16ui:
+        case SpvImageFormatRg8ui:
+        case SpvImageFormatR16ui:
+        case SpvImageFormatR8ui:
+            return l->id_u32 ? l->id_u32 : emit_type_int(l, 32, 0);
+        default:
+            return l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
+    }
+}
+
+static SsirAccessMode wgsl_storage_texture_access_from_name(const char *name) {
+    if (!name || strcmp(name, "write") == 0) return SSIR_ACCESS_WRITE;
+    if (strcmp(name, "read") == 0) return SSIR_ACCESS_READ;
+    if (strcmp(name, "read_write") == 0) return SSIR_ACCESS_READ_WRITE;
+    return SSIR_ACCESS_WRITE;
+}
+
+static int wgsl_storage_texture_info(const WgslAstNode *type_node, SsirTextureDim *out_dim,
+                                     SpvImageFormat *out_format, SsirAccessMode *out_access) {
+    if (!type_node || type_node->type != WGSL_NODE_TYPE) return 0;
+    const TypeNode *tn = &type_node->type_node;
+    if (!tn->name) return 0;
+
+    WgslBuiltinTypeInfo info;
+    if (!sw_parse_builtin_type_name(tn->name, strlen(tn->name), &info)) return 0;
+
+    SsirTextureDim dim;
+    switch (info.tag) {
+        case WGSL_TYPE_TEXTURE_STORAGE_1D: dim = SSIR_TEX_1D; break;
+        case WGSL_TYPE_TEXTURE_STORAGE_2D: dim = SSIR_TEX_2D; break;
+        case WGSL_TYPE_TEXTURE_STORAGE_2D_ARRAY: dim = SSIR_TEX_2D_ARRAY; break;
+        case WGSL_TYPE_TEXTURE_STORAGE_3D: dim = SSIR_TEX_3D; break;
+        default: return 0;
+    }
+
+    if (out_dim) *out_dim = dim;
+    if (out_format) *out_format = wgsl_storage_texture_format_from_name(wgsl_type_arg_name(tn, 0));
+    if (out_access) *out_access = wgsl_storage_texture_access_from_name(wgsl_type_arg_name(tn, 1));
+    return 1;
+}
+
+static int wgsl_storage_texture_access_info(const WgslAstNode *type_node, SsirAccessMode *out_access) {
+    SsirAccessMode access = SSIR_ACCESS_WRITE;
+    if (wgsl_storage_texture_info(type_node, NULL, NULL, &access)) {
+        if (out_access) *out_access = access;
+        return 1;
+    }
+
+    if (!type_node || type_node->type != WGSL_NODE_TYPE) return 0;
+    const TypeNode *tn = &type_node->type_node;
+    if (!tn->name || strcmp(tn->name, "binding_array") != 0 || tn->type_arg_count == 0) return 0;
+    return wgsl_storage_texture_access_info(tn->type_args[0], out_access);
+}
+
+static uint32_t lower_storage_texture_type(WgslLower *l, const TypeNode *tn, SpvDim dim,
+                                           uint32_t arrayed) {
+    SpvImageFormat format = wgsl_storage_texture_format_from_name(wgsl_type_arg_name(tn, 0));
+    uint32_t st = wgsl_storage_texture_sampled_type(l, format);
+    return emit_type_image(l, st, dim, 0, arrayed, 0, 2, format);
+}
+
 // l nonnull
 static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
     wgsl_compiler_assert(l != NULL, "lower_type: l is NULL");
@@ -1289,8 +1421,7 @@ static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
                 return emit_type_image(l, st, SpvDim2D, 1, 0, 0, 1, SpvImageFormatUnknown);
             }
             case WGSL_TYPE_TEXTURE_STORAGE_2D: {
-                uint32_t st = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
-                return emit_type_image(l, st, SpvDim2D, 0, 0, 0, 2, SpvImageFormatRgba8);
+                return lower_storage_texture_type(l, tn, SpvDim2D, 0);
             }
             case WGSL_TYPE_TEXTURE_MULTISAMPLED_2D: {
                 uint32_t st = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
@@ -1311,16 +1442,13 @@ static uint32_t lower_type(WgslLower *l, const WgslAstNode *type_node) {
                 return emit_type_image(l, st, SpvDimCube, 1, 0, 0, 1, SpvImageFormatUnknown);
             }
             case WGSL_TYPE_TEXTURE_STORAGE_1D: {
-                uint32_t st = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
-                return emit_type_image(l, st, SpvDim1D, 0, 0, 0, 2, SpvImageFormatRgba8);
+                return lower_storage_texture_type(l, tn, SpvDim1D, 0);
             }
             case WGSL_TYPE_TEXTURE_STORAGE_3D: {
-                uint32_t st = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
-                return emit_type_image(l, st, SpvDim3D, 0, 0, 0, 2, SpvImageFormatRgba8);
+                return lower_storage_texture_type(l, tn, SpvDim3D, 0);
             }
             case WGSL_TYPE_TEXTURE_STORAGE_2D_ARRAY: {
-                uint32_t st = l->id_f32 ? l->id_f32 : emit_type_float(l, 32);
-                return emit_type_image(l, st, SpvDim2D, 0, 1, 0, 2, SpvImageFormatRgba8);
+                return lower_storage_texture_type(l, tn, SpvDim2D, 1);
             }
             case WGSL_TYPE_UNKNOWN: default: break;
         }
@@ -3835,6 +3963,7 @@ static ExprResult lower_call(WgslLower *l, const WgslAstNode *node) {
                         switch (st->texture_storage.dim) {
                             case SSIR_TEX_1D: dim_count = 1; break;
                             case SSIR_TEX_2D: dim_count = 2; break;
+                            case SSIR_TEX_2D_ARRAY: dim_count = 3; break;
                             case SSIR_TEX_3D: dim_count = 3; break;
                             default: dim_count = 2; break;
                         }
@@ -5851,6 +5980,14 @@ static int lower_globals(WgslLower *l) {
 
         // Determine type and storage class
         uint32_t elem_type = lower_type(l, gv->type);
+        SsirTextureDim storage_texture_dim = SSIR_TEX_2D;
+        SpvImageFormat storage_texture_format = SpvImageFormatRgba8;
+        SsirAccessMode storage_texture_access = SSIR_ACCESS_WRITE;
+        int is_storage_texture = wgsl_storage_texture_info(gv->type, &storage_texture_dim,
+                                                           &storage_texture_format,
+                                                           &storage_texture_access);
+        int has_storage_texture_access = wgsl_storage_texture_access_info(gv->type,
+                                                                          &storage_texture_access);
 
         // For samplers and textures, always use UniformConstant
         SpvStorageClass sc;
@@ -5929,7 +6066,12 @@ static int lower_globals(WgslLower *l) {
                 snprintf(wrapper_name, sizeof(wrapper_name), "_%s_block", gv->name ? gv->name : "anon");
                 ssir_pointee = ssir_type_struct(l->ssir, wrapper_name, &ssir_arr, 1, &offset_zero);
             } else {
-                ssir_pointee = spv_type_to_ssir(l, elem_type);
+                if (is_storage_texture) {
+                    ssir_pointee = ssir_type_texture_storage(l->ssir, storage_texture_dim,
+                        (uint32_t)storage_texture_format, storage_texture_access);
+                } else {
+                    ssir_pointee = spv_type_to_ssir(l, elem_type);
+                }
             }
             SsirAddressSpace ssir_addr = spv_sc_to_ssir_addr(sc);
             uint32_t ssir_ptr_type = ssir_type_ptr(l->ssir, ssir_pointee, ssir_addr);
@@ -5939,6 +6081,13 @@ static int lower_globals(WgslLower *l) {
             }
             if (sym->has_binding) {
                 ssir_global_set_binding(l->ssir, ssir_var, (uint32_t)sym->binding_index);
+            }
+            if (has_storage_texture_access) {
+                if (storage_texture_access == SSIR_ACCESS_READ) {
+                    ssir_global_set_non_writable(l->ssir, ssir_var, true);
+                } else if (storage_texture_access == SSIR_ACCESS_WRITE) {
+                    ssir_global_set_non_readable(l->ssir, ssir_var, true);
+                }
             }
             ssir_id_map_set(l, var_id, ssir_var);
         }

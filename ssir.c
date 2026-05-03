@@ -1205,6 +1205,15 @@ void ssir_global_set_interp_sampling(SsirModule *mod, uint32_t global_id, SsirIn
 }
 
 // mod nonnull
+void ssir_global_set_non_readable(SsirModule *mod, uint32_t global_id, bool non_readable) {
+    wgsl_compiler_assert(mod != NULL, "ssir_global_set_non_readable: mod is NULL");
+    SsirGlobalVar *g = ssir_get_global(mod, global_id);
+    if (g) {
+        g->non_readable = non_readable;
+    }
+}
+
+// mod nonnull
 void ssir_global_set_non_writable(SsirModule *mod, uint32_t global_id, bool non_writable) {
     wgsl_compiler_assert(mod != NULL, "ssir_global_set_non_writable: mod is NULL");
     SsirGlobalVar *g = ssir_get_global(mod, global_id);

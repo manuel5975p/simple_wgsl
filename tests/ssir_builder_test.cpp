@@ -353,6 +353,17 @@ TEST(SsirGlobal, NonWritable) {
     EXPECT_TRUE(gv->non_writable);
 }
 
+TEST(SsirGlobal, NonReadable) {
+    ModGuard g(ssir_module_create());
+    uint32_t f32   = ssir_type_f32(g.get());
+    uint32_t ptr_t = ssir_type_ptr(g.get(), f32, SSIR_ADDR_STORAGE);
+    uint32_t gid   = ssir_global_var(g.get(), "buf", ptr_t);
+    ssir_global_set_non_readable(g.get(), gid, true);
+    SsirGlobalVar *gv = ssir_get_global(g.get(), gid);
+    ASSERT_NE(gv, nullptr);
+    EXPECT_TRUE(gv->non_readable);
+}
+
 TEST(SsirGlobal, Invariant) {
     ModGuard g(ssir_module_create());
     uint32_t f32   = ssir_type_f32(g.get());

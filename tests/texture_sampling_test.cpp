@@ -1,6 +1,31 @@
 #include <gtest/gtest.h>
 #include "test_utils.h"
 
+namespace {
+
+std::string DisassembleSpirvForTextureTest(const std::vector<uint32_t> &spirv) {
+    std::string spv_path = wgsl_test::MakeTempSpvPath("wgsl_tex");
+    if (!wgsl_test::WriteSpirvFile(spv_path, spirv.data(), spirv.size())) return "";
+
+    std::string output;
+    int ret = wgsl_test::RunCommand("spirv-dis --no-header " + spv_path + " 2>&1", &output);
+    std::remove(spv_path.c_str());
+    if (ret != 0) return "";
+    return output;
+}
+
+int CountSubstr(const std::string &s, const char *needle) {
+    int count = 0;
+    size_t pos = 0;
+    while ((pos = s.find(needle, pos)) != std::string::npos) {
+        ++count;
+        pos += std::strlen(needle);
+    }
+    return count;
+}
+
+} // namespace
+
 // =============================================================================
 // textureSampleLevel
 // =============================================================================
@@ -262,6 +287,232 @@ TEST(TextureSamplingTest, TextureStore_Basic) {
     textureStore(t, vec2<u32>(gid.x, gid.y), vec4<f32>(1.0, 0.0, 0.0, 1.0));
 })");
     EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(TextureSamplingTest, TextureStorage_FormatLowered) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var t: texture_storage_2d<r32float, write>;
+
+@compute @workgroup_size(1) fn main() {
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("R32f"), std::string::npos) << spvasm;
+    EXPECT_EQ(spvasm.find("Rgba8"), std::string::npos) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureStorage_AllDimensionsFormatLowered) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var tex1d: texture_storage_1d<r32float, write>;
+@group(0) @binding(1) var tex2d: texture_storage_2d<r32float, write>;
+@group(0) @binding(2) var tex2dArray: texture_storage_2d_array<r32float, write>;
+@group(0) @binding(3) var tex3d: texture_storage_3d<r32float, write>;
+
+@compute @workgroup_size(1) fn main() {
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("1D 0 0 0 2 R32f"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("2D 0 0 0 2 R32f"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("2D 0 1 0 2 R32f"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("3D 0 0 0 2 R32f"), std::string::npos) << spvasm;
+    EXPECT_EQ(spvasm.find("Rgba8"), std::string::npos) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureStorage_IntegerFormatsUseIntegerImageTypes) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var uintTex: texture_storage_3d<r32uint, write>;
+@group(0) @binding(1) var sintTex: texture_storage_3d<r32sint, write>;
+@group(0) @binding(2) var rgbaUintTex: texture_storage_2d_array<rgba8uint, write>;
+@group(0) @binding(3) var rgbaSintTex: texture_storage_2d_array<rgba8sint, write>;
+
+@compute @workgroup_size(1) fn main() {
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("R32ui"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("R32i"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("Rgba8ui"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("Rgba8i"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("OpTypeImage %uint 3D 0 0 0 2 R32ui"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("OpTypeImage %int 3D 0 0 0 2 R32i"), std::string::npos) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureStorage_AdditionalFormatsLowered) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var a: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(1) var b: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(2) var c: texture_storage_2d<rg32float, write>;
+@group(0) @binding(3) var d: texture_storage_2d<rgba8snorm, write>;
+@group(0) @binding(4) var e: texture_storage_2d<rg16uint, write>;
+@group(0) @binding(5) var f: texture_storage_2d<r8sint, write>;
+@group(0) @binding(6) var g: texture_storage_2d<rgb10a2uint, write>;
+@group(0) @binding(7) var h: texture_storage_2d<rgba16unorm, write>;
+
+@compute @workgroup_size(1) fn main() {
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("Rgba16f"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("Rgba32f"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("Rg32f"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("Rgba8Snorm"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("Rg16ui"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("R8i"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("Rgb10a2ui"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("Rgba16"), std::string::npos) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureStorage_AccessDecorationsLowered) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var readTex: texture_storage_2d<rgba8unorm, read>;
+@group(0) @binding(1) var writeTex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(2) var rwTex: texture_storage_2d<rgba8unorm, read_write>;
+
+@compute @workgroup_size(1) fn main() {
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_EQ(CountSubstr(spvasm, "NonWritable"), 1) << spvasm;
+    EXPECT_EQ(CountSubstr(spvasm, "NonReadable"), 1) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureStorage_AccessDecorationsAllDimensions) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var read1d: texture_storage_1d<rgba8unorm, read>;
+@group(0) @binding(1) var write2dArray: texture_storage_2d_array<rgba8unorm, write>;
+@group(0) @binding(2) var rw3d: texture_storage_3d<rgba8unorm, read_write>;
+
+@compute @workgroup_size(1) fn main() {
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_EQ(CountSubstr(spvasm, "NonWritable"), 1) << spvasm;
+    EXPECT_EQ(CountSubstr(spvasm, "NonReadable"), 1) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureStorage_BindingArrayAccessDecorated) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var readTextures: binding_array<texture_storage_2d<rgba8unorm, read>>;
+@group(0) @binding(1) var writeTextures: binding_array<texture_storage_2d<rgba8unorm, write>>;
+
+@compute @workgroup_size(1) fn main() {
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_EQ(CountSubstr(spvasm, "NonWritable"), 1) << spvasm;
+    EXPECT_EQ(CountSubstr(spvasm, "NonReadable"), 1) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureStore_1D) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var t: texture_storage_1d<rgba8unorm, write>;
+
+@compute @workgroup_size(1) fn main() {
+    textureStore(t, 0i, vec4<f32>(1.0, 0.0, 0.0, 1.0));
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("ImageWrite"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("1D 0 0 0 2 Rgba8"), std::string::npos) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureStore_3D) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var t: texture_storage_3d<rgba8unorm, write>;
+
+@compute @workgroup_size(1) fn main() {
+    textureStore(t, vec3<i32>(0, 0, 0), vec4<f32>(1.0, 0.0, 0.0, 1.0));
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("ImageWrite"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("3D 0 0 0 2 Rgba8"), std::string::npos) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureLoad_Storage1DRead) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> output: Buf;
+@group(0) @binding(1) var t: texture_storage_1d<r32uint, read>;
+
+@compute @workgroup_size(1) fn main() {
+    let value = textureLoad(t, 0i);
+    output.data[0] = value.x;
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("ImageRead"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("1D 0 0 0 2 R32ui"), std::string::npos) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureLoad_Storage3DRead) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> output: Buf;
+@group(0) @binding(1) var t: texture_storage_3d<rgba8uint, read>;
+
+@compute @workgroup_size(1) fn main() {
+    let value = textureLoad(t, vec3<i32>(0, 0, 0));
+    output.data[0] = value.x;
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("ImageRead"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("3D 0 0 0 2 Rgba8ui"), std::string::npos) << spvasm;
+}
+
+TEST(TextureSamplingTest, TextureLoadAndStore_Storage3DReadWrite) {
+    auto r = wgsl_test::CompileWgsl(R"(
+@group(0) @binding(0) var t: texture_storage_3d<rgba8unorm, read_write>;
+
+@compute @workgroup_size(1) fn main() {
+    let coord = vec3<i32>(0, 0, 0);
+    let value = textureLoad(t, coord);
+    textureStore(t, coord, value);
+}
+)");
+    ASSERT_TRUE(r.success) << r.error;
+
+    std::string spvasm = DisassembleSpirvForTextureTest(r.spirv);
+    ASSERT_FALSE(spvasm.empty());
+    EXPECT_NE(spvasm.find("ImageRead"), std::string::npos) << spvasm;
+    EXPECT_NE(spvasm.find("ImageWrite"), std::string::npos) << spvasm;
+    EXPECT_EQ(spvasm.find("NonWritable"), std::string::npos) << spvasm;
+    EXPECT_EQ(spvasm.find("NonReadable"), std::string::npos) << spvasm;
 }
 
 TEST(TextureSamplingTest, TextureStore_ComputedValue) {

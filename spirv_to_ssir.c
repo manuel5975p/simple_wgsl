@@ -1331,6 +1331,9 @@ static void convert_global_vars(VtsConverter *c) {
         } else if (vts_has_decoration(c, i, SpvDecorationSample, NULL)) {
             ssir_global_set_interp_sampling(c->mod, gid, SSIR_INTERP_SAMPLING_SAMPLE);
         }
+        if (vts_has_decoration(c, i, SpvDecorationNonReadable, NULL)) {
+            ssir_global_set_non_readable(c->mod, gid, true);
+        }
         if (vts_has_decoration(c, i, SpvDecorationNonWritable, NULL)) {
             ssir_global_set_non_writable(c->mod, gid, true);
         }

@@ -54,6 +54,44 @@ struct Buf { data: array<u32> };
     EXPECT_TRUE(r.success) << r.error;
 }
 
+TEST(TextureQueryTest, TextureDimensions_Storage1D) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> output: Buf;
+@group(0) @binding(1) var t: texture_storage_1d<rgba8unorm, read>;
+@compute @workgroup_size(1) fn main() {
+    output.data[0] = textureDimensions(t);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(TextureQueryTest, TextureDimensions_Storage2DArray) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> output: Buf;
+@group(0) @binding(1) var t: texture_storage_2d_array<rgba8unorm, read>;
+@compute @workgroup_size(1) fn main() {
+    let dims = textureDimensions(t);
+    output.data[0] = dims.x;
+    output.data[1] = dims.y;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(TextureQueryTest, TextureDimensions_Storage3D) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> output: Buf;
+@group(0) @binding(1) var t: texture_storage_3d<rgba8unorm, read>;
+@compute @workgroup_size(1) fn main() {
+    let dims = textureDimensions(t);
+    output.data[0] = dims.x;
+    output.data[1] = dims.y;
+    output.data[2] = dims.z;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
 // -----------------------------------------------------------------------------
 // textureNumLayers(t)
 // Returns the number of layers in an array texture.
@@ -142,6 +180,28 @@ struct Buf { data: array<u32> };
     output.data[0] = dims.x;
     output.data[1] = dims.y;
     output.data[2] = levels;
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(TextureQueryTest, TextureNumLevels_3D) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> output: Buf;
+@group(0) @binding(1) var t: texture_3d<f32>;
+@compute @workgroup_size(1) fn main() {
+    output.data[0] = textureNumLevels(t);
+})");
+    EXPECT_TRUE(r.success) << r.error;
+}
+
+TEST(TextureQueryTest, TextureNumLevels_2DArray) {
+    auto r = wgsl_test::CompileWgsl(R"(
+struct Buf { data: array<u32> };
+@group(0) @binding(0) var<storage, read_write> output: Buf;
+@group(0) @binding(1) var t: texture_2d_array<f32>;
+@compute @workgroup_size(1) fn main() {
+    output.data[0] = textureNumLevels(t);
 })");
     EXPECT_TRUE(r.success) << r.error;
 }

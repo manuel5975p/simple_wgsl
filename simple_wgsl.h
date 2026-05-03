@@ -78,6 +78,19 @@ void sw_free(void *p);
 #endif
 #endif
 
+#ifndef WGSL_COMPILER_ASSUME
+#if defined(__clang__)
+#define WGSL_COMPILER_ASSUME(cond) __builtin_assume(cond)
+#elif defined(__GNUC__)
+#define WGSL_COMPILER_ASSUME(cond) \
+    do { if (!(cond)) __builtin_unreachable(); } while (0)
+#elif defined(_MSC_VER)
+#define WGSL_COMPILER_ASSUME(cond) __assume(cond)
+#else
+#define WGSL_COMPILER_ASSUME(cond) ((void)0)
+#endif
+#endif
+
 #ifndef NDEBUG
 #ifndef wgsl_compiler_assert
 #define wgsl_compiler_assert(cond, fmt, ...)   \
@@ -87,7 +100,8 @@ void sw_free(void *p);
 #endif
 #else
 #ifndef wgsl_compiler_assert
-#define wgsl_compiler_assert(cond, fmt, ...) ((void)(cond))
+/* Release: feed the condition to the optimizer as an assumption. */
+#define wgsl_compiler_assert(cond, fmt, ...) WGSL_COMPILER_ASSUME(cond)
 #endif
 #endif
 
@@ -1327,6 +1341,7 @@ struct SsirGlobalVar {
     SsirBuiltinVar builtin;
     SsirInterpolation interp;
     SsirInterpolationSampling interp_sampling;
+    bool non_readable;
     bool non_writable;
     bool invariant;
     bool has_initializer;
@@ -1490,6 +1505,7 @@ void ssir_global_set_location(SsirModule *mod, uint32_t global_id, uint32_t loca
 void ssir_global_set_builtin(SsirModule *mod, uint32_t global_id, SsirBuiltinVar builtin);
 void ssir_global_set_interpolation(SsirModule *mod, uint32_t global_id, SsirInterpolation interp);
 void ssir_global_set_interp_sampling(SsirModule *mod, uint32_t global_id, SsirInterpolationSampling sampling);
+void ssir_global_set_non_readable(SsirModule *mod, uint32_t global_id, bool non_readable);
 void ssir_global_set_non_writable(SsirModule *mod, uint32_t global_id, bool non_writable);
 void ssir_global_set_invariant(SsirModule *mod, uint32_t global_id, bool invariant);
 void ssir_global_set_initializer(SsirModule *mod, uint32_t global_id, uint32_t const_id);

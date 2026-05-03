@@ -162,6 +162,9 @@ typedef struct {
     int has_image_query_cap;
     int has_psb_cap;       /* PhysicalStorageBufferAddresses */
     int has_binding_array; /* RuntimeDescriptorArrayEXT */
+    int has_sampled1d_cap;
+    int has_image1d_cap;
+    int has_storage_image_extended_formats_cap;
     int glsl_ext_emitted;
 
     /* Pre-computed function type IDs (indexed by function index) */
@@ -183,6 +186,20 @@ typedef struct {
         uint32_t spv_id;
     } sampled_image_cache[16];
     uint32_t sampled_image_cache_count;
+
+    /* Deduplication cache for OpTypeImage. Storage texture access is carried
+     * by variable decorations, not by the SPIR-V image type itself. */
+    struct {
+        SsirTextureDim dim;
+        uint32_t sampled_type;
+        uint32_t depth;
+        uint32_t arrayed;
+        uint32_t ms;
+        uint32_t sampled;
+        SpvImageFormat format;
+        uint32_t spv_id;
+    } image_type_cache[128];
+    uint32_t image_type_cache_count;
 
     /* Block decoration dedup: SPIR-V type IDs that already have Block */
     uint32_t block_decorated[64];
@@ -706,23 +723,85 @@ static uint32_t sts_emit_type_sampler(Ctx *c) {
     return id;
 }
 
-#define texture_dim_to_spv sw_ssir_tex_dim_to_spv
+// pure, no preconditions
+static int sts_storage_format_requires_extended_cap(SpvImageFormat format) {
+    switch (format) {
+        case SpvImageFormatUnknown:
+        case SpvImageFormatRgba32f:
+        case SpvImageFormatRgba32i:
+        case SpvImageFormatRgba32ui:
+        case SpvImageFormatR32f:
+        case SpvImageFormatR32i:
+        case SpvImageFormatR32ui:
+        case SpvImageFormatRgba8:
+        case SpvImageFormatRgba8Snorm:
+        case SpvImageFormatRgba8i:
+        case SpvImageFormatRgba8ui:
+            return 0;
+        default:
+            return 1;
+    }
+}
+
+// c nonnull
+static void sts_emit_image_capabilities(Ctx *c, SsirTextureDim dim, uint32_t sampled,
+                                        SpvImageFormat format) {
+    wgsl_compiler_assert(c != NULL, "sts_emit_image_capabilities: c is NULL");
+    if ((dim == SSIR_TEX_1D || dim == SSIR_TEX_1D_ARRAY) && !c->has_sampled1d_cap) {
+        sts_emit_capability(c, SpvCapabilitySampled1D);
+        c->has_sampled1d_cap = 1;
+    }
+    if (sampled == 2 && (dim == SSIR_TEX_1D || dim == SSIR_TEX_1D_ARRAY) &&
+        !c->has_image1d_cap) {
+        sts_emit_capability(c, SpvCapabilityImage1D);
+        c->has_image1d_cap = 1;
+    }
+    if (sampled == 2 && sts_storage_format_requires_extended_cap(format) &&
+        !c->has_storage_image_extended_formats_cap) {
+        sts_emit_capability(c, SpvCapabilityStorageImageExtendedFormats);
+        c->has_storage_image_extended_formats_cap = 1;
+    }
+}
 
 // c nonnull
 static uint32_t sts_emit_type_image(Ctx *c, SsirTextureDim dim, uint32_t sampled_type,
     uint32_t depth, uint32_t arrayed, uint32_t ms, uint32_t sampled, SpvImageFormat format) {
     wgsl_compiler_assert(c != NULL, "sts_emit_type_image: c is NULL");
+    sts_emit_image_capabilities(c, dim, sampled, format);
+    for (uint32_t i = 0; i < c->image_type_cache_count; ++i) {
+        if (c->image_type_cache[i].dim == dim &&
+            c->image_type_cache[i].sampled_type == sampled_type &&
+            c->image_type_cache[i].depth == depth &&
+            c->image_type_cache[i].arrayed == arrayed &&
+            c->image_type_cache[i].ms == ms &&
+            c->image_type_cache[i].sampled == sampled &&
+            c->image_type_cache[i].format == format) {
+            return c->image_type_cache[i].spv_id;
+        }
+    }
+
     StsWordBuf *wb = &c->sections.types_constants;
     uint32_t id = sts_fresh_id(c);
     if (!sts_emit_op(wb, SpvOpTypeImage, 9)) return 0;
     if (!wb_push(wb, id)) return 0;
     if (!wb_push(wb, sampled_type)) return 0;
-    if (!wb_push(wb, texture_dim_to_spv(dim))) return 0;
+    if (!wb_push(wb, sw_ssir_tex_dim_to_spv(dim))) return 0;
     if (!wb_push(wb, depth)) return 0;
     if (!wb_push(wb, arrayed)) return 0;
     if (!wb_push(wb, ms)) return 0;
     if (!wb_push(wb, sampled)) return 0;
     if (!wb_push(wb, format)) return 0;
+    if (c->image_type_cache_count < 128) {
+        c->image_type_cache[c->image_type_cache_count].dim = dim;
+        c->image_type_cache[c->image_type_cache_count].sampled_type = sampled_type;
+        c->image_type_cache[c->image_type_cache_count].depth = depth;
+        c->image_type_cache[c->image_type_cache_count].arrayed = arrayed;
+        c->image_type_cache[c->image_type_cache_count].ms = ms;
+        c->image_type_cache[c->image_type_cache_count].sampled = sampled;
+        c->image_type_cache[c->image_type_cache_count].format = format;
+        c->image_type_cache[c->image_type_cache_count].spv_id = id;
+        c->image_type_cache_count++;
+    }
     return id;
 }
 
@@ -1170,6 +1249,9 @@ static uint32_t sts_emit_global_var(Ctx *c, const SsirGlobalVar *g) {
         sts_emit_decorate(c, id, SpvDecorationCentroid, NULL, 0);
     } else if (g->interp_sampling == SSIR_INTERP_SAMPLING_SAMPLE) {
         sts_emit_decorate(c, id, SpvDecorationSample, NULL, 0);
+    }
+    if (g->non_readable) {
+        sts_emit_decorate(c, id, SpvDecorationNonReadable, NULL, 0);
     }
     if (g->non_writable) {
         sts_emit_decorate(c, id, SpvDecorationNonWritable, NULL, 0);
@@ -2491,8 +2573,9 @@ static int emit_instruction(Ctx *c, const SsirInst *inst, uint32_t func_type_hin
             SsirType *tex_type_ts = ssir_get_type((SsirModule *)c->mod, tex_ssir_type_ts);
             int is_multisampled = (tex_type_ts && tex_type_ts->kind == SSIR_TYPE_TEXTURE &&
                                    (tex_type_ts->texture.dim == SSIR_TEX_MULTISAMPLED_2D));
+            int is_storage_texture = (tex_type_ts && tex_type_ts->kind == SSIR_TYPE_TEXTURE_STORAGE);
             int has_level = (inst->operand_count >= 2 && inst->operands[1] != 0);
-            if (is_multisampled || !has_level) {
+            if (is_storage_texture || is_multisampled || !has_level) {
                 sts_emit_op(wb, SpvOpImageQuerySize, 4);
                 wb_push(wb, type_spv);
                 wb_push(wb, result_spv);
