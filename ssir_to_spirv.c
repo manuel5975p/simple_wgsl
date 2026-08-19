@@ -1023,7 +1023,7 @@ static uint32_t sts_emit_type(Ctx *c, uint32_t ssir_type_id) {
                        fmt == SpvImageFormatRgba8ui || fmt == SpvImageFormatR32ui ||
                        fmt == SpvImageFormatRg32ui || fmt == SpvImageFormatRg16ui ||
                        fmt == SpvImageFormatRg8ui || fmt == SpvImageFormatR16ui ||
-                       fmt == SpvImageFormatR8ui) {
+                       fmt == SpvImageFormatR8ui || fmt == SpvImageFormatRgb10a2ui) {
                 sampled_type = sts_emit_type_int(c, 32, 0);
             } else {
                 sampled_type = c->spv_f32 ? c->spv_f32 : sts_emit_type_float(c, 32);
