@@ -316,6 +316,32 @@ static uint32_t sc_follow_plain_branch(SsirFunction *func, uint32_t block_id) {
     return cur;
 }
 
+/* True if any block's terminator branches to block_id (CFG predecessor).
+ * A merge annotation pointing at such a block names a real convergence
+ * point and must not be re-targeted past it. */
+static bool sc_block_has_pred(SsirFunction *func, uint32_t block_id) {
+    for (uint32_t bi = 0; bi < func->block_count; bi++) {
+        SsirBlock *b = &func->blocks[bi];
+        if (b->inst_count == 0) continue;
+        SsirInst *term = &b->insts[b->inst_count - 1];
+        if (term->op == SSIR_OP_BRANCH) {
+            if (term->operand_count >= 1 && term->operands[0] == block_id)
+                return true;
+        } else if (term->op == SSIR_OP_BRANCH_COND) {
+            if ((term->operand_count >= 2 && term->operands[1] == block_id) ||
+                (term->operand_count >= 3 && term->operands[2] == block_id))
+                return true;
+        } else if (term->op == SSIR_OP_SWITCH) {
+            if (term->operand_count >= 2 && term->operands[1] == block_id)
+                return true;
+            for (uint32_t ei = 1; ei < term->extra_count; ei += 2)
+                if (term->extra[ei] == block_id)
+                    return true;
+        }
+    }
+    return false;
+}
+
 static uint32_t sc_follow_trivial_branch(SsirFunction *func, uint32_t block_id) {
     if (!func || !block_id) return block_id;
     uint32_t cur = block_id;
@@ -330,6 +356,9 @@ static uint32_t sc_follow_trivial_branch(SsirFunction *func, uint32_t block_id) 
         if (!b || b->inst_count == 0) break;
         SsirInst *term = &b->insts[b->inst_count - 1];
         if (!sc_is_trivial_branch_bridge(b)) break;
+        /* Only skip past dangling annotation-only bridges. A bridge that is
+         * an actual branch target is the construct's convergence block. */
+        if (sc_block_has_pred(func, cur)) break;
         if (term->operands[0] == cur) break;
         cur = term->operands[0];
     }
@@ -602,6 +631,41 @@ static void sc_ensure_term(SC *c) {
 }
 
 
+/* Debug: dump one function's CFG (blocks, merge annotations, terminators). */
+static void sc_dump_cfg(SsirFunction *func, const char *tag) {
+    fprintf(stderr, "[ssir_struct] === CFG %s func=%s blocks=%u ===\n",
+            tag, func->name ? func->name : "<anon>", func->block_count);
+    for (uint32_t bi = 0; bi < func->block_count; bi++) {
+        SsirBlock *b = &func->blocks[bi];
+        fprintf(stderr, "  block %u%s%s%s:", b->id,
+                b->name ? " (" : "", b->name ? b->name : "", b->name ? ")" : "");
+        for (uint32_t ii = 0; ii < b->inst_count; ii++) {
+            SsirInst *s = &b->insts[ii];
+            switch (s->op) {
+            case SSIR_OP_SELECTION_MERGE:
+                fprintf(stderr, " selmerge(%u)", s->operands[0]); break;
+            case SSIR_OP_LOOP_MERGE:
+                fprintf(stderr, " loopmerge(%u,%u)", s->operands[0], s->operands[1]); break;
+            case SSIR_OP_BRANCH:
+                fprintf(stderr, " br(%u)", s->operands[0]); break;
+            case SSIR_OP_BRANCH_COND:
+                fprintf(stderr, " brcond(t=%u,f=%u,m=%u)",
+                        s->operands[1], s->operands[2],
+                        s->operand_count >= 4 ? s->operands[3] : 0);
+                break;
+            case SSIR_OP_SWITCH:
+                fprintf(stderr, " switch(def=%u)", s->operands[1]); break;
+            case SSIR_OP_RETURN: case SSIR_OP_RETURN_VOID:
+                fprintf(stderr, " ret"); break;
+            case SSIR_OP_UNREACHABLE:
+                fprintf(stderr, " unreachable"); break;
+            default: break;
+            }
+        }
+        fprintf(stderr, "\n");
+    }
+}
+
 /* ============================================================================
  * Public API
  * ============================================================================ */
@@ -612,6 +676,8 @@ void ssir_structurize_function(SsirModule *mod, uint32_t func_id) {
 
     const char *debug_env = getenv("SSIR_STRUCT_DEBUG");
     bool debug_phase3 = debug_env && debug_env[0] != '\0' && debug_env[0] != '0';
+
+    if (debug_phase3) sc_dump_cfg(func, "pre");
 
     /* Phase -1 intentionally left empty -- bridge collapse is not safe for
      * all patterns. Instead, the structurizer works purely additively. */
@@ -1740,6 +1806,8 @@ void ssir_structurize_function(SsirModule *mod, uint32_t func_id) {
         }
         if (c2) STRUCT_FREE(c2);
     }
+
+    if (debug_phase3) sc_dump_cfg(func, "post");
 
     STRUCT_FREE(c);
 }
