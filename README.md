@@ -33,22 +33,23 @@ int main(void) {
         "}\n";
 
     WgslAstNode *ast = wgsl_parse(src);
-    WgslResolver *resolver = wgsl_resolver_build(ast);
+    WgslResolveResult res = wgsl_resolver_build(ast);
+    WgslResolver *resolver = res.value;
 
     // Compile to SPIR-V
     WgslLowerOptions opts = {0};
     opts.env = WGSL_LOWER_ENV_VULKAN_1_2;
     opts.enable_debug_names = 1;
 
-    uint32_t *spirv;
-    size_t word_count;
-    WgslLowerResult res = wgsl_lower_emit_spirv(ast, resolver, &opts, &spirv, &word_count);
+    WgslLowerSpirvResult spv = wgsl_lower_emit_spirv(ast, resolver, &opts);
 
-    if (res == WGSL_LOWER_OK)
-        printf("Generated %zu SPIR-V words\n", word_count);
+    if (spv.code == SW_OK)
+        printf("Generated %zu SPIR-V words\n", spv.word_count);
 
-    wgsl_lower_free(spirv);
+    wgsl_lower_free(spv.words);
+    wgsl_diagnostic_list_free(spv.diags);
     wgsl_resolver_free(resolver);
+    wgsl_diagnostic_list_free(res.diags);
     wgsl_free_ast(ast);
 }
 ```

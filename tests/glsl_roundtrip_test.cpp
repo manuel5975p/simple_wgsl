@@ -1944,3 +1944,105 @@ GLSL_EMIT_TEST(KitchenSinkCompute, R"(
         << "GLSL:\n" << glsl_result.glsl;
     EXPECT_TRUE(glsl_result.glsl.find("uniform") != std::string::npos)
         << "GLSL:\n" << glsl_result.glsl)
+
+// ============================================================================
+// GLSL memory qualifiers -> SPIR-V NonWritable/NonReadable
+// ============================================================================
+
+TEST(GlslRoundtrip, ReadonlyWriteonlyBuffersLowerToDecorations) {
+    const char *glsl = R"(
+        #version 450
+        layout(local_size_x = 64) in;
+        layout(std430, set = 0, binding = 0) restrict readonly buffer RF {
+            float data_in[];
+        } rf;
+        layout(std430, set = 0, binding = 1) restrict writeonly buffer Result {
+            float data_out[];
+        } result;
+        void main() {
+            result.data_out[gl_GlobalInvocationID.x] = rf.data_in[gl_GlobalInvocationID.x];
+        }
+    )";
+    WgslAstNode *ast = glsl_parse(glsl, NULL, WGSL_STAGE_COMPUTE, NULL);
+    ASSERT_NE(ast, nullptr);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    ASSERT_NE(rr.value, nullptr);
+
+    WgslLowerOptions opts = {};
+    opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
+    WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast, rr.value, &opts);
+    wgsl_resolver_free(rr.value);
+    wgsl_diagnostic_list_free(rr.diags);
+    wgsl_free_ast(ast);
+    ASSERT_EQ(lsr.code, SW_OK);
+
+    /* Scan for OpDecorate (71) with NonWritable (24) / NonReadable (25). */
+    bool non_writable = false, non_readable = false;
+    for (size_t i = 5; i < lsr.word_count;) {
+        uint32_t wc = lsr.words[i] >> 16;
+        uint32_t op = lsr.words[i] & 0xFFFFu;
+        if (op == 71 && wc == 3) {
+            if (lsr.words[i + 2] == 24) non_writable = true;
+            if (lsr.words[i + 2] == 25) non_readable = true;
+        }
+        if (wc == 0) break;
+        i += wc;
+    }
+    EXPECT_TRUE(non_writable) << "readonly buffer did not produce NonWritable";
+    EXPECT_TRUE(non_readable) << "writeonly buffer did not produce NonReadable";
+
+    std::string val_err;
+    EXPECT_TRUE(wgsl_test::ValidateSpirv(lsr.words, lsr.word_count, &val_err)) << val_err;
+    wgsl_lower_free(lsr.words);
+    wgsl_diagnostic_list_free(lsr.diags);
+}
+
+// ============================================================================
+// Direct GLSL -> SPIR-V: gl_FragCoord must decorate as BuiltIn FragCoord (not Position)
+// ============================================================================
+
+TEST(GlslDirect, FragCoordIsBuiltInFragCoord) {
+    const char *glsl = R"(#version 450
+layout(location = 0) in  vec2 in_UV;
+layout(location = 0) out vec4 out_Color;
+layout(push_constant) uniform PushConstants { uint width; uint height; } screen;
+void main () {
+  vec2 uv = gl_FragCoord.xy / vec2(screen.width, screen.height);
+  out_Color = vec4(uv, 0.0, 1.0);
+}
+)";
+    WgslAstNode *ast = glsl_parse(glsl, NULL, WGSL_STAGE_FRAGMENT, NULL);
+    ASSERT_NE(ast, nullptr);
+    WgslResolveResult rr = wgsl_resolver_build(ast);
+    ASSERT_NE(rr.value, nullptr);
+    WgslLowerOptions opts = {};
+    opts.env = WGSL_LOWER_ENV_VULKAN_1_3;
+    opts.enable_debug_names = 1;
+    opts.zero_initialize_vars = 1;
+    WgslLowerSpirvResult lsr = wgsl_lower_emit_spirv(ast, rr.value, &opts);
+    ASSERT_EQ(lsr.code, SW_OK);
+
+    // Scan decorations: OpDecorate (opcode 71) <id> BuiltIn (11) <value>
+    bool saw_fragcoord = false, saw_position = false;
+    for (size_t i = 5; i < lsr.word_count;) {
+        uint32_t w = lsr.words[i];
+        uint32_t len = w >> 16, op = w & 0xFFFF;
+        if (len == 0) break;
+        if (op == 71 && len == 4 && lsr.words[i + 2] == 11) {
+            if (lsr.words[i + 3] == 15) saw_fragcoord = true;  // SpvBuiltInFragCoord
+            if (lsr.words[i + 3] == 0) saw_position = true;    // SpvBuiltInPosition
+        }
+        i += len;
+    }
+    EXPECT_TRUE(saw_fragcoord);
+    EXPECT_FALSE(saw_position);
+
+    std::string val_err;
+    EXPECT_TRUE(wgsl_test::ValidateSpirv(lsr.words, lsr.word_count, &val_err)) << val_err;
+
+    wgsl_lower_free(lsr.words);
+    wgsl_diagnostic_list_free(lsr.diags);
+    wgsl_resolver_free(rr.value);
+    wgsl_diagnostic_list_free(rr.diags);
+    wgsl_free_ast(ast);
+}

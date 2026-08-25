@@ -4885,6 +4885,30 @@ static void collect_variables_from_block(WgslLower *l, const WgslAstNode *block)
 
 // Infer type from expression (lightweight version for variable declaration)
 // l nonnull
+static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr);
+
+// Resolve the SPIR-V type of a module-scope const/let/override by name.
+// Returns 0 if no such module-scope binding exists. Used by infer_expr_type
+// because the variable-hoist pass runs before module consts are registered as
+// function locals, so an identifier referring to e.g. `const N: u32 = 8u` would
+// otherwise mis-infer as the f32 default. l, name nonnull.
+static uint32_t infer_module_const_type(WgslLower *l, const char *name) {
+    if (!l->program || l->program->type != WGSL_NODE_PROGRAM) return 0;
+    const Program *prog = &l->program->program;
+    for (int d = 0; d < prog->decl_count; d++) {
+        const WgslAstNode *decl = prog->decls[d];
+        if (!decl || decl->type != WGSL_NODE_VAR_DECL) continue;
+        const VarDecl *vd = &decl->var_decl;
+        if (vd->kind != WGSL_DECL_CONST && vd->kind != WGSL_DECL_LET &&
+            vd->kind != WGSL_DECL_OVERRIDE) continue;
+        if (!vd->name || strcmp(vd->name, name) != 0) continue;
+        if (vd->type) return lower_type(l, vd->type);
+        if (vd->init) return infer_expr_type(l, vd->init);
+        return 0;
+    }
+    return 0;
+}
+
 static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
     wgsl_compiler_assert(l != NULL, "infer_expr_type: l is NULL");
     if (!expr) return l->id_f32;
@@ -4990,6 +5014,10 @@ static uint32_t infer_expr_type(WgslLower *l, const WgslAstNode *expr) {
             if (fn_ctx_find_local(l, name, &ptr_id, &type_id)) {
                 return type_id;
             }
+            // Not a function local: may be a module-scope const/let/override
+            // (not yet registered as a local during the variable-hoist pass).
+            uint32_t const_type = infer_module_const_type(l, name);
+            if (const_type) return const_type;
             return l->id_f32;
         }
         case WGSL_NODE_MEMBER: {
@@ -5048,8 +5076,18 @@ static void collect_variables_from_stmt(WgslLower *l, const WgslAstNode *stmt) {
         case WGSL_NODE_VAR_DECL: {
             const VarDecl *vd = &stmt->var_decl;
 
-            // let/const/override are handled elsewhere, not as local variables
+            // let/const/override are handled elsewhere, not as local variables.
+            // Record a type-only binding (ptr_id 0) so that a later `var x = C`
+            // in the same hoist pass can infer its type from a function-scope
+            // const/let declared above it. The real value binding is added
+            // during body lowering and shadows this one (find searches newest-first).
             if (vd->kind == WGSL_DECL_LET || vd->kind == WGSL_DECL_CONST || vd->kind == WGSL_DECL_OVERRIDE) {
+                if (vd->name) {
+                    uint32_t ty = 0;
+                    if (vd->type) ty = lower_type(l, vd->type);
+                    else if (vd->init) ty = infer_expr_type(l, vd->init);
+                    if (ty) fn_ctx_add_local_ex(l, vd->name, 0, ty, 1);
+                }
                 break;
             }
 
@@ -6092,6 +6130,20 @@ static int lower_globals(WgslLower *l) {
             ssir_id_map_set(l, var_id, ssir_var);
         }
 
+        /* GLSL memory qualifiers (readonly/writeonly) recorded as attributes */
+        for (int a = 0; a < gv->attr_count; a++) {
+            const WgslAstNode *attr = gv->attrs[a];
+            if (!attr || attr->type != WGSL_NODE_ATTRIBUTE || !attr->attribute.name)
+                continue;
+            if (strcmp(attr->attribute.name, "readonly") == 0) {
+                emit_decorate(l, var_id, SpvDecorationNonWritable, NULL, 0);
+                ssir_global_set_non_writable(l->ssir, ssir_var, true);
+            } else if (strcmp(attr->attribute.name, "writeonly") == 0) {
+                emit_decorate(l, var_id, SpvDecorationNonReadable, NULL, 0);
+                ssir_global_set_non_readable(l->ssir, ssir_var, true);
+            }
+        }
+
         // Track mapping
         if (l->global_map_count >= l->global_map_cap) {
             int new_cap = l->global_map_cap ? l->global_map_cap * 2 : 16;
@@ -6240,6 +6292,12 @@ static int lower_io_globals(WgslLower *l) {
                     SpvBuiltIn spv_bi;
                     SsirBuiltinVar ssir_bi;
                     if (resolve_builtin_name(attr->attribute.args[0]->ident.name, &spv_bi, &ssir_bi)) {
+                        /* An input `position` is only legal in fragment shaders (gl_FragCoord);
+                         * BuiltIn Position is vertex-only in Vulkan SPIR-V. */
+                        if (sc == SpvStorageClassInput && spv_bi == SpvBuiltInPosition) {
+                            spv_bi = SpvBuiltInFragCoord;
+                            ssir_bi = SSIR_BUILTIN_FRAG_COORD;
+                        }
                         uint32_t bi_val = (uint32_t)spv_bi;
                         emit_decorate(l, var_id, SpvDecorationBuiltIn, &bi_val, 1);
                         if (l->ssir) ssir_global_set_builtin(l->ssir, ssir_var, ssir_bi);
